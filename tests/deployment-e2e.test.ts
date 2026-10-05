@@ -19,7 +19,8 @@ services:
   web:
     command: "'${process.execPath}' server.ts"
     ports: { http: auto }
-    ready: http://127.0.0.1:\${services.web.ports.http}
+    healthcheck:
+      test: http://127.0.0.1:\${services.web.ports.http}
     environment: { PORT: "\${services.web.ports.http}", DATA_DIR: "\${rig.data}" }
 `,
     );

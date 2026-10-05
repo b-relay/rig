@@ -16,6 +16,8 @@ import type {
 import { stopDetached } from "../src/domain/stop-budget";
 import { runtimeStateSchema } from "../src/runtime/state-schema";
 import { readFixedTargetNames } from "../src/runtime/state-store";
+import { checkIdentity } from "../src/runtime/health-monitor";
+import type { ManagedComponent } from "../src/config/types";
 import {
   parseHostConfig,
   parseProjectConfig,
@@ -172,6 +174,8 @@ function world(
   };
   let id = 0;
   const deps: RuntimeDependencies = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root: "/tmp/isolated-rig-278",
     async readAdminActivity() {
       return [];
@@ -342,8 +346,8 @@ function world(
   };
 }
 
-async function registered() {
-  const w = world();
+async function registered(config?: ProjectConfig) {
+  const w = world(config);
   await w.runtime.command({ action: "init", repoPath: "/tmp/fletcher" });
   return w;
 }
@@ -822,8 +826,10 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
           CONVEX_CLOUD_PORT: "${services.convex.ports.cloud}",
           CONVEX_SITE_PORT: "${services.convex.ports.site}",
         },
-        ready: "http://127.0.0.1:${services.convex.ports.cloud}/instance_name",
-        ready_timeout: "1m",
+        healthcheck: {
+          test: "http://127.0.0.1:${services.convex.ports.cloud}/instance_name",
+          start_period: "1m",
+        },
       },
       web: {
         build:
@@ -836,8 +842,10 @@ function designConfig(web: { stop_timeout?: string } = {}): ProjectConfig {
           APP_ORIGIN: "http://127.0.0.1:${services.web.ports.http}",
           NEXT_TELEMETRY_DISABLED: "1",
         },
-        ready: "http://127.0.0.1:${services.web.ports.http}/api/health",
-        ready_timeout: "2m",
+        healthcheck: {
+          test: "http://127.0.0.1:${services.web.ports.http}/api/health",
+          start_period: "2m",
+        },
         depends_on: ["convex"],
         ...web,
       },
@@ -894,6 +902,18 @@ async function recordedBeforeStopTimeout(): Promise<RuntimeState> {
 async function upgraded(config: ProjectConfig) {
   const w = world(config);
   const recorded = await recordedBeforeStopTimeout();
+  // These Services had `ready`, which rig.yaml now writes as healthcheck. That move starts ongoing checks, so it is drift of
+  // its own (ADR 0012; tests/healthcheck-runtime.test.ts). The recorded plans are given the checks it adds, so what these
+  // tests compare is stop_timeout alone.
+  for (const target of recorded.targets)
+    for (const component of target.plan.components)
+      if (component.kind === "managed")
+        component.healthcheck = {
+          interval: 30,
+          timeout: 30,
+          retries: 3,
+          onFailure: "report",
+        };
   Object.assign(w.state, structuredClone(recorded));
   return { ...w, recorded };
 }
@@ -998,6 +1018,139 @@ test("a rig.yaml that sets a non-default stop_timeout is still drift from a plan
       hint: "Run rig deploy stable --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
     },
   ]);
+});
+
+test("a health restart stops the Service within its stop_timeout under its Target's lock, spends no restart budget, records why, and holds up no other Target", async () => {
+  const w = await registered(
+    parseProjectConfig({
+      name: "fletcher",
+      services: {
+        web: {
+          command: "serve",
+          ports: { http: 4567 },
+          stop_timeout: "2m",
+          healthcheck: { on_failure: "restart" },
+        },
+        worker: { command: "work", depends_on: ["web"], stop_timeout: "25m" },
+      },
+      targets: { working: true, stable: true, preview: true },
+    }),
+  );
+  await w.command({ action: "up", target: "working" });
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
+  const working = () => w.state.targets.find((t) => t.kind === "working")!;
+  const before = working().services!.web!;
+  const webCheck = checkIdentity(
+    working().plan.components.find(
+      (c): c is ManagedComponent => c.kind === "managed" && c.name === "web",
+    )!,
+  );
+  // A request from a check the recorded plan no longer makes (a deploy replaced its test) is refused under the lock.
+  expect(
+    await w.runtime.restartUnhealthy({
+      targetId: working().id,
+      service: "web",
+      check: checkIdentity({
+        ...(working().plan.components.find(
+          (c) => c.name === "web",
+        ) as ManagedComponent),
+        health: "http://127.0.0.1:4567/legacy",
+      }),
+      incarnation: before.incarnation!,
+      attempt: 1,
+      failures: 3,
+      since: 0,
+      restarts: [],
+    }),
+  ).toEqual({ outcome: "skipped" });
+  expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toEqual([]);
+  w.hold();
+  const restart = w.runtime.restartUnhealthy({
+    targetId: working().id,
+    service: "web",
+    check: webCheck,
+    incarnation: before.incarnation!,
+    attempt: 2,
+    failures: 3,
+    output: "HTTP 503",
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    restarts: [Date.parse("2026-09-27T03:50:00.000Z")],
+  });
+  // The normal stop path: web's own stop_timeout, shown as the Target stopping.
+  const stop = await w.stopOf("web");
+  expect(stop.request.graceMs).toBe(2 * 60_000);
+  // Recorded before the stop, so whatever starts web next carries the stretch on.
+  expect(working().services!.web!.healthStretch?.restarts).toHaveLength(2);
+  expect(
+    (await w.runtime.status({ project: "fletcher" })).targets.find(
+      (t) => t.kind === "working",
+    )!.state,
+  ).toBe("stopping");
+  // The working Target is held; the stable Target is not.
+  expect(w.runtime.targetBusy(working())).toBe(true);
+  expect(
+    w.runtime.targetBusy(w.state.targets.find((t) => t.kind === "stable")!),
+  ).toBe(false);
+  expect(await w.command({ action: "up", target: "stable" })).toMatchObject({
+    target: "stable",
+  });
+  w.hold(false);
+  stop.exit();
+  expect(await restart).toEqual({
+    outcome: "restarted",
+    at: Date.parse("2026-09-27T04:00:00.000Z"),
+  });
+  const after = working().services!.web!;
+  expect(after.incarnation).not.toBe(before.incarnation);
+  expect(after.attempts).toEqual([]);
+  expect(after.healthStretch).toEqual({
+    since: Date.parse("2026-09-27T03:50:00.000Z"),
+    restarts: [
+      Date.parse("2026-09-27T03:50:00.000Z"),
+      Date.parse("2026-09-27T04:00:00.000Z"),
+    ],
+  });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    action: "health-restart",
+    outcome: "started",
+    target: "working",
+    message:
+      "web was restarted because it is unhealthy: 3 health checks in a row failed (last output: HTTP 503) (health restart 2).",
+  });
+  expect(w.runtime.targetBusy(working())).toBe(false);
+  // A request that names no process, or another one than the record does, is never acted on.
+  for (const incarnation of [undefined, "some-other-process"])
+    expect(
+      await w.runtime.restartUnhealthy({
+        targetId: working().id,
+        service: "web",
+        check: webCheck,
+        ...(incarnation ? { incarnation } : {}),
+        attempt: 3,
+        failures: 3,
+        since: 0,
+        restarts: [],
+      }),
+    ).toEqual({ outcome: "skipped" });
+  // Judged again under the lock: a Service whose recorded plan has no healthcheck that restarts is left alone.
+  expect(
+    await w.runtime.restartUnhealthy({
+      targetId: working().id,
+      service: "worker",
+      check: webCheck,
+      incarnation: working().services!.worker!.incarnation!,
+      attempt: 1,
+      failures: 3,
+      since: 0,
+      restarts: [],
+    }),
+  ).toEqual({ outcome: "skipped" });
+  expect(w.stops.filter((stop) => stop.key.endsWith(":worker"))).toEqual([]);
+  // Still only the one stop the health restart made.
+  expect(w.stops.filter((stop) => stop.key.endsWith(":web"))).toHaveLength(1);
+  // An explicit restart ends the stretch.
+  await w.command({ action: "restart", target: "working" });
+  expect(working().services!.web!.healthStretch).toBeUndefined();
 });
 
 test("a Service whose plan was recorded before stop_timeout existed is stopped with the 10 s default grace", async () => {

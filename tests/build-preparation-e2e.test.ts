@@ -46,7 +46,8 @@ services:
     build: echo service:web >> '${counts}/order' && echo built > web.built
     command: "'${process.execPath}' server.ts"
     ports: { http: auto }
-    ready: http://127.0.0.1:\${services.web.ports.http}
+    healthcheck:
+      test: http://127.0.0.1:\${services.web.ports.http}
     environment: { PORT: "\${services.web.ports.http}" }
 tools:
   counted:
@@ -121,7 +122,8 @@ services:
     build: echo service:web >> '${counts}/order'
     command: "${run}"
     ports: { http: auto }
-    ready: http://127.0.0.1:\${services.web.ports.http}
+    healthcheck:
+      test: http://127.0.0.1:\${services.web.ports.http}
     environment: { PORT: "\${services.web.ports.http}" }
 tools:
   counted:

@@ -13,6 +13,7 @@ import {
 import type {
   OperationRecord,
   RuntimeState,
+  ServiceRun,
   TargetRecord,
 } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
@@ -175,6 +176,12 @@ export async function recordHostRestart(
     if (state.host)
       state.host.restart = {
         ...mark,
+        // Where the restart falls among starts: kept from when it was first recorded. Nothing has started since the
+        // restart: rigd starts nothing until its first pass has read the state and recorded it (application.ts,
+        // reconcilePending), so every start after the restart takes a higher startSeq than this.
+        seq: sameMark(state.host.restart, mark)
+          ? (state.host.restart!.seq ?? state.startSeq ?? 0)
+          : (state.startSeq ?? 0),
         settled: [
           ...new Set([
             ...finding.settled,
@@ -259,6 +266,8 @@ function markSettled(
     ? state.host.restart!
     : {
         ...found,
+        // As in recordHostRestart: nothing has started since the restart, so this comes before every start after it.
+        seq: state.startSeq ?? 0,
         settled: [],
         unannounced: true as const,
         ...(unannouncedBefore?.length
@@ -280,9 +289,39 @@ export async function recordStoppedAfterHostRestart(
   mark: RestartMark,
   deps: StartDeps,
 ): Promise<boolean> {
-  return await recordStoppedByHostRestart(target, mark.kind, deps, (state) =>
-    markSettled(state, target.id, mark),
-  );
+  // One step: whatever fails in it (the read below, an observation, the write) answers false, so the caller keeps the
+  // restart pending and tries again; nothing escapes to skip that.
+  try {
+    // The restart as recorded orders it among starts: a run started after it was recorded is not one it stopped.
+    const recorded = (await deps.store.read()).host?.restart;
+    const seq = recorded && sameMark(recorded, mark) ? recorded.seq : undefined;
+    return await recordStoppedByHostRestart(
+      target,
+      mark.kind,
+      deps,
+      (state) => markSettled(state, target.id, mark),
+      (_service, run) => !startedAfter(run, seq),
+    );
+  } catch (error) {
+    await deps
+      .diagnostic({
+        operationId: deps.id(),
+        action: "reconcile",
+        outcome: "failed",
+        target: target.name,
+        errorCode: diagnosticErrorCode(error),
+      })
+      .catch(() => {});
+    return false;
+  }
+}
+/** Whether `run` was started after the Host restart recorded at `seq` (see `RuntimeState.startSeq`). A run with no
+ * `startSeq` (an older rigd's), or a restart recorded without `seq`, counts as before it. */
+export function startedAfter(
+  run: Pick<ServiceRun, "startSeq"> | undefined,
+  seq: number | undefined,
+): boolean {
+  return seq !== undefined && run?.startSeq !== undefined && run.startSeq > seq;
 }
 
 /** Records `session` as the one rigd has acted on, so its next start compares against it; it replaces any pending restart. */

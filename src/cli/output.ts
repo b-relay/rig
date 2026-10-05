@@ -1,4 +1,7 @@
-import type { ProjectStatusReport } from "../domain/project-status";
+import {
+  healthSummary,
+  type ProjectStatusReport,
+} from "../domain/project-status";
 import { killingText } from "./stop-display";
 import { terminalText } from "./terminal-text";
 /** Human presenters consume the same domain report returned by structured commands. */
@@ -103,7 +106,7 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
       const state =
         component.state === "stopping" && typeof component.killAt === "string"
           ? `stopping · ${killingText(component.killAt, now, "minutes", false)}`
-          : word(component.state);
+          : word(healthSummary(component, now)) || word(component.state);
       lines.push(
         `  ${[word(component.name), state, port, route].filter(Boolean).join("  ")}`,
       );

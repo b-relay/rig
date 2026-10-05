@@ -14,7 +14,8 @@ services:
       PORT: ${port}
       DATA_DIR: ${rig.data}
       LOG_LEVEL: info
-    ready: http://127.0.0.1:${port}/health
+    healthcheck:
+      test: http://127.0.0.1:${port}/health
 
 # No proxy: api is the one Service with a port, so the domain routes "/" to it.
 

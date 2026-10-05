@@ -160,6 +160,14 @@ export interface TargetLifecycle {
     journal: ActivationJournal,
     stops?: StopControl,
   ): Promise<{ outcome: "started" | "unchanged" }>;
+  /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
+   * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
+   * starts it again. */
+  stop(
+    target: TargetRecord,
+    service: string,
+    stops?: StopControl,
+  ): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout. Every Service is attempted, and
    * STOP_INCOMPLETE names the failures, except when the stop is detached: STOP_DETACHED ends it at once. */
   down(
@@ -238,15 +246,24 @@ export function withStops(
       lifecycle.up(target, checkpoint, journal, control ?? stops),
     recover: (target, service, journal, control) =>
       lifecycle.recover(target, service, journal, control ?? stops),
+    stop: (target, service, control) =>
+      lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
   };
 }
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
+/** Told about each Service's lifecycle transitions, synchronously and while the caller holds the Target: as a start or a
+ * stop begins (`changing`), and when a start passed its start check, its healthcheck's first passing check (`activated`). */
+export interface LifecycleObserver {
+  changing(target: TargetRecord, service: string): void;
+  activated(target: TargetRecord, service: string, incarnation: string): void;
+}
 export function createTargetLifecycle(
   effects: TargetEffects,
   timing: ReadinessTiming = readinessTiming,
+  observer?: LifecycleObserver,
 ): TargetLifecycle {
   const lifecycle: TargetLifecycle = {
     pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
@@ -538,6 +555,23 @@ export function createTargetLifecycle(
         );
       }
     },
+    async stop(target, service, stops) {
+      const component = target.plan.components.find(
+        (candidate): candidate is ManagedComponent =>
+          candidate.kind === "managed" && candidate.name === service,
+      );
+      if (!component)
+        throw new RigError(
+          "SERVICE_UNKNOWN",
+          `${target.name} has no Service named '${service}'.`,
+          "Select a Service of the recorded plan.",
+          { service },
+        );
+      const result = await stopService(target, component, stops);
+      return {
+        outcome: result.outcome === "stopped" ? "stopped" : "unchanged",
+      };
+    },
     async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
@@ -569,6 +603,7 @@ export function createTargetLifecycle(
   ): Promise<StopResult> {
     const graceMs = serviceGraceMs(component.stopTimeout);
     const kill = stops.kill?.(target);
+    observer?.changing(target, component.name);
     stops.observer?.stopping(target, component.name, graceMs);
     try {
       const result = await effects
@@ -599,6 +634,7 @@ export function createTargetLifecycle(
     const key = `${target.id}:${component.name}`;
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
     const env = await effects.environment(target, component);
+    observer?.changing(target, component.name);
     const incarnation = journal
       ? await journal.starting(component.name)
       : randomUUID();
@@ -632,6 +668,7 @@ export function createTargetLifecycle(
     if (!hasReadiness(component))
       await awaitSurvival(component, timing, process);
     await awaitActivation(component, target, effects, timing, process);
+    observer?.activated(target, component.name, incarnation);
     await journal?.activated(component.name, incarnation);
   }
   return lifecycle;
@@ -843,7 +880,7 @@ async function awaitActivation(
     lastCheck === undefined
       ? `${component.name} did not become ready.`
       : `${component.name} did not become ready (last check: ${lastCheck}).`,
-    "Inspect Target logs and the configured health check.",
+    "Inspect the Target logs and the Service's healthcheck.",
     {
       component: component.name,
       outcome: lastCheck === undefined ? "unanswered" : "unready",

@@ -11,10 +11,21 @@ import {
   rolePatch,
   localhostCommand,
   localhostHealth,
-  isHealthUrl,
   validHostname,
 } from "./schema";
-import { referenceResolver, type PublicInput } from "./references";
+import {
+  HEALTHCHECK_DEFAULTS,
+  execCommand,
+  healthcheckInForce,
+  healthcheckTest,
+  isHealthUrl,
+  type HealthcheckSettings,
+} from "./healthcheck";
+import {
+  referenceResolver,
+  type PublicInput,
+  type ResolvedText,
+} from "./references";
 import { planWorkingDir } from "./working-dir";
 import type {
   BuildUnit,
@@ -129,6 +140,41 @@ export function resolveTargetPlan(
     data: (service) => join(input.dataRoot, service),
     port: (service, port) => ports[`services.${service}.ports.${port}`]!,
   });
+  /** A healthcheck's test with references resolved, as the one string the plan records; undefined without a test. A URL is
+   * data for the HTTP probe; a shell command is quoted for /bin/sh; a `CMD` program and its arguments are resolved one by
+   * one and quoted into a command that runs them unchanged. */
+  const resolveTest = (
+    settings: HealthcheckSettings,
+    at: string,
+  ): ResolvedText | undefined => {
+    const test = healthcheckTest(settings);
+    if (test === undefined) return undefined;
+    if (test.kind === "exec") {
+      const argv = test.argv.map((arg, index) =>
+        references.text(arg, `${at}.${index + 1}`),
+      );
+      return {
+        value: execCommand(argv.map((arg) => arg.value)),
+        inputs: argv.flatMap((arg) => arg.inputs),
+      };
+    }
+    if (test.kind === "url")
+      return { value: references.text(test.url, at).value, inputs: [] };
+    // A plain string that only reads as a URL once its references are resolved is the URL check too, as `ready` was.
+    const text = references.text(test.command, `${at}${test.at}`);
+    if (test.at === "" && isHealthUrl(text.value))
+      return { value: text.value, inputs: [] };
+    const command = references.shell(test.command, `${at}${test.at}`);
+    // A shell command must never read as the URL check a plain string can be.
+    if (isHealthUrl(command.value))
+      throw new ConfigError(
+        `${at}${test.at} runs a shell command that reads as a URL.`,
+        "invalid_healthcheck",
+        { path: `${at}${test.at}` },
+        "Write an HTTP check as a plain string, such as test: http://127.0.0.1:${port}/health.",
+      );
+    return command;
+  };
   /** Listed files, then the operator's optional all.env and role file for this scope. */
   const envFiles = (
     listed: string | string[] | undefined,
@@ -167,20 +213,16 @@ export function resolveTargetPlan(
           "invalid_binding",
           { service: name },
         );
-      // A readiness URL is data for the HTTP probe; only a shell check is quoted for /bin/sh.
-      const probe =
-        service.ready === undefined
-          ? undefined
-          : references.text(service.ready, `${at}.ready`);
-      const ready =
-        probe === undefined || isHealthUrl(probe.value)
-          ? probe
-          : references.shell(service.ready!, `${at}.ready`);
+      const check = healthcheckInForce(service.healthcheck)
+        ? service.healthcheck
+        : undefined;
+      const ready = check && resolveTest(check, `${at}.healthcheck.test`);
       if (ready !== undefined && !localhostHealth(ready.value))
         throw new ConfigError(
-          "Resolved readiness check addresses a host outside localhost.",
+          "Resolved healthcheck addresses a host outside localhost.",
           "invalid_binding",
-          { service: name, field: "ready" },
+          { service: name, field: "healthcheck.test" },
+          `Point services.${name}.healthcheck.test at 127.0.0.1 or localhost.`,
         );
       const build =
         service.build === undefined
@@ -214,12 +256,28 @@ export function resolveTargetPlan(
         command: run.value,
         ...(workingDir !== undefined ? { workingDir } : {}),
         ...declaredPorts(name, service, ports),
-        readyTimeout: durationSeconds(service.ready_timeout ?? "30s"),
+        readyTimeout: durationSeconds(
+          check?.start_period ?? HEALTHCHECK_DEFAULTS.start_period,
+        ),
         stopTimeout: durationSeconds(
           service.stop_timeout ?? `${DEFAULT_STOP_TIMEOUT_SECONDS}s`,
         ),
         restart: service.restart ?? DEFAULT_RESTART_POLICY,
         ...(ready !== undefined ? { health: ready.value } : {}),
+        ...(check
+          ? {
+              healthcheck: {
+                interval: durationSeconds(
+                  check.interval ?? HEALTHCHECK_DEFAULTS.interval,
+                ),
+                timeout: durationSeconds(
+                  check.timeout ?? HEALTHCHECK_DEFAULTS.timeout,
+                ),
+                retries: check.retries ?? HEALTHCHECK_DEFAULTS.retries,
+                onFailure: check.on_failure ?? HEALTHCHECK_DEFAULTS.on_failure,
+              },
+            }
+          : {}),
       };
     }),
     ...Object.entries(settings.tools ?? {})

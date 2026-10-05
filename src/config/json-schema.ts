@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
+import { HEALTHCHECK_DEFAULTS } from "./healthcheck";
 import { hostConfigSchema, projectConfigSchema } from "./schema";
 
 /** Where the committed schema files are served from; an editor fetches them by this address. */
@@ -23,9 +24,14 @@ export interface ConfigJsonSchemas {
  * settings optional so the parsed config stays what the author wrote; the JSON Schema shows the value for an editor. Only fixed
  * values belong here: a setting that falls back to another setting (a Service build_timeout) has none.
  * tests/config-json-schema.test.ts holds each entry to what resolveTargetPlan does. */
-const PLANNING_DEFAULTS: readonly (readonly [string[], string])[] = [
+const PLANNING_DEFAULTS: readonly (readonly [
+  readonly string[],
+  string | number,
+])[] = [
   [["build_timeout"], "10m"],
-  [["services", "*", "ready_timeout"], "30s"],
+  ...Object.entries(HEALTHCHECK_DEFAULTS).map(
+    ([key, value]) => [["services", "*", "healthcheck", key], value] as const,
+  ),
   [["services", "*", "stop_timeout"], `${DEFAULT_STOP_TIMEOUT_SECONDS}s`],
   [["services", "*", "restart"], DEFAULT_RESTART_POLICY],
 ];

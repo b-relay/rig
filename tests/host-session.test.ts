@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  bootOnly,
   hostRestartBetween,
   identified,
   mayReplace,
 } from "../src/domain/host-session";
 import { findHostRestart } from "../src/runtime/host-restart";
+import { daemonHostSession } from "../src/daemon/composition";
 import {
   createHostSessionProbe,
   parseBootSession,
@@ -238,4 +240,46 @@ test("the probe reads each part on its own, leaves out what fails, and never rej
   };
   answers["kern.bootsessionuuid"] = new Error("spawn failed");
   expect(await probe.current()).toEqual({});
+});
+
+test("a rigd run as a process under RIG_ROOT reads only the boot, so a new login is never a Host restart for it and a reboot still is", async () => {
+  let session = {
+    boot: "B1",
+    bootedAt: "2026-10-05T07:00:00.000Z",
+    login: "100002",
+  };
+  const probe = bootOnly({ current: async () => ({ ...session }) });
+  const before = await probe.current();
+  expect(before).toEqual({ boot: "B1", bootedAt: "2026-10-05T07:00:00.000Z" });
+  session = { ...session, login: "100003" };
+  expect(hostRestartBetween(before, await probe.current())).toBeUndefined();
+  session = { ...session, boot: "B2" };
+  expect(hostRestartBetween(before, await probe.current())).toBe("reboot");
+});
+
+test("the daemon's probe follows how it was installed: as a process it reads no login, as a launchd job it does", async () => {
+  const gui = await readFile(
+    join(import.meta.dir, "fixtures", "launchctl-print", "gui-domain.txt"),
+    "utf8",
+  );
+  const answers: Record<string, CommandResult> = {
+    "kern.bootsessionuuid": { exitCode: 0, stdout: `${BOOT}\n`, stderr: "" },
+    "kern.boottime": {
+      exitCode: 0,
+      stdout: "{ sec = 1779656276, usec = 781635 } Sun May 24 16:57:56 2026\n",
+      stderr: "",
+    },
+    "gui/501": { exitCode: 0, stdout: gui, stderr: "" },
+  };
+  const run = async (request: CommandRequest): Promise<CommandResult> =>
+    answers[request.command.at(-1)!]!;
+  expect(
+    await daemonHostSession("launchd", { run, uid: 501 }).current(),
+  ).toMatchObject({ boot: BOOT, login: "100007" });
+  const asProcess = await daemonHostSession("process", {
+    run,
+    uid: 501,
+  }).current();
+  expect(asProcess).toMatchObject({ boot: BOOT });
+  expect(asProcess).not.toHaveProperty("login");
 });

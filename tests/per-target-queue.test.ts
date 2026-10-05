@@ -114,6 +114,8 @@ async function fixture(host: Record<string, unknown> = {}) {
       }
   };
   const deps: RuntimeDependencies = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root,
     async readAdminActivity() {
       return [];
@@ -220,6 +222,9 @@ async function fixture(host: Record<string, unknown> = {}) {
         const incarnation = await journal.starting(service);
         processes.set(key(target, service), { state: "running", incarnation });
         return { outcome: "started" };
+      },
+      async stop() {
+        return { outcome: "stopped" as const };
       },
       async down(target) {
         events.push(`stop ${target.plan.project} ${target.name}`);

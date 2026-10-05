@@ -50,7 +50,7 @@ export const commandSchema = z
         name: z.string(),
         command: z.string(),
         port: z.number().int().optional(),
-        ready: z.string().optional(),
+        healthcheck: z.string().optional(),
       })
       .strict()
       .optional(),

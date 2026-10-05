@@ -310,35 +310,63 @@ export function createTargetEffects(
     }
     return { ready: true };
   };
-  /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0. */
+  /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0 within the
+   * healthcheck's timeout, or 2 s for a `ready` check a plan recorded before healthcheck. */
   const probe = async (
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
   ): Promise<HealthCheck> => {
+    const timeoutMs = (component.healthcheck?.timeout ?? 2) * 1000;
     try {
       if (isHealthUrl(component.health!)) {
-        const response = await fetch(component.health!, {
-          signal,
-          redirect: "manual",
-        });
-        await response.body?.cancel();
-        return response.status < 400
-          ? { ready: true }
-          : { ready: false, reason: `HTTP ${response.status}` };
+        // A healthcheck's timeout bounds each request, at start and while it runs; a `ready` URL a plan recorded before
+        // healthcheck is bounded by its start budget alone, as it was. The request has its own signal, aborted by the
+        // caller's or by its timer; both are let go when it ends, so a finished check holds no timer and no listener.
+        const request = new AbortController();
+        let timedOut = false;
+        const forward = () => request.abort(signal.reason);
+        signal.addEventListener("abort", forward, { once: true });
+        const timer = component.healthcheck
+          ? setTimeout(() => {
+              timedOut = true;
+              request.abort();
+            }, timeoutMs)
+          : undefined;
+        try {
+          if (signal.aborted) forward();
+          const response = await fetch(component.health!, {
+            signal: request.signal,
+            redirect: "manual",
+          });
+          await response.body?.cancel();
+          return response.status < 400
+            ? { ready: true }
+            : { ready: false, reason: `HTTP ${response.status}` };
+        } catch (error) {
+          if (!signal.aborted && timedOut)
+            return {
+              ready: false,
+              reason: `timed out after ${timeoutMs / 1000}s`,
+            };
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", forward);
+        }
       }
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
         cwd: await runDirectory(target, component),
         env: await environment(target, component),
         signal,
-        timeoutMs: 2000,
+        timeoutMs,
       });
       if (result.exitCode === 0) return { ready: true };
       const detail = lastLine(result.stderr) ?? lastLine(result.stdout);
       return {
         ready: false,
-        reason: `${result.timedOut ? "timed out after 2s" : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
+        reason: `${result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
       };
     } catch (error) {
       if (signal.aborted) throw error;

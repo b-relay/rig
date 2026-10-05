@@ -15,6 +15,18 @@ export interface HostSessionProbe {
   current(): Promise<HostSession>;
 }
 
+/** `probe` for a rigd that does not run in the user's GUI login: a detached process under RIG_ROOT ("process" mode),
+ * which a logout and login do not stop, nor its children. Only a boot change is a Host restart for it, so it reads only
+ * the boot; a login change is never taken for one. */
+export function bootOnly(probe: HostSessionProbe): HostSessionProbe {
+  return {
+    async current() {
+      const { login: _ignored, ...session } = await probe.current();
+      return session;
+    },
+  };
+}
+
 /** Why every process Rig ran is gone at once: the Mac restarted (`reboot`), or the user logged out and in again (`login`),
  * which ends every launchd job and process of the old login session. */
 export type HostRestart = "reboot" | "login";

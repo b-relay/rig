@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; its readiness rule (`ready`, `ready_timeout`, no ongoing checks) is superseded by [0012](0012-compose-healthcheck.md)
 ---
 
 # rig.yaml has one format again

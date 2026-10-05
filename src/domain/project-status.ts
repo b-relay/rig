@@ -1,4 +1,50 @@
 import { z } from "zod";
+/** The cached result of a Service's ongoing checks (its healthcheck), as rigd last saw it; status never runs one for it. */
+export const serviceHealthSchema = z
+  .object({
+    status: z
+      .enum(["starting", "healthy", "unhealthy"])
+      .describe(
+        "starting until a check of the running process answered; unhealthy once `retries` checks in a row failed, until one passes; healthy otherwise.",
+      ),
+    checkedAt: z
+      .string()
+      .optional()
+      .describe("When the last check of this process answered (ISO 8601)."),
+    failures: z.number().int().describe("Failed checks in a row."),
+    retries: z
+      .number()
+      .int()
+      .describe(
+        "Failed checks in a row that make the Service unhealthy: its healthcheck's retries.",
+      ),
+    output: z
+      .string()
+      .optional()
+      .describe(
+        "The last failed check's output as one line of at most 200 characters; absent once a check passed.",
+      ),
+    restarts: z
+      .number()
+      .int()
+      .describe(
+        "Health restarts made since the Service became unhealthy this time (on_failure: restart).",
+      ),
+    restartFailed: z
+      .literal(true)
+      .optional()
+      .describe(
+        "The last health restart stopped the Service and its start failed the start check: it is stopped until the next health restart.",
+      ),
+    nextRestartAt: z
+      .string()
+      .optional()
+      .describe(
+        "When that next health restart is due (ISO 8601): 1 min, 5 min, 15 min and then every hour after the last.",
+      ),
+  })
+  .passthrough();
+export type ServiceHealth = z.infer<typeof serviceHealthSchema>;
 
 const componentReportSchema = z
   .object({
@@ -61,6 +107,11 @@ const componentReportSchema = z
         "For a stopping Service: when SIGKILL is due (ISO 8601), once its stop_timeout has passed.",
       ),
     reason: z.string().optional().describe("Explanation of the observation."),
+    health: serviceHealthSchema
+      .optional()
+      .describe(
+        "For a running Service with a healthcheck: the cached result of its ongoing checks, which decides healthy or unhealthy.",
+      ),
   })
   .passthrough();
 const targetReportSchema = z
@@ -146,4 +197,68 @@ export interface StatusSelection {
 }
 export interface ProjectStatusReader {
   status(selection: StatusSelection): Promise<ProjectStatusReport>;
+}
+/** A Service's state as its cached health check result says, on one line, the way `rig status` and the dashboard show it:
+ * `healthy · checked 12s ago`, `healthy · 1/3 failed · checked 4s ago`, `unhealthy 3/3 · HTTP 503 · restarted 2 times`.
+ * Undefined for a Service with no such result, or one in any other state. The output is shown as rigd recorded it, already
+ * one line of at most 200 characters; a terminal caller still makes it safe to print. */
+export function healthSummary(
+  component: Pick<ComponentReport, "state" | "health">,
+  now: Date,
+): string | undefined {
+  const health = component.health;
+  if (!health || !["healthy", "unhealthy"].includes(component.state))
+    return undefined;
+  if (health.restartFailed)
+    return [
+      "unhealthy",
+      "restart failed its start check",
+      health.nextRestartAt
+        ? Date.parse(health.nextRestartAt) <= now.getTime()
+          ? "next attempt now"
+          : `next attempt in ${until(health.nextRestartAt, now)}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  if (component.state === "healthy")
+    return [
+      "healthy",
+      health.failures ? `${health.failures}/${health.retries} failed` : "",
+      health.checkedAt ? `checked ${ago(health.checkedAt, now)}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  return [
+    health.failures
+      ? `unhealthy ${health.failures}/${health.retries}`
+      : "unhealthy",
+    health.output ?? "",
+    health.restarts
+      ? `restarted ${health.restarts} ${health.restarts === 1 ? "time" : "times"}`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+/** "45s", "5m", "1h": how long until `at`. */
+function until(at: string, now: Date): string {
+  const seconds = Math.max(
+    0,
+    Math.round((Date.parse(at) - now.getTime()) / 1000),
+  );
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m`;
+  return `${Math.round(seconds / 3600)}h`;
+}
+/** "12s ago", "3m ago", "2h ago". */
+function ago(at: string, now: Date): string {
+  const seconds = Math.max(
+    0,
+    Math.round((now.getTime() - Date.parse(at)) / 1000),
+  );
+  if (!Number.isFinite(seconds)) return "at an unknown time";
+  if (seconds < 120) return `${seconds}s ago`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m ago`;
+  return `${Math.round(seconds / 3600)}h ago`;
 }

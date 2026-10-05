@@ -259,14 +259,18 @@ async function saveRuns(
 /** The journal a start runs under. Every `starting` is saved before it answers, so a process never carries an incarnation the
  * record does not name. An `explicit` start (an operator's up or restart, a deployment, rigd's start of a Stable Target
  * after a Host restart) begins a new activation with full budgets of automatic attempts; an automatic one spends an
- * attempt of the named budget of the current activation. `afterHostRestart` marks each process an explicit start makes as
- * started after that restart, which status reports.
+ * attempt of the named budget of the current activation. A `health` restart spends from neither budget and carries both
+ * on, with `healthStretch`, the unhealthy stretch it continues. `afterHostRestart` marks each process an explicit start
+ * makes as started after that restart, which status reports.
  * `failed` marks the Services an explicit start began as not started after it was rolled back; nothing retries that. */
 export function activationJournal(
   target: TargetRecord,
-  mode: "explicit" | RestartBudget,
+  mode: "explicit" | RestartBudget | "health",
   deps: Pick<Deps, "store" | "now" | "id">,
-  options: { afterHostRestart?: HostRestart } = {},
+  options: {
+    afterHostRestart?: HostRestart;
+    healthStretch?: NonNullable<ServiceRun["healthStretch"]>;
+  } = {},
 ): ActivationJournal & { failed(error: unknown): Promise<void> } {
   const begun: string[] = [];
   return {
@@ -282,14 +286,24 @@ export function activationJournal(
           ? { startedAfterHostRestart: options.afterHostRestart }
           : {}),
       };
-      await saveRun(
-        target,
-        service,
+      const run: ServiceRun =
         mode === "explicit"
           ? fresh
-          : automaticStart(fresh, current, mode, Date.parse(deps.now())),
-        deps,
-      );
+          : mode === "health"
+            ? {
+                ...carriedOver(fresh, current),
+                ...(options.healthStretch
+                  ? { healthStretch: options.healthStretch }
+                  : {}),
+              }
+            : automaticStart(fresh, current, mode, Date.parse(deps.now()));
+      // In the same write, the start takes the next value of the state's startSeq, which orders it after every Host
+      // restart recorded before it: such a restart's stop never applies to this run.
+      await saveRuns(target, { [service]: run }, deps, (state) => {
+        const next = (state.startSeq ?? 0) + 1;
+        state.startSeq = next;
+        run.startSeq = next;
+      });
       begun.push(service);
       return incarnation;
     },
@@ -316,6 +330,21 @@ export function activationJournal(
     },
   };
 }
+/** `fresh` with what a start that is not explicit carries over from `current`: both budgets' spent attempts, and the
+ * unhealthy stretch a health restart began. */
+function carriedOver(
+  fresh: ServiceRun,
+  current: ServiceRun | undefined,
+): ServiceRun {
+  return {
+    ...fresh,
+    attempts: current?.attempts ?? [],
+    ...(current?.unknownAttempts
+      ? { unknownAttempts: current.unknownAttempts }
+      : {}),
+    ...(current?.healthStretch ? { healthStretch: current.healthStretch } : {}),
+  };
+}
 /** The record of an automatic start at `now`: both budgets carry over from `current`, and `budget` spends one attempt. */
 function automaticStart(
   fresh: ServiceRun,
@@ -324,11 +353,7 @@ function automaticStart(
   now: number,
 ): ServiceRun {
   const carried: ServiceRun = {
-    ...fresh,
-    attempts: current?.attempts ?? [],
-    ...(current?.unknownAttempts
-      ? { unknownAttempts: current.unknownAttempts }
-      : {}),
+    ...carriedOver(fresh, current),
     ...(budget === "unknown-exit" ? { restartedAfterUnknown: true } : {}),
   };
   return withAttempts(carried, budget, [
@@ -373,16 +398,22 @@ export async function recordStoppedByHostRestart(
   restart: HostRestart,
   deps: Deps,
   alongside?: (state: RuntimeState) => void,
+  /** Which runs the restart stopped; a run started since it is not touched. All when absent. */
+  stoppedBy?: (service: string, run: ServiceRun | undefined) => boolean,
 ): Promise<boolean> {
   return await settleStopped(
     target,
     deps,
     (component, run) => {
+      if (stoppedBy && !stoppedBy(component.name, run)) return undefined;
       if (run?.intent === "stopped" || run?.exhausted) return undefined;
       const outcome = run?.outcome;
+      // A Service waiting for its next health restart would be started by the health monitor whatever its restart
+      // policy, so it is marked stopped by the Host restart too: only rig up starts it again.
       if (
         outcome &&
         outcome.kind !== "unknown" &&
+        run?.healthStretch?.pendingStart === undefined &&
         restartBudget(component.restart ?? DEFAULT_RESTART_POLICY, outcome) ===
           undefined
       )
@@ -528,6 +559,14 @@ async function superviseService(
   const observation = observed.value;
   let run = currentRun(target, service);
   if (run?.intent === "stopped" || run?.exhausted) return undefined;
+  // A health restart whose start failed is the health monitor's to try again, on its back-off: neither restart: nor the
+  // automatic-restart budget decides it. Without a healthcheck that restarts any more, restart policy takes it back.
+  if (
+    run?.healthStretch?.pendingStart !== undefined &&
+    !(run.outcome?.kind === "unknown" && run.outcome.hostRestart) &&
+    component.healthcheck?.onFailure === "restart"
+  )
+    return undefined;
   const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   if (!run?.outcome) {
     const outcome = observedOutcome(run, observation, deps.now());
@@ -689,6 +728,22 @@ async function holdBack(
   });
 }
 
+/** Records on the Service's current run the unhealthy stretch a health restart is about to continue. */
+export async function recordHealthStretch(
+  target: TargetRecord,
+  service: string,
+  stretch: NonNullable<ServiceRun["healthStretch"]>,
+  deps: Pick<Deps, "store" | "now" | "id">,
+): Promise<void> {
+  const current = currentRun(target, service);
+  if (current)
+    await saveRun(
+      target,
+      service,
+      { ...current, healthStretch: stretch },
+      deps,
+    );
+}
 /** What a failed automatic attempt leaves on record. A start refused before it was journalled, or one Rig itself stopped, is a failure it witnessed. A process that
  * ended on its own before it was ready is judged like any other exit: by its evidence, and `unknown` without any. A rollback
  * that could not be verified may have left the process behind, and a start the supervisor failed may have ended unseen. */

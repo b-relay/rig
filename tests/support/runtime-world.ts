@@ -19,6 +19,7 @@ import { timerObservationDeadline } from "../../src/runtime/bounded-observations
 import type { RuntimeDependencies } from "../../src/runtime/contracts";
 import {
   createTargetLifecycle,
+  type LifecycleObserver,
   type ReadinessTiming,
 } from "../../src/runtime/lifecycle";
 import { FileStateStore } from "../../src/runtime/state-store";
@@ -50,10 +51,14 @@ export interface RuntimeWorldOptions {
   readonly startsAt: string;
   /** Real milliseconds a readiness deadline lasts; see `promptReadiness`. */
   readonly readinessDeadlineMs: number;
+  /** Replaces `promptReadiness`: when a start check's deadline fires, decided by the test. */
+  readonly timing?: ReadinessTiming & { startGraceMs: number };
   /** Port and listener evidence; when absent every port answers and the owned process listens on nothing. */
   readonly activation?: Pick<TargetAdapterOptions, "connect" | "listeners">;
   /** Publishes routes; `unreloadedCaddy` when absent. */
   readonly router?: Router;
+  /** Told about each start and stop as it begins, and each passed start check, as rigd tells its health monitor. */
+  readonly lifecycleObserver?: LifecycleObserver;
   /** Rewrites the config each Target plan is resolved from. */
   readonly planConfig?: (config: ProjectConfig) => ProjectConfig;
   /** Dependencies that replace or add to the world's own, given its root and state file. */
@@ -83,11 +88,13 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
     router: options.router ?? unreloadedCaddy(root),
     run: runCommand,
   });
-  const timing = promptReadiness(options.readinessDeadlineMs);
+  const timing = options.timing ?? promptReadiness(options.readinessDeadlineMs);
   const store = new FileStateStore(root);
   const planConfig = options.planConfig ?? ((config) => config);
   let id = 0;
   const deps = {
+    // Never reconciled before its commands, so nothing waits for a first pass.
+    reconcileGate: "open",
     root,
     async readAdminActivity() {
       return [];
@@ -137,7 +144,11 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
         return parseHostConfig({});
       },
     },
-    lifecycle: createTargetLifecycle(effects, timing),
+    lifecycle: createTargetLifecycle(
+      effects,
+      timing,
+      options.lifecycleObserver,
+    ),
     observations: effects.observations,
     observationBudgetMs: 2000,
     observationDeadline: timerObservationDeadline,

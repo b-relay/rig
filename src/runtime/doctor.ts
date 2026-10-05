@@ -175,6 +175,7 @@ export async function doctor(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
+    deps.healthResults,
   );
   for (const report of reports)
     for (const component of report.components)
@@ -332,7 +333,7 @@ async function configCheck(
       // a deploy of a Commit that uses them replaces it. Its recorded plan still runs.
       return target.kind !== "working" && usesRenamedKeys(source.failure)
         ? failing(
-            `${label} predates the Compose key names of ADR 0011 (run is now command, env is now environment), so its policy was not compared. The Target still runs its recorded plan.`,
+            `${label} predates the Compose key names of ADR 0011 and 0012 (run is now command, env is now environment, ready is now healthcheck.test, ready_timeout is now healthcheck.start_period), so its policy was not compared. The Target still runs its recorded plan.`,
             "config-predates-rename",
             `Commit rig.yaml with the new names, then run rig deploy ${deploySelector(target)}; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.`,
           )
@@ -409,7 +410,7 @@ function componentHint(selector: string, component: ComponentReport): string {
   if (component.state === "failed" || component.exitCode !== undefined)
     return `Inspect the Target logs (rig logs ${selector}) for why it exited.`;
   if (component.state === "unhealthy")
-    return `The health check failed; inspect the Target logs (rig logs ${selector}) and the health URL.`;
+    return `Its health check failed; inspect the Target logs (rig logs ${selector}) and the Service's healthcheck in rig.yaml.`;
   if (component.state === "missing")
     return `The installed artifact or storage is absent; run rig up ${selector} or redeploy this Target.`;
   return "Inspect Target logs and provider configuration.";

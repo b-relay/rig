@@ -47,7 +47,7 @@ async function fixture(
     {
       command: string;
       restart?: string;
-      ready?: string;
+      healthcheck?: { test: string };
       depends_on?: string[];
       ports: { http: number };
     }
@@ -389,7 +389,7 @@ test("an automatic start that never becomes ready is stopped by Rig and spends b
   const unready = join(tmpdir(), `rig-restart-policy-unready-${process.pid}`);
   roots.push(unready);
   const f = await fixture({
-    api: { ...SERVICES.api, ready: `test ! -e '${unready}'` },
+    api: { ...SERVICES.api, healthcheck: { test: `test ! -e '${unready}'` } },
   });
   await f.command("up");
   await f.exit("api", { exitCode: 1 });

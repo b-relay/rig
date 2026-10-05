@@ -118,12 +118,12 @@ test("editor rejects unregistered identities, arbitrary paths, identity edits an
 
 test("YAML scalar removal preserves unrelated comments and refuses attached comments or collection replacement", async () => {
   const f = await fixture(
-    "# Project\nname: pantry\ndescription: optional\nservices:\n  web:\n    command: serve\n    ready: curl localhost # keep explanation\n",
+    "# Project\nname: pantry\ndescription: optional\nservices:\n  web:\n    command: serve\n    build: make web # keep explanation\n",
   );
   const read = await f.editor({ action: "read", project: "pantry" });
   const request = { project: "pantry", expectedRevision: read.revision };
   for (const patch of [
-    [{ op: "remove", path: ["services", "web", "ready"] }],
+    [{ op: "remove", path: ["services", "web", "build"] }],
     [{ op: "remove", path: ["services", "web"] }],
     [{ op: "set", path: ["services"], value: {} }],
   ])
@@ -140,7 +140,7 @@ test("YAML scalar removal preserves unrelated comments and refuses attached comm
   });
   expect(result.raw).not.toContain("description:");
   expect(result.raw).toContain("# Project");
-  expect(result.raw).toContain("ready: curl localhost # keep explanation");
+  expect(result.raw).toContain("build: make web # keep explanation");
 });
 
 test("apply rejects an invalid domain value without a write", async () => {

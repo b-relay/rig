@@ -28,13 +28,49 @@ const component = z.discriminatedUnion("kind", [
     workingDir: text
       .optional()
       .describe(
-        "Directory the Service's command, build and shell readiness check run in, relative to the plan's workspace; absent means the workspace root.",
+        "Directory the Service's command, build and healthcheck command run in, relative to the plan's workspace; absent means the workspace root.",
       ),
     port: z.number().int().min(1).max(65535).optional(),
     ports: z.record(text, z.number().int().min(1).max(65535)).optional(),
     sitePort: z.number().int().min(1).max(65535).optional(),
-    health: text.optional(),
-    readyTimeout: z.number().positive(),
+    health: text
+      .optional()
+      .describe(
+        "What one check runs, references resolved: a local http(s) URL or a /bin/sh command; absent when the Service is checked by connecting to its declared ports.",
+      ),
+    readyTimeout: z
+      .number()
+      .positive()
+      .describe(
+        "Seconds a start may take to pass its first check: the healthcheck's start_period, else 30.",
+      ),
+    healthcheck: z
+      .object({
+        interval: z
+          .number()
+          .int()
+          .positive()
+          .describe("Seconds between checks while the Service runs."),
+        timeout: z
+          .number()
+          .int()
+          .positive()
+          .describe("Seconds one check may take before it counts as failed."),
+        retries: z
+          .number()
+          .int()
+          .positive()
+          .describe("Failed checks in a row before the Service is unhealthy."),
+        onFailure: z
+          .enum(["report", "restart"])
+          .describe(
+            "Whether Rig only reports an unhealthy Service or also restarts it.",
+          ),
+      })
+      .optional()
+      .describe(
+        "The Service's healthcheck in force, whose checks repeat while it runs; absent when it has none, as in every plan recorded before healthcheck, whose `health` only gates start.",
+      ),
     stopTimeout: z
       .number()
       .int()
@@ -253,6 +289,37 @@ const services = z
         .describe(
           "The operator's latest stop needed SIGKILL: the Service's stop_timeout ran out, or --kill cut it short.",
         ),
+      startSeq: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe(
+          "Where this start falls in the order of starts and Host restarts (the state's startSeq). A stop by a Host restart is recorded only for a run started before the restart was recorded; a run without this field was started by an older rigd and counts as before.",
+        ),
+      healthStretch: z
+        .object({
+          since: z
+            .number()
+            .finite()
+            .describe("Unix milliseconds when the Service became unhealthy."),
+          restarts: z
+            .array(z.number().finite())
+            .describe(
+              "Unix milliseconds of each health restart in this stretch.",
+            ),
+          pendingStart: z
+            .number()
+            .finite()
+            .optional()
+            .describe(
+              "Unix milliseconds when the latest health restart began, written before it stopped anything and cleared once its start passed. Until then the health monitor owns the Service: it checks it while a process runs, and starts it at the next step of the back-off while none does, whatever its restart policy.",
+            ),
+        })
+        .optional()
+        .describe(
+          "The unhealthy stretch a health restart started the running process in, so a new rigd continues its back-off; an explicit start clears it.",
+        ),
     }),
   )
   .optional()
@@ -353,6 +420,14 @@ export const runtimeStateSchema = z
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    startSeq: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "The last value handed out to order starts and Host restarts: each journalled start takes the next one, and a recorded Host restart notes the value it found. It only grows.",
+      ),
     host: z
       .object({
         boot: text
@@ -383,6 +458,14 @@ export const runtimeStateSchema = z
               .optional()
               .describe(
                 "The login session rigd found when it detected the restart.",
+              ),
+            seq: z
+              .number()
+              .int()
+              .nonnegative()
+              .optional()
+              .describe(
+                "The state's startSeq when the restart was recorded: a run with a higher startSeq was started after it, and the restart's stop never applies to it. Absent on a restart an older rigd recorded.",
               ),
             settled: z
               .array(text)

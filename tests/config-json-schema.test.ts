@@ -39,10 +39,21 @@ test("the Project schema names its draft, identity and the public top-level sett
   );
   expect(project.required).toEqual(["name"]);
   expect(project.additionalProperties).toBe(false);
-  // Removed settings are not offered: there is one rig.yaml format, and readiness is ready and ready_timeout.
+  // Removed settings are not offered: there is one rig.yaml format, and health checks are Compose's healthcheck.
   expect(project.properties.supervisor).toBeUndefined();
   expect(project.properties.format).toBeUndefined();
   expect(service.properties.health).toBeUndefined();
+  expect(service.properties.ready).toBeUndefined();
+  expect(service.properties.ready_timeout).toBeUndefined();
+  expect(Object.keys(service.properties.healthcheck.properties)).toEqual([
+    "test",
+    "interval",
+    "timeout",
+    "retries",
+    "start_period",
+    "disable",
+    "on_failure",
+  ]);
   expect(service.properties.restart.enum).toEqual([
     "always",
     "on-failure",
@@ -75,7 +86,14 @@ test("every default the schema shows is the value planning applies when the sett
       config: {
         name: "app",
         build: "make",
-        services: { web: { command: "serve", build: "make web" } },
+        services: {
+          web: { command: "serve", build: "make web" },
+          // A healthcheck that sets nothing but its test plans every other setting's default.
+          api: {
+            command: "api",
+            healthcheck: { test: "true" },
+          },
+        },
         tools: { report: { bin: "bin/report", build: "make report" } },
       },
       target: "stable",
@@ -97,9 +115,22 @@ test("every default the schema shows is the value planning applies when the sett
           timeout === seconds(project.properties.build_timeout.default),
       ),
   ).toBe(true);
+  const healthcheck = service.properties.healthcheck.properties;
+  // A Service without a healthcheck still waits start_period's default for its ports.
   expect(web).toMatchObject({
-    readyTimeout: seconds(service.properties.ready_timeout.default),
+    readyTimeout: seconds(healthcheck.start_period.default),
     restart: service.properties.restart.default,
+  });
+  expect(
+    plan.components.find((component) => component.name === "api"),
+  ).toMatchObject({
+    readyTimeout: seconds(healthcheck.start_period.default),
+    healthcheck: {
+      interval: seconds(healthcheck.interval.default),
+      timeout: seconds(healthcheck.timeout.default),
+      retries: healthcheck.retries.default,
+      onFailure: healthcheck.on_failure.default,
+    },
   });
   // A Target switch is true, false or a settings map; the map is the second shape.
   const patch = (role: "working" | "stable" | "preview") =>
@@ -128,7 +159,7 @@ test("each field that takes references lists the references valid there", () => 
   const inService = [
     service.properties.command,
     service.properties.build,
-    service.properties.ready,
+    ...service.properties.healthcheck.properties.test.anyOf,
     service.properties.environment.additionalProperties,
     service.properties.env_file,
   ];

@@ -43,6 +43,7 @@ export async function main(args: readonly string[]): Promise<number> {
         root,
         [...command, "capture"],
         installation?.bun,
+        installation?.mode,
       );
     } catch (error) {
       // runDaemonHost records its own failures; composition failures need the same record.

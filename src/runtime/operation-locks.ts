@@ -72,8 +72,8 @@ export interface OperationLocks {
   tryAcquire(id: string, scopes: readonly LockScope[]): Lease | undefined;
   /** Undefined unless the request `id` is waiting. */
   position(id: string): WaitPosition | undefined;
-  /** Whether any held lease or waiting request conflicts with `scope`. */
-  busy(scope: LockScope): boolean;
+  /** Whether any held lease or waiting request conflicts with `scope`, apart from those whose id `ignore` accepts. */
+  busy(scope: LockScope, ignore?: (id: string) => boolean): boolean;
   /** The ids of every held lease, oldest first. */
   holders(): string[];
   /** How many requests are waiting. */
@@ -187,9 +187,9 @@ export function createOperationLocks(): OperationLocks {
           .map((request) => request.id),
       };
     },
-    busy: (scope) =>
-      [...held.values(), ...queue].some((entry) =>
-        scopesConflict(entry.scopes, [scope]),
+    busy: (scope, ignore) =>
+      [...held.values(), ...queue].some(
+        (entry) => !ignore?.(entry.id) && scopesConflict(entry.scopes, [scope]),
       ),
     holders: () => [...held.values()].map((lease) => lease.id),
     waiting: () => queue.length,

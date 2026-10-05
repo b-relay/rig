@@ -10,8 +10,17 @@ import type {
   PersistentComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import { runningNote, stoppedStanding, supervisionScope } from "./supervision";
+import {
+  currentRun,
+  runningNote,
+  stoppedStanding,
+  supervisionScope,
+} from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
+import type { ServiceHealth } from "../domain/project-status";
+import { healthStartPending, type HealthResults } from "./health-monitor";
+import { healthRestartDueAt } from "../domain/health-policy";
+import { targetSelector } from "../domain/target-selector";
 export interface ObservationEffects {
   process(
     target: TargetRecord,
@@ -42,12 +51,15 @@ export interface ObservationEffects {
   ): Promise<number[]>;
 }
 /** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget.
- * The caller chooses the budget and the deadline scheduler, so a test can expire an observation deterministically. */
+ * The caller chooses the budget and the deadline scheduler, so a test can expire an observation deterministically.
+ * A running Service with a healthcheck is judged by the health monitor's cached `health` results and its check is not run;
+ * without them (no monitor runs) it is checked here once, as a Service whose plan predates healthcheck is. */
 export async function observeTargets(
   targets: readonly TargetRecord[],
   effects: ObservationEffects,
   budgetMs: number,
   deadline: ObservationDeadline,
+  health?: HealthResults,
 ): Promise<TargetReport[]> {
   const entries = targets.flatMap((target) =>
     target.plan.components.map((component) => ({
@@ -81,6 +93,16 @@ export async function observeTargets(
             };
           const observed = await effects.process(target, component, signal);
           if (observed.state === "stopped") {
+            const waiting = healthRestartWaiting(target, component);
+            if (waiting)
+              return {
+                ...base,
+                port: component.port,
+                ...waiting,
+                ...(observed.reason
+                  ? { reason: `${observed.reason} ${waiting.reason}` }
+                  : {}),
+              };
             const standing = stoppedStanding(
               target,
               component,
@@ -112,16 +134,24 @@ export async function observeTargets(
           ]
             .filter(Boolean)
             .join(" ");
+          const cached =
+            component.healthcheck && health
+              ? monitoredHealth(target, component, health)
+              : undefined;
+          const reason = [said, cached?.reason].filter(Boolean).join(" ");
           return {
             ...base,
             port: component.port,
             pid: observed.pid,
-            state: component.health
-              ? (await effects.health(target, component, signal)).ready
-                ? "healthy"
-                : "unhealthy"
-              : "running",
-            ...(said ? { reason: said } : {}),
+            state: cached
+              ? cached.state
+              : component.health || component.healthcheck
+                ? (await effects.health(target, component, signal)).ready
+                  ? "healthy"
+                  : "unhealthy"
+                : "running",
+            ...(cached ? { health: cached.health } : {}),
+            ...(reason ? { reason } : {}),
           };
         },
     ),
@@ -154,6 +184,80 @@ export async function observeTargets(
       state: aggregate(components),
     };
   });
+}
+/** A Service its health restart stopped and could not start again: unhealthy, and waiting for the next health restart on
+ * the back-off. Undefined for any other stopped Service. */
+function healthRestartWaiting(
+  target: TargetRecord,
+  component: ManagedComponent,
+):
+  | (Pick<ComponentReport, "state" | "reason"> & { health: ServiceHealth })
+  | undefined {
+  const run = currentRun(target, component.name);
+  if (
+    target.desired !== "running" ||
+    component.healthcheck?.onFailure !== "restart" ||
+    !healthStartPending(run)
+  )
+    return undefined;
+  const stretch = run.healthStretch;
+  return {
+    state: "unhealthy",
+    health: {
+      status: "unhealthy",
+      failures: 0,
+      retries: component.healthcheck.retries,
+      restarts: stretch.restarts.length,
+      restartFailed: true,
+      nextRestartAt: new Date(healthRestartDueAt(stretch)).toISOString(),
+    },
+    reason: `Its health restart ${stretch.restarts.length} did not leave it running (its start failed the start check, or the restart was cut short), so it is stopped. Rig starts it again at its next health restart (${new Date(healthRestartDueAt(stretch)).toISOString()}), whatever its restart policy; run rig restart ${targetSelector(target)} to start it now, or rig down ${targetSelector(target)} to stop trying.`,
+  };
+}
+/** How a running Service with a healthcheck stands by its cached checks: running until one answered, then healthy or
+ * unhealthy, with why and what Rig does about it. */
+function monitoredHealth(
+  target: Pick<TargetRecord, "id" | "name">,
+  component: ManagedComponent,
+  results: HealthResults,
+): Pick<ComponentReport, "state" | "reason"> & { health: ServiceHealth } {
+  const policy = component.healthcheck!;
+  const health: ServiceHealth = results(target, component.name) ?? {
+    status: "starting",
+    failures: 0,
+    retries: policy.retries,
+    restarts: 0,
+  };
+  const checks = (count: number) =>
+    `${count} health ${count === 1 ? "check" : "checks"}`;
+  const output = health.output ? ` (${health.output})` : "";
+  if (health.status === "starting")
+    return {
+      state: "running",
+      health,
+      reason: "Its healthcheck has not answered since it started.",
+    };
+  if (health.status === "healthy")
+    return {
+      state: "healthy",
+      health,
+      ...(health.failures
+        ? {
+            reason: `${checks(health.failures)} in a row failed${output}; it is unhealthy after ${health.retries}.`,
+          }
+        : {}),
+    };
+  const failed = health.failures
+    ? `${checks(health.failures)} in a row failed${output}`
+    : `It became unhealthy${output}, and no check has passed since`;
+  return {
+    state: "unhealthy",
+    health,
+    reason:
+      policy.onFailure === "restart"
+        ? `${failed}. Rig restarts it${health.restarts ? ` (${health.restarts} health ${health.restarts === 1 ? "restart" : "restarts"} so far)` : ""}.`
+        : `${failed}. Its healthcheck's on_failure is report, so Rig reports it and does not restart it.`,
+  };
 }
 /** The reason a component report carries when the shared status deadline expired before its observation finished. */
 export const OBSERVATION_EXPIRED =

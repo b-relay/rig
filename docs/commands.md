@@ -16,7 +16,7 @@ rig
 │    --production-branch <branch>
 │    --create-git                   run git init when the directory is not a repository
 │    --domain <domain>              stable Target domain; Previews get <first label>-<name>
-│    --service <name>  --command <command>  --port <port>  --ready <check>
+│    --service <name>  --command <command>  --port <port>  --healthcheck <test>
 │    --tool <name>     --bin <path>     --tool-build <command>
 │
 ├─ list                             all Projects on this Host
@@ -96,6 +96,12 @@ status` takes no Target.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
 - `--json` exists on `status`, `deploy`, `up`, `down`, and `restart` only.
+- `status` runs no health check for a Service with a `healthcheck`: it shows
+  the result `rigd`'s ongoing checks cached, such as
+  `web  healthy · checked 12s ago` or
+  `api  unhealthy 3/3 · HTTP 503 · restarted 1 time`. `doctor` reports an
+  unhealthy Service from the same result. Becoming unhealthy, becoming
+  healthy again, and each health restart are in `rig activity`.
 - `--destroy` is its own confirmation; there is no prompt and no `--yes`.
 - `logs --service` takes a Service or Tool name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the
@@ -107,7 +113,8 @@ status` takes no Target.
   the Host `logs` settings (see the guide's Logs section).
 - `init` writes one Service (`--service` with `--command`) or one Tool (`--tool`
   with `--bin`). The Service gets one port, `http`, so a `--domain` routes to it
-  without a `proxy` line. A Tool's `bin` is the executable's path inside the
+  without a `proxy` line, and `--healthcheck` becomes its `healthcheck.test` (the
+  old `--ready` is refused with that hint). A Tool's `bin` is the executable's path inside the
   repository; Rig copies it into `<RIG_ROOT>/bin` as `<tool>` for the stable
   Target, `<tool>-dev` for the working Target and `<tool>-<preview name>` for a
   Preview, so it must be

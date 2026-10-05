@@ -80,6 +80,16 @@ export interface ServiceRun {
   /** The operator's latest stop needed SIGKILL: the stop_timeout ran out (`timeout`), or `--kill` cut it short (`request`).
    * A new start clears it. */
   stopKilled?: "timeout" | "request";
+  /** The unhealthy stretch a health restart started this process in: when the Service became unhealthy and each health
+   * restart since (Unix milliseconds), so a new rigd continues the back-off. Automatic starts carry it on; an explicit start
+   * clears it. `pendingStart` is when the latest health restart began, written before it stopped anything and cleared once
+   * its start passed: until then the health monitor owns the Service, checking it while a process runs and starting it at
+   * the next step of the back-off while none does, not automatic restart. */
+  healthStretch?: { since: number; restarts: number[]; pendingStart?: number };
+  /** Where this start falls in the order of starts and Host restarts (`RuntimeState.startSeq`). A stop by a Host restart
+   * applies only to a run started before the restart was recorded; one without it was started by an older rigd and counts
+   * as before. */
+  startSeq?: number;
 }
 
 export interface TargetRecord {
@@ -140,6 +150,9 @@ export interface RuntimeState {
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
+  /** The last value handed out to order starts and Host restarts: each journalled start takes the next one as its run's
+   * `startSeq`, and a recorded Host restart notes the value it found as its `seq`. It only grows. */
+  startSeq?: number;
   /** The boot and login session rigd last acted on; absent until a rigd that records it has started. */
   host?: HostSession & {
     seenAt: string;
@@ -149,6 +162,9 @@ export interface RuntimeState {
       kind: HostRestart;
       boot?: string;
       login?: string;
+      /** `startSeq` when the restart was recorded: a run whose `startSeq` is higher was started after it, and the restart's
+       * stop never applies to it. Absent on a restart an older rigd recorded. */
+      seq?: number;
       /** The Targets already settled for this restart: Stable Targets started again (or whose start failed), and Working
        * copies and Previews whose stopped Services were recorded as stopped by it. A daemon that finds the restart again
        * does not act on them a second time. */

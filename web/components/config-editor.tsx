@@ -751,13 +751,6 @@ function ServiceFields({
           placeholder="10m"
           mono
         />
-        <Text path={[...path, "ready"]} label="Readiness check" mono />
-        <Text
-          path={[...path, "ready_timeout"]}
-          label="Readiness timeout"
-          placeholder="30s"
-          mono
-        />
         <ListText path={[...path, "depends_on"]} label="Depends on" />
         <Choice
           path={[...path, "restart"]}
@@ -776,7 +769,101 @@ function ServiceFields({
         valuePlaceholder="auto"
         initial="auto"
       />
+      <HealthcheckFields path={[...path, "healthcheck"]} />
       <EnvironmentSection path={path} />
+    </div>
+  );
+}
+/** A Service's healthcheck, in Docker Compose's shape. A list-form test (CMD, CMD-SHELL, NONE) is shown, not edited, so
+ * the form never rewrites it as a string. */
+function HealthcheckFields({ path }: { path: string[] }) {
+  const draft = useDraft();
+  const test = getAt(draft.tree, [...path, "test"]);
+  const disabled = getAt(draft.tree, [...path, "disable"]) === true;
+  const retries = getAt(draft.tree, [...path, "retries"]);
+  return (
+    <div className="grid gap-4 rounded-md border p-4">
+      <div className="text-sm font-medium">Healthcheck</div>
+      {Array.isArray(test) ? (
+        <Field
+          label="Test"
+          htmlFor={[...path, "test"].join(".")}
+          help="A list form; edit it in rig.yaml."
+        >
+          <Input
+            id={[...path, "test"].join(".")}
+            value={JSON.stringify(test)}
+            disabled
+            className="font-mono text-xs"
+          />
+        </Field>
+      ) : (
+        <Text
+          path={[...path, "test"]}
+          label="Test"
+          placeholder="http://127.0.0.1:${port}/health"
+          mono
+        />
+      )}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Text
+          path={[...path, "interval"]}
+          label="Interval"
+          placeholder="30s"
+          mono
+        />
+        <Text
+          path={[...path, "timeout"]}
+          label="Timeout"
+          placeholder="30s"
+          mono
+        />
+        <Field
+          label="Retries"
+          htmlFor={[...path, "retries"].join(".")}
+          help={useHelp([...path, "retries"])}
+        >
+          <Input
+            id={[...path, "retries"].join(".")}
+            value={typeof retries === "number" ? String(retries) : ""}
+            placeholder="3"
+            inputMode="numeric"
+            className="font-mono text-xs"
+            onChange={(event) => {
+              const next = event.target.value.trim();
+              if (next === "") draft.remove([...path, "retries"]);
+              else
+                draft.set(
+                  [...path, "retries"],
+                  /^\d+$/.test(next) ? Number(next) : next,
+                );
+            }}
+          />
+        </Field>
+        <Text
+          path={[...path, "start_period"]}
+          label="Start period"
+          placeholder="30s"
+          mono
+        />
+        <Choice
+          path={[...path, "on_failure"]}
+          label="On failure"
+          defaultOption="report"
+          options={["report", "restart"]}
+        />
+      </div>
+      <Label className="gap-2 font-normal">
+        <Switch
+          checked={disabled}
+          onCheckedChange={(next) =>
+            next
+              ? draft.set([...path, "disable"], true)
+              : draft.remove([...path, "disable"])
+          }
+        />
+        Disable the healthcheck
+      </Label>
     </div>
   );
 }

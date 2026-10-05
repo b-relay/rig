@@ -78,6 +78,12 @@ import {
   type TargetLifecycle,
   withStops,
 } from "./lifecycle";
+import { restartForHealth } from "./health-restart";
+import { reportingTransitions } from "./health-transitions";
+import type {
+  HealthRestartRequest,
+  HealthRestartResult,
+} from "./health-monitor";
 import { isStopDetached } from "../domain/stop-budget";
 import {
   activeStops,
@@ -151,6 +157,14 @@ export interface SupervisionPass {
   nextRetryAt?: number;
 }
 export interface RigRuntime extends ProjectStatusReader {
+  /** Whether an Operation holds or waits for `target`, so one of its Services may be starting or stopping. A supervision
+   * pass that only observes the Target does not count; one that is starting a Service again does. */
+  targetBusy(
+    target: Pick<TargetRecord, "projectId" | "kind" | "name">,
+  ): boolean;
+  /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
+   * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
+  restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -201,11 +215,36 @@ const UNLOCKED: Admission = {
 /** rigd is the one authority over lifecycle state. Mutations of one Target run one at a time; other
  * Targets and Projects run side by side and share Host resources through short critical sections.
  * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
-export function createRuntime(deps: RuntimeDependencies): RigRuntime {
+export function createRuntime(input: RuntimeDependencies): RigRuntime {
+  // Every write the runtime makes reports its lifecycle transitions to the health monitor as it is applied, while the
+  // Operation making it still holds its Target (the epoch rule in health-monitor.ts).
+  const deps: RuntimeDependencies = input.healthTransitions
+    ? {
+        ...input,
+        store: reportingTransitions(input.store, input.healthTransitions),
+      }
+    : input;
   const locks = createOperationLocks();
   const reservations = createHostReservations();
   let draining = false;
   let passes = 0;
+  /** The daemon-wide gate: nothing starts until rigd has reconciled the Host session. It starts closed (unless the
+   * dependencies say `reconcileGate: "open"`, as a test that never reconciles does), opens once a first pass has read the
+   * state (and so recorded any Host restart or held its pending stops), and closes again when a first pass cannot read it.
+   * While it is closed every pass is a first pass, and nothing starts a Service: no supervision start, no health restart
+   * or start, and up, restart and deploy are refused; down, stops and destroy still run. So no run is ever journalled
+   * before a Host restart's record, whose `seq` therefore comes before every start made after the restart, however early a
+   * command reaches rigd. */
+  let reconcilePending = input.reconcileGate !== "open";
+  /** Refuses a command that would start a Service while the gate above is closed. */
+  const assertReconciled = (action: string) => {
+    if (reconcilePending && ["up", "restart", "deploy"].includes(action))
+      throw new RigError(
+        "HOST_STATE_PENDING",
+        "rigd is still starting and has not read its state yet, so it cannot tell whether the Mac restarted, and nothing was started.",
+        `Retry rig ${action} in a moment. If this keeps happening, rigd cannot read its state under RIG_ROOT/runtime: rig doctor and the rigd diagnostic log show why.`,
+      );
+  };
   /** Every Operation this daemon is running or holding, its own supervision work included. */
   const operations = new Map<string, StopTracking>();
   /** Command executions still running, so a drain waits for them to answer. */
@@ -231,8 +270,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       observer: stopObserver(entry, deps.now),
     });
   /** working Targets and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
-   * by Target id, with that restart as the first pass identified it; each pass tries again. */
+   * by Target id, with that restart as the first pass identified it; each pass, and each Operation admitted on the Target,
+   * tries again (see `recordUnmarked`). Only the write is retried: which runs it applies to is in the runs themselves. */
   const unmarked = new Map<string, RestartMark>();
+  /** Records, under the caller's lease of `target`, the stop by a Host restart this daemon could not record yet, if there is
+   * one, so an explicit start that follows supersedes it and a later pass never applies it to the new process. Resolves
+   * whether none is left unrecorded. */
+  const recordUnmarked = async (target: TargetRecord): Promise<boolean> => {
+    const pending = unmarked.get(target.id);
+    if (!pending) return true;
+    if (!(await recordStoppedAfterHostRestart(target, pending, deps)))
+      return false;
+    unmarked.delete(target.id);
+    return true;
+  };
   /** stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
    * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
   const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
@@ -341,6 +392,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         if (subject.target) entry.view.target = subject.target;
         lease = await locks.acquire(operationId, scopes);
         if (draining) throw drainingError();
+        // Checked once admitted: a first pass that failed while this waited behind it closes the gate.
+        assertReconciled(entry.view.action);
       },
       holds: (scopes) =>
         scopes.every((scope) =>
@@ -471,6 +524,7 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           deps.observations,
           deps.observationBudgetMs,
           deps.observationDeadline,
+          deps.healthResults,
         );
         if (
           state.targets.some((t) => t.desired === "running") ||
@@ -743,6 +797,20 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
             "STATE_WRITE",
             `${target.name}'s failed start after the Host restarted could not be recorded, so nothing was done.`,
             "rigd could not write its state under RIG_ROOT/runtime; rig doctor and the rigd diagnostic log show why. Free disk space or fix the permissions, then retry.",
+            { target: target.name },
+          );
+        // So is a stop by a Host restart, so an explicit start after it supersedes it. Nothing starts on the Target while it
+        // cannot be recorded: the restart's stop applies to the runs started before the restart was recorded, so a start
+        // made before then would be taken for one the restart stopped. Stops and down go on.
+        if (
+          target &&
+          !(await recordUnmarked(target)) &&
+          ["up", "restart", "deploy"].includes(command.action)
+        )
+          throw new RigError(
+            "STATE_WRITE",
+            `Rig could not record that the Mac restarted for ${target.name}, so nothing was started.`,
+            `Fix the state directory under RIG_ROOT/runtime (rig doctor and the rigd diagnostic log show why; free disk space or fix the permissions), then retry rig ${command.action}. rig down ${targetSelector(target)} still works.`,
             { target: target.name },
           );
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
@@ -1185,8 +1253,97 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       return replacements;
     }
   };
+  /** A health restart: an Operation on one Target, listed like a command so status shows its stop. */
+  const restartUnhealthy = async (
+    request: HealthRestartRequest,
+  ): Promise<HealthRestartResult> => {
+    if (draining) return { outcome: "skipped" };
+    const recorded = (await deps.store.read()).targets.find(
+      (target) => target.id === request.targetId,
+    );
+    if (!recorded) return { outcome: "skipped" };
+    const operationId = `health:${deps.id()}`;
+    const entry: StopTracking = {
+      kills: new Map(),
+      targetId: recorded.id,
+      view: {
+        operationId,
+        action: "health-restart",
+        target: recorded.name,
+        phase: "restarting",
+        startedAt: deps.now(),
+      },
+    };
+    operations.set(operationId, entry);
+    const running = (async () => {
+      const lease = await locks.acquire(operationId, [
+        targetScope(recorded.projectId, recorded),
+      ]);
+      try {
+        if (draining) return { outcome: "skipped" as const };
+        const state = await deps.store.read();
+        const target = state.targets.find((t) => t.id === request.targetId);
+        if (
+          !target ||
+          target.desired !== "running" ||
+          target.recovery ||
+          target.destructionPending
+        )
+          return { outcome: "skipped" as const };
+        // Nothing starts until rigd has reconciled the Host session (see `reconcilePending`).
+        if (reconcilePending) return { outcome: "deferred" as const };
+        // A failed start after a Host restart this daemon could not record yet is recorded before anything acts on the
+        // Target, as a supervision pass and an admitted command do; the monitor asks again and judges what is recorded then.
+        if (unrecorded.has(target.id)) {
+          await recordUnrecorded(target);
+          return { outcome: "deferred" as const };
+        }
+        // So is a working Target's or Preview's stop by a Host restart: until it is recorded, which holds its Services
+        // stopped until rig up, nothing is restarted or started for health; the next supervision pass records it.
+        if (!(await recordUnmarked(target)))
+          return { outcome: "deferred" as const };
+        const project = state.projects.find((p) => p.id === target.projectId);
+        if (project) entry.view.project = project.name;
+        return await restartForHealth(
+          target,
+          request,
+          { ...deps, lifecycle: lifecycleOf(entry) },
+          (phase) => {
+            entry.view.phase = phase;
+          },
+        );
+      } catch (error) {
+        await deps
+          .diagnostic({
+            operationId,
+            action: "health-restart",
+            outcome: "failed",
+            target: recorded.name,
+            errorCode: diagnosticErrorCode(error),
+            ...diagnosticCauses(error),
+          })
+          .catch(() => {});
+        return { outcome: "failed" as const, at: Date.parse(deps.now()) };
+      } finally {
+        lease.release();
+        operations.delete(operationId);
+      }
+    })();
+    executing.add(running);
+    void running.finally(() => executing.delete(running)).catch(() => {});
+    return await running;
+  };
   return {
     status,
+    restartUnhealthy,
+    targetBusy: (target) =>
+      locks.busy(targetScope(target.projectId, target), (id) => {
+        const entry = operations.get(id);
+        return (
+          entry?.view.action === "supervise" &&
+          entry.view.phase === initialPhase("supervise")
+        );
+      }),
     async drain() {
       draining = true;
       // A stop in progress may wait an hour; shutdown leaves it to the Service and the next daemon.
@@ -1242,9 +1399,10 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
    * and the next pass looks again. `reconcile` holds the whole Host while it reclaims checkpoints, then hands each Target its
    * own lease before anything queued behind it runs. */
   async function pass(
-    action: "reconcile" | "supervise",
+    requested: "reconcile" | "supervise",
   ): Promise<SupervisionPass> {
     if (draining) return {};
+    const action = reconcilePending ? "reconcile" : requested;
     // Requested before anything is awaited, so a reconcile called at startup is ahead of every command.
     const hostId = `reconcile:${++passes}`;
     if (action === "reconcile")
@@ -1291,9 +1449,11 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
       } catch (error) {
         lease?.release();
         operations.delete(hostId);
+        if (action === "reconcile") reconcilePending = true;
         await failed(error);
         return {};
       }
+      if (action === "reconcile") reconcilePending = false;
       if (action === "reconcile") {
         await pruneCheckpoints(state, deps);
         const current = await hostSession;
@@ -1331,6 +1491,13 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
           : undefined;
       // A drain may already have begun: a Target skipped for it is not settled, so the restart is found again.
       expected = eligible.map((target) => target.id);
+      // Until its stop by the restart is recorded, each working Target and Preview is held as not yet recorded: a job that
+      // fails before it records it (a read that fails, say) leaves it so, and later passes, Operations and health restarts
+      // keep holding it until it is.
+      if (mark)
+        for (const target of eligible)
+          if (target.kind !== "stable" && !finding?.settled.has(target.id))
+            unmarked.set(target.id, mark);
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
         return held
@@ -1452,6 +1619,8 @@ export function createRuntime(deps: RuntimeDependencies): RigRuntime {
         target.desired !== "running"
       )
         settled?.add(targetId);
+      // Gone, or meant to be stopped: nothing of it waits for a restart's stop to be recorded.
+      if (!target || target.desired !== "running") unmarked.delete(targetId);
       if (!target || target.recovery || target.destructionPending)
         return undefined;
       name = target.name;

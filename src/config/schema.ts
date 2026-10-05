@@ -2,6 +2,14 @@ import { z } from "zod";
 import { ConfigError } from "./errors";
 import { referenceResolver } from "./references";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
+import {
+  HEALTHCHECK_DEFAULTS,
+  MIN_HEALTHCHECK_INTERVAL_SECONDS,
+  healthcheckInForce,
+  healthcheckListProblem,
+  isHealthUrl,
+  type HealthcheckSettings,
+} from "./healthcheck";
 const text = z.string().min(1);
 const name = text
   .regex(
@@ -55,10 +63,7 @@ const command = text
   .describe(
     "Shell command run with /bin/sh -c; explicit bindings must be localhost only. Interpolated values with spaces or shell characters are single-quoted unless the placeholder is already quoted.",
   );
-/** A health value is an HTTP probe when it starts with an http(s) scheme in any letter case; anything else runs as a shell command. */
-export function isHealthUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
-}
+export { isHealthUrl } from "./healthcheck";
 /** A health URL must parse as a whole, carry no userinfo, and address 127.0.0.1 or localhost; a shell health command follows the command rule. */
 export function localhostHealth(value: string): boolean {
   if (!isHealthUrl(value)) return localhostCommand(value);
@@ -73,14 +78,6 @@ export function localhostHealth(value: string): boolean {
     return false;
   }
 }
-const health = text
-  .refine(
-    (value) => localhostHealth(value.replace(/\$\{[^}]+\}/g, "1234")),
-    "Health checks must address 127.0.0.1 or localhost.",
-  )
-  .describe(
-    "Local HTTP URL or shell command used to check readiness; interpolated values are shell-quoted like command.",
-  );
 /** A hostname Caddy will serve as one site: labels of letters, digits and '-', joined by dots.
  * Schemes, ports, paths, wildcards and comma lists would be rejected by Caddy at deploy time
  * or, for a catch-all, would take every request on the Host. */
@@ -213,7 +210,80 @@ const workingDir = text
     "must be a directory inside the workspace, relative to it, such as apps/web: no absolute path, ~, '..' or reference",
   )
   .describe(
-    "Directory the Service's command, its build and a shell ready check run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root.",
+    "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root.",
+  );
+/** A local URL or a command that addresses only 127.0.0.1 or localhost, judged with every reference standing in as a port. */
+const localCheck = (value: string) =>
+  localhostHealth(value.replace(/\$\{[^}]+\}/g, "1234"));
+const LOCAL_CHECK = "Health checks must address 127.0.0.1 or localhost.";
+const healthcheckTest = z
+  .union([
+    text
+      .refine(localCheck, LOCAL_CHECK)
+      .describe(
+        `A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
+      ),
+    z
+      .array(z.string())
+      .min(1)
+      .superRefine((test, ctx) => {
+        const problem = healthcheckListProblem(test);
+        if (problem) ctx.addIssue({ code: "custom", message: problem });
+        else if (test[0] !== "NONE" && !localCheck(test.slice(1).join(" ")))
+          ctx.addIssue({ code: "custom", message: LOCAL_CHECK });
+      })
+      .describe(
+        `Compose's list forms: ["CMD-SHELL", "<command>"] runs a shell command; ["CMD", "<program>", "<argument>", ...] runs the program with exactly those arguments, without a shell; ["NONE"] turns the healthcheck off. ${referencesIn("service")}`,
+      ),
+  ])
+  .describe(
+    "What one check runs: a shell command, a local http(s) URL, or one of Compose's list forms. Without it, a check passes when every declared port accepts a connection.",
+  );
+const healthcheck = z
+  .strictObject({
+    test: healthcheckTest.optional(),
+    interval: duration
+      .refine(
+        (value) => durationSeconds(value) >= MIN_HEALTHCHECK_INTERVAL_SECONDS,
+        `must be at least ${MIN_HEALTHCHECK_INTERVAL_SECONDS}s`,
+      )
+      .optional()
+      .describe(
+        `Time between checks while the Service runs, such as 1m (default ${HEALTHCHECK_DEFAULTS.interval}, at least ${MIN_HEALTHCHECK_INTERVAL_SECONDS}s).`,
+      ),
+    timeout: duration
+      .optional()
+      .describe(
+        `How long one check may take before it counts as failed, such as 5s (default ${HEALTHCHECK_DEFAULTS.timeout}).`,
+      ),
+    retries: z
+      .number()
+      .int()
+      .min(1)
+      .optional()
+      .describe(
+        `Failed checks in a row before the Service is unhealthy (default ${HEALTHCHECK_DEFAULTS.retries}). One passing check makes it healthy again.`,
+      ),
+    start_period: duration
+      .optional()
+      .describe(
+        `How long a start may take to pass its first check, such as 2m (default ${HEALTHCHECK_DEFAULTS.start_period}; Compose's is 0s). Until then Rig checks every 100 ms, not at interval, and a Service that depends on this one starts only once a check passed.`,
+      ),
+    disable: z
+      .boolean()
+      .optional()
+      .describe(
+        "true turns the healthcheck off, mainly in a Target patch to drop an inherited one; the Service then behaves as if it had none, start_period included.",
+      ),
+    on_failure: z
+      .enum(["report", "restart"])
+      .optional()
+      .describe(
+        "What Rig does once the Service is unhealthy (Rig's extension; Compose never restarts for health): report (default) shows it in status and records it in Activity; restart also stops it within its stop_timeout and starts it again, at once and then after 1m, 5m, 15m and every hour while it stays unhealthy.",
+      ),
+  })
+  .describe(
+    "Docker Compose's healthcheck. The first passing check is the start gate, and checks repeat at interval while the Service runs. Without a healthcheck, start waits for every declared port to accept a connection and nothing is checked afterwards.",
   );
 const serviceFields = {
   command: command.describe(
@@ -227,22 +297,13 @@ const serviceFields = {
   build_timeout: buildTimeout.optional(),
   working_dir: workingDir.optional(),
   ports: ports.optional(),
-  ready: health
-    .describe(
-      `Local HTTP URL or shell command that must pass before the Service counts as started and before a Service that depends on it starts: an HTTP URL must answer with a status below 400 (a redirect is not followed), a command must exit 0 and runs in working_dir. Without it Rig waits for every declared port to accept a connection. Referenced values in a shell command are quoted as in command. ${referencesIn("service")}`,
-    )
-    .optional(),
-  ready_timeout: duration
-    .optional()
-    .describe(
-      "How long the Service may take to pass its ready check when it starts, or without one to accept a connection on every declared port, such as 30s (the default).",
-    ),
+  healthcheck: healthcheck.optional(),
   stop_timeout: stopTimeout.optional(),
   depends_on: z
     .array(entryName)
     .optional()
     .describe(
-      "Services that must be running and ready before this one starts; a later dependency failure does not restart this Service.",
+      "Services that must be running and have passed their start check (their healthcheck, or without one every declared port accepting a connection) before this one starts; a later dependency failure does not restart this Service.",
     ),
   restart: restart.optional(),
   environment: env("service").optional(),
@@ -380,7 +441,7 @@ function mergeSettings(base: Fields, patch: Fields): Record<string, unknown> {
 type GraphService = Fields & {
   command?: string;
   build?: string;
-  ready?: string;
+  healthcheck?: HealthcheckSettings;
   depends_on?: readonly string[];
   ports?: Readonly<Record<string, number | "auto">>;
   environment?: Readonly<Record<string, string>>;
@@ -665,6 +726,17 @@ function validateGraph(
         );
       else pinned.set(value, `${key}.${port}`);
     }
+  // A healthcheck without test checks the declared ports; with none there is nothing to check.
+  for (const [key, entry] of Object.entries(services))
+    if (
+      healthcheckInForce(entry.healthcheck) &&
+      entry.healthcheck.test === undefined &&
+      !Object.keys(entry.ports ?? {}).length
+    )
+      report(
+        [...at, "services", key, "healthcheck"],
+        `Service '${key}' declares no port, so its healthcheck needs a test, such as test: test -f /tmp/${key}.alive.`,
+      );
   validateReferences(settings, at, report);
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))
@@ -716,8 +788,15 @@ function validateReferences(
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
-    for (const field of ["command", "build", "ready"] as const)
+    for (const field of ["command", "build"] as const)
       fields.push([[...own, field], service[field]]);
+    const test = service.healthcheck?.test;
+    if (typeof test === "string")
+      fields.push([[...own, "healthcheck", "test"], test]);
+    else
+      for (const [index, value] of (test ?? []).entries())
+        if (index > 0)
+          fields.push([[...own, "healthcheck", "test", String(index)], value]);
     for (const [key, value] of Object.entries(service.environment ?? {}))
       fields.push([[...own, "environment", key], value]);
     for (const value of [service.env_file ?? []].flat())
@@ -757,10 +836,15 @@ const REMOVED_SUPERVISOR =
  * instruction rather than as an unknown field. */
 const REMOVED_FORMAT =
   "was removed because Rig reads one rig.yaml format; delete this line";
-/** A Service's `health` block held its start check and ongoing health checks until both were removed; start readiness is
- * `ready` and `ready_timeout`, so a file that still has the block is told where its settings go. */
+/** A Service's `health` block held its start check and ongoing health checks until ADR 0009 removed both; ADR 0012 brought
+ * them back as Docker Compose's `healthcheck`, so a file that still has the block is told where its settings go. */
 const REMOVED_HEALTH =
-  "was removed with ongoing health checks; write its check as ready and its start_timeout as ready_timeout";
+  "`health` is now `healthcheck`, in Docker Compose's shape: write check as test, start_timeout as start_period and failures as retries; interval, timeout and on_failure keep their names, and retry_for is gone";
+/** `ready` and `ready_timeout` were a Service's start check until ADR 0012 replaced them with Compose's `healthcheck`. */
+const SERVICE_MOVES: Readonly<Record<string, string>> = {
+  ready: "`ready` is now `healthcheck.test`; move it there",
+  ready_timeout: "`ready_timeout` is now `healthcheck.start_period`",
+};
 /** Keys renamed to their Docker Compose names (ADR 0011). A file that still uses the old name is told the new one rather than
  * that the key is unknown. Project settings and a Target patch had `env`; a Service had `run` and `env`. */
 const SETTINGS_RENAMES: Readonly<Record<string, string>> = {
@@ -839,7 +923,15 @@ function refuseUnsupportedShapes(value: unknown): void {
           });
   for (const [path, service] of serviceBlockPaths(value)) {
     if (Object.hasOwn(service, "health"))
-      issues.push({ path: [...path, "health"], message: REMOVED_HEALTH });
+      issues.push({
+        path: [...path, "health"],
+        message: REMOVED_HEALTH,
+        rule: RENAMED_RULE,
+      });
+    // Renamed like run and env (ADR 0011), so a deployed revision that still has them is told apart from a broken file.
+    for (const [key, message] of Object.entries(SERVICE_MOVES))
+      if (Object.hasOwn(service, key))
+        issues.push({ path: [...path, key], message, rule: RENAMED_RULE });
     renames(service, path, SERVICE_RENAMES);
   }
   for (const [role, patch] of Object.entries(
@@ -1043,10 +1135,11 @@ interface Issue {
   message: string;
   rule?: typeof RENAMED_RULE;
 }
-/** A key or reference path written under a name ADR 0011 replaced with its Compose name, such as `run` or `${env.X}`. */
+/** A key or reference path written under a name ADR 0011 or 0012 replaced with its Compose name, such as `run`,
+ * `${env.X}` or `ready`. */
 const RENAMED_RULE = "renamed";
-/** Whether a refused config was refused, at least in part, because it uses names from before ADR 0011: a rig.yaml committed
- * before the rename, which a deployed revision may still hold. */
+/** Whether a refused config was refused, at least in part, because it uses names from before ADR 0011 or 0012: a rig.yaml
+ * committed before the rename, which a deployed revision may still hold. */
 export function usesRenamedKeys(error: ConfigError): boolean {
   const issues = error.context.issues;
   return (

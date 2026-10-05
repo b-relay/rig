@@ -51,6 +51,7 @@ export async function projectStatus(
     | "observationBudgetMs"
     | "observationDeadline"
     | "inspectProxy"
+    | "healthResults"
   > & {
     documents: Pick<RuntimeDependencies["documents"], "read">;
     /** Whether the daemon is executing this operation right now. */
@@ -83,6 +84,7 @@ export async function projectStatus(
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
+    deps.healthResults,
   );
   if (configWarning) warnings.push(configWarning);
   if (document) {

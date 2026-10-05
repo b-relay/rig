@@ -1028,10 +1028,9 @@ capability:
 - `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
   size at which a Target log file is rotated and how many rotated files are
   kept (see Logs)
-- `alerts.channels.macos.enabled`: whether operator alerts are posted as
-  macOS notifications (see "Operator alerts"). When unset, it is on for a
-  `rigd` installed as a LaunchAgent and off for a process-mode `rigd`
-  (`RIG_ROOT` set, as tests and agent runs use)
+
+Rig no longer sends alerts. An `alerts` section an earlier Rig read is ignored,
+so `rigd` still starts, and `rig doctor` asks you to delete it.
 
 Editors can check and complete both files from JSON Schemas generated from
 the same validation Rig runs: [`schemas/rig.schema.json`](../schemas/rig.schema.json)
@@ -1400,86 +1399,6 @@ Likewise, if none of the writes that record the restart succeeded before
 nothing records that restart: after a second reboot the Host shows only the new
 boot, so the next start sees one restart and writes one entry.
 
-### Operator alerts
-
-`rigd` tells you when a Stable Target stops serving and stays down, so an
-outage does not wait for someone to run `rig status`. The Working copy and
-Previews never alert.
-
-Every 30 seconds `rigd` observes each Stable Target that is meant to run, the
-same way `rig status` does. It counts the Target as down when one of its
-Services:
-
-- has failed, including an unknown exit that is not started again;
-- has used up its automatic restarts, even after clean exits;
-- is still `starting`, for example waiting for a dependency that does not come
-  back;
-- fails its readiness check, or does not answer it within 5 seconds.
-
-A Target also counts as down when its route is unpublished (no host Caddyfile
-loads Rig's routes), or when a deploy left it mid-transition: its rollback
-could not finish, or `rigd` stopped during the deploy. Its alert then says to
-run `rig down` first, then `rig up`. An operation that is working on the
-Target now (a deploy, a restart, an up or a down of that Target, or a change to
-its whole Project such as `rig forget`), or an observation that did
-not answer, changes nothing either way: a Target already counted as down gets
-no first alert while an operation may be fixing it. Operations on different
-Targets run at the same time; each one running, or waiting its turn, holds
-back only the Stable Targets it may be changing. After the Mac restarts or you
-log in again, `rigd` starting a Stable Target again counts the same way, so
-a slow start is not mistaken for downtime since the restart.
-
-The timing:
-
-- **After 5 minutes down**, you get one alert. Normal restarts, deploy swaps
-  and the retries after an unknown exit end well within that time, so they
-  stay quiet. The 5 minutes count from the earliest exit Rig recorded for the
-  Target's down Services, or else from when `rigd` first saw it down.
-- **Targets that go down within one minute of each other** are one event and
-  get one alert naming all of them, once each has been down 5 minutes: "3
-  Stable Targets across 3 Projects went down at 13:58:58 UTC".
-- **Every 6 hours** while any alerted Stable Target stays down, a reminder
-  names each one and how long it has been down.
-- **When it comes back**, one message says so, with how long it was down. A
-  Target you stop with `rig down`, or that is no longer recorded, gets the same
-  closing message, worded for that case.
-
-An alert names the Project, the Target, the Services that keep it down with
-the reason Rig recorded, and the command that starts it again
-(`rig up live --project pantry`). A macOS notification carries a short form
-of this: the command first for one Target, or the name of each Target for a
-group (a banner shows its first lines; expand the notification for the rest).
-The full text is in `rig activity`, where each alert that went out is
-one `outage` entry: `failed` when Targets went down, `unchanged` for a
-reminder, and `started` or `stopped` when they are no longer down. A Host-wide
-event is one entry, not one per Service.
-
-`rig doctor` has a `stable-targets` check that lists every Stable Target Rig
-counts as down and for how long ("pantry live for 42 h (since
-2026-09-25T13:58:58.000Z)"), with the commands that recover them. While `rigd`
-is reachable, `rigd status` prints a `Down` line for each.
-
-**Delivery.** The only channel today is a macOS user notification, posted
-with `osascript` from `rigd`'s LaunchAgent in your login session. macOS files
-these notifications under Script Editor. The first time, allow notifications
-for Script Editor in System Settings > Notifications, or macOS may keep them
-out of sight. Set `alerts.channels.macos.enabled: false` in the Host config to
-turn the channel off. Rig then still counts downtime and records each alert in
-Activity and doctor, but sends nothing. A process-mode `rigd` (`RIG_ROOT` set)
-leaves the channel off unless its Host config sets `enabled: true`, so tests
-and agent runs never post to your screen.
-
-A delivery that fails is recorded in Activity (`alert failed`, with the
-reason) and in the diagnostic log. It never changes the outcome of a
-lifecycle operation. Rig tries again after 5 minutes, then waits twice as long
-after each further failure, up to 6 hours. Alert state is kept in runtime
-state under the Rig root, so a `rigd` restart neither repeats an alert nor
-forgets one: a Target that recovered while `rigd` was stopped still gets its
-closing message.
-
-Push channels that reach you away from the Mac, such as Slack, come later,
-together with a place to keep their secrets.
-
 ### Databases and other local dependencies
 
 A database is an ordinary Service: a `run` command, a port, and its data under
@@ -1793,9 +1712,7 @@ Providers receive everything they need from that plan. They do not read Host
 config, Project config, or global path helpers themselves. The bundled
 providers are the `rigd` process supervisor, the Caddy router,
 the Git source store, the artifact installer for Tools, and the command
-runner; their contracts live in `src/providers/contracts.ts`. Operator alert
-channels implement `OperatorAlerts` (`src/domain/operator-alerts.ts`); the
-macOS notification is the bundled one.
+runner; their contracts live in `src/providers/contracts.ts`.
 
 Tests supply isolated provider interfaces and `RIG_ROOT`. There are no
 `--state-root` or `--config` path overrides.

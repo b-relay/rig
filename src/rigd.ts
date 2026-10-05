@@ -43,7 +43,6 @@ export async function main(args: readonly string[]): Promise<number> {
         root,
         [...command, "capture"],
         installation?.bun,
-        process.env.RIG_DAEMON_MODE === "process" ? "process" : "launchd",
       );
     } catch (error) {
       // runDaemonHost records its own failures; composition failures need the same record.

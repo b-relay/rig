@@ -834,31 +834,12 @@ export const hostConfigSchema = z.strictObject({
     .describe(
       "Size limits for Target logs: each Target's target.jsonl. Every writer reads a change within a few seconds.",
     ),
-  alerts: z
-    .strictObject({
-      channels: z
-        .strictObject({
-          macos: z
-            .strictObject({
-              enabled: z
-                .boolean()
-                .optional()
-                .describe(
-                  "Post a macOS notification when a Stable Target has been down 5 minutes, every 6 hours while it stays down, and when it recovers. macOS asks once to allow notifications from Script Editor. When unset, it is on for a rigd installed as a LaunchAgent and off for a process-mode rigd (RIG_ROOT set, as tests and agent runs use).",
-                ),
-            })
-            .prefault({})
-            .describe("The macOS user notification on this Mac."),
-        })
-        .prefault({})
-        .describe(
-          "Where operator alerts go. With every channel disabled, Rig still counts downtime and records each alert in Activity.",
-        ),
-    })
-    .prefault({})
-    .describe(
-      "Operator alerts about Stable Targets that stay down. The Working copy and Previews never alert.",
-    ),
+  // Retired, not refused: rigd reads this file as it starts, so a refusal would keep it from starting at all.
+  alerts: z.unknown().optional().meta({
+    deprecated: true,
+    description:
+      "No longer used: Rig sends no alerts. The section is ignored, and rig doctor asks you to delete it.",
+  }),
 });
 export function parseHostConfig(value: unknown) {
   const result = hostConfigSchema.safeParse(value);

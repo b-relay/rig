@@ -22,6 +22,28 @@ import type { RuntimeDependencies } from "./contracts";
 import type { ObservationEffects } from "./status";
 import { currentRun } from "./supervision";
 
+/* The epoch rule: how the monitor keeps a stale observation out of what it caches and records.
+ *
+ * - `clock` is one counter for the whole monitor. It only goes up, so no value is ever handed out twice.
+ * - A Service's epoch is the later of two marks: its own and its Target's. Each mark is the clock value at the last
+ *   lifecycle transition of that Service or Target. A Service or Target with no mark has epoch 0.
+ * - Every lifecycle transition advances the clock and marks, synchronously, through `invalidate` or `started`. The runtime
+ *   calls them while it still holds the Target's lock:
+ *   - the lifecycle calls `invalidate(target, service)` as it begins any start (fresh, automatic, health restart or
+ *     explicit, with or without an unhealthy stretch) or any stop of a Service (down, restart, a rollback, a destroy);
+ *   - it calls `started` once a start passed its start check;
+ *   - the runtime's state store calls `invalidate(target)` on every write that changes a Target's plan, desired state,
+ *     recovery or pending destruction, or removes it, and `invalidate(target, service)` on every write that records
+ *     another process for a Service (see `src/runtime/health-transitions.ts`).
+ * - Every unit of work (a pass, a check, a restart) takes `since = clock` BEFORE the state read its writes derive from.
+ *   Each of its writes for a Service (to the cache, to the policy it caches, to Activity, to the run record) is applied
+ *   only while that Service's epoch is still at most `since`. The comparison is synchronous and comes right before the
+ *   write, with no await between; a state write is compared again inside the store's update, as it is applied.
+ * - Activity about a change of health is written only after the cache write that made the change was applied.
+ * - `stop` makes every comparison fail.
+ *
+ * A Service or Target nothing is known about any more is forgotten, its marks included. That is safe because only a pass
+ * forgets, only keys untouched since its own read and with no check or restart in flight, and passes run one at a time. */
 /** How many ongoing checks run at once across the Host. */
 export const HEALTH_CHECK_CONCURRENCY = 4;
 /** How often rigd looks for checks that are due; a check runs at most this late. */
@@ -78,10 +100,18 @@ export interface HealthMonitor {
   pass(): Promise<void>;
   /** Resolves once every check and restart started so far has settled. */
   idle(): Promise<void>;
-  /** A start of the Service passed its start check, the healthcheck's first passing check: it is healthy as of now, and
-   * its next check is one interval away. A process started inside an unhealthy stretch stays unhealthy until an ongoing
-   * check passes, so its back-off holds. */
+  /** A start of the Service passed its start check, the healthcheck's first passing check: a lifecycle transition (see
+   * the epoch rule), whose result is cached as the newest thing known. It is healthy as of now and next checked one
+   * interval later, unless it carries an unhealthy stretch on (an automatic or health restart), in which case it stays
+   * unhealthy until an ongoing check passes, so its back-off holds. */
   started(target: TargetRecord, service: string, incarnation: string): void;
+  /** A lifecycle transition of one Service, or with no Service of the whole Target: anything a pass, check or restart
+   * read before it is not applied (see the epoch rule). The runtime calls it, while it holds the Target, as a start or stop
+   * begins and on every state write that changes a Target's plan, desired state, recovery or destruction, removes it, or
+   * records another process for a Service. */
+  invalidate(targetId: string, service?: string): void;
+  /** How many entries the monitor keeps: cached results, policies and epoch marks. Zero once nothing is monitored. */
+  retained(): number;
   /** Ends the monitor: no pass starts anything after it, every probe in flight is aborted (a command probe's process group
    * is killed), nothing is written to state any more, and it resolves once the work in flight settled or `boundMs`
    * (HEALTH_MONITOR_STOP_MS when absent) passed, whichever comes first. */
@@ -116,17 +146,13 @@ export function checkIdentity(component: ManagedComponent): string {
 }
 
 type Due = Extract<HealthAction, { kind: "restart" }>;
-/** What a check or a due restart is about: the generation of the Service's state it began from, and the check and process
- * it judged. A result is recorded, and a restart asked, only while all three still hold. */
-interface Origin {
-  generation: number;
-  check: string | undefined;
-  incarnation: string | undefined;
-}
-/** A restart the policy calls for, and what it is about. */
+/** A restart the policy calls for, and what it is about: the clock taken before the read it was judged from (see the
+ * epoch rule), and the check and process it judged. */
 interface Verdict {
   action: Due;
-  origin: Origin;
+  since: number;
+  check: string | undefined;
+  incarnation: string | undefined;
 }
 /** What the policy calls for, except that a process nothing identifies (adopted from a rigd older than incarnations) is
  * never restarted for its checks, since a restart could stop another process started meanwhile: it is checked and
@@ -158,17 +184,11 @@ export function createHealthMonitor(
 ): HealthMonitor {
   const states = new Map<string, HealthState>();
   const policies = new Map<string, HealthPolicy>();
-  /** Per Service, how many times what is known of it was replaced by something about another process or check: by
-   * `started`, by a pass that finds a new process or plan, or by a check that first sees a new process. A check or restart
-   * remembers the generation it began from and discards what it found once that has moved on. */
-  const generations = new Map<string, number>();
-  const generation = (key: string) => generations.get(key) ?? 0;
-  /** Replaces what is known of `key` with a state about another process or check, so any job that took the old one
-   * discards its result. */
-  const reset = (key: string, state: HealthState) => {
-    generations.set(key, generation(key) + 1);
-    states.set(key, state);
-  };
+  let clock = 0;
+  /** The clock at each Service's last lifecycle transition, by `<target id>:<service>`. */
+  const serviceMarks = new Map<string, number>();
+  /** The clock at each Target's last lifecycle transition, by Target id. */
+  const targetMarks = new Map<string, number>();
   /** Set by `stop`: from then on nothing is observed, started or written. */
   let stopped = false;
   /** The probes in flight, aborted by `stop`. */
@@ -191,10 +211,35 @@ export function createHealthMonitor(
     if (next) next();
     else running--;
   };
+  const keyOf = (targetId: string, service: string) => `${targetId}:${service}`;
+  /** Whether a write derived from a read taken at `since` may still be applied for the Service. */
+  const current = (targetId: string, service: string, since: number) =>
+    !stopped &&
+    Math.max(
+      serviceMarks.get(keyOf(targetId, service)) ?? 0,
+      targetMarks.get(targetId) ?? 0,
+    ) <= since;
+  /** A transition: the Service's, or with no Service the whole Target's, epoch moves past every unit of work begun so far. */
+  const invalidate = (targetId: string, service?: string) => {
+    clock++;
+    if (service === undefined) targetMarks.set(targetId, clock);
+    else serviceMarks.set(keyOf(targetId, service), clock);
+  };
+  /** Caches `state` for the Service when the epoch rule allows it; says whether it did. */
+  const write = (
+    targetId: string,
+    service: string,
+    since: number,
+    state: HealthState,
+  ): boolean => {
+    if (!current(targetId, service, since)) return false;
+    states.set(keyOf(targetId, service), state);
+    return true;
+  };
 
   return {
     results(target, service) {
-      const key = `${target.id}:${service}`;
+      const key = keyOf(target.id, service);
       const state = states.get(key),
         policy = policies.get(key);
       if (!state || !policy) return undefined;
@@ -214,11 +259,12 @@ export function createHealthMonitor(
         restarts: state.stretch?.restarts.length ?? 0,
       };
     },
+    retained: () =>
+      states.size + policies.size + serviceMarks.size + targetMarks.size,
     idle,
+    invalidate,
     async stop(boundMs = HEALTH_MONITOR_STOP_MS) {
       stopped = true;
-      for (const key of [...generations.keys()])
-        generations.set(key, generation(key) + 1);
       for (const probe of probes) probe.abort();
       let cancel = () => {};
       await Promise.race([
@@ -231,25 +277,34 @@ export function createHealthMonitor(
     },
     started(target, service, incarnation) {
       if (stopped) return;
+      // The start itself is the transition, and what it says is the newest thing known: it is cached unconditionally.
+      invalidate(target.id, service);
+      const key = keyOf(target.id, service);
       const component = target.plan.components.find(
         (candidate): candidate is ManagedComponent =>
           candidate.kind === "managed" && candidate.name === service,
       );
       const policy = component && healthPolicy(component);
-      if (!policy || seeded(target, service).stretch) return;
-      const key = `${target.id}:${service}`;
+      if (!policy) {
+        states.delete(key);
+        policies.delete(key);
+        return;
+      }
       policies.set(key, policy);
-      // A check in flight about the process this one replaces discards its result.
-      reset(key, {
-        ...NEW_HEALTH,
+      // Its start check passed. A start that carries an unhealthy stretch on (an automatic or health restart) stays
+      // unhealthy until an ongoing check passes; any other is healthy as of now.
+      const base = seeded(target, service);
+      states.set(key, {
+        ...base,
         incarnation,
         check: checkIdentity(component),
-        checkedAt: deps.now(),
-        passed: true,
+        eligibleSince: deps.now(),
+        ...(base.stretch ? {} : { checkedAt: deps.now(), passed: true }),
       });
     },
     async pass() {
       if (stopped) return;
+      const since = clock;
       const recorded = await deps.store.read();
       if (stopped) return;
       const monitored = new Set<string>();
@@ -264,73 +319,56 @@ export function createHealthMonitor(
           if (component.kind !== "managed") continue;
           const policy = healthPolicy(component);
           if (!policy) continue;
-          const key = `${target.id}:${component.name}`;
+          const key = keyOf(target.id, component.name);
           monitored.add(key);
+          // Something happened to the Service after this read was taken: what the read says is not about it any more.
+          if (!current(target.id, component.name, since)) continue;
           policies.set(key, policy);
           if (inFlight.has(key)) continue;
-          const known = states.get(key);
-          const recordedIncarnation = currentRun(
-            target,
-            component.name,
-          )?.incarnation;
-          // Every start is recorded before it spawns: a process other than the one judged is a new one, whose checks start
-          // afresh even before it is observed, so the old one's result never speaks for it.
-          // So is a check the plan now makes another way: the old test's result never speaks for the new one.
-          const replaced =
-            known === undefined ||
-            (known.incarnation !== undefined &&
-              recordedIncarnation !== undefined &&
-              recordedIncarnation !== known.incarnation) ||
-            (known.check !== undefined &&
-              known.check !== checkIdentity(component));
-          const state = !replaced
-            ? known
-            : known === undefined
-              ? seeded(target, component.name)
-              : fresh(target, component.name, known);
-          if (replaced) reset(key, state);
+          const state = judged(target, component, states.get(key));
           // Starting or stopping: no check, and the process is first seen afresh once the Target is free.
           if (deps.busy(target)) {
             const { eligibleSince: _paused, ...rest } = state;
-            states.set(key, rest);
+            write(target.id, component.name, since, rest);
             continue;
           }
-          states.set(key, state);
+          write(target.id, component.name, since, state);
           const action = actionFor(state, policy, deps.now());
           const due = nextCheckAt(state, policy);
           if (!isDue(action) && due !== undefined && deps.now() < due) continue;
           inFlight.add(key);
-          // A restart due now is about the check and process this state judged, as of this generation.
-          const origin: Origin = {
-            generation: generation(key),
-            check: state.check,
-            incarnation: state.incarnation,
-          };
           const job = (async () => {
             try {
+              // A restart due now is about this read of the process and check this state judged.
               let next: Verdict | undefined = isDue(action)
-                ? { action, origin }
+                ? {
+                    action,
+                    since,
+                    check: state.check,
+                    incarnation: state.incarnation,
+                  }
                 : undefined;
               if (!next) {
                 await slot();
                 try {
-                  // Read again with the slot held: while this waited, a deploy or restart may have replaced the plan, its
-                  // healthcheck or its process, and a check judges only what is recorded now, under the policy it has now.
+                  // The check's own read, with the slot held: a deploy or restart while it waited is judged by what is
+                  // recorded now, under the policy it has now.
+                  const checkSince = clock;
                   const now = await checked(target.id, component.name);
-                  if (now) {
+                  if (now && current(target.id, component.name, checkSince)) {
                     policies.set(key, now.policy);
                     next = await check(
                       now.target,
                       now.component,
                       now.policy,
-                      key,
+                      checkSince,
                     );
                   }
                 } finally {
                   release();
                 }
               }
-              if (next) await act(target.id, component.name, key, next);
+              if (next) await act(target.id, component.name, next);
             } catch (error) {
               await deps
                 .diagnostic({
@@ -349,14 +387,66 @@ export function createHealthMonitor(
           void job.finally(() => work.delete(job));
         }
       }
-      // A Service no longer meant to run, or no longer checked, forgets what was known about it.
-      for (const key of [...states.keys()])
-        if (!monitored.has(key) && !inFlight.has(key)) {
-          states.delete(key);
-          policies.delete(key);
+      // A Service no longer meant to run, or no longer checked, forgets what was known about it, marks included, once
+      // nothing touched it after this read and nothing of it is in flight; a Target, once none of its Services is left.
+      const targetsKept = new Set<string>();
+      for (const key of new Set([
+        ...states.keys(),
+        ...policies.keys(),
+        ...serviceMarks.keys(),
+      ])) {
+        const split = key.lastIndexOf(":");
+        const targetId = key.slice(0, split),
+          service = key.slice(split + 1);
+        if (
+          monitored.has(key) ||
+          inFlight.has(key) ||
+          !current(targetId, service, since)
+        ) {
+          targetsKept.add(targetId);
+          continue;
         }
+        states.delete(key);
+        policies.delete(key);
+        serviceMarks.delete(key);
+      }
+      for (const [targetId, mark] of targetMarks)
+        if (!targetsKept.has(targetId) && !stopped && mark <= since)
+          targetMarks.delete(targetId);
     },
   };
+
+  /** What the cache should hold for a Service after a pass's read: what it held, unless the read names another process
+   * or another check, which start afresh from their record; and the unhealthy stretch as the record carries it on, when
+   * a health restart counted an attempt there that the cache could not (its restart was itself a transition). */
+  function judged(
+    target: TargetRecord,
+    component: ManagedComponent,
+    known: HealthState | undefined,
+  ): HealthState {
+    const run = currentRun(target, component.name);
+    if (
+      known === undefined ||
+      (known.incarnation !== undefined &&
+        run?.incarnation !== undefined &&
+        run.incarnation !== known.incarnation) ||
+      (known.check !== undefined && known.check !== checkIdentity(component))
+    )
+      return known === undefined
+        ? seeded(target, component.name)
+        : fresh(target, component.name, known);
+    const record = run?.healthStretch;
+    return known.stretch &&
+      record &&
+      run?.incarnation === known.incarnation &&
+      record.since === known.stretch.since &&
+      record.restarts.length > known.stretch.restarts.length
+      ? {
+          ...known,
+          stretch: { since: record.since, restarts: [...record.restarts] },
+        }
+      : known;
+  }
 
   /** The Service's Target, plan entry and policy as recorded now; undefined when the Target is no longer meant to run, the
    * Service is gone, or it has no healthcheck any more, so nothing of it is checked or restarted. */
@@ -391,12 +481,16 @@ export function createHealthMonitor(
     return component && policy ? { target, component, policy } : undefined;
   }
   /** Whether the Target is busy, in which case the Service's checks pause until it is free again. */
-  function paused(target: TargetRecord, key: string): boolean {
+  function paused(
+    target: TargetRecord,
+    service: string,
+    since: number,
+  ): boolean {
     if (!deps.busy(target)) return false;
-    const state = states.get(key);
+    const state = states.get(keyOf(target.id, service));
     if (state) {
       const { eligibleSince: _paused, ...rest } = state;
-      states.set(key, rest);
+      write(target.id, service, since, rest);
     }
     return true;
   }
@@ -432,7 +526,7 @@ export function createHealthMonitor(
     timeoutMs: number,
   ): Promise<{ identity: string | undefined } | "stopped" | undefined> {
     // The process and the check are read from one snapshot of state, so a check never adopts a process its plan entry
-    // does not belong to: a deploy that lands between two reads is seen as a change, and nothing is judged.
+    // does not belong to.
     const recordedNow = async () => {
       const saved = (await deps.store.read()).targets.find(
         (t) => t.id === target.id,
@@ -471,121 +565,81 @@ export function createHealthMonitor(
     return { identity: recorded ?? observed.incarnation };
   }
 
-  /** One Service's turn: find its process, check it once it may be checked, record what changed, and return the restart the
-   * result calls for, with what it is about.
-   *
-   * Every await below may let something else replace what is known of the Service: `started` after a deploy or restart,
-   * or `stop`. Each of those bumps its generation, so after every await this re-reads the cached state and gives up when
-   * the generation moved; and the result is recorded only at the decision point, with no await between comparing the
-   * probe's origin (generation, check, process) with the cached state and writing it. */
+  /** One Service's turn, under the epoch rule with `since` taken before the read `component` came from: find its process,
+   * check it once it may be checked, record what changed, and return the restart the result calls for. Each await below
+   * (the two process reads around each observation, the run-record read for a new process, the probe) may let a
+   * transition through; every write after it is compared with `since` then, so one that came through discards it. */
   async function check(
     target: TargetRecord,
     component: ManagedComponent,
     policy: HealthPolicy,
-    key: string,
+    since: number,
   ): Promise<Verdict | undefined> {
-    const took = generation(key);
-    const moved = () => stopped || generation(key) !== took;
+    const service = component.name;
+    const key = keyOf(target.id, service);
     // The Target may have become busy while this waited for a slot: nothing is checked while it starts or stops.
-    if (paused(target, key)) return undefined;
-    // Await: the process, with the check it belongs to, from one snapshot of state (see runningProcess).
+    if (paused(target, service, since)) return undefined;
+    // Await: the process, with the check it belongs to, from one snapshot of state.
     const before = await runningProcess(target, component, policy.timeoutMs);
-    if (moved() || before === undefined) return undefined;
+    if (before === undefined) return undefined;
     let state = states.get(key) ?? NEW_HEALTH;
     if (before === "stopped") {
       // Not running: starting it again is automatic restart's work. The stretch goes on until a check passes.
       const { eligibleSince: _gone, incarnation: _was, ...rest } = state;
-      states.set(key, { ...rest, failures: 0 });
+      write(target.id, service, since, { ...rest, failures: 0 });
       return undefined;
     }
     const { identity } = before;
     const check = checkIdentity(component);
-    if (
-      state.eligibleSince === undefined ||
-      identity !== state.incarnation ||
-      check !== state.check
-    ) {
-      // A process seen with its Target free: its start check has passed, so it may be checked from now. A new process, or
-      // the same one checked another way, starts afresh, and continues the stretch only when its record says so.
-      let base = state;
-      if (identity !== state.incarnation || check !== state.check) {
-        // Await: the run record, for the stretch a new process continues.
-        const saved = (await deps.store.read()).targets.find(
-          (t) => t.id === target.id,
-        );
-        if (moved()) return undefined;
-        base = fresh(saved ?? target, component.name, states.get(key) ?? state);
-        state = {
-          ...base,
-          ...(identity !== undefined ? { incarnation: identity } : {}),
-          check,
-          eligibleSince: deps.now(),
-        };
-        reset(key, state);
-        return await probe(target, component, policy, key, {
-          generation: generation(key),
-          check,
-          incarnation: identity,
-        });
-      }
-      state = { ...base, eligibleSince: deps.now() };
-      states.set(key, state);
+    if (identity !== state.incarnation || check !== state.check) {
+      // A new process, or the same one checked another way, starts afresh and continues the stretch only when its record
+      // says so. Await: that record.
+      const saved = (await deps.store.read()).targets.find(
+        (t) => t.id === target.id,
+      );
+      state = {
+        ...fresh(saved ?? target, service, states.get(key) ?? state),
+        ...(identity !== undefined ? { incarnation: identity } : {}),
+        check,
+        eligibleSince: deps.now(),
+      };
+      if (!write(target.id, service, since, state)) return undefined;
+    } else if (state.eligibleSince === undefined) {
+      // Seen with its Target free: its start check has passed, so it may be checked from now.
+      state = { ...state, eligibleSince: deps.now() };
+      if (!write(target.id, service, since, state)) return undefined;
     }
-    return await probe(target, component, policy, key, {
-      generation: took,
-      check,
-      incarnation: identity,
-    });
-  }
-  /** The probe and its result, about `origin`'s check of `origin`'s process. */
-  async function probe(
-    target: TargetRecord,
-    component: ManagedComponent,
-    policy: HealthPolicy,
-    key: string,
-    origin: Origin,
-  ): Promise<Verdict | undefined> {
-    /** Whether the cached state is still about what this probe judges: the same generation, check and process. Read
-     * synchronously at the moment it is asked. */
-    const ours = (): HealthState | undefined => {
-      const cached = states.get(key);
-      return !stopped &&
-        cached !== undefined &&
-        generation(key) === origin.generation &&
-        cached.check === origin.check &&
-        cached.incarnation === origin.incarnation
-        ? cached
-        : undefined;
-    };
-    const due = ours();
-    if (!due || deps.now() < nextCheckAt(due, policy)!) return undefined;
-    if (paused(target, key)) return undefined;
+    if (deps.now() < nextCheckAt(state, policy)!) return undefined;
+    if (paused(target, service, since)) return undefined;
     // Await: the probe itself, bounded by the healthcheck's timeout and aborted by stop.
     const result = await withinTimeout(
       (signal) => deps.observations.health(target, component, signal),
       policy.timeoutMs,
     );
-    // An aborted probe says nothing, and a stopped monitor records nothing.
-    if (!ours()) return undefined;
     // The answer speaks only for the process it asked: one an Operation began to stop or replace meanwhile, or that ended
     // on its own before supervision recorded it, is not what runs now.
-    if (paused(target, key)) return undefined;
-    // Await: the process and check recorded after the probe, from one snapshot; both must be what the probe asked.
+    if (paused(target, service, since)) return undefined;
+    // Await: the process and check recorded after the probe; both must be what the probe asked.
     const after = await runningProcess(target, component, policy.timeoutMs);
     if (
       after === undefined ||
       after === "stopped" ||
-      after.identity !== origin.incarnation ||
-      paused(target, key)
+      after.identity !== identity ||
+      paused(target, service, since)
     )
       return undefined;
-    // Decision point, with no await until the state is written: the cached state must still be about this probe's origin.
-    // A deploy that started another process (and told `started`) while the snapshot above was read has moved the
-    // generation, even when that snapshot is the old one.
-    const cached = ours();
-    if (!cached) return undefined;
+    // Decision point, with no await until the cache is written: the epoch rule, and the cached state still about this
+    // probe's check and process.
+    const cached = states.get(key);
+    if (
+      !cached ||
+      !current(target.id, service, since) ||
+      cached.check !== check ||
+      cached.incarnation !== identity
+    )
+      return undefined;
     const at = deps.now();
-    const checked = recordCheck(
+    const outcome = recordCheck(
       cached,
       result === undefined
         ? {
@@ -601,70 +655,70 @@ export function createHealthMonitor(
       at,
       policy,
     );
-    states.set(key, checked.state);
-    // From here on only Activity is written, about this probe's origin; the restart verdict is about it too, and `act`
-    // judges it again under the same rule before asking.
-    if (checked.event === "unhealthy")
-      await record(target, {
+    if (!write(target.id, service, since, outcome.state)) return undefined;
+    // The cache was written, so its change may be recorded; each record is compared with `since` again as it is applied.
+    if (outcome.event === "unhealthy")
+      await record(target, service, since, {
         action: "health",
         outcome: "failed",
-        message: `${component.name} is unhealthy: ${checked.state.failures} health ${checked.state.failures === 1 ? "check" : "checks"} in a row failed (${checked.state.output ?? "no output"}). ${
+        message: `${service} is unhealthy: ${outcome.state.failures} health ${outcome.state.failures === 1 ? "check" : "checks"} in a row failed (${outcome.state.output ?? "no output"}). ${
           policy.onFailure !== "restart"
             ? "Its healthcheck's on_failure is report, so Rig only reports it."
-            : checked.state.incarnation === undefined
+            : outcome.state.incarnation === undefined
               ? `Rig cannot restart it for its health, since a rigd too old to record which process it is started it; run rig restart ${target.name} once.`
               : "Rig restarts it."
         }`,
       });
-    if (checked.event === "recovered") {
-      await record(target, {
+    if (outcome.event === "recovered") {
+      await record(target, service, since, {
         action: "health",
         outcome: "unchanged",
-        message: `${component.name} is healthy again: its health check passed.`,
+        message: `${service} is healthy again: its health check passed.`,
       });
-      await forgetStretch(target, component.name, origin.incarnation);
+      await forgetStretch(target, service, since, identity);
     }
-    const action = actionFor(checked.state, policy, at);
-    return isDue(action) ? { action, origin } : undefined;
+    const action = actionFor(outcome.state, policy, at);
+    return isDue(action)
+      ? { action, since, check, incarnation: identity }
+      : undefined;
   }
 
-  /** Restarts the Service as `verdict` says, when nothing has moved since: the cached state is still of the verdict's
-   * generation, and the recorded plan still makes the check, under a policy that restarts, of the process it judged. The
-   * request names that check and process, never whatever is cached by then, so the restart's own guard under the Target's
-   * lock refuses it once either changed. */
+  /** Restarts the Service as `verdict` says, under the epoch rule with the verdict's `since`, when the recorded plan still
+   * makes the verdict's check, under a policy that restarts, of the verdict's process. The request names that check and
+   * process, never whatever is cached by then, so the restart's own guard under the Target's lock refuses it once either
+   * changed. */
   async function act(
     targetId: string,
     service: string,
-    key: string,
     verdict: Verdict,
   ): Promise<void> {
-    const { origin } = verdict;
+    const key = keyOf(targetId, service);
     // Await: the plan and run record as they are now.
     const now = await checked(targetId, service);
     // Decision point, with no await until the request is built.
     const state = states.get(key);
     if (
       !now ||
-      stopped ||
       !state ||
-      generation(key) !== origin.generation ||
-      origin.check === undefined ||
-      checkIdentity(now.component) !== origin.check ||
-      currentRun(now.target, service)?.incarnation !== origin.incarnation ||
-      state.check !== origin.check ||
-      state.incarnation !== origin.incarnation
+      !current(targetId, service, verdict.since) ||
+      verdict.check === undefined ||
+      checkIdentity(now.component) !== verdict.check ||
+      currentRun(now.target, service)?.incarnation !== verdict.incarnation ||
+      state.check !== verdict.check ||
+      state.incarnation !== verdict.incarnation
     )
       return;
     const stretch = state.stretch;
     const action = actionFor(state, now.policy, deps.now());
     if (!stretch || !isDue(action)) return;
-    // Await: the restart, an Operation that waits for the Target.
+    // Await: the restart, an Operation that waits for the Target. Its stop and start are transitions, so what it means for
+    // the back-off reaches the cache from the run record it writes, through the next pass, when it did either.
     const result = await deps.restart({
       targetId,
       service,
-      check: origin.check,
-      ...(origin.incarnation !== undefined
-        ? { incarnation: origin.incarnation }
+      check: verdict.check,
+      ...(verdict.incarnation !== undefined
+        ? { incarnation: verdict.incarnation }
         : {}),
       attempt: action.attempt,
       failures: state.failures,
@@ -672,18 +726,16 @@ export function createHealthMonitor(
       since: stretch.since,
       restarts: stretch.restarts,
     });
-    // What the restart means for the cached state applies only to the state it was about.
-    if (generation(key) !== origin.generation) return;
-    const current = states.get(key) ?? state;
+    const after = states.get(key) ?? state;
     if (!("at" in result)) {
       if (result.outcome === "deferred") return;
       // The process that was judged is gone or was replaced meanwhile: the next pass looks at what runs now, afresh.
-      const { incarnation: _gone, eligibleSince: _next, ...rest } = current;
-      states.set(key, { ...rest, failures: 0 });
+      const { incarnation: _gone, eligibleSince: _next, ...rest } = after;
+      write(targetId, service, verdict.since, { ...rest, failures: 0 });
       return;
     }
     // A failed restart counts for the back-off too, so a Service that cannot start is not asked again at once.
-    states.set(key, restarted(current, result.at));
+    write(targetId, service, verdict.since, restarted(after, result.at));
   }
 
   /** Runs `observe`, aborted after `timeoutMs`: its answer, a failure as a failed check, or undefined when it did not
@@ -715,9 +767,7 @@ export function createHealthMonitor(
           controller.signal.addEventListener(
             "abort",
             () => resolve(undefined),
-            {
-              once: true,
-            },
+            { once: true },
           ),
         ),
       ]);
@@ -727,14 +777,16 @@ export function createHealthMonitor(
     }
   }
 
-  /** A stretch that ended: the record no longer carries it, so a new rigd does not continue it. */
+  /** A stretch that ended: the record no longer carries it, so a new rigd does not continue it. Under the epoch rule. */
   async function forgetStretch(
     target: TargetRecord,
     service: string,
+    since: number,
     incarnation: string | undefined,
   ): Promise<void> {
-    if (stopped) return;
+    if (!current(target.id, service, since)) return;
     await deps.store.update((state) => {
+      if (!current(target.id, service, since)) return;
       const run = state.targets.find((t) => t.id === target.id)?.services?.[
         service
       ];
@@ -743,12 +795,16 @@ export function createHealthMonitor(
     });
   }
 
+  /** One Activity entry about the Service, under the epoch rule. */
   async function record(
     target: TargetRecord,
+    service: string,
+    since: number,
     entry: Pick<OperationRecord, "action" | "outcome" | "message">,
   ): Promise<void> {
-    if (stopped) return;
-    await deps.store.update((state) =>
+    if (!current(target.id, service, since)) return;
+    await deps.store.update((state) => {
+      if (!current(target.id, service, since)) return;
       recordActivity(state, {
         id: deps.id(),
         projectId: target.projectId,
@@ -756,7 +812,7 @@ export function createHealthMonitor(
         target: target.name,
         occurredAt: new Date(deps.now()).toISOString(),
         ...entry,
-      }),
-    );
+      });
+    });
   }
 }

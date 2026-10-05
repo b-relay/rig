@@ -155,10 +155,15 @@ export async function composeDaemon(
       runCommand,
     ),
     // A start check that passed is the healthcheck's first passing check, so status shows it at once.
+    // Every start and stop tells the health monitor as it begins, and a passed start check is its first passing check.
     lifecycle: createTargetLifecycle(effects, undefined, {
+      changing: (target, service) => health?.invalidate(target.id, service),
       activated: (target, service, incarnation) =>
         health?.started(target, service, incarnation),
     }),
+    healthTransitions: {
+      invalidate: (targetId, service) => health?.invalidate(targetId, service),
+    },
     observations: effects.observations,
     observationBudgetMs: OBSERVATION_BUDGET_MS,
     observationDeadline: timerObservationDeadline,

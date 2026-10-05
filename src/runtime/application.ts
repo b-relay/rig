@@ -79,6 +79,7 @@ import {
   withStops,
 } from "./lifecycle";
 import { restartForHealth } from "./health-restart";
+import { reportingTransitions } from "./health-transitions";
 import type {
   HealthRestartRequest,
   HealthRestartResult,
@@ -214,7 +215,15 @@ const UNLOCKED: Admission = {
 /** rigd is the one authority over lifecycle state. Mutations of one Target run one at a time; other
  * Targets and Projects run side by side and share Host resources through short critical sections.
  * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
-export function createRuntime(deps: RuntimeDependencies): RigRuntime {
+export function createRuntime(input: RuntimeDependencies): RigRuntime {
+  // Every write the runtime makes reports its lifecycle transitions to the health monitor as it is applied, while the
+  // Operation making it still holds its Target (the epoch rule in health-monitor.ts).
+  const deps: RuntimeDependencies = input.healthTransitions
+    ? {
+        ...input,
+        store: reportingTransitions(input.store, input.healthTransitions),
+      }
+    : input;
   const locks = createOperationLocks();
   const reservations = createHostReservations();
   let draining = false;

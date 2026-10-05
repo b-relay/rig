@@ -254,14 +254,16 @@ export function withStops(
   };
 }
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
-/** Told when a Service this lifecycle started passed its start check: its healthcheck's first passing check. */
-export interface ActivationObserver {
+/** Told about each Service's lifecycle transitions, synchronously and while the caller holds the Target: as a start or a
+ * stop begins (`changing`), and when a start passed its start check, its healthcheck's first passing check (`activated`). */
+export interface LifecycleObserver {
+  changing(target: TargetRecord, service: string): void;
   activated(target: TargetRecord, service: string, incarnation: string): void;
 }
 export function createTargetLifecycle(
   effects: TargetEffects,
   timing: ReadinessTiming = readinessTiming,
-  observer?: ActivationObserver,
+  observer?: LifecycleObserver,
 ): TargetLifecycle {
   const lifecycle: TargetLifecycle = {
     pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
@@ -601,6 +603,7 @@ export function createTargetLifecycle(
   ): Promise<StopResult> {
     const graceMs = serviceGraceMs(component.stopTimeout);
     const kill = stops.kill?.(target);
+    observer?.changing(target, component.name);
     stops.observer?.stopping(target, component.name, graceMs);
     try {
       const result = await effects
@@ -631,6 +634,7 @@ export function createTargetLifecycle(
     const key = `${target.id}:${component.name}`;
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
     const env = await effects.environment(target, component);
+    observer?.changing(target, component.name);
     const incarnation = journal
       ? await journal.starting(component.name)
       : randomUUID();

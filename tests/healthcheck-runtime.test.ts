@@ -18,7 +18,10 @@ afterEach(async () => {
 });
 
 /** A working Target of one Project whose rig.yaml is `config`, read live, over a supervisor that starts every process. */
-async function fixture(services: Record<string, unknown>) {
+async function fixture(
+  services: Record<string, unknown>,
+  transitions?: string[],
+) {
   const config = parseProjectConfig({ name: "demo", services });
   const processes = new Map<string, ProcessObservation>();
   const supervisor: Supervisor = {
@@ -49,6 +52,16 @@ async function fixture(services: Record<string, unknown>) {
     supervisor: () => supervisor,
     startsAt: "2026-10-05T08:00:00.000Z",
     readinessDeadlineMs: 2000,
+    ...(transitions
+      ? {
+          dependencies: () => ({
+            healthTransitions: {
+              invalidate: (_targetId: string, service?: string) =>
+                transitions.push(service ? `service ${service}` : "target"),
+            },
+          }),
+        }
+      : {}),
   });
   roots.push(world.root);
   const runtime = world.open();
@@ -201,4 +214,31 @@ test("status and doctor read a Service's cached health and run no check for it",
     hint: "Its health check failed; inspect the Target logs (rig logs working) and the Service's healthcheck in rig.yaml.",
   });
   expect(checks).toEqual([]);
+});
+
+test("the runtime reports each lifecycle transition it writes to the health monitor while it holds the Target", async () => {
+  const transitions: string[] = [];
+  const f = await fixture(
+    { web: { command: "serve", healthcheck: { test: "true" } } },
+    transitions,
+  );
+  await f.runtime.command({ action: "up", project: "demo", target: "working" });
+  // The working Target's plan was recorded, then web's start journalled.
+  expect(transitions).toContain("target");
+  expect(transitions).toContain("service web");
+  transitions.length = 0;
+  await f.runtime.command({
+    action: "down",
+    project: "demo",
+    target: "working",
+  });
+  // Meant to stop: the whole Target.
+  expect(transitions).toContain("target");
+  transitions.length = 0;
+  await f.runtime.command({
+    action: "restart",
+    project: "demo",
+    target: "working",
+  });
+  expect(transitions).toContain("service web");
 });

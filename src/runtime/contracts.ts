@@ -22,6 +22,7 @@ import type { ObservationDeadline } from "./bounded-observations";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
 import type { HealthResults } from "./health-monitor";
+import type { HealthTransitions } from "./health-transitions";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -177,6 +178,10 @@ export interface RuntimeDependencies {
   /** The health monitor's cached results of ongoing checks, which status and doctor read instead of running them; absent
    * where no monitor runs. */
   healthResults?: HealthResults;
+  /** Where every state write that is a lifecycle transition (a plan, desired state, recovery or destruction change, a
+   * removed Target, a Service's new process) is reported to the health monitor, as it is applied; absent where no monitor
+   * runs. */
+  healthTransitions?: HealthTransitions;
 }
 
 /** Borrowed inventory snapshot under the runtime mutation queue. */

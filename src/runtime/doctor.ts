@@ -167,7 +167,7 @@ export async function doctor(
       checks.push({
         name: `${target.name}/hostnames`,
         ok: true,
-        message: `Serves ${sites
+        message: `Recorded hostnames: ${sites
           .map(
             (site) =>
               `${site.hostname} (${[...new Set(site.routes.map((route) => route.service))].join(", ")})`,

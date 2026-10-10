@@ -486,6 +486,6 @@ test("status and doctor list every hostname a Target serves", async () => {
   expect(doctor.checks).toContainEqual({
     name: "working/hostnames",
     ok: true,
-    message: "Serves app.test (web), api.app.test (api).",
+    message: "Recorded hostnames: app.test (web), api.app.test (api).",
   });
 });

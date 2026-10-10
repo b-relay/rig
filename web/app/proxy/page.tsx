@@ -2,7 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, FileCode2, TriangleAlert } from "lucide-react";
 import type { ProjectEntry } from "@/lib/board-rows";
-import { managedProxyRoutes, ownRoutesNote, proxyRoutes } from "@/lib/proxy";
+import {
+  managedProxyRoutes,
+  ownRoutesNote,
+  pendingNote,
+  proxyRoutes,
+} from "@/lib/proxy";
 import { projectHref, targetHref } from "@/lib/target";
 import { projectList, projectStatus, proxyReport } from "@/server/status";
 import {
@@ -52,6 +57,7 @@ export default async function ProxyPage() {
   const hosts = new Set(routes.map((route) => route.host));
   const unpublished = routes.filter((route) => !route.published).length;
   const ownRoutes = routes.filter((route) => route.source === "custom");
+  const pending = pendingNote(proxy);
   return (
     <>
       <PageHeader
@@ -74,6 +80,12 @@ export default async function ProxyPage() {
           />
         ) : null}
       </div>
+      {pending ? (
+        <p className="flex gap-2 text-sm text-warn">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>{pending}</span>
+        </p>
+      ) : null}
       {unpublished ? (
         <p className="flex gap-2 text-sm text-warn">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />

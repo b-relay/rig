@@ -159,7 +159,7 @@ function addProxyCommands(
   proxy
     .command("reload")
     .description(
-      "Apply the proxy section of Host config as it is now: proxy.routes, site lines and certificate settings. rigd also applies it when it starts. A configuration Caddy rejects or Rig refuses changes nothing that is served.",
+      "Apply the proxy section of Host config as it is now: proxy.routes, ports and certificate settings. rigd also applies it when it starts. Settings Rig refuses change nothing that is served: Caddy keeps the ones it last accepted, and rig proxy shows the refused ones as pending.",
     )
     .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
   proxy

@@ -1,13 +1,9 @@
 import { readFile, readlink, stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
-import {
-  generationFiles,
-  hostRoutes,
-  proxyPaths,
-} from "../domain/managed-proxy";
+import { generationFiles, proxyPaths } from "../domain/managed-proxy";
+import { pendingSettings } from "./proxy-generation";
 import { createCaddyAdmin } from "../providers/caddy-admin";
 import { installedBinary } from "../providers/caddy-binary";
 import { createCaddyJob } from "../providers/caddy-job";
@@ -104,7 +100,7 @@ export async function inspectManagedProxy(
             hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
           },
   );
-  checks.push(...(await generationChecks(paths, settings)));
+  checks.push(...(await generationChecks(root, paths, settings)));
   // What Caddy runs, not what the files say: after a crash between switching and activating they differ.
   if (reachable) {
     const [loaded, expected] = await Promise.all([
@@ -134,9 +130,10 @@ export async function inspectManagedProxy(
   }
   return checks;
 }
-/** Whether the current generation exists and serves `proxy.routes` as Host config says now, and which retired custom Caddy
- * files are left on disk, ignored. */
+/** Whether the current generation exists and serves the proxy section of Host config as it says now (refused settings say
+ * why), and which retired custom Caddy files are left on disk, ignored. */
 async function generationChecks(
+  root: string,
   paths: ReturnType<typeof proxyPaths>,
   settings: ProxySettings,
 ): Promise<DoctorCheck[]> {
@@ -162,32 +159,25 @@ async function generationChecks(
         hint: "Run rigd install.",
       },
     ];
-  const files = generationFiles(
-    target.startsWith("/") ? target : join(dirname(paths.current), target),
+  const pending = await pendingSettings(root, settings);
+  checks.push(
+    pending
+      ? {
+          name: "proxy-settings",
+          ok: false,
+          message: `The proxy section of config.yaml${pending.fields.length ? ` (${pending.fields.join(", ")})` : ""} is not what Rig's Caddy serves: ${pending.reason}`,
+          reason: pending.code
+            ? "proxy-settings-refused"
+            : "proxy-settings-pending",
+          hint: pending.code
+            ? "Fix the proxy section of config.yaml and run rig proxy reload. Caddy keeps serving the settings it last accepted."
+            : "Run rig proxy reload to apply it.",
+        }
+      : {
+          name: "proxy-settings",
+          ok: true,
+          message: "Rig's Caddy serves the proxy section of config.yaml.",
+        },
   );
-  const served = await readFile(files.metadata, "utf8")
-    .then(
-      (text) =>
-        (JSON.parse(text) as { customRoutes?: unknown }).customRoutes ?? [],
-    )
-    .catch(() => []);
-  const wanted = hostRoutes(settings);
-  if (wanted.length || (Array.isArray(served) && served.length))
-    checks.push(
-      Bun.deepEquals(served, wanted)
-        ? {
-            name: "proxy-routes",
-            ok: true,
-            message: `Your ${wanted.length === 1 ? "route" : `${wanted.length} routes`} in proxy.routes ${wanted.length === 1 ? "is" : "are"} served.`,
-          }
-        : {
-            name: "proxy-routes",
-            ok: false,
-            message:
-              "proxy.routes in config.yaml changed since Rig's Caddy last applied it.",
-            reason: "proxy-routes-pending",
-            hint: "Run rig proxy reload to apply it.",
-          },
-    );
   return checks;
 }

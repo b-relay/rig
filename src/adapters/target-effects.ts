@@ -693,6 +693,20 @@ export function createTargetEffects(
         }),
       );
     },
+    async checkRoute(target) {
+      const sites = plannedSites(target.plan);
+      if (!sites.length || !options.router.check) return;
+      await options.router.check({
+        key: target.id,
+        sites: sites.map((site) => ({
+          hostname: site.hostname,
+          routes: site.routes.map((route) => ({
+            prefix: route.prefix,
+            upstream: `127.0.0.1:${route.port}`,
+          })),
+        })),
+      });
+    },
     async removeRoute(target) {
       await transactions.withRouteChange(target.id, () =>
         options.router.remove(target.id),

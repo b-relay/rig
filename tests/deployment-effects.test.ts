@@ -24,12 +24,13 @@ import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { Supervisor } from "../src/providers/contracts";
 import { RigError, diagnosticCauses } from "../src/domain/errors";
 import { unreloadedCaddy } from "./support/router-doubles";
+import { managedCaddyWorld } from "./support/managed-caddy-double";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(options: { router?: Router } = {}) {
   const root = await mkdtemp(join(tmpdir(), "rig-effect-transaction-"));
   roots.push(root);
   for (const revision of ["old", "new"]) {
@@ -57,7 +58,7 @@ async function fixture() {
     async shutdown() {},
     async detach() {},
   };
-  const router = unreloadedCaddy(root);
+  const router = options.router ?? unreloadedCaddy(root);
   const adapters = (
     overrides: { installer?: ArtifactInstaller; router?: Router } = {},
   ) =>
@@ -814,4 +815,61 @@ test("no-up cannot certify the old installed binary as belonging to the newly re
   expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(
     "#!/bin/sh\necho new\n",
   );
+});
+
+test("Host config Rig refused never takes an unrelated Project offline: B deploys and stays up while a route colliding with A is pending", async () => {
+  const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+  roots.push(caddy.root);
+  // Project A serves a.test; the owner then adds a proxy.routes entry for it, which Rig refuses and records as pending.
+  await caddy.caddy.router.apply({
+    key: "a",
+    sites: [
+      {
+        hostname: "a.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:4000" }],
+      },
+    ],
+  });
+  const f = await fixture({ router: caddy.caddy.router });
+  await f.lifecycle.up(f.previous);
+  caddy.setSettings({ tls: { ca: "internal" }, routes: { "a.test": 3005 } });
+  await expect(caddy.caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_CONFIG_INVALID",
+  });
+  // Deploying B stops its previous Deployment and publishes its routes with the settings Caddy accepted.
+  const deployed = await activateDeployment(
+    f.candidate,
+    f.previous,
+    { activation: "start" },
+    f.deps,
+  );
+  expect(deployed).toMatchObject({ commit: "new", desired: "running" });
+  expect(f.running.size).toBe(1);
+  expect(caddy.servedRoutes()).toContain("new.test");
+  expect(caddy.servedRoutes()).toContain("a.test");
+  expect(caddy.servedRoutes()).not.toContain("old.test");
+});
+
+test("a deploy whose route cannot be published is refused before the previous Deployment stops", async () => {
+  const caddy = await managedCaddyWorld({
+    tls: { ca: "internal" },
+    routes: { "new.test": 3005 },
+  });
+  roots.push(caddy.root);
+  const f = await fixture({ router: caddy.caddy.router });
+  await f.lifecycle.up(f.previous);
+  const served = caddy.servedRoutes();
+  await expect(
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  // B's previous Deployment never stopped, and Caddy still serves it.
+  expect(f.running.size).toBe(1);
+  expect(f.state.targets[0]).toMatchObject({ commit: "old" });
+  expect(caddy.servedRoutes()).toBe(served);
+  expect(served).toContain("old.test");
 });

@@ -63,7 +63,7 @@ async function get(
   };
 }
 
-test("real Caddy runs Rig's generations: routes, a withdrawal, the owner's own route, refused site lines and a restart", async () => {
+test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down page, the owner's own route, refused Host config kept pending, and a restart", async () => {
   const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
     existsSync,
   );
@@ -134,8 +134,17 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, the owner's own r
   // An unknown name under the generated wildcard is closed, never routed.
   expect((await get("other.example.test", https)).status).toBe(0);
 
+  // A withheld path, and an upstream that refuses: Rig's own page, never what an upstream said.
   await caddy.router.apply(route(null));
-  expect((await get("app.example.test", https)).status).toBe(503);
+  expect(await get("app.example.test", https)).toEqual({
+    status: 503,
+    body: "503 - app.example.test is currently down",
+  });
+  await caddy.router.apply(route(`127.0.0.1:${freePort()}`));
+  expect(await get("app.example.test", https)).toEqual({
+    status: 502,
+    body: "502 - app.example.test is currently down",
+  });
   await caddy.router.apply(route(`127.0.0.1:${upstream.port}`));
 
   // The owner's own route, from proxy.routes: a plain reverse proxy, applied by a republish (rig proxy reload). A custom
@@ -153,39 +162,31 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, the owner's own r
   });
   expect((await get("app.example.test", https)).body).not.toContain("takeover");
   const accepted = settings;
-  // One of the owner's routes may not name a Target's hostname: Caddy would merge the two sites.
-  settings = { ...accepted, routes: { "app.example.test": upstream.port! } };
+  // One of the owner's routes may not name a Target's hostname: Caddy would merge the two sites. Rig refuses the settings,
+  // records them as pending, and goes on serving and publishing with the ones it accepted.
+  settings = {
+    ...accepted,
+    routes: { ...accepted.routes, "app.example.test": upstream.port! },
+  };
   await expect(caddy.republish()).rejects.toMatchObject({
     code: "PROXY_CONFIG_INVALID",
     message: expect.stringContaining("which a Target serves"),
   });
-  // What real Caddy makes of the Host's site lines is held to the allowlist. These bypass the schema, which refuses some of
-  // them first, to show the allowlist holds on its own.
-  for (const [site, refused] of [
-    [["file_server"], "file_server is not allowed"],
-    [["reverse_proxy /x/* 10.0.0.5:80"], "is not a loopback upstream"],
-    [
-      ["header X-Host {system.hostname}"],
-      "uses the placeholder {system.hostname}",
-    ],
-    [["header X-Var {vars.secret}"], "uses the placeholder {http.vars.secret}"],
-    [
-      ["@p not file /tmp/marker", "respond @p yes"],
-      "file is not an allowed matcher",
-    ],
-    [["log"], "srv0.logs differs from what Rig sets"],
-  ] as const) {
-    settings = { ...accepted, site: [...site] };
-    await expect(caddy.republish()).rejects.toMatchObject({
-      code: "PROXY_CONFIG_INVALID",
-      message: expect.stringContaining(refused),
-    });
-  }
-  settings = { ...accepted, site: ["not_a_directive"] };
-  await expect(caddy.republish()).rejects.toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
-    message: expect.stringContaining("not_a_directive"),
+  await caddy.router.apply(route(`127.0.0.1:${upstream.port}`));
+  const pending = await proxyReport({
+    root,
+    requested: settings,
+    job,
+    admin,
+    targets: [{ id: "app", project: "demo", name: "stable" }],
   });
+  expect(pending.pending).toMatchObject({
+    fields: ["routes"],
+    code: "PROXY_CONFIG_INVALID",
+    reason: expect.stringContaining("which a Target serves"),
+  });
+  // What is served is still described from the accepted generation.
+  expect(pending.caddy.ports).toEqual(accepted.ports);
   settings = accepted;
   // None of it changed what is served.
   expect((await get("own.example.test", https)).body).toBe("app /");
@@ -229,7 +230,7 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, the owner's own r
   ]);
   const report = await proxyReport({
     root,
-    settings,
+    requested: settings,
     job,
     admin,
     targets: [{ id: "app", project: "demo", name: "stable" }],

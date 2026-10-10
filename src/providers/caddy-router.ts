@@ -211,6 +211,15 @@ export function createCaddyRouter(options: {
       return operation;
     },
     remove: (key) => serialized(key),
+    async check(route) {
+      await pending.catch(() => {});
+      editRouteFile({
+        before: await readRoutes(),
+        key: route.key,
+        route,
+        siteConfig: options.extraConfig ?? [],
+      });
+    },
     async withheld(key) {
       await pending.catch(() => {});
       const text = await readFile(options.caddyfile, "utf8").catch((error) => {

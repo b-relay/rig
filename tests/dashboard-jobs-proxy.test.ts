@@ -4,6 +4,7 @@ import { commandSchema } from "../src/daemon/protocol";
 import {
   managedProxyRoutes,
   ownRoutesNote,
+  pendingNote,
   proxyRoutes,
   siteUrl,
 } from "../web/lib/proxy";
@@ -313,4 +314,33 @@ test("the owner's own routes are set in config.yaml, and need Rig's own Caddy", 
       failure: { code: "DAEMON_MISSING", message: "rigd is not reachable." },
     }),
   ).toContain("rigd is not reachable.");
+});
+
+test("Host config the dashboard's Caddy does not serve is shown apart, with why", () => {
+  const value = {
+    caddy: {
+      state: "running" as const,
+      ports: { http: 80, https: 443 },
+      ca: "letsencrypt",
+    },
+    sites: [],
+  };
+  expect(pendingNote({ ok: true, value })).toBeUndefined();
+  expect(
+    pendingNote({
+      ok: true,
+      value: {
+        ...value,
+        pending: { fields: ["routes", "tls"], reason: "Refused: a collision." },
+      },
+    }),
+  ).toBe(
+    "The proxy settings in config.yaml (routes, tls) are not served yet, so this page shows what Caddy last accepted. Refused: a collision.",
+  );
+  expect(
+    pendingNote({
+      ok: false,
+      failure: { code: "PROXY_UNMANAGED", message: "" },
+    }),
+  ).toBeUndefined();
 });

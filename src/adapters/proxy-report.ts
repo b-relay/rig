@@ -1,5 +1,10 @@
 import { readFile, readlink } from "node:fs/promises";
-import { currentCustomRoutes } from "./proxy-verify";
+import {
+  acceptedProxySettings,
+  currentCustomRoutes,
+  pendingSettings,
+  type PendingSettings,
+} from "./proxy-generation";
 import type { ProxySettings } from "../config/proxy-schema";
 import {
   certificateName,
@@ -35,8 +40,10 @@ export type ProxySite =
       readonly upstream: string;
       readonly certificate?: string;
     };
-/** What `rig proxy` shows: the job and every served site, Rig's Targets' and the owner's own routes. */
+/** What `rig proxy` shows: the job and every served site, Rig's Targets' and the owner's own routes, all as the current
+ * generation serves them, and Host config's proxy settings that are not served yet. */
 export interface ProxyReport {
+  /** The job, and the ports and CA of the settings Caddy accepted. */
   readonly caddy: {
     /** running answers on its socket; unreachable runs (or may) but does not answer; stopped is confirmed. */
     readonly state: "running" | "unreachable" | "stopped";
@@ -47,6 +54,8 @@ export interface ProxyReport {
     readonly generation?: string;
   };
   readonly sites: readonly ProxySite[];
+  /** Host config's proxy settings that Caddy does not serve: refused, with why, or not applied yet. */
+  readonly pending?: PendingSettings;
 }
 /** A Target as the report names it. */
 export interface ReportedTarget {
@@ -54,10 +63,12 @@ export interface ReportedTarget {
   readonly project: string;
   readonly name: string;
 }
-/** Builds the report from the current generation, which is what Caddy was given, never from plans. */
+/** Builds the report from the current generation, which is what Caddy was given, never from plans or from Host config;
+ * Host config (`requested`) only decides what is pending. */
 export async function proxyReport(options: {
   readonly root: string;
-  readonly settings: ProxySettings;
+  /** The proxy section of Host config now, or why it cannot be read. */
+  readonly requested: ProxySettings | Error;
   readonly job: CaddyJob;
   readonly admin: CaddyAdmin;
   readonly targets: readonly ReportedTarget[];
@@ -72,8 +83,13 @@ export async function proxyReport(options: {
     options.job.state(),
   ]);
   const customRoutes = await currentCustomRoutes(options.root);
+  // Before the first generation nothing is served; Host config is what the first one will be.
+  const served =
+    (await acceptedProxySettings(options.root)) ??
+    (options.requested instanceof Error ? undefined : options.requested);
+  const pending = await pendingSettings(options.root, options.requested);
   const parents =
-    options.settings.tls.certificates === "wildcard"
+    served?.tls.certificates === "wildcard"
       ? new Set(
           wildcardParents([
             ...routeFileHostnames(routes),
@@ -117,10 +133,11 @@ export async function proxyReport(options: {
           ? "stopped"
           : "unreachable",
       ...(binary ? { binary } : {}),
-      ports: options.settings.ports,
-      ca: options.settings.tls.ca,
+      ports: served?.ports ?? { http: 80, https: 443 },
+      ca: served?.tls.ca ?? "unknown",
       ...(generation ? { generation: generation.split("/").at(-1)! } : {}),
     },
     sites: sites.sort((a, b) => a.hostname.localeCompare(b.hostname)),
+    ...(pending ? { pending } : {}),
   };
 }

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   mkdir,
@@ -19,10 +19,10 @@ import {
   generationFiles,
   hostRoutes,
   normalizeToken,
-  wildcardParents,
   proxyPaths,
   redactSecrets,
   renderMainCaddyfile,
+  settingsDigest,
   type HostRoute,
   type ProxyPaths,
 } from "../domain/managed-proxy";
@@ -30,9 +30,12 @@ import {
   issuancePolicies,
   issuerCas,
   protectedDifferences,
+  withDownPages,
 } from "../domain/caddy-config";
-import type { ProxySettings } from "../config/proxy-schema";
-import { configProblems } from "../domain/config-allowlist";
+import {
+  proxySettingsSchema,
+  type ProxySettings,
+} from "../config/proxy-schema";
 import type { CommandRunner } from "./contracts";
 import {
   editRouteFile,
@@ -69,12 +72,30 @@ interface GenerationMetadata {
   ca: string;
   /** Digest of the settings it was rendered from, so an unchanged republish builds nothing. */
   settings: string;
+  /** The proxy settings it was rendered from: once it serves, the last accepted ones, which every route change and recovery
+   * publishes with until a republish of newer Host config is accepted. */
+  proxy?: ProxySettings;
   /** The owner's own routes it serves, from `proxy.routes`: what reporting and verify list beside Rig's. */
   customRoutes: HostRoute[];
   createdAt: string;
 }
 /** Why a publication was made, which decides the failure codes: a route change, or a republish of the current settings. */
 type PublicationKind = "route" | "settings";
+/** Failures that mean Host config itself was refused, not that Caddy could not be reached: recorded as pending, while Rig's
+ * routes go on with the last accepted settings. */
+const SETTINGS_REFUSALS = new Set([
+  "PROXY_CONFIG_INVALID",
+  "PROXY_PATH",
+  "PROXY_TOKEN",
+]);
+/** Host config Rig refused, recorded so `rig proxy` and doctor can say why it is not served. */
+export interface RejectedSettings {
+  /** Digest of the refused settings: the record holds only while Host config still says them. */
+  readonly settings: string;
+  readonly code: string;
+  readonly reason: string;
+  readonly at: string;
+}
 export interface ManagedCaddyOptions {
   readonly root: string;
   /** The `proxy` settings as Host config says now; read at every publication. */
@@ -94,8 +115,10 @@ export interface ManagedCaddyOptions {
  * queue. */
 export interface ManagedCaddy {
   readonly router: Router;
-  /** Rewrites every owned route block with the current `site` lines and builds a generation from the current settings,
-   * `proxy.routes` included, unless the current generation already says exactly that (`rig proxy reload`, rigd's start). */
+  /** Builds a generation from the proxy section of Host config as it is now, `proxy.routes` included, unless the current
+   * generation already says exactly that (`rig proxy reload`, rigd's start). Settings Rig refuses are recorded as pending
+   * with the reason and the error is thrown; Caddy keeps serving the last accepted ones, and a route file ahead of what it
+   * serves is still published with them. */
   republish(): Promise<{ published: boolean }>;
   readonly paths: ProxyPaths;
 }
@@ -140,6 +163,25 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     } catch {
       return undefined;
     }
+  }
+  /** The settings the current generation was accepted with; Host config as it is before the first generation. */
+  async function acceptedSettings(): Promise<ProxySettings> {
+    const recorded = (await metadataOf(await currentGeneration()))?.proxy;
+    const parsed = proxySettingsSchema.safeParse(recorded);
+    return parsed.success ? parsed.data : await options.settings();
+  }
+  async function recordRejection(
+    settings: ProxySettings,
+    error: RigError,
+  ): Promise<void> {
+    const record: RejectedSettings = {
+      settings: settingsDigest(settings),
+      code: error.code,
+      reason: error.message,
+      at: now().toISOString(),
+    };
+    await mkdir(paths.caddy, { recursive: true });
+    await writeFile(paths.rejectedSettings, JSON.stringify(record) + "\n");
   }
   async function token(settings: ProxySettings): Promise<string | undefined> {
     if (settings.tls.ca === "internal") return undefined;
@@ -250,10 +292,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     }
   }
 
-  /** Builds, validates and switches to a generation of `routes` and the current settings, then makes Caddy serve it, and
-   * confirms that it does. A failure at any step leaves the previous generation current and served. */
-  async function publish(routes: string, kind: PublicationKind): Promise<void> {
-    const settings = await options.settings();
+  /** Builds, validates and switches to a generation of `routes` and `settings`, then makes Caddy serve it, and confirms that
+   * it does. A failure at any step leaves the previous generation current and served. */
+  async function publish(
+    routes: string,
+    kind: PublicationKind,
+    settings: ProxySettings,
+  ): Promise<void> {
     const rigHosts = routeFileHostnames(routes);
     const customRoutes = hostRoutes(settings);
     // One name is one site to a client, whatever scheme or port either side writes it with: Caddy would merge the two blocks
@@ -280,12 +325,10 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await mkdir(building, { recursive: true });
     await mkdir(paths.data, { recursive: true, mode: 0o700 });
     await writeFile(staged.routes, routes);
-    // The allowlist's base: Rig's routes without their site lines.
-    await writeFile(staged.baseRoutes, rerenderOwnedBlocks(routes, []));
     const rejectedAs = async (
       reason: string | undefined,
       stderr: string,
-      by: "caddy" | "allowlist" = "caddy",
+      by: "caddy" | "rig" = "caddy",
     ) => {
       const rejected = `${directory}.rejected`;
       await rename(
@@ -302,7 +345,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       return new RigError(
         kind === "route" ? "ROUTE_VALIDATE" : "PROXY_CONFIG_INVALID",
         `${verb} the ${kind === "route" ? "updated routes" : "proxy configuration"}${reason ? `: ${reason}` : "."}`,
-        `Nothing changed. What Caddy saw is kept in ${rejected}; fix the ${kind === "route" ? "route configuration" : "proxy section of Host config (its site lines or routes)"} and retry.`,
+        `Nothing changed. What Caddy saw is kept in ${rejected}; fix the ${kind === "route" ? "route configuration" : "proxy section of Host config"} and retry.`,
         details,
       );
     };
@@ -310,6 +353,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       id,
       ca: settings.tls.ca,
       settings: settingsDigest(settings),
+      proxy: settings,
       customRoutes,
       createdAt: now().toISOString(),
     };
@@ -322,55 +366,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         hostnames: rigHosts,
       }),
     );
-    await writeFile(
-      staged.base,
-      renderMainCaddyfile({
-        settings,
-        paths,
-        generation: directory,
-        hostnames: rigHosts,
-        routes: files.baseRoutes,
-      }),
-    );
     await writeFile(staged.metadata, JSON.stringify(metadata, null, 2) + "\n");
     await rename(building, directory);
 
-    // What Caddy will run, kept beside the generation: activation is confirmed against it. Only Rig renders it, but the Host's
-    // site lines are Caddy directives, so it may differ from Rig's routes without them only by what the allowlist lets a
-    // route do. Adapting provisions nothing, so nothing refused is opened or created before it is refused.
+    // What Caddy will run, kept beside the generation: activation is confirmed against it. Every value in the Caddyfile went
+    // through caddyValue, so it holds nothing but Rig's own directives; Rig adds its page for an upstream that is down.
     const adapted = await adapt(executable, files.main, secret);
     if (adapted.config === undefined)
       throw await rejectedAs(adapted.reason, adapted.reason ?? "");
-    const base = await adapt(executable, files.base, secret);
-    if (base.config === undefined)
-      throw await rejectedAs(base.reason, base.reason ?? "");
-    const served = [
-      ...rigHosts.map(bareHostname),
-      ...customRoutes.map((route) => route.hostname),
-    ];
-    const problems = configProblems({
-      base: base.config,
-      full: adapted.config,
-      hosts: [
-        ...served,
-        ...(settings.tls.certificates === "wildcard"
-          ? wildcardParents(served)
-          : []),
-      ],
-    });
-    if (problems.length)
-      throw await rejectedAs(
-        `${problems[0]!.path} ${problems[0]!.problem}${
-          problems.length > 1
-            ? ` (and ${problems.length - 1} more: ${problems
-                .slice(1, 4)
-                .map((problem) => problem.path)
-                .join(", ")})`
-            : ""
-        }`,
-        "",
-        "allowlist",
-      );
     const moved = protectedDifferences(adapted.config, {
       admin: `unix/${paths.socket}|0600`,
       storage: paths.data,
@@ -381,9 +384,12 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       throw await rejectedAs(
         `the configuration changes ${moved.join(", ")}, which Rig sets itself`,
         "",
-        "allowlist",
+        "rig",
       );
-    await writeFile(files.adapted, JSON.stringify(adapted.config) + "\n");
+    await writeFile(
+      files.adapted,
+      JSON.stringify(withDownPages(adapted.config)) + "\n",
+    );
     // Only the accepted, frozen JSON is provisioned, by validation, and it is exactly what Caddy will load.
     const validation = await caddy(
       [executable, "validate", "--config", files.adapted],
@@ -514,8 +520,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   async function reconcile(kind: PublicationKind): Promise<void> {
     const current = await currentGeneration();
     if (!current) return;
-    const settings = await options.settings();
-    const secret = await token(settings).catch(() => undefined);
+    const secret = await token(await acceptedSettings()).catch(() => undefined);
     await activate(current, await binary(), secret, kind, "reconcile");
   }
 
@@ -531,19 +536,43 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await chmod(temporary, mode & 0o777);
     await rename(temporary, file);
   }
-  /** Publishes the current settings with every owned block rendered again for the current `site` lines; the route file is
-   * put back when the publication fails. */
-  async function republishAll(): Promise<void> {
-    const settings = await options.settings();
+  /** Publishes `settings` with every owned block rendered again, which drops directives an external router's
+   * `extra_config` left in them; the route file is put back when the publication fails. */
+  async function republishWith(
+    settings: ProxySettings,
+    kind: PublicationKind,
+  ): Promise<void> {
     const before = (await readText(paths.routes)) ?? "";
-    const routes = rerenderOwnedBlocks(before, settings.site);
+    const routes = rerenderOwnedBlocks(before, []);
     if (routes !== before) await writeRoutes(routes, before);
     try {
-      await publish(routes, "settings");
+      await publish(routes, kind, settings);
     } catch (error) {
       if (routes !== before) await writeRoutes(before, routes);
       throw error;
     }
+  }
+  /** The route edit `route` or `restoration` makes, refused as `editRouteFile` refuses it, against the owner's routes Caddy
+   * accepted. */
+  async function edited(
+    before: string,
+    key: string,
+    route?: RouteRequest,
+    restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
+  ) {
+    return editRouteFile({
+      before,
+      key,
+      ...(route ? { route } : {}),
+      ...(restoration ? { restoration } : {}),
+      siteConfig: [],
+      reserved: {
+        sites: hostRoutes(await acceptedSettings()).map(
+          (owned) => owned.hostname,
+        ),
+        owner: "proxy.routes in Host config",
+      },
+    });
   }
   async function change(
     key: string,
@@ -553,19 +582,10 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     // Nothing changes while what Caddy serves is unknown: a withdrawal must be served before its upstream may stop.
     await reconcile("route");
     const before = (await readText(paths.routes)) ?? "";
-    const settings = await options.settings();
     const current = await currentGeneration();
-    const edit = editRouteFile({
-      before,
-      key,
-      ...(route ? { route } : {}),
-      ...(restoration ? { restoration } : {}),
-      siteConfig: settings.site,
-      reserved: {
-        sites: hostRoutes(settings).map((owned) => owned.hostname),
-        owner: "proxy.routes in Host config",
-      },
-    });
+    // A route change publishes with the settings Caddy last accepted: Host config Rig refused never blocks one.
+    const settings = await acceptedSettings();
+    const edit = await edited(before, key, route, restoration);
     const after = edit?.after ?? before;
     // Done only when Caddy serves exactly this, which reconcile just confirmed for the current generation. A route file
     // ahead of it (a crash between writing it and publishing) is published here, even when this change adds nothing.
@@ -575,7 +595,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (after === served) return;
     if (after !== before) await writeRoutes(after, before);
     try {
-      await publish(after, "route");
+      await publish(after, "route", settings);
     } catch (error) {
       if (after !== before) await writeRoutes(before, after);
       throw error;
@@ -597,30 +617,58 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       checkpoint: async (key) => ({ key, value: await readOwned(key) }),
       restore: (saved, expected) =>
         queued(() => change(saved.key, undefined, { saved, expected })),
+      // What a deploy asks before it stops anything: whether this route would be refused.
+      check: (route) =>
+        queued(async () => {
+          await edited((await readText(paths.routes)) ?? "", route.key, route);
+        }),
     },
     republish: () =>
       queued(async () => {
-        const settings = await options.settings();
+        const requested = await options.settings();
         const before = (await readText(paths.routes)) ?? "";
         const current = await currentGeneration();
         if (
           current &&
-          rerenderOwnedBlocks(before, settings.site) === before &&
-          (await metadataOf(current))?.settings === settingsDigest(settings) &&
+          rerenderOwnedBlocks(before, []) === before &&
+          (await metadataOf(current))?.settings === settingsDigest(requested) &&
           (await readText(generationFiles(current).routes)) === before &&
           (await adaptedOf(current)) !== undefined
         ) {
           // The files say it; Caddy must too. A crash after the switch leaves Caddy on the previous generation, a CA change
           // included, until this makes it serve the current one.
+          await rm(paths.rejectedSettings, { force: true });
           await reconcile("settings");
           return { published: false };
         }
-        await republishAll();
-        return { published: true };
+        try {
+          await republishWith(requested, "settings");
+          await rm(paths.rejectedSettings, { force: true });
+          return { published: true };
+        } catch (error) {
+          if (
+            !current ||
+            !(error instanceof RigError) ||
+            !SETTINGS_REFUSALS.has(error.code)
+          )
+            throw error;
+          await recordRejection(requested, error);
+          // Rig's routes go on with the settings Caddy last accepted, so a route file ahead of what Caddy serves still is.
+          const accepted = await acceptedSettings();
+          await reconcile("settings");
+          const routes = rerenderOwnedBlocks(before, []);
+          if (
+            routes !== (await readText(generationFiles(current).routes)) ||
+            (await metadataOf(current))?.settings !== settingsDigest(accepted)
+          )
+            await republishWith(accepted, "route");
+          throw new RigError(
+            error.code,
+            error.message,
+            `${error.hint} Caddy keeps serving the proxy settings it last accepted; rig proxy shows the refused ones as pending.`,
+            { ...error.details, pending: true },
+          );
+        }
       }),
   };
-}
-/** A digest of the settings a generation is rendered from. */
-function settingsDigest(settings: ProxySettings): string {
-  return createHash("sha256").update(JSON.stringify(settings)).digest("hex");
 }

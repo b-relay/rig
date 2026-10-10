@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
 import { bareHostname } from "../domain/managed-proxy";
+import { checkCaddyValue } from "../domain/caddy-value";
 
 /** One path prefix of a hostname. It matches the prefix itself and everything below its next slash, and the upstream sees the
  * path unchanged. A `null` upstream is withheld: its requests are answered 503 and reach no process. */
@@ -37,6 +38,9 @@ export interface Router {
   withheld(key: string): Promise<WithheldPath[]>;
   checkpoint(key: string): Promise<RouteCheckpoint>;
   restore(saved: RouteCheckpoint, expected: RouteCheckpoint): Promise<void>;
+  /** Refuses `route` as `apply` would (ROUTE_INVALID, ROUTE_CONFLICT) without changing anything, so a deploy learns before it
+   * stops the previous Deployment that its route cannot be published. */
+  check?(route: RouteRequest): Promise<void>;
 }
 
 /** One change to the route file, worked out from its text alone. */
@@ -167,16 +171,21 @@ export function renderOwnedBlock(
   const { begin, end } = routeMarkers(route.key);
   return `${begin}\n${route.sites.map((site) => siteBlock(site, siteConfig)).join("")}${end}\n`;
 }
-/** One Caddy site: its paths, then the Host's extra directives. Its header is the only line of a Rig block that starts at
- * column 0 and ends with `{`, which is how `parseOwnedSites` tells the sites apart. */
+/** One Caddy site: its paths, then the Host's extra directives (an external router's `extra_config`; Rig's own Caddy has
+ * none). Its header is the only line of a Rig block that starts at column 0 and ends with `{`, which is how
+ * `parseOwnedSites` tells the sites apart. Values pass `checkCaddyValue` and stay unquoted: the file's format is a contract
+ * with the external router and the parser here, and a value that passes needs no quoting. */
 function siteBlock(site: RouteSite, siteConfig: readonly string[]): string {
-  return `${site.hostname} {\n${siteRoutes(site.routes)}${siteConfig.map((line) => "  " + line + "\n").join("")}}\n`;
+  return `${checkCaddyValue("address", site.hostname)} {\n${siteRoutes(site.routes)}${siteConfig.map((line) => "  " + line + "\n").join("")}}\n`;
 }
 /** A lone '/' is the site's one handler. Several paths become mutually exclusive `handle` blocks in the given order; each
  * matcher names the prefix and its subtree, so '/api' never takes '/apix'. */
 function siteRoutes(routes: readonly RoutePath[]): string {
   const handler = (path: RoutePath) =>
-    path.upstream === null ? "respond 503" : `reverse_proxy ${path.upstream}`;
+    path.upstream === null
+      ? "respond 503"
+      : `reverse_proxy ${checkCaddyValue("upstream", path.upstream)}`;
+  for (const path of routes) checkCaddyValue("prefix", path.prefix);
   if (routes.length === 1) return `  ${handler(routes[0]!)}\n`;
   return routes
     .map((path, index) =>

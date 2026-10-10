@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { validHostname } from "./hostname";
+import { CADDY_PATTERNS } from "../domain/caddy-value";
 
 const text = z.string().min(1);
 const port = z.number().int().min(1).max(65535);
@@ -53,6 +54,10 @@ export const proxySettingsSchema = z
       .strictObject({
         email: z
           .email()
+          .refine(
+            (email) => CADDY_PATTERNS.email.test(email),
+            "must be a plain address such as ops@example.com",
+          )
           .optional()
           .describe(
             "Contact address for the ACME account; optional. The CA may send expiry or policy notices to it.",
@@ -60,7 +65,12 @@ export const proxySettingsSchema = z
         ca: z
           .union([
             z.enum(["letsencrypt", "letsencrypt-staging", "internal"]),
-            z.url({ protocol: /^https$/ }),
+            z
+              .string()
+              .refine(
+                (url) => CADDY_PATTERNS.url.test(url),
+                "must be letsencrypt, letsencrypt-staging, internal, or an https:// URL of letters, digits and . - _ ~ % / only: no placeholder, query, space or quote",
+              ),
           ])
           .default("letsencrypt")
           .describe(
@@ -92,23 +102,6 @@ export const proxySettingsSchema = z
       })
       .prefault({})
       .describe("Certificates."),
-    site: z
-      .array(
-        text
-          .refine((line) => !/[\r\n]/.test(line), "must be one line")
-          .refine(
-            (line) => !/^\s*["`]?import\b/.test(line),
-            "may not import: there is no file of snippets to import from, so write the directive itself",
-          )
-          .refine(
-            (line) => !/\{\$|\{(?:env|file)\./.test(line),
-            "may not read the environment or a file ({$NAME}, {env.*} or {file.*})",
-          ),
-      )
-      .default([])
-      .describe(
-        "Caddy directives added inside every site block Rig writes for a Target, one per line, such as encode gzip. Each must be complete in itself: no import, and nothing read from the environment or a file. Rig refuses a generation in which they do more than handle requests to the loopback services (ADR 0014).",
-      ),
     routes: z
       .record(
         z
@@ -139,7 +132,7 @@ export const proxySettingsSchema = z
       )
       .default({})
       .describe(
-        "Your own hostnames, outside any Rig Project, each sent to a service on this Mac, such as grafana.example.com: 3000. Rig serves each with a certificate like its own and nothing but a reverse proxy to the upstream. A hostname a Target serves is refused, and a Target asking for one of these is refused as ROUTE_CONFLICT. Applied by rig proxy reload and when rigd starts.",
+        "Your own hostnames, outside any Rig Project, each sent to a service on this Mac, such as grafana.example.com: 3000. Rig serves each with a certificate like its own and nothing but a reverse proxy to the upstream. A hostname a Target serves is refused, and a Target asking for one of these is refused as ROUTE_CONFLICT. Applied by rig proxy reload and when rigd starts; until then, and if Rig refuses it, Caddy keeps the routes it last accepted.",
       ),
   })
   .describe(

@@ -228,27 +228,35 @@ asking for one of your hostnames is refused as `ROUTE_CONFLICT`. Rig reads no
 Caddyfile of yours: `proxy/custom.caddy` and `proxy/custom-global.caddy` from
 earlier builds are ignored, and doctor names one left on disk.
 
-`proxy.site` lists directives added to every site block Rig writes for a
-Target, one complete line each, such as `encode gzip`: no `import`, and nothing
-read from the environment or a file. Rig compares what Caddy makes of them with
-its routes without them, before Caddy provisions anything, and refuses anything
-beyond handling requests: they may use `reverse_proxy` to `127.0.0.1`,
-`localhost` or `[::1]`, `respond`, `abort`, `header`, `rewrite`, `uri`,
-`encode`, `handle` and `route`, matchers on the request (`path`, `method`,
-`header`, `query`, `protocol`, `not` and their regexp forms), and placeholders
-that read the request. Logging, certificates, `file_server`, `{system.*}` or
-`{vars.*}` placeholders and the like are refused, naming the JSON path.
+No config carries Caddy directives: every value Rig writes into Caddy's
+configuration (paths, ports, `tls.ca`, the email, hostnames, upstreams) is
+checked against its own pattern and quoted, so none can hold a placeholder,
+an `{$ENV}` expansion or a directive. `tls.ca` is a named CA or a plain
+`https://` URL. When an upstream refuses, times out or is withheld, Caddy
+answers with Rig's own plain-text page, `<status> - <host> is currently down`,
+never with what the upstream said.
+
+Host config Rig refuses never takes a Project offline. `rig proxy reload` (and
+rigd's start) applies Host config as it is now; when Rig refuses it, the
+command says why, Caddy keeps the proxy settings it last accepted, and every
+deploy and route change goes on with those. `rig proxy`, `rig doctor`
+(`proxy-settings`) and the dashboard show the refused settings as pending, with
+the reason. A Host config that no longer validates fails the reload with
+`PROXY_CONFIG`, naming the fields at fault. A deploy also checks that its
+route can be published before it stops the previous Deployment.
 
 `rig doctor` checks whether Caddy runs the current configuration (`proxy-serving`), the token (`proxy-token`), Rig's copy of Caddy
 (`proxy-binary`), whether the job runs and answers (`proxy-process`), and
-whether `proxy.routes` is applied (`proxy-routes`), and any custom Caddy file
+whether Host config's proxy section is what Caddy serves (`proxy-settings`),
+and any custom Caddy file
 left from an earlier build (`proxy-custom-file`). With a `proxy` section
 it no longer needs `caddy` on `PATH`.
 
 `rig proxy` shows the job, every hostname it serves with the Project and
 Target behind it, or `proxy.routes` and its upstream, its routes and the
-certificate that covers it. `rig proxy reload` applies the `proxy` section of
-Host config as it is now. `rig proxy verify` makes a
+certificate that covers it, all as Caddy serves them, then any proxy settings
+in Host config that are not served yet. `rig proxy reload` applies the `proxy`
+section of Host config as it is now. `rig proxy verify` makes a
 real TLS handshake with every served hostname on this Host's HTTPS port. A
 hostname passes only with a certificate trusted by Mozilla's root store, from a production
 CA, valid for more than seven days. A new certificate can take minutes while

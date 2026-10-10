@@ -256,6 +256,17 @@ function renderProxy(report: Record<string, unknown>): string {
       `${word(site.hostname)}  ${owner}${routes ? `  ${routes}` : ""}${site.certificate ? `  [${word(site.certificate)}]` : ""}`,
     );
   }
+  // What is above is what Caddy serves; Host config it has not taken is shown apart, with why.
+  if (report.pending !== undefined) {
+    const pending = object(report.pending);
+    const fields = Array.isArray(pending.fields)
+      ? pending.fields.map(String)
+      : [];
+    lines.push(
+      "",
+      `Pending    proxy settings in config.yaml${fields.length ? ` (${fields.map(word).join(", ")})` : ""} are not served: ${word(pending.reason)}`,
+    );
+  }
   return `${lines.join("\n")}\n`;
 }
 function renderDoctor(report: Record<string, unknown>): string {

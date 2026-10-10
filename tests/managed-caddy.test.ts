@@ -2,241 +2,37 @@ import { afterEach, expect, test } from "bun:test";
 import {
   lstat,
   mkdir,
-  mkdtemp,
   readFile,
   readdir,
-  readlink,
   rm,
   stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseHostConfig } from "../src/config";
-import type { ProxySettings } from "../src/config/proxy-schema";
-import {
-  createManagedCaddy,
-  type CaddyJobState,
-} from "../src/providers/managed-caddy";
-import { bareHostname } from "../src/domain/managed-proxy";
-import { routeFileHostnames } from "../src/providers/route-file";
-import type { CommandRunner } from "../src/providers/contracts";
+import { managedCaddyWorld, TOKEN } from "./support/managed-caddy-double";
 
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-const TOKEN = "Syn_thetic-Token-0123456789abcdefABCDEF";
 const app = (upstream: string | null = "127.0.0.1:3001") => ({
   key: "app",
   sites: [
     { hostname: "app.example.test", routes: [{ prefix: "/", upstream }] },
   ],
 });
-
-/** A stand-in for `caddy adapt`, shaped as Caddy's JSON is (checked against 2.10.2): Rig's sites and proxy.routes as
- * routes of one HTTPS server, the route file's text as the Rig routes' body, so two generations with the same content
- * adapt alike, and a site line `file_server` adapts to that handler, for the allowlist to refuse. */
-async function fakeAdapt(file: string): Promise<unknown> {
-  const text = await readFile(file, "utf8");
-  const imported = /^import (\S+)$/m.exec(text)?.[1];
-  const routesText = imported
-    ? await readFile(imported, "utf8").catch(() => "")
-    : "";
-  const field = (pattern: RegExp) => pattern.exec(text)?.[1];
-  const https = Number(field(/https_port (\d+)/));
-  const routes = [
-    ...routeFileHostnames(routesText).map((host) => ({
-      match: [{ host: [bareHostname(host)] }],
-      handle: [
-        routesText.includes("file_server")
-          ? { handler: "file_server", root: "/" }
-          : { handler: "static_response", body: routesText },
-      ],
-      terminal: true,
-    })),
-    ...[...text.matchAll(/^(\S+) \{\n\treverse_proxy (\S+)\n\}$/gm)].map(
-      (match) => ({
-        match: [{ host: [match[1]!] }],
-        handle: [
-          {
-            handler: "subroute",
-            routes: [
-              {
-                handle: [
-                  {
-                    handler: "reverse_proxy",
-                    upstreams: [{ dial: match[2]! }],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-        terminal: true,
-      }),
-    ),
-  ];
-  return {
-    admin: { listen: field(/admin "([^"]+)"/) },
-    storage: {
-      module: "file_system",
-      root: field(/storage file_system (\S+)/),
-    },
-    apps: {
-      http: {
-        http_port: Number(field(/http_port (\d+)/)),
-        https_port: https,
-        servers: {
-          srv0: {
-            listen: [
-              text.includes("default_bind 127.0.0.1")
-                ? `127.0.0.1:${https}`
-                : `:${https}`,
-            ],
-            routes,
-          },
-        },
-      },
-      tls: {
-        automation: {
-          policies: [
-            {
-              issuers: [
-                text.includes("local_certs")
-                  ? { module: "internal" }
-                  : { module: "acme", ca: field(/cert_issuer acme (\S+)/) },
-              ],
-            },
-          ],
-        },
-      },
-    },
-  };
-}
-
-/** A managed Caddy over a temporary root whose caddy, job and admin socket are scripted. `caddy.loaded` is what the fake
- * Caddy runs; a reload or restart loads a generation as real Caddy would. */
 async function world(
-  proxy: Record<string, unknown> = {},
-  token: string | null = TOKEN,
-) {
-  const root = await mkdtemp(join(tmpdir(), "rig-managed-"));
-  roots.push(root);
-  await mkdir(join(root, "caddy", "bin"), { recursive: true });
-  await writeFile(join(root, "caddy", "bin", "caddy-0000"), "");
-  await symlink("caddy-0000", join(root, "caddy", "bin", "caddy"));
-  if (token !== null) {
-    await mkdir(join(root, "auth"), { recursive: true });
-    await writeFile(join(root, "auth", "acme-dns.token"), token, {
-      mode: 0o600,
-    });
-  }
-  let settings: ProxySettings = parseHostConfig({
-    proxy: { caddy: "/usr/local/bin/caddy", ...proxy },
-  }).proxy!;
-  const commands: string[][] = [];
-  const failures: { validate?: string; reload?: string } = {};
-  const control = {
-    reachable: true,
-    state: "running" as CaddyJobState,
-    restarts: 0,
-    /** Set to make a reload succeed without Caddy loading anything. */
-    ignoreReload: false,
-    loaded: {} as unknown,
-  };
-  const run: CommandRunner = async ({ command }) => {
-    commands.push([...command]);
-    const verb = command[1]!;
-    if (verb === "adapt")
-      return {
-        exitCode: 0,
-        stdout: JSON.stringify(await fakeAdapt(command[3]!)),
-        stderr: "",
-      };
-    const failure = failures[verb as "validate" | "reload"];
-    if (failure) return { exitCode: 1, stdout: "", stderr: failure };
-    if (verb === "reload" && !control.ignoreReload)
-      control.loaded = command[3]!.endsWith(".json")
-        ? JSON.parse(await readFile(command[3]!, "utf8"))
-        : await fakeAdapt(command[3]!);
-    return { exitCode: 0, stdout: "", stderr: "" };
-  };
-  let id = 0;
-  const caddy = createManagedCaddy({
-    root,
-    settings: async () => settings,
-    run,
-    job: {
-      state: async () => control.state,
-      restart: async () => {
-        control.restarts++;
-        control.loaded = JSON.parse(
-          await readFile(
-            join(root, "caddy", "current", "adapted.json"),
-            "utf8",
-          ),
-        );
-      },
-    },
-    admin: {
-      reachable: async () => control.reachable,
-      config: async () => (control.reachable ? control.loaded : undefined),
-    },
-    generationId: () => `g${String(++id).padStart(3, "0")}`,
-    reachableWaitMs: 300,
-    now: () => new Date("2026-10-10T00:00:00.000Z"),
-  });
-  return {
-    root,
-    caddy,
-    commands,
-    failures,
-    control,
-    setSettings(next: Record<string, unknown>) {
-      settings = parseHostConfig({
-        proxy: { caddy: "/usr/local/bin/caddy", ...next },
-      }).proxy!;
-    },
-    current: async () =>
-      (await readlink(join(root, "caddy", "current")).catch(() => undefined))
-        ?.split("/")
-        .at(-1),
-    generations: () =>
-      readdir(join(root, "caddy", "generations"))
-        .then((names) => names.sort())
-        .catch(() => []),
-    routes: () =>
-      readFile(join(root, "proxy", "Caddyfile"), "utf8").catch(() => ""),
-    file: (...parts: string[]) => readFile(join(root, ...parts), "utf8"),
-    /** The generation the fake Caddy serves, by the route file it was given. */
-    /** The route file the fake Caddy serves: the body its Rig routes carry, or nothing when it serves none. */
-    servedRoutes: () => {
-      const servers = (
-        control.loaded as {
-          apps?: {
-            http?: {
-              servers?: Record<
-                string,
-                { routes?: { handle?: { body?: string }[] }[] }
-              >;
-            };
-          };
-        }
-      )?.apps?.http?.servers;
-      const bodies = Object.values(servers ?? {}).flatMap((server) =>
-        (server.routes ?? []).map((route) => route.handle?.[0]?.body ?? ""),
-      );
-      return bodies.find((body) => body.includes("# rig begin")) ?? "";
-    },
-    verbs: () => commands.map((command) => command[1]),
-  };
+  ...args: Parameters<typeof managedCaddyWorld>
+): ReturnType<typeof managedCaddyWorld> {
+  const made = await managedCaddyWorld(...args);
+  roots.push(made.root);
+  return made;
 }
 
-test("a route change is published as a generation: adapted, allowlisted, validated, switched to, then reloaded and confirmed from what Caddy runs", async () => {
-  const w = await world({ site: ["encode gzip"] });
+test("a route change is published as a generation: adapted, validated as the frozen JSON, switched to, then reloaded and confirmed from what Caddy runs", async () => {
+  const w = await world();
   await w.caddy.router.apply(app());
   expect(await w.current()).toBe("g001");
   const generation = join(w.root, "caddy", "generations", "g001");
@@ -250,49 +46,38 @@ test("a route change is published as a generation: adapted, allowlisted, validat
       "--adapter",
       "caddyfile",
     ],
-    // Rig's config alone, which the allowlist holds the full one against.
-    [
-      binary,
-      "adapt",
-      "--config",
-      join(generation, "base.Caddyfile"),
-      "--adapter",
-      "caddyfile",
-    ],
-    // Only the accepted JSON is provisioned: validation comes after the allowlist, never before it.
+    // Only the frozen JSON is provisioned, and it is exactly what Caddy will load.
     [binary, "validate", "--config", join(generation, "adapted.json")],
     [binary, "reload", "--config", join(generation, "adapted.json")],
   ]);
-  // The base imports Rig's routes without their site lines.
-  const base = await w.file("caddy", "generations", "g001", "base.Caddyfile");
-  expect(base).toContain(`import ${join(generation, "base-routes.caddy")}`);
-  expect(
-    await w.file("caddy", "generations", "g001", "base-routes.caddy"),
-  ).not.toContain("encode gzip");
   const routes = await w.routes();
   expect(routes).toContain(
-    "app.example.test {\n  reverse_proxy 127.0.0.1:3001\n  encode gzip\n}\n",
+    "app.example.test {\n  reverse_proxy 127.0.0.1:3001\n}\n",
   );
   expect(await w.file("caddy", "generations", "g001", "routes.caddy")).toBe(
     routes,
   );
   expect(w.servedRoutes()).toBe(routes);
-  expect(
-    JSON.parse(await w.file("caddy", "generations", "g001", "adapted.json")),
-  ).toEqual(w.control.loaded);
+  const adapted = JSON.parse(
+    await w.file("caddy", "generations", "g001", "adapted.json"),
+  );
+  expect(adapted).toEqual(w.control.loaded);
+  // Rig's own page for an upstream that is down, on every server.
+  expect(adapted.apps.http.servers.srv0.errors.routes[0].handle[0]).toEqual({
+    handler: "static_response",
+    status_code: "{http.error.status_code}",
+    headers: { "Content-Type": ["text/plain; charset=utf-8"] },
+    body: "{http.error.status_code} - {http.request.host} is currently down",
+  });
+  // Every value in the main file is quoted.
   const main = await w.file("caddy", "generations", "g001", "Caddyfile");
-  expect(main).toContain(`import ${join(generation, "routes.caddy")}`);
-  expect(main).toContain("*.example.test {\n\tabort\n}");
-  // Rig writes no custom Caddy file for the owner: their own routes are proxy.routes in Host config.
-  expect(
-    await stat(join(w.root, "proxy", "custom.caddy")).catch(() => undefined),
-  ).toBeUndefined();
+  expect(main).toContain(`import "${join(generation, "routes.caddy")}"`);
+  expect(main).toContain('"*.example.test" {\n\tabort\n}');
   // An unchanged route is not published again: Caddy already runs it.
   const before = w.commands.length;
   await w.caddy.router.apply(app());
   expect(w.commands).toHaveLength(before);
 });
-
 test("a configuration Caddy rejects switches nothing, keeps what Caddy saw, restores the route file and never shows the token", async () => {
   const w = await world();
   await w.caddy.router.apply(app());
@@ -420,27 +205,30 @@ test("a change of CA restarts Caddy instead of reloading it, since a reload keep
   expect(await w.caddy.republish()).toEqual({ published: false });
 });
 
-test("republishing rewrites every owned block with the current site lines", async () => {
-  const w = await world({
-    site: ["header X-Rig on", "encode gzip"],
-  });
+test("republishing rewrites every owned block, dropping directives an external router's extra_config left in them", async () => {
+  const w = await world();
   await w.caddy.router.apply(app());
-  w.setSettings({ site: ["encode gzip"] });
+  const routesFile = join(w.root, "proxy", "Caddyfile");
+  await writeFile(
+    routesFile,
+    (await w.routes()).replace(
+      "  reverse_proxy 127.0.0.1:3001\n",
+      "  reverse_proxy 127.0.0.1:3001\n  import cloudflare\n",
+    ),
+  );
   await w.caddy.republish();
   const routes = await w.routes();
-  expect(routes).not.toContain("header X-Rig on");
-  expect(routes).toContain("  encode gzip\n");
+  expect(routes).not.toContain("import cloudflare");
   expect(await w.file("caddy", "current", "routes.caddy")).toBe(routes);
   expect(w.servedRoutes()).toBe(routes);
   expect(w.control.restarts).toBe(0);
 });
-
 test("proxy.routes are served as plain reverse proxies, applied by a republish and recorded with the generation", async () => {
   const w = await world({ routes: { "own.example.test": 3005 } });
   await w.caddy.router.apply(app());
   const main = await w.file("caddy", "current", "Caddyfile");
   expect(main).toContain(
-    "own.example.test {\n\treverse_proxy 127.0.0.1:3005\n}",
+    '"own.example.test" {\n\treverse_proxy "127.0.0.1:3005"\n}',
   );
   expect(
     JSON.parse(await w.file("caddy", "current", "generation.json")),
@@ -508,24 +296,97 @@ test("one hostname is never both a Target's and the owner's, whatever scheme, po
   expect(await v.generations()).toEqual([served!]);
 });
 
-test("site lines are held to the allowlist on what Caddy makes of them: a handler outside it is refused at its JSON path", async () => {
-  const w = await world();
+test("Host config Rig refuses is recorded as pending and never blocks a route change: those keep the accepted settings", async () => {
+  const w = await world({ routes: { "own.example.test": 3005 } });
   await w.caddy.router.apply(app());
   const accepted = await w.current();
-  w.setSettings({ site: ["file_server"] });
+  // The owner adds a route for a hostname a Target serves.
+  w.setSettings({
+    routes: { "own.example.test": 3005, "app.example.test": 3006 },
+  });
   const error = await w.caddy.republish().catch((caught) => caught);
   expect(error).toMatchObject({
     code: "PROXY_CONFIG_INVALID",
-    message: expect.stringContaining(
-      "Rig refused the proxy configuration: $.apps.http.servers.srv0.routes[0].handle[0].handler file_server is not allowed",
-    ),
+    message: expect.stringContaining("names app.example.test"),
+    hint: expect.stringContaining("last accepted"),
+    details: { pending: true },
   });
   expect(await w.current()).toBe(accepted);
-  expect(await w.generations()).toContain("g002.rejected");
-  // The route file is put back, so Rig's routes keep their previous site lines.
-  expect(await w.routes()).not.toContain("file_server");
+  expect(
+    JSON.parse(await w.file("caddy", "settings-rejected.json")),
+  ).toMatchObject({
+    code: "PROXY_CONFIG_INVALID",
+    reason: expect.stringContaining("names app.example.test"),
+  });
+  // Another Project's route still publishes, with the settings Caddy accepted: the refused route is not in it.
+  await w.caddy.router.apply({
+    key: "other",
+    sites: [
+      {
+        hostname: "other.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3009" }],
+      },
+    ],
+  });
+  await w.caddy.router.apply(app("127.0.0.1:3002"));
+  const metadata = JSON.parse(
+    await w.file("caddy", "current", "generation.json"),
+  );
+  expect(metadata.customRoutes).toEqual([
+    { hostname: "own.example.test", upstream: "127.0.0.1:3005" },
+  ]);
+  expect(w.servedRoutes()).toContain("127.0.0.1:3002");
+  expect(w.servedRoutes()).toContain("other.example.test");
+  // Fixed Host config is accepted, and the record goes.
+  w.setSettings({
+    routes: { "own.example.test": 3005, "new.example.test": 3006 },
+  });
+  expect(await w.caddy.republish()).toEqual({ published: true });
+  expect(
+    await stat(join(w.root, "caddy", "settings-rejected.json")).catch(
+      () => undefined,
+    ),
+  ).toBeUndefined();
 });
 
+test("a route check refuses what apply would, against the accepted routes, and changes nothing", async () => {
+  const w = await world({ routes: { "own.example.test": 3005 } });
+  await w.caddy.router.apply(app());
+  const commands = w.commands.length;
+  await expect(
+    w.caddy.router.check!({
+      key: "b",
+      sites: [
+        {
+          hostname: "OWN.example.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:1" }],
+        },
+      ],
+    }),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  await expect(
+    w.caddy.router.check!({
+      key: "b",
+      sites: [
+        {
+          hostname: "app.example.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:1" }],
+        },
+      ],
+    }),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  await w.caddy.router.check!({
+    key: "b",
+    sites: [
+      {
+        hostname: "b.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:1" }],
+      },
+    ],
+  });
+  expect(w.commands).toHaveLength(commands);
+  expect(await w.routes()).not.toContain("b.example.test");
+});
 test("custom Caddy files an earlier build read are ignored: nothing in them reaches a generation", async () => {
   const w = await world();
   await mkdir(join(w.root, "proxy"), { recursive: true });
@@ -544,13 +405,9 @@ test("custom Caddy files an earlier build read are ignored: nothing in them reac
   expect(JSON.stringify(w.control.loaded)).not.toContain("2999");
 });
 
-test("a republish takes the current site lines too, and a failed rollback is reported, not claimed", async () => {
-  const w = await world({ site: ["header X-Rig on"] });
+test("a failed rollback is reported, not claimed", async () => {
+  const w = await world();
   await w.caddy.router.apply(app());
-  w.setSettings({ site: [] });
-  await w.caddy.republish();
-  expect(await w.routes()).not.toContain("header X-Rig on");
-
   w.failures.reload = "Error: loading new config: boom";
   const error = await w.caddy.router
     .apply(app("127.0.0.1:3002"))
@@ -559,7 +416,6 @@ test("a republish takes the current site lines too, and a failed rollback is rep
   // Caddy still runs the previous generation, so serving it again needed nothing: the rollback stands.
   expect(error.details.rollbackReloaded).toBeUndefined();
 });
-
 test("without a well-formed token nothing is published, and the token never appears in the error", async () => {
   const missing = await world({}, null);
   await expect(missing.caddy.router.apply(app())).rejects.toMatchObject({

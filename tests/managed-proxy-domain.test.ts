@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { caddyValue, checkCaddyValue } from "../src/domain/caddy-value";
 import {
   bareHostname,
   hostRoutes,
@@ -10,6 +11,7 @@ import {
 } from "../src/domain/managed-proxy";
 import { parseHostConfig } from "../src/config";
 import {
+  withDownPages,
   issuancePolicies,
   issuerCas,
   protectedDifferences,
@@ -58,7 +60,6 @@ test("a generation's main file names only its own files, the socket, storage and
   const text = renderMainCaddyfile({
     settings: settings({
       tls: { email: "ops@example.com" },
-      site: ["encode gzip"],
       routes: {
         "grafana.example.com": 3000,
         "files.example.org": "localhost:8080",
@@ -74,16 +75,16 @@ test("a generation's main file names only its own files, the socket, storage and
       "{",
       '\tadmin "unix//r/caddy/admin.sock|0600"',
       "\tpersist_config off",
-      "\tstorage file_system /r/caddy/data",
-      "\thttp_port 80",
-      "\thttps_port 443",
-      "\temail ops@example.com",
-      "\tcert_issuer acme https://acme-v02.api.letsencrypt.org/directory {",
-      "\t\tdns cloudflare {file./r/auth/acme-dns.token}",
-      "\t\tresolvers 1.1.1.1 1.0.0.1",
+      '\tstorage file_system "/r/caddy/data"',
+      '\thttp_port "80"',
+      '\thttps_port "443"',
+      '\temail "ops@example.com"',
+      '\tcert_issuer acme "https://acme-v02.api.letsencrypt.org/directory" {',
+      '\t\tdns "cloudflare" "{file./r/auth/acme-dns.token}"',
+      '\t\tresolvers "1.1.1.1" "1.0.0.1"',
       "\t}",
       "\tlog default {",
-      "\t\toutput file /r/caddy/caddy.log {",
+      '\t\toutput file "/r/caddy/caddy.log" {',
       "\t\t\troll_size 10MiB",
       "\t\t\troll_keep 5",
       "\t\t}",
@@ -91,25 +92,25 @@ test("a generation's main file names only its own files, the socket, storage and
       "}",
       "",
       "# One certificate per parent of a served hostname. A name below one of these that no site serves is refused.",
-      "*.app.example.com, *.example.com, *.example.org {",
+      '"*.app.example.com" "*.example.com" "*.example.org" {',
       "\tabort",
       "}",
       "",
-      "import /r/caddy/generations/g1/routes.caddy",
+      'import "/r/caddy/generations/g1/routes.caddy"',
       "",
-      "files.example.org {",
-      "\treverse_proxy localhost:8080",
+      '"files.example.org" {',
+      '\treverse_proxy "localhost:8080"',
       "}",
       "",
-      "grafana.example.com {",
-      "\treverse_proxy 127.0.0.1:3000",
+      '"grafana.example.com" {',
+      '\treverse_proxy "127.0.0.1:3000"',
       "}",
       "",
     ].join("\n"),
   );
 });
 
-test("high ports stay on 127.0.0.1, internal certificates never touch the keychain, hostname mode has no wildcards, and the base imports what it is given", () => {
+test("high ports stay on 127.0.0.1, internal certificates never touch the keychain, and hostname mode has no wildcards", () => {
   const paths = proxyPaths("/r");
   const local = renderMainCaddyfile({
     settings: settings({
@@ -131,14 +132,14 @@ test("high ports stay on 127.0.0.1, internal certificates never touch the keycha
     paths,
     generation: "/r/caddy/generations/g3",
     hostnames: ["app.example.com", "x.share.example.com"],
-    routes: "/r/base-routes.caddy",
   });
   expect(staged).toContain(
-    "cert_issuer acme https://acme-staging-v02.api.letsencrypt.org/directory {",
+    'cert_issuer acme "https://acme-staging-v02.api.letsencrypt.org/directory" {',
   );
   expect(staged).not.toContain("default_bind");
-  expect(staged).toContain("*.example.com, *.share.example.com {\n\tabort\n}");
-  expect(staged).toContain("import /r/base-routes.caddy\n");
+  expect(staged).toContain(
+    '"*.example.com" "*.share.example.com" {\n\tabort\n}',
+  );
 
   expect(() =>
     renderMainCaddyfile({
@@ -330,4 +331,130 @@ test("a site address is one bare hostname to a client, whatever its scheme, port
     { hostname: "a.example.com", upstream: "127.0.0.1:3" },
     { hostname: "b.example.com", upstream: "localhost:9" },
   ]);
+});
+
+test("every value written into a Caddyfile passes one gate: its field's shape, no Caddyfile syntax, then quoted", () => {
+  expect(caddyValue("url", "https://acme.test/directory")).toBe(
+    '"https://acme.test/directory"',
+  );
+  expect(caddyValue("port", 443)).toBe('"443"');
+  for (const [field, value] of [
+    ["url", "https://example.test/{$NAME}"],
+    ["url", "https://example.test/{env.X}"],
+    ["url", "https://example.test/x log"],
+    ["url", 'https://example.test/"x'],
+    ["url", "http://example.test/directory"],
+    ["url", "https://example.test/x#y"],
+    ["url", "https://example.test/x\\y"],
+    ["email", "ops@example.com\n}"],
+    ["hostname", "app.example.com {"],
+    ["upstream", "10.0.0.5:80"],
+    ["path", "/r with space"],
+    ["port", 70000],
+    ["module", "cloudflare\tx"],
+    ["address", "app.test}"],
+    ["prefix", "/a b"],
+  ] as const)
+    expect(() => checkCaddyValue(field, value)).toThrow(
+      expect.objectContaining({
+        code: field === "path" ? "PROXY_PATH" : "PROXY_CONFIG_INVALID",
+      }),
+    );
+});
+
+test("tls.ca is a named CA or a plain https URL: a placeholder that could expand into a directive is refused before anything renders", () => {
+  // The round-5 reproduction: {$NAME} expands when Caddy parses the Caddyfile, so it could inject a global logger.
+  for (const ca of [
+    "https://example.test/{$NAME}",
+    "https://example.test/directory\n\tlog",
+    "https://example.test/{file./etc/passwd}",
+    "https://example.test/dir ectory",
+  ])
+    expect(() => settings({ tls: { ca } })).toThrow();
+  expect(() => settings({ tls: { email: "ops@example.com}" } })).toThrow();
+  expect(settings({ tls: { ca: "https://acme.test/directory" } }).tls.ca).toBe(
+    "https://acme.test/directory",
+  );
+  // Values that get past the schema some other way are still refused when rendered.
+  const smuggled = settings();
+  (smuggled.tls as { ca: string }).ca = "https://example.test/{$NAME}";
+  expect(() =>
+    renderMainCaddyfile({
+      settings: smuggled,
+      paths: proxyPaths("/r"),
+      generation: "/r/caddy/generations/g9",
+      hostnames: [],
+    }),
+  ).toThrow(expect.objectContaining({ code: "PROXY_CONFIG_INVALID" }));
+});
+
+test("Rig's own page answers for an upstream that is down, on every server, without echoing the upstream", () => {
+  const config = withDownPages({
+    apps: {
+      http: {
+        servers: {
+          srv0: {
+            listen: [":443"],
+            routes: [
+              {
+                handle: [
+                  {
+                    handler: "subroute",
+                    routes: [
+                      {
+                        handle: [
+                          { handler: "static_response", status_code: 503 },
+                        ],
+                      },
+                      { handle: [{ handler: "static_response", abort: true }] },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    },
+  }) as {
+    apps: {
+      http: {
+        servers: Record<
+          string,
+          {
+            routes: { handle: { routes: { handle: unknown[] }[] }[] }[];
+            errors: unknown;
+          }
+        >;
+      };
+    };
+  };
+  const server = config.apps.http.servers.srv0!;
+  expect(server.routes[0]!.handle[0]!.routes[0]!.handle[0]).toEqual({
+    handler: "static_response",
+    status_code: 503,
+    headers: { "Content-Type": ["text/plain; charset=utf-8"] },
+    body: "503 - {http.request.host} is currently down",
+  });
+  // A connection Rig closes on purpose stays closed.
+  expect(server.routes[0]!.handle[0]!.routes[1]!.handle[0]).toEqual({
+    handler: "static_response",
+    abort: true,
+  });
+  expect(server.errors).toEqual({
+    routes: [
+      {
+        match: [{ expression: "{http.error.status_code} in [502, 503, 504]" }],
+        handle: [
+          {
+            handler: "static_response",
+            status_code: "{http.error.status_code}",
+            headers: { "Content-Type": ["text/plain; charset=utf-8"] },
+            body: "{http.error.status_code} - {http.request.host} is currently down",
+          },
+        ],
+        terminal: true,
+      },
+    ],
+  });
 });

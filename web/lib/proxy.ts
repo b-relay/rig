@@ -141,3 +141,10 @@ export function ownRoutesNote(read: Outcome<ProxyReport>): string {
     ? "The Host's Caddy serves Rig's routes. With a proxy section in config.yaml, Rig runs its own Caddy (ADR 0014) and your own hostnames go under proxy.routes."
     : `rigd could not report its Caddy: ${read.failure.message}`;
 }
+/** Pure: Host config's proxy settings that Caddy does not serve, and why, for a notice beside what it does serve; undefined
+ * when it serves them, or without Rig's own Caddy. */
+export function pendingNote(read: Outcome<ProxyReport>): string | undefined {
+  if (!read.ok || !read.value.pending) return undefined;
+  const { fields, reason } = read.value.pending;
+  return `The proxy settings in config.yaml${fields.length ? ` (${fields.join(", ")})` : ""} are not served yet, so this page shows what Caddy last accepted. ${reason}`;
+}

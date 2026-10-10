@@ -964,10 +964,11 @@ its own route map, and a Target's sites are published and withdrawn together.
 ### Config generation
 
 One complete, self-contained configuration of Rig's Caddy: its main file, a
-copy of the route file, the owner's `proxy.routes`, and the adapted JSON Caddy
-runs. Rig holds that JSON to an allowlist on what the Host's `site` lines add,
-then validates it, before switching one link to it, so Caddy never reads a
-set of files from two changes.
+copy of the route file, the proxy settings it was accepted with (the owner's
+`proxy.routes` among them), and the adapted JSON Caddy runs. Rig validates it
+before switching one link to it, so Caddy never reads a set of files from two
+changes. Route changes and recovery publish with the last accepted settings, so
+Host config Rig refused is pending and never blocks a Project.
 
 ### Provider contract
 

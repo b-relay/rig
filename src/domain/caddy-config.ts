@@ -69,3 +69,55 @@ export function issuerCas(config: unknown): string[] {
     }
   return [...cas].sort();
 }
+
+/** What Rig serves when a site's upstream is down: one line of plain text naming the status and the hostname, never what
+ * the upstream said. */
+export const DOWN_PAGE_BODY =
+  "{http.error.status_code} - {http.request.host} is currently down";
+const DOWN_STATUSES = [502, 503, 504];
+/** `config` with Rig's page for an upstream that is down, on every HTTP server: errors 502, 503 and 504 (an upstream that
+ * refuses, is withheld or times out) answer with `DOWN_PAGE_BODY` as plain text, and Rig's own `respond 503` for a
+ * withheld path says the same. Pure; Rig generates this JSON itself rather than take it from any config. */
+export function withDownPages(config: unknown): unknown {
+  const copy = structuredClone(config) as Json;
+  const http = record(record(copy.apps).http);
+  const plain = { "Content-Type": ["text/plain; charset=utf-8"] };
+  const withheld = (handler: Json) =>
+    handler.handler === "static_response" &&
+    Number(handler.status_code) === 503 &&
+    handler.body === undefined;
+  const visit = (routes: unknown) => {
+    for (const route of list(routes))
+      for (const handler of list(record(route).handle).map(record)) {
+        if (withheld(handler)) {
+          handler.headers = plain;
+          handler.body = "503 - {http.request.host} is currently down";
+        }
+        visit(handler.routes);
+      }
+  };
+  for (const server of Object.values(record(http.servers)).map(record)) {
+    visit(server.routes);
+    server.errors = {
+      routes: [
+        {
+          match: [
+            {
+              expression: `{http.error.status_code} in [${DOWN_STATUSES.join(", ")}]`,
+            },
+          ],
+          handle: [
+            {
+              handler: "static_response",
+              status_code: "{http.error.status_code}",
+              headers: plain,
+              body: DOWN_PAGE_BODY,
+            },
+          ],
+          terminal: true,
+        },
+      ],
+    };
+  }
+  return copy;
+}

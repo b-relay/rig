@@ -1,4 +1,5 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
+import { readProxySettings } from "../adapters/proxy-settings";
 import {
   HEALTH_MONITOR,
   JOB_SCHEDULER,
@@ -294,7 +295,7 @@ export async function composeDaemon(
     editor,
     env,
     async start() {
-      // Queued ahead of anything the first pass publishes: Host config's site lines and settings may have changed, and a
+      // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
       void (managed ? managed.caddy.republish() : external!.republish()).catch(
         (error: unknown) =>
@@ -370,16 +371,7 @@ function composeManagedCaddy(
     userName: userInfo().username,
     admin,
   });
-  const settings = async () => {
-    const host = await readHostConfig(root);
-    if (!host.proxy)
-      throw new RigError(
-        "PROXY_CONFIG",
-        "Host config no longer has a proxy section, but this rigd publishes through Rig's Caddy.",
-        "Run rigd install to switch how routes are published.",
-      );
-    return host.proxy;
-  };
+  const settings = () => readProxySettings(root);
   const caddy = createManagedCaddy({
     root,
     settings,
@@ -391,7 +383,15 @@ function composeManagedCaddy(
     caddy,
     control: {
       report: async (targets) =>
-        proxyReport({ root, settings: await settings(), job, admin, targets }),
+        proxyReport({
+          root,
+          requested: await settings().catch((error: unknown) =>
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+          job,
+          admin,
+          targets,
+        }),
       apply: async () => {
         await caddy.republish();
       },

@@ -9,29 +9,10 @@ import {
   certificateName,
   generationFiles,
   proxyPaths,
-  type HostRoute,
 } from "../domain/managed-proxy";
+import { currentCustomRoutes } from "./proxy-generation";
 import { routeFileHostnames } from "../providers/route-file";
 
-/** The owner's `proxy.routes` the current generation serves, as its metadata recorded them when it was published; none
- * before the first generation. */
-export async function currentCustomRoutes(root: string): Promise<HostRoute[]> {
-  const files = generationFiles(proxyPaths(root).current);
-  try {
-    const metadata = JSON.parse(await readFile(files.metadata, "utf8")) as {
-      customRoutes?: unknown;
-    };
-    if (Array.isArray(metadata.customRoutes))
-      return metadata.customRoutes.flatMap((entry: unknown) => {
-        const route = entry as Partial<HostRoute> | null;
-        return typeof route?.hostname === "string" &&
-          typeof route.upstream === "string"
-          ? [{ hostname: route.hostname, upstream: route.upstream }]
-          : [];
-      });
-  } catch {}
-  return [];
-}
 /** Every hostname with a certificate that the current generation serves: Rig's sites and the owner's own routes. Read from
  * the generation itself, so it needs no rigd and names exactly what Caddy was given. */
 export async function servedHostnames(root: string): Promise<string[]> {

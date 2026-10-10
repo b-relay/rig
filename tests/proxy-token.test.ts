@@ -16,6 +16,9 @@ import {
   writeProxyToken,
 } from "../src/adapters/proxy-token";
 import { inspectHost } from "../src/adapters/host-inspection";
+import { parseHostConfig } from "../src/config";
+import type { ProxySettings } from "../src/config/proxy-schema";
+import { hostRoutes, settingsDigest } from "../src/domain/managed-proxy";
 import { createRigCommand } from "../src/cli/commands";
 
 const roots: string[] = [];
@@ -116,7 +119,7 @@ test("doctor checks Rig's own Caddy instead of a Host Caddyfile, and no longer n
   });
 });
 
-test("doctor names a custom Caddy file an earlier build read as ignored, and proxy.routes Caddy does not serve yet", async () => {
+test("doctor names a custom Caddy file an earlier build read as ignored, and Host config Caddy does not serve: pending, or refused with why", async () => {
   const r = await root();
   await mkdir(join(r, "daemon"), { recursive: true });
   await writeFile(
@@ -132,13 +135,18 @@ test("doctor names a custom Caddy file an earlier build read as ignored, and pro
     join(r, "proxy", "custom.caddy"),
     "grafana.example.com {\n\treverse_proxy 127.0.0.1:3000\n}\n",
   );
-  // A generation built before the route was added.
+  // A generation accepted before the route was added.
+  const accepted = parseHostConfig({
+    proxy: { caddy: "/usr/local/bin/caddy" },
+  }).proxy!;
   const generation = join(r, "caddy", "generations", "g1");
   await mkdir(generation, { recursive: true });
-  await writeFile(
-    join(generation, "generation.json"),
-    JSON.stringify({ customRoutes: [] }),
-  );
+  const record = (proxy: ProxySettings) =>
+    writeFile(
+      join(generation, "generation.json"),
+      JSON.stringify({ proxy, customRoutes: hostRoutes(proxy) }),
+    );
+  await record(accepted);
   await symlink(join("generations", "g1"), join(r, "caddy", "current"));
   const checks = await inspectHost(r);
   expect(checks.filter((check) => check.name === "proxy-custom-file")).toEqual([
@@ -150,19 +158,40 @@ test("doctor names a custom Caddy file an earlier build read as ignored, and pro
       hint: expect.stringContaining("proxy.routes in config.yaml"),
     },
   ]);
-  expect(checks.find((check) => check.name === "proxy-routes")).toMatchObject({
-    ok: false,
-    reason: "proxy-routes-pending",
-  });
+  expect(checks.find((check) => check.name === "proxy-settings")).toMatchObject(
+    {
+      ok: false,
+      reason: "proxy-settings-pending",
+      message: expect.stringContaining("(routes)"),
+      hint: expect.stringContaining("rig proxy reload"),
+    },
+  );
+  // Refused: the reason Rig recorded for exactly these settings.
+  const requested = parseHostConfig({
+    proxy: {
+      caddy: "/usr/local/bin/caddy",
+      routes: { "grafana.example.com": 3000 },
+    },
+  }).proxy!;
   await writeFile(
-    join(generation, "generation.json"),
+    join(r, "caddy", "settings-rejected.json"),
     JSON.stringify({
-      customRoutes: [
-        { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
-      ],
+      settings: settingsDigest(requested),
+      code: "PROXY_CONFIG_INVALID",
+      reason:
+        "proxy.routes in Host config names grafana.example.com, which a Target serves (grafana.example.com).",
+      at: "2026-10-10T00:00:00.000Z",
     }),
   );
   expect(
-    (await inspectHost(r)).find((check) => check.name === "proxy-routes"),
+    (await inspectHost(r)).find((check) => check.name === "proxy-settings"),
+  ).toMatchObject({
+    ok: false,
+    reason: "proxy-settings-refused",
+    message: expect.stringContaining("which a Target serves"),
+  });
+  await record(requested);
+  expect(
+    (await inspectHost(r)).find((check) => check.name === "proxy-settings"),
   ).toMatchObject({ ok: true });
 });

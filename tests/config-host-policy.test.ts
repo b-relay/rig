@@ -33,7 +33,6 @@ test("a written proxy section makes Rig run its own Caddy, with every default re
       certificates: "wildcard",
       resolvers: ["1.1.1.1", "1.0.0.1"],
     },
-    site: [],
     routes: {},
   });
   // providers.caddy written beside it is ignored, and said to be.
@@ -48,18 +47,14 @@ test("a written proxy section makes Rig run its own Caddy, with every default re
   );
 });
 
-test("proxy refuses a relative Caddy, ports that cannot be served together, a site line that is not complete in itself, and an unknown CA", () => {
+test("proxy refuses a relative Caddy, ports that cannot be served together, any site directive, and an unknown or templated CA", () => {
   for (const proxy of [
     { caddy: "caddy" },
     { caddy: "/c", ports: { http: 80, https: 80 } },
     { caddy: "/c", ports: { http: 80, https: 8443 } },
-    { caddy: "/c", site: ["encode gzip\nencode zstd"] },
-    // No file of snippets exists to import from, and a site line reads nothing outside the generation.
-    { caddy: "/c", site: ["import backend_errors"] },
-    { caddy: "/c", site: ["`import` /tmp/x.caddy"] },
-    { caddy: "/c", site: ["header X-A {$SECRET}"] },
-    { caddy: "/c", site: ["header X-A {env.SECRET}"] },
-    { caddy: "/c", site: ["respond {file./etc/passwd}"] },
+    // No Caddy directives from config at all: site lines are gone.
+    { caddy: "/c", site: ["encode gzip"] },
+    { caddy: "/c", tls: { ca: "https://acme.test/{$NAME}" } },
     { caddy: "/c", tls: { ca: "zerossl" } },
     { caddy: "/c", tls: { ca: "http://acme.test/directory" } },
     { caddy: "/c", tls: { resolvers: ["one.one.one.one"] } },
@@ -77,7 +72,6 @@ test("proxy refuses a relative Caddy, ports that cannot be served together, a si
           email: "ops@example.com",
           certificates: "hostname",
         },
-        site: ["encode gzip"],
       },
     }).proxy,
   ).toMatchObject({

@@ -125,21 +125,10 @@ export async function composeDaemon(
   // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
   const managed =
     host.proxyMode === "managed" ? composeManagedCaddy(root, mode) : undefined;
-  const effects = createTargetEffects({
-    recordingTime: () => new Date().toISOString(),
-    logRetention,
-    root,
-    supervisors,
-    run: runCommand,
-    connect: probeLocalPort,
-    listeners: createListenerInspection(runCommand),
-    installer: createArtifactInstaller({
-      run: runCommand,
-      bunExecutable: toolBun,
-    }),
-    router:
-      managed?.caddy.router ??
-      createCaddyRouter({
+  // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
+  const external = managed
+    ? undefined
+    : createCaddyRouter({
         caddyfile:
           host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
         run: runCommand,
@@ -160,7 +149,20 @@ export async function composeDaemon(
               ],
             }
           : {}),
-      }),
+      });
+  const effects = createTargetEffects({
+    recordingTime: () => new Date().toISOString(),
+    logRetention,
+    root,
+    supervisors,
+    run: runCommand,
+    connect: probeLocalPort,
+    listeners: createListenerInspection(runCommand),
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: toolBun,
+    }),
+    router: managed?.caddy.router ?? external!,
     environment: executionBaseline(process.env),
   });
   const store = new FileStateStore(root);
@@ -250,16 +252,17 @@ export async function composeDaemon(
     async start() {
       // Queued ahead of anything the first pass publishes: Host config's site lines and settings may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
-      void managed?.caddy.republish().catch((error: unknown) =>
-        diagnostic.record({
-          event: "proxy.republish",
-          level: "error",
-          ...(error instanceof RigError ? { code: error.code } : {}),
-          ...(error instanceof RigError &&
-          typeof error.details?.evidence === "string"
-            ? { evidence: error.details.evidence }
-            : {}),
-        }),
+      void (managed ? managed.caddy.republish() : external!.republish()).catch(
+        (error: unknown) =>
+          diagnostic.record({
+            event: "proxy.republish",
+            level: "error",
+            ...(error instanceof RigError ? { code: error.code } : {}),
+            ...(error instanceof RigError &&
+            typeof error.details?.evidence === "string"
+              ? { evidence: error.details.evidence }
+              : {}),
+          }),
       );
       await runtime.reconcile();
       if (stopped) return;

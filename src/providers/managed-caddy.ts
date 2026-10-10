@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmod,
   mkdir,
   readFile,
   readdir,
   readlink,
+  realpath,
   rename,
   rm,
   stat,
@@ -17,6 +19,7 @@ import {
   customFileHeader,
   generationFiles,
   normalizeToken,
+  protectedGlobalOptions,
   proxyPaths,
   redactSecrets,
   renderMainCaddyfile,
@@ -238,6 +241,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     kind: PublicationKind,
   ): Promise<void> {
     const settings = await options.settings();
+    const taken = protectedGlobalOptions(custom.global);
+    if (taken.length)
+      throw new RigError(
+        "PROXY_CUSTOM_INVALID",
+        `${paths.customGlobal}:${taken[0]!.line} sets ${taken[0]!.option}, which Rig sets itself.`,
+        `Delete ${taken.map((entry) => `${entry.option} (line ${entry.line})`).join(", ")} from ${paths.customGlobal} and run rig proxy reload again; ports, certificates and the CA are set under proxy in Host config. Nothing changed.`,
+        { options: taken },
+      );
     const secret = await token(settings);
     const executable = await binary();
     const previous = await currentGeneration();
@@ -318,21 +329,34 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       );
     } catch (error) {
       await switchTo(previous);
-      if (previous)
-        await caddy(
-          [
-            executable,
-            "reload",
-            "--config",
-            generationFiles(previous).main,
-            "--adapter",
-            "caddyfile",
-          ],
-          secret,
+      // Put back what was served, and say whether that worked: the error alone cannot tell.
+      const rollback = previous
+        ? await caddy(
+            [
+              executable,
+              "reload",
+              "--config",
+              generationFiles(previous).main,
+              "--adapter",
+              "caddyfile",
+            ],
+            secret,
+          )
+        : { exitCode: 0 };
+      if (error instanceof RigError && rollback.exitCode !== 0)
+        throw new RigError(
+          error.code,
+          error.message.replace(
+            /; the previous configuration was restored\.$/,
+            ".",
+          ),
+          `${error.hint} Reloading the previous configuration failed too, so inspect Caddy (rig doctor) before retrying.`,
+          { ...error.details, rollbackReloaded: false },
         );
       throw error;
     }
-    await prune([directory, previous]);
+    // The change is served; tidying old generations must not turn it into a failure.
+    await prune([directory, previous]).catch(() => {});
   }
   /** Makes Caddy serve the generation just switched to. A Caddy confirmed stopped reads it when it starts; one that runs but
    * cannot be reached may still serve the previous generation, so that is a failure, never a success. */
@@ -375,12 +399,34 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     }
   }
 
+  /** Writes the route file whole, through a symlink and keeping its mode, as the external router does: the emergency
+   * rollback hands this same file to the old router Caddy, which must still find and read it. */
   async function writeRoutes(text: string, before: string): Promise<void> {
     await mkdir(dirname(paths.routes), { recursive: true });
-    const temporary = `${paths.routes}.${randomUUID()}.tmp`;
-    await writeFile(`${paths.routes}.rig-backup`, before, { mode: 0o600 });
-    await writeFile(temporary, text, { mode: 0o600 });
-    await rename(temporary, paths.routes);
+    const file = await realpath(paths.routes).catch(() => paths.routes);
+    const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
+    const temporary = `${file}.${randomUUID()}.tmp`;
+    await writeFile(`${file}.rig-backup`, before, { mode });
+    await writeFile(temporary, text, { mode });
+    await chmod(temporary, mode & 0o777);
+    await rename(temporary, file);
+  }
+  /** Publishes `custom` with every owned block rendered again for the current `site` lines; the route file is put back when
+   * the publication fails. Resolves whether anything was published. */
+  async function republishWith(
+    custom: CustomFiles,
+    kind: "custom" | "settings",
+  ): Promise<void> {
+    const settings = await options.settings();
+    const before = (await readText(paths.routes)) ?? "";
+    const routes = rerenderOwnedBlocks(before, settings.site);
+    if (routes !== before) await writeRoutes(routes, before);
+    try {
+      await publish(routes, custom, kind);
+    } catch (error) {
+      if (routes !== before) await writeRoutes(before, routes);
+      throw error;
+    }
   }
   async function change(
     key: string,
@@ -412,9 +458,12 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       throw error;
     }
   }
-  async function readOwned(key: string): Promise<string | null> {
-    await pending.catch(() => {});
-    return ownedBlock((await readText(paths.routes)) ?? "", key);
+  /** Read in the queue: a change writes the route file before it publishes and puts it back when publishing fails, so a read
+   * beside it could see a block that was never served. */
+  function readOwned(key: string): Promise<string | null> {
+    return queued(async () =>
+      ownedBlock((await readText(paths.routes)) ?? "", key),
+    );
   }
   return {
     paths,
@@ -430,31 +479,20 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       queued(async () => {
         const settings = await options.settings();
         const before = (await readText(paths.routes)) ?? "";
-        const routes = rerenderOwnedBlocks(before, settings.site);
-        const custom = await acceptedCustom();
         const current = await currentGeneration();
-        const metadata = await metadataOf(current);
         if (
           current &&
-          routes === before &&
-          metadata?.settings === settingsDigest(settings) &&
-          (await readText(generationFiles(current).routes)) === routes
+          rerenderOwnedBlocks(before, settings.site) === before &&
+          (await metadataOf(current))?.settings === settingsDigest(settings) &&
+          (await readText(generationFiles(current).routes)) === before
         )
           return { published: false };
-        if (routes !== before) await writeRoutes(routes, before);
-        try {
-          await publish(routes, custom, "settings");
-        } catch (error) {
-          if (routes !== before) await writeRoutes(before, routes);
-          throw error;
-        }
+        await republishWith(await acceptedCustom(), "settings");
         return { published: true };
       }),
+    // `rig proxy reload` applies the proxy settings too, so the owned blocks take the current site lines.
     applyCustom: () =>
-      queued(async () => {
-        const routes = (await readText(paths.routes)) ?? "";
-        await publish(routes, await diskCustom(), "custom");
-      }),
+      queued(async () => republishWith(await diskCustom(), "custom")),
   };
 }
 /** A digest of the settings a generation is rendered from. */

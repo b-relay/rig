@@ -14,6 +14,7 @@ import type { CommandRunner } from "./contracts";
 import {
   editRouteFile,
   ownedBlock,
+  rerenderOwnedBlocks,
   withheldPaths,
   type RouteCheckpoint,
   type RouteRequest,
@@ -40,19 +41,25 @@ export function createCaddyRouter(options: {
   /** The Host Caddyfile that imports the route file, asked on every change because the import can be added while rigd runs.
    * With one, routes are checked through it, so they may use snippets it defines; without one, the route file is checked alone. */
   readonly hostCaddyfile?: () => Promise<string | undefined>;
-}): Router {
+}): Router & {
+  /** Rewrites every owned block with the current `extraConfig`, validating and reloading as a change does; a file whose
+   * blocks already carry it is left alone. rigd runs it at startup, so an `extra_config` edit needs no redeploy. */
+  republish(): Promise<void>;
+} {
   const { run } = options;
   let pending: Promise<unknown> = Promise.resolve();
+  const readRoutes = () =>
+    readFile(options.caddyfile, "utf8").catch((error) => {
+      if (error.code === "ENOENT") return "";
+      throw error;
+    });
   async function change(
     key: string,
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ): Promise<void> {
     await mkdir(dirname(options.caddyfile), { recursive: true });
-    const before = await readFile(options.caddyfile, "utf8").catch((error) => {
-      if (error.code === "ENOENT") return "";
-      throw error;
-    });
+    const before = await readRoutes();
     const edit = editRouteFile({
       before,
       key,
@@ -64,6 +71,10 @@ export function createCaddyRouter(options: {
     if (!edit) return;
     const { after, withdrawing } = edit;
     if (after === before && !withdrawing) return;
+    await commit(before, after);
+  }
+  /** Validates `after`, writes it in place of `before` and reloads Caddy, putting `before` back when Caddy refuses it. */
+  async function commit(before: string, after: string): Promise<void> {
     // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
     const file = await realpath(options.caddyfile).catch(
       () => options.caddyfile,
@@ -188,6 +199,17 @@ export function createCaddyRouter(options: {
   }
   return {
     apply: (route) => serialized(route.key, route),
+    republish() {
+      const operation = pending
+        .catch(() => {})
+        .then(async () => {
+          const before = await readRoutes();
+          const after = rerenderOwnedBlocks(before, options.extraConfig ?? []);
+          if (after !== before) await commit(before, after);
+        });
+      pending = operation;
+      return operation;
+    },
     remove: (key) => serialized(key),
     async withheld(key) {
       await pending.catch(() => {});

@@ -753,3 +753,39 @@ test("one Target publishes several hostnames in one block: they are withheld, ch
   expect(left).not.toContain("melody.test");
   expect(left).toContain("other.test");
 });
+test("republishing gives every owned block the current extra directives, so a rollback to providers.caddy restores them", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-republish-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const commands: string[][] = [];
+  const route = {
+    key: "app",
+    sites: [
+      {
+        hostname: "app.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+      },
+    ],
+  };
+  // Written by Rig's own Caddy, whose site lines no longer import cloudflare.
+  await createCaddyRouter({
+    caddyfile: file,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    extraConfig: ["import backend_errors"],
+  }).apply(route);
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async ({ command }) => {
+      commands.push([...command]);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    extraConfig: ["import cloudflare", "import backend_errors"],
+  });
+  await router.republish();
+  expect(await readFile(file, "utf8")).toContain(
+    "app.test {\n  reverse_proxy 127.0.0.1:3001\n  import cloudflare\n  import backend_errors\n}\n",
+  );
+  expect(commands.map((command) => command[1])).toEqual(["validate", "reload"]);
+  await router.republish();
+  expect(commands).toHaveLength(2);
+});

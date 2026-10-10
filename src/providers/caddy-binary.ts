@@ -83,8 +83,27 @@ export async function installCaddyBinary(options: {
     await chmod(temporary, 0o755);
     await rename(temporary, file);
   }
+  const version = await checkCaddyBinary({ ...options, file });
+  const previous = await installedBinary(paths);
+  if (previous === file) return { changed: false, file, version };
+  await options.validate?.(file);
+  await switchBinary(paths, file);
+  await pruneBinaries(paths, [file, previous]);
+  return { changed: true, file, ...(previous ? { previous } : {}), version };
+}
+/** Checks that `file` runs as Caddy 2.10 or later with the DNS provider module, and resolves to its version. `source` names
+ * it in a refusal (PROXY_BINARY). `rigd install` runs this on proxy.caddy itself before it stops rigd, so a binary it would
+ * refuse never costs a restart. */
+export async function checkCaddyBinary(options: {
+  readonly file: string;
+  readonly source: string;
+  readonly dns: string;
+  readonly run: CommandRunner;
+}): Promise<string> {
+  const refuse = (message: string, hint: string) =>
+    new RigError("PROXY_BINARY", message, hint, { source: options.source });
   const run = async (args: string[]) =>
-    options.run({ command: [file, ...args] }).catch(() => ({
+    options.run({ command: [options.file, ...args] }).catch(() => ({
       exitCode: 1,
       stdout: "",
       stderr: "",
@@ -107,22 +126,7 @@ export async function installCaddyBinary(options: {
       `${options.source} does not include the dns.providers.${options.dns} module.`,
       `Build or download Caddy with github.com/caddy-dns/${options.dns}, for example from https://caddyserver.com/download, and point proxy.caddy at it.`,
     );
-  const previous = await installedBinary(paths);
-  if (previous === file)
-    return {
-      changed: false,
-      file,
-      version: version.stdout.trim().split(" ")[0]!,
-    };
-  await options.validate?.(file);
-  await switchBinary(paths, file);
-  await pruneBinaries(paths, [file, previous]);
-  return {
-    changed: true,
-    file,
-    ...(previous ? { previous } : {}),
-    version: version.stdout.trim().split(" ")[0]!,
-  };
+  return version.stdout.trim().split(" ")[0]!;
 }
 /** Deletes binary copies other than `keep`. */
 async function pruneBinaries(

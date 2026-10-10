@@ -148,3 +148,17 @@ test("a custom file Caddy rejects does not block the install: the accepted copie
   expect(installed.warnings?.join("\n")).toContain("not_a_directive");
   expect(await w.caddyAdmin.reachable()).toBe(true);
 }, 60_000);
+
+test("switching to Rig's Caddy without a token is refused while rigd keeps running", async () => {
+  const w = await world();
+  await w.config(undefined);
+  await w.admin.install();
+  await w.config({ tls: { ca: "letsencrypt" } });
+  await expect(w.admin.install()).rejects.toMatchObject({
+    code: "PROXY_TOKEN",
+  });
+  expect(await w.admin.status()).toMatchObject({ reachable: true });
+  expect(await readInstallationRecord(w.root)).toMatchObject({
+    proxy: "external",
+  });
+}, 60_000);

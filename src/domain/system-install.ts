@@ -46,21 +46,33 @@ export function systemInstallLine(
     `{ echo ${shellQuote(`${plistDigest(job.plist)}  ${staged}`)} | sudo shasum -a 256 -c - || { sudo rm -f ${shellQuote(staged)}; false; }; }`,
     ...(job.replaces
       ? [
-          `{ launchctl bootout ${job.replaces.domain}/${job.label} 2>/dev/null; rm -f ${shellQuote(job.replaces.plist)}; true; }`,
+          stopped(`${job.replaces.domain}/${job.label}`, false),
+          `rm -f ${shellQuote(job.replaces.plist)}`,
         ]
       : []),
     `sudo install -m 644 -o root -g wheel ${shellQuote(staged)} ${shellQuote(installed)}`,
-    `{ sudo launchctl bootout system/${job.label} 2>/dev/null; true; }`,
+    stopped(`system/${job.label}`, true),
+    // A job the emergency rollback disabled stays disabled across reboots until it is enabled again, here.
+    `sudo launchctl enable system/${job.label}`,
     `sudo launchctl bootstrap system ${shellQuote(installed)}`,
   ].join(" && ");
 }
-/** The line that removes a system job: it stops it, then deletes both its installed and staged plists. */
+/** A step that succeeds only once `target` is confirmed not loaded: a job launchd does not know is fine; a loaded one is
+ * booted out and must then be gone within five seconds. A bootout that fails, or leaves the job loaded, fails the step,
+ * so nothing after it runs. */
+export function stopped(target: string, sudo: boolean): string {
+  const launchctl = `${sudo ? "sudo " : ""}launchctl`;
+  const absent = `! ${launchctl} print ${target} >/dev/null 2>&1`;
+  return `{ ${absent} || { ${launchctl} bootout ${target} && for wait in 1 2 3 4 5; do ${absent} && break; sleep 1; done && ${absent}; }; }`;
+}
+/** The line that removes a system job: it stops it (only a confirmed stop lets the line go on), then deletes both its
+ * installed and staged plists. */
 export function systemRemoveLine(
   label: string,
   places: SystemPlaces = DEFAULT_PLACES,
 ): string {
   return [
-    `{ sudo launchctl bootout system/${label} 2>/dev/null; true; }`,
+    stopped(`system/${label}`, true),
     `sudo rm -f ${shellQuote(`${places.daemons}/${label}.plist`)} ${shellQuote(`${places.staging}/${label}.plist`)}`,
   ].join(" && ");
 }

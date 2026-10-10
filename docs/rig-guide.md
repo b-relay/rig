@@ -218,7 +218,13 @@ served. A Rig route whose hostname a custom site serves is refused as
 `ROUTE_CONFLICT`. `proxy.site` lists directives added to every site block Rig
 writes, and may use snippets `custom.caddy` defines.
 
-`rig doctor` checks the token (`proxy-token`), Rig's copy of Caddy
+Custom files must be complete in themselves: they may not read other files.
+Rig refuses an `import` of anything but a snippet `custom.caddy` defines (by
+name), a `{file.*}` placeholder, and certificate or key files outside the Rig
+root. Inline the snippet into `custom.caddy` instead. Global options Rig sets
+itself, such as `admin`, `storage`, the ports and the CA, are refused too.
+
+`rig doctor` checks whether Caddy runs the current configuration (`proxy-serving`), the token (`proxy-token`), Rig's copy of Caddy
 (`proxy-binary`), whether the job runs and answers (`proxy-process`), and
 whether the custom files are applied (`proxy-custom`). With a `proxy` section
 it no longer needs `caddy` on `PATH`.

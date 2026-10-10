@@ -223,6 +223,39 @@ writes, and may use snippets `custom.caddy` defines.
 whether the custom files are applied (`proxy-custom`). With a `proxy` section
 it no longer needs `caddy` on `PATH`.
 
+`rig proxy` shows the job, every hostname it serves with the Project and
+Target (or `custom.caddy`) behind it, its routes and the certificate that covers
+it, and whether each custom file is applied. `rig proxy reload` applies the
+custom files and the `proxy` section of Host config. `rig proxy verify` makes a
+real TLS handshake with every served hostname on this Host's HTTPS port. A
+hostname passes only with a certificate the system trusts, from a production
+CA, valid for more than seven days. A new certificate can take minutes while
+DNS propagates, so `--wait 600` keeps checking until then. A reload that
+succeeded does not mean the certificates are ready; `verify` is what says so.
+Changing `proxy.tls.ca` restarts Caddy rather than reloading it, because a
+reload keeps the certificates it already has. Let's Encrypt allows only five
+certificates for the same set of names per week, so keep `<RIG_ROOT>/caddy/data`
+across reinstalls, as `rigd uninstall` does.
+
+### Start at boot
+
+With `daemon.start: boot` in Host config, `rigd` and Rig's Caddy run as system
+jobs, as your user, from boot, before anyone logs in. `rigd install` cannot
+install a system job itself, so it prints one line per job for you to paste.
+Each line stops at its first failure. It copies the plist into a directory only
+root can write, checks its digest there, removes the LaunchAgent it replaces,
+and loads the job. Run `rigd install` again afterwards to confirm. Upgrades
+need no sudo: the jobs run programs at fixed paths under the Rig root, and
+launchd starts them again when they exit. `rigd uninstall`, and switching back
+to `daemon.start: login`, print the line that removes the jobs.
+
+A system job's environment is fixed: `HOME`, `USER`, `LANG`, `RIG_ROOT`, and a
+`PATH` of `<RIG_ROOT>/bin`, `~/.bun/bin`, `~/.local/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin` and the system directories. A Service that needs a program
+elsewhere names its full path. Without a login session there is no login
+Keychain or GUI, and macOS may refuse protected folders such as Documents.
+FileVault holds everything until the disk is unlocked.
+
 ### Another Caddy (`providers.caddy`, retiring)
 
 Without a `proxy` section, Rig only writes its route file for a Caddy it does
@@ -1146,6 +1179,8 @@ capability:
   directives every site gets (see Setup)
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
   reload mode, for a Caddy Rig does not run (retiring; see Setup)
+- `daemon.start` (default `login`): `boot` runs `rigd` and Rig's Caddy as
+  system jobs from boot (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
 - `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
   size at which a Target log file is rotated and how many rotated files are

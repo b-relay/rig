@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { runRigdCli } from "./cli/rigd";
 import {
   daemonCommand,
@@ -18,6 +18,7 @@ import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
 import { runCommand } from "./providers/command-runner";
 import { createProxyInstallation } from "./daemon/proxy-installation";
+import { readHostConfig } from "./config";
 export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
@@ -67,10 +68,12 @@ export async function main(args: readonly string[]): Promise<number> {
       }),
       mode,
       userHome: homedir(),
+      start: async () => (await readHostConfig(root)).daemon.start,
       proxy: createProxyInstallation({
         root,
         userHome: homedir(),
         uid: process.getuid?.() ?? 501,
+        userName: userInfo().username,
         mode,
         run: runCommand,
       }),

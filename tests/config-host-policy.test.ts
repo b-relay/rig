@@ -14,6 +14,7 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     providers: { caddy: { extra_config: [], reload: { mode: "manual" } } },
     diagnostics: { retention_days: 14, level: "info" },
     logs: { max_bytes: 64 * 1024 * 1024, generations: 1 },
+    daemon: { start: "login" },
     proxyMode: "external",
     externalIgnored: false,
   });

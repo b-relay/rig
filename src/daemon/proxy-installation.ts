@@ -20,8 +20,8 @@ import {
   switchBinary,
 } from "../providers/caddy-binary";
 import {
-  createLaunchAgentCaddyJob,
-  createProcessCaddyJob,
+  caddySystemPlist,
+  createCaddyJob,
   type InstallableCaddyJob,
   type LaunchctlCommand,
 } from "../providers/caddy-job";
@@ -36,8 +36,15 @@ export interface ProxyInstallation {
   /** Whether Rig's Caddy is installed as Host config asks: the binary proxy.caddy names, the job defined as this Rig defines
    * it and answering, and a current generation. */
   inSync(): Promise<boolean>;
-  /** Installs Rig's Caddy and has it serve the current routes and custom files; resolves to warnings. */
-  install(): Promise<string[]>;
+  /** Installs Rig's Caddy and has it serve the current routes and custom files; resolves to warnings. `publish` replaces
+   * publishing here, for a system rigd that keeps running and publishes itself (proxy-apply); `defineJob: false` stops
+   * before the job, for a system job that needs the owner's sudo first. */
+  install(how?: {
+    publish?: () => Promise<unknown>;
+    defineJob?: boolean;
+  }): Promise<string[]>;
+  /** The plist of Rig's Caddy as a system job (`daemon.start: boot`). */
+  systemJob(): { label: string; plist: string };
   /** Refuses, before anything stops, what install would refuse from Host config alone: a missing proxy section, both
    * sections written, the token, and a proxy.caddy that is not Caddy 2.10 or later with the DNS module. */
   preflight(): Promise<void>;
@@ -48,8 +55,12 @@ export interface ProxyInstallationOptions {
   readonly root: string;
   readonly userHome: string;
   readonly uid: number;
-  /** How rigd runs under this root, and so where its Caddy job lives. */
+  /** How rigd was launched under this root; a launchd install becomes a system job when daemon.start is boot. */
   readonly mode: "process" | "launchd";
+  /** The account a system job runs as. */
+  readonly userName: string;
+  /** Where system plists live; tests pass a temporary directory. */
+  readonly daemons?: string;
   readonly run: CommandRunner;
   readonly launchctl?: LaunchctlCommand;
   /** How long Caddy may take to answer after a start; launchd's 10 s throttle is inside it. */
@@ -60,28 +71,29 @@ export function createProxyInstallation(
 ): ProxyInstallation {
   const paths = proxyPaths(options.root);
   const admin = createCaddyAdmin(paths.socket);
-  const job: InstallableCaddyJob =
-    options.mode === "process"
-      ? createProcessCaddyJob({
-          root: options.root,
-          paths,
-          userHome: options.userHome,
-          admin,
-          ...(options.startDeadlineMs
-            ? { deadlineMs: options.startDeadlineMs }
-            : {}),
-        })
-      : createLaunchAgentCaddyJob({
-          root: options.root,
-          paths,
-          userHome: options.userHome,
-          uid: options.uid,
-          admin,
-          ...(options.launchctl ? { launchctl: options.launchctl } : {}),
-          ...(options.startDeadlineMs
-            ? { deadlineMs: options.startDeadlineMs }
-            : {}),
-        });
+  /** The Caddy job beside rigd: a process under RIG_ROOT, otherwise as daemon.start in Host config says now. */
+  async function currentJob(): Promise<InstallableCaddyJob> {
+    const host = await readHostConfig(options.root).catch(() => undefined);
+    return createCaddyJob({
+      root: options.root,
+      paths,
+      mode:
+        options.mode === "process"
+          ? "process"
+          : host?.daemon.start === "boot"
+            ? "system"
+            : "launchd",
+      userHome: options.userHome,
+      uid: options.uid,
+      userName: options.userName,
+      admin,
+      ...(options.launchctl ? { launchctl: options.launchctl } : {}),
+      ...(options.startDeadlineMs
+        ? { deadlineMs: options.startDeadlineMs }
+        : {}),
+      ...(options.daemons ? { daemons: options.daemons } : {}),
+    });
+  }
   async function settings(): Promise<ProxySettings> {
     const host = await readHostConfig(options.root);
     if (host.proxyMode !== "managed" || !host.proxy)
@@ -103,6 +115,7 @@ export function createProxyInstallation(
     async inSync() {
       const wanted = await settings().catch(() => undefined);
       if (!wanted) return false;
+      const job = await currentJob();
       const digest = await readFile(wanted.caddy)
         .then((content) => createHash("sha256").update(content).digest("hex"))
         .catch(() => undefined);
@@ -116,10 +129,11 @@ export function createProxyInstallation(
         (await admin.reachable())
       );
     },
-    async install() {
+    async install(how = {}) {
       const wanted = await settings();
       await requireToken(options.root, wanted);
       const warnings: string[] = [];
+      const job = await currentJob();
       const wasRunning = (await job.state()) === "running";
       const caddy = createManagedCaddy({
         root: options.root,
@@ -147,7 +161,7 @@ export function createProxyInstallation(
       try {
         // The custom files on disk are applied; when Caddy rejects them, install still succeeds with the accepted ones.
         try {
-          await caddy.applyCustom();
+          await (how.publish ? how.publish() : caddy.applyCustom());
         } catch (error) {
           if (!(
             error instanceof RigError && error.code === "PROXY_CUSTOM_INVALID"
@@ -156,12 +170,13 @@ export function createProxyInstallation(
           warnings.push(
             `${error.message} The previously accepted custom files are used; fix them and run rig proxy reload.`,
           );
-          await caddy.republish();
+          if (!how.publish) await caddy.republish();
         }
       } catch (error) {
         await restoreBinary();
         throw error;
       }
+      if (how.defineJob === false) return warnings;
       try {
         const defined = await job.install();
         // A job that kept running still runs the old binary until it starts again.
@@ -207,7 +222,14 @@ export function createProxyInstallation(
         run: options.run,
       });
     },
-    remove: () => job.remove(),
+    remove: async () => (await currentJob()).remove(),
+    systemJob: () =>
+      caddySystemPlist({
+        root: options.root,
+        paths,
+        userHome: options.userHome,
+        userName: options.userName,
+      }),
   };
 }
 /** Refuses an install that would leave Caddy unable to provision: no token, or one that is malformed or readable by others. */

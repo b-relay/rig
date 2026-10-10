@@ -1058,6 +1058,17 @@ export const hostConfigSchema = z.strictObject({
       "Provider settings. providers.caddy describes a Caddy Rig does not run; a written proxy section replaces it.",
     ),
   proxy: proxySettingsSchema.optional(),
+  daemon: z
+    .strictObject({
+      start: z
+        .enum(["login", "boot"])
+        .default("login")
+        .describe(
+          "When rigd and Rig's Caddy start. login: as LaunchAgents while you are logged in. boot: as system jobs that run as you from boot, before anyone logs in; rigd install prints one sudo line per job, once. Ignored when RIG_ROOT is set.",
+        ),
+    })
+    .prefault({})
+    .describe("How rigd is installed on this Host."),
   diagnostics: z
     .strictObject({
       retention_days: z

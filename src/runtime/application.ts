@@ -14,7 +14,7 @@ import {
 import { recordActivity } from "../domain/activity";
 import { deploymentHistory, recordDeployment } from "../domain/deployments";
 import { ConfigError } from "../config/errors";
-import type { ConfigDocument, ProjectConfig } from "../config/types";
+import type { ConfigDocument, PlanJob, ProjectConfig } from "../config/types";
 import {
   readActions,
   type ActivityResult,
@@ -73,7 +73,12 @@ import {
 } from "./targets";
 import { sameConfigDigest } from "../config/config-digest";
 import { assertLogServices } from "./log-services";
-import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
+import {
+  DEFAULT_JOB_TARGETS,
+  PREVIEW_SELECTOR,
+  TARGET_ROLES,
+  targetOn,
+} from "../config/schema";
 import {
   assertSourceBuildsKnown,
   type TargetLifecycle,
@@ -118,6 +123,13 @@ import {
   type LockScope,
 } from "./operation-locks";
 import { createHostReservations } from "./host-reservations";
+import { recordSkippedRun, startJobRun, stopJobRuns } from "./jobs";
+import {
+  JOB_LATE_LIMIT_MS,
+  schedulesJobs,
+  type ScheduledRunRequest,
+  type ScheduledRunResult,
+} from "./job-scheduler";
 import { boundedObservations } from "./bounded-observations";
 import {
   initialPhase,
@@ -166,6 +178,16 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
   restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
+  /** Gives back `workspace`, a checkout of the Target `targetId` a job run kept after a deploy, once nothing uses it, under
+   * the Target's lease. Never rejects. */
+  releaseJobRevision(targetId: string, workspace: string): Promise<void>;
+  /** Stops the job runs in progress of the Target `targetId` when rig.yaml turns its role off, under its lease, as rig down
+   * would. Never rejects. */
+  stopJobsIfOff(targetId: string): Promise<void>;
+  /** Runs one scheduled time of a job as an Operation on its Target: it waits for the Target like any command, then starts
+   * a run when the Target is still deployed, meant to run and on in rig.yaml, the job is still in its plan and the time is
+   * not past the late limit; a run still going makes it record the time skipped. Never rejects; failures are recorded. */
+  runScheduledJob(request: ScheduledRunRequest): Promise<ScheduledRunResult>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
@@ -239,7 +261,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   let reconcilePending = input.reconcileGate !== "open";
   /** Refuses a command that would start a Service while the gate above is closed. */
   const assertReconciled = (action: string) => {
-    if (reconcilePending && ["up", "restart", "deploy"].includes(action))
+    if (reconcilePending && ["up", "restart", "deploy", "run"].includes(action))
       throw new RigError(
         "HOST_STATE_PENDING",
         "rigd is still starting and has not read its state yet, so it cannot tell whether the Mac restarted, and nothing was started.",
@@ -330,6 +352,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         inProgress,
         stopping,
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
+        ...(state.jobs ? { jobRecords: state.jobs } : {}),
       },
     );
   };
@@ -539,6 +562,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         if (
           state.targets.some((t) => t.desired === "running") ||
+          state.jobs?.some((record) => record.running) ||
           reports.some((t) =>
             t.components.some((c) =>
               ["running", "healthy", "unhealthy", "unknown"].includes(c.state),
@@ -752,6 +776,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ...command,
           branch: await deps.sources.currentBranch(selection.checkout),
         };
+      // A job runs in the stable Target unless the command names another, as jobs are scheduled there by default.
+      if (command.action === "run" && command.target === undefined)
+        command = { ...command, target: "stable" };
       // One document snapshot serves the whole action: whether the Target is on, and the plan made from it.
       const configured = await checkoutConfig(
         selection.document,
@@ -774,7 +801,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       // config cannot say, and leaves a recorded Target to its record as before.
       if (
         configured.document &&
-        (["up", "restart", "deploy"].includes(command.action) ||
+        (["up", "restart", "deploy", "run"].includes(command.action) ||
           (command.action === "logs" && !target))
       )
         assertTargetOn(configured.document.config, kind);
@@ -825,7 +852,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (
           target &&
           !(await recordUnmarked(target)) &&
-          ["up", "restart", "deploy"].includes(command.action)
+          ["up", "restart", "deploy", "run"].includes(command.action)
         )
           throw new RigError(
             "STATE_WRITE",
@@ -873,6 +900,22 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           )),
           ...(command.logFilter ? { filtered: true } : {}),
         } satisfies LogsResult;
+      }
+      if (command.action === "run") {
+        if (!target) throw missingTarget(command, name);
+        const job = runnableJob(target, command.job, configured.document);
+        attempted = true;
+        const { run, settled } = await startJobRun(
+          target,
+          job,
+          { id: operationId, trigger: "manual" },
+          deps,
+        );
+        if (settled) await releaseJobRevisions(target, [settled], deps);
+        return await finish("started", {
+          job: job.name,
+          startedAt: run.startedAt,
+        });
       }
       if (command.action === "deploy") {
         if (kind === "working") throw deployTargetError();
@@ -1038,7 +1081,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         target.updatedAt = deps.now();
         await persistTarget(target, deps.store);
         admission.phase("stopping", target);
+        // Its job runs first, with the stop budget each started with: a run may use the Services that stop after it.
+        const stoppedJobs = await stopJobRuns(target, deps);
         outcome = (await stopKeepingKills(target)).outcome;
+        if (stoppedJobs.length) outcome = "stopped";
+        await releaseJobRevisions(target, stoppedJobs, deps);
         recordStopKills(target, operations.get(operationId)!.view);
       } else {
         if (command.action === "restart") {
@@ -1394,9 +1441,189 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     void running.finally(() => executing.delete(running)).catch(() => {});
     return await running;
   };
+  /** A scheduled run: an Operation on one Target, listed like a command while it waits for and starts the run. */
+  const runScheduledJob = async (
+    request: ScheduledRunRequest,
+  ): Promise<ScheduledRunResult> => {
+    if (draining) return "passed";
+    const recorded = (await deps.store.read()).targets.find(
+      (target) => target.id === request.targetId,
+    );
+    if (!recorded) return "passed";
+    const operationId = request.id;
+    operations.set(operationId, {
+      kills: new Map(),
+      targetId: recorded.id,
+      view: {
+        operationId,
+        action: "job",
+        target: recorded.name,
+        phase: "starting",
+        startedAt: deps.now(),
+      },
+    });
+    const running = (async (): Promise<ScheduledRunResult> => {
+      const lease = await locks.acquire(operationId, [
+        targetScope(recorded.projectId, recorded),
+      ]);
+      try {
+        if (draining) return "passed";
+        // Nothing starts until rigd has reconciled the Host session (see `reconcilePending`).
+        if (reconcilePending) return "deferred";
+        const state = await deps.store.read();
+        const target = state.targets.find((t) => t.id === request.targetId);
+        const job = target?.plan.jobs?.find((j) => j.name === request.job);
+        const project = state.projects.find((p) => p.id === target?.projectId);
+        // The Target changed while this waited: it is no longer meant to run the job, or the time is too late to start.
+        if (
+          !target ||
+          !job ||
+          !project ||
+          !schedulesJobs(target) ||
+          Date.parse(deps.now()) - request.scheduledFor > JOB_LATE_LIMIT_MS
+        )
+          return "passed";
+        if (unrecorded.has(target.id)) {
+          await recordUnrecorded(target);
+          return "deferred";
+        }
+        if (!(await recordUnmarked(target))) return "deferred";
+        operations.get(operationId)!.view.project = project.name;
+        // rig.yaml decides whether the role is on; a config that cannot be read leaves the Target to its record (ADR 0010).
+        const configured = await checkoutConfig(undefined, project, deps);
+        if (
+          configured.document &&
+          !targetOn(configured.document.config, target.kind)
+        )
+          return "passed";
+        try {
+          const { settled } = await startJobRun(
+            target,
+            job,
+            {
+              id: request.id,
+              trigger: "schedule",
+              scheduledFor: request.scheduledFor,
+            },
+            deps,
+          );
+          if (settled) await releaseJobRevisions(target, [settled], deps);
+          return "started";
+        } catch (error) {
+          if (!(error instanceof RigError) || error.code !== "JOB_RUNNING")
+            throw error;
+          await recordSkippedRun(
+            target,
+            job.name,
+            request.scheduledFor,
+            deps.id(),
+            deps,
+          );
+          return "skipped";
+        }
+      } catch (error) {
+        await deps
+          .diagnostic({
+            operationId,
+            action: "job",
+            outcome: "failed",
+            target: recorded.name,
+            errorCode: diagnosticErrorCode(error),
+            ...diagnosticCauses(error),
+          })
+          .catch(() => {});
+        return "failed";
+      } finally {
+        lease.release();
+        operations.delete(operationId);
+      }
+    })();
+    executing.add(running);
+    void running.finally(() => executing.delete(running)).catch(() => {});
+    return await running;
+  };
+  /** Runs `work` on the recorded Target `targetId` under its lease, as rigd's own Operation `action`; undefined when the
+   * Target is gone or rigd is draining. Failures go to the diagnostic log. */
+  const onTarget = async (
+    targetId: string,
+    action: string,
+    work: (target: TargetRecord) => Promise<void>,
+  ): Promise<void> => {
+    if (draining) return;
+    const recorded = (await deps.store.read()).targets.find(
+      (target) => target.id === targetId,
+    );
+    if (!recorded) return;
+    const operationId = `${action}:${deps.id()}`;
+    const entry: StopTracking = {
+      kills: new Map(),
+      targetId: recorded.id,
+      view: {
+        operationId,
+        action,
+        target: recorded.name,
+        phase: "stopping",
+        startedAt: deps.now(),
+      },
+    };
+    operations.set(operationId, entry);
+    const running = (async () => {
+      const lease = await locks.acquire(operationId, [
+        targetScope(recorded.projectId, recorded),
+      ]);
+      try {
+        if (draining) return;
+        const target = (await deps.store.read()).targets.find(
+          (t) => t.id === targetId,
+        );
+        if (target) await work(target);
+      } catch (error) {
+        await deps
+          .diagnostic({
+            operationId,
+            action,
+            outcome: "failed",
+            target: recorded.name,
+            errorCode: diagnosticErrorCode(error),
+            ...diagnosticCauses(error),
+          })
+          .catch(() => {});
+      } finally {
+        lease.release();
+        operations.delete(operationId);
+      }
+    })();
+    executing.add(running);
+    void running.finally(() => executing.delete(running)).catch(() => {});
+    await running;
+  };
   return {
     status,
     restartUnhealthy,
+    runScheduledJob,
+    releaseJobRevision: (targetId, workspace) =>
+      onTarget(targetId, "job-revision", (target) =>
+        releaseJobRevisions(target, [{ workspace }], deps),
+      ),
+    async stopJobsIfOff(targetId) {
+      const state = await deps.store.read();
+      const target = state.targets.find((t) => t.id === targetId);
+      const project = state.projects.find((p) => p.id === target?.projectId);
+      if (!target || !project) return;
+      const configured = await checkoutConfig(undefined, project, deps);
+      // A config that cannot be read says nothing about the switch, and leaves the runs to their record (ADR 0010).
+      if (
+        !configured.document ||
+        targetOn(configured.document.config, target.kind)
+      )
+        return;
+      await onTarget(targetId, "job-off", async (held) => {
+        const again = await checkoutConfig(undefined, project, deps);
+        if (!again.document || targetOn(again.document.config, held.kind))
+          return;
+        await releaseJobRevisions(held, await stopJobRuns(held, deps), deps);
+      });
+    },
     targetBusy: (target) =>
       locks.busy(targetScope(target.projectId, target), (id) => {
         const entry = operations.get(id);
@@ -1748,6 +1975,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       if (action === "reconcile") {
         entry.view.phase = "stopping";
+        await releaseJobRevisions(
+          target,
+          await stopJobRuns(target, { ...deps, lifecycle }),
+          deps,
+        );
         // A stop that fails part-way still records the SIGKILL of a Service it stopped before.
         try {
           await lifecycle.down(target);
@@ -1815,6 +2047,53 @@ async function checkoutConfig(
   } catch (failure) {
     return { failure };
   }
+}
+/** The job `rig run` names in `target`'s recorded plan, once the Target can run one: deployed completely and in no
+ * transition. A name the plan lacks fails JOB_UNKNOWN, naming the jobs it has, or the rig.yaml line that would give it the
+ * job when the current rig.yaml declares one for other Targets only. */
+function runnableJob(
+  target: TargetRecord,
+  name: string | undefined,
+  document: ConfigDocument<ProjectConfig> | undefined,
+): PlanJob {
+  if (target.recovery)
+    throw new RigError(
+      "DEPLOY_RECOVERY",
+      "This Target has an unresolved deployment transition.",
+      `Run rig down ${targetSelector(target)} to stop both recorded plans first.`,
+    );
+  if (target.deploymentIncomplete)
+    throw new RigError(
+      "JOB_UNAVAILABLE",
+      `${target.name}'s last deploy did not complete, so its checkout may not be ready to run a job.`,
+      `Run rig up ${targetSelector(target)} to finish it, or deploy again.`,
+    );
+  const jobs = target.plan.jobs ?? [];
+  const job = jobs.find((candidate) => candidate.name === name);
+  if (job) return job;
+  const declared =
+    name !== undefined && document?.config.jobs
+      ? Object.hasOwn(document.config.jobs, name)
+        ? document.config.jobs[name]
+        : undefined
+      : undefined;
+  // The working Target is planned again by rig restart; a deployed one by a deploy of a Commit whose rig.yaml has the job.
+  const replan =
+    target.kind === "working"
+      ? "run rig restart working"
+      : `deploy ${target.kind === "stable" ? "stable" : "the Preview"} again from a Commit that has it`;
+  throw new RigError(
+    "JOB_UNKNOWN",
+    `${target.name} has no job named '${name ?? ""}'.`,
+    declared
+      ? (declared.targets ?? DEFAULT_JOB_TARGETS).includes(target.kind)
+        ? `rig.yaml declares it, but ${target.name} was planned before; ${replan}.`
+        : `jobs.${name}.targets in rig.yaml does not name ${target.kind} (it runs in ${(declared.targets ?? DEFAULT_JOB_TARGETS).join(", ")}); add ${target.kind} there, then ${replan}.`
+      : jobs.length
+        ? `Run one of: ${jobs.map((candidate) => candidate.name).join(", ")}.`
+        : `${target.name} runs no jobs. Declare one under jobs in rig.yaml, then ${replan}.`,
+    { job: name, known: jobs.map((candidate) => candidate.name) },
+  );
 }
 /** A deploy names the stable Target or a Preview; the working Target runs the checkout and is never deployed. */
 function deployTargetError(): RigError {
@@ -1963,6 +2242,8 @@ async function destroyPreview(
   target.destructionPending = true;
   target.updatedAt = deps.now();
   await persistTarget(target, deps.store);
+  // A job run, possibly on a checkout an earlier deploy kept for it, ends before the Preview's storage goes.
+  const stoppedJobs = await stopJobRuns(target, deps);
   await retireForDestruction(target, deps);
   progress("destroying");
   await deps.files.destroyPreview({
@@ -1974,9 +2255,54 @@ async function destroyPreview(
   const workspacePath = ownedRevision(target);
   if (workspacePath)
     await deps.sources.release({ project: target.projectId, workspacePath });
+  for (const run of stoppedJobs)
+    if (
+      run.workspace &&
+      run.workspace !== workspacePath &&
+      ownedRevision({
+        ...target,
+        plan: { ...target.plan, workspacePath: run.workspace },
+      })
+    )
+      await deps.sources
+        .release({ project: target.projectId, workspacePath: run.workspace })
+        .catch(() => {});
   await deps.store.update((s) => {
     s.targets = s.targets.filter((t) => t.id !== target.id);
   });
+}
+/** Gives back the checkouts of `target` that the job runs in `ended` used and nothing uses any more: a deploy keeps the
+ * checkout a run started in until the run ends. A failure to remove one is a diagnostic, never an Operation's failure. */
+async function releaseJobRevisions(
+  target: TargetRecord,
+  ended: readonly { readonly workspace?: string }[],
+  deps: RuntimeDependencies,
+): Promise<void> {
+  const workspaces = new Set(
+    ended
+      .map((run) => run.workspace)
+      .filter(
+        (workspace): workspace is string =>
+          workspace !== undefined &&
+          workspace !== target.plan.workspacePath &&
+          workspace !== target.recovery?.plan.workspacePath,
+      ),
+  );
+  for (const workspacePath of workspaces)
+    for (const retained of await releaseUnreferencedRevisions(
+      [{ ...target, plan: { ...target.plan, workspacePath } }],
+      deps,
+    ))
+      await deps
+        .diagnostic({
+          operationId: deps.id(),
+          action: "job-revision",
+          outcome: "revision-retained",
+          target: target.name,
+          path: retained.workspacePath,
+          ...retained.causes,
+        })
+        .catch(() => {});
 }
 /** Previews leave in this order at the limit: ones whose deploy never completed, then stopped ones, then running ones. */
 function evictionRank(target: TargetRecord): number {

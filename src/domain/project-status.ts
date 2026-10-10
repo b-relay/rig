@@ -127,6 +127,96 @@ const componentReportSchema = z
       ),
   })
   .passthrough();
+const jobRunReportSchema = z
+  .object({
+    trigger: z
+      .enum(["schedule", "manual"])
+      .describe("Whether the schedule or rig run started it."),
+    scheduledFor: z
+      .string()
+      .optional()
+      .describe("The scheduled time a scheduled run was for (ISO 8601)."),
+    startedAt: z.string().describe("When the run started (ISO 8601)."),
+    finishedAt: z
+      .string()
+      .optional()
+      .describe("When it ended (ISO 8601); absent while it runs."),
+    durationMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("How long it ran, in milliseconds; absent while it runs."),
+    outcome: z
+      .enum([
+        "succeeded",
+        "failed",
+        "timed-out",
+        "stopped",
+        "unknown",
+        "start-failed",
+      ])
+      .optional()
+      .describe(
+        "How it ended: exit 0; another exit or a signal; stopped at its timeout; stopped by Rig (rig down, a restart, a deploy); gone with nothing recording how (the Mac restarted); or never started. Absent while it runs.",
+      ),
+    exitCode: z
+      .number()
+      .int()
+      .optional()
+      .describe("Its exit code, when one was recorded."),
+    signal: z
+      .string()
+      .optional()
+      .describe("The signal that ended it, when recorded."),
+    errorCode: z.string().optional().describe("Why a start failed."),
+    skipped: z
+      .number()
+      .int()
+      .optional()
+      .describe("Scheduled times skipped because this run was still going."),
+    summary: z
+      .string()
+      .describe(
+        "One line about the run, as rig status and rig activity show it.",
+      ),
+  })
+  .passthrough();
+const jobReportSchema = z
+  .object({
+    name: z.string().describe("The job's name under jobs in rig.yaml."),
+    schedule: z.string().describe("Its five-field cron expression."),
+    timeZone: z
+      .string()
+      .describe(
+        "The IANA time zone the schedule is read in: the job's timezone, else the Host's.",
+      ),
+    state: z
+      .enum(["running", "idle"])
+      .describe("running while a run is in progress, otherwise idle."),
+    scheduled: z
+      .boolean()
+      .describe(
+        "Whether its schedule runs it now: the Target is deployed, meant to run and on in rig.yaml. A Target stopped with rig down, or turned off, runs none of its jobs.",
+      ),
+    nextRunAt: z
+      .string()
+      .optional()
+      .describe(
+        "When the schedule runs it next (ISO 8601); absent when it is not scheduled.",
+      ),
+    timeout: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        "Seconds one run may take before it is stopped; absent when unlimited.",
+      ),
+    running: jobRunReportSchema.optional().describe("The run in progress."),
+    last: jobRunReportSchema.optional().describe("The latest run that ended."),
+    reason: z.string().optional().describe("Why it is not scheduled."),
+  })
+  .passthrough();
 const targetReportSchema = z
   .object({
     name: z.string().describe("Target identity used for selection."),
@@ -194,6 +284,12 @@ const targetReportSchema = z
     components: z
       .array(componentReportSchema)
       .describe("Configured and observed component capabilities."),
+    jobs: z
+      .array(jobReportSchema)
+      .optional()
+      .describe(
+        "The scheduled jobs the Target's plan runs, with their last and next run; absent when it runs none.",
+      ),
   })
   .passthrough();
 export const projectStatusSchema = z
@@ -211,6 +307,8 @@ export const projectStatusSchema = z
   })
   .passthrough();
 export type ComponentReport = z.infer<typeof componentReportSchema>;
+export type JobReport = z.infer<typeof jobReportSchema>;
+export type JobRunReport = z.infer<typeof jobRunReportSchema>;
 export type TargetReport = z.infer<typeof targetReportSchema>;
 export type ProjectStatusReport = z.infer<typeof projectStatusSchema>;
 export interface StatusSelection {

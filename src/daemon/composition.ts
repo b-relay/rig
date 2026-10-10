@@ -1,6 +1,7 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
 import {
   HEALTH_MONITOR,
+  JOB_SCHEDULER,
   createNoticeBoard,
   recordingDiagnostic,
   startFailureMonitor,
@@ -11,6 +12,12 @@ import {
   type HealthMonitor,
 } from "../runtime/health-monitor";
 import type { DaemonHostOptions } from "./host";
+import {
+  JOB_SCHEDULER_TICK_MS,
+  createJobScheduler,
+} from "../runtime/job-scheduler";
+import { createJobStopMarks } from "../runtime/jobs";
+import { hostTimeZone } from "../domain/cron";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
 import { randomUUID } from "node:crypto";
@@ -156,6 +163,16 @@ export async function composeDaemon(
   });
   // Built after the runtime, which restarts what it finds unhealthy; the runtime reads its results for status and doctor.
   let health: HealthMonitor | undefined;
+  // Every stop of a job run is noted as it begins, so the run is recorded as stopped by Rig.
+  const jobStops = createJobStopMarks();
+  // A start check that passed is the healthcheck's first passing check, so status shows it at once.
+  // Every start and stop tells the health monitor as it begins, and a passed start check is its first passing check.
+  const lifecycle = createTargetLifecycle(effects, undefined, {
+    changing: (target, service) => health?.invalidate(target.id, service),
+    activated: (target, service, incarnation) =>
+      health?.started(target, service, incarnation),
+    stoppingJob: (target, job) => jobStops.mark(target.id, job, Date.now()),
+  });
   const runtime = createRuntime({
     root,
     // Nothing starts until the first pass has read the state, however early a command arrives.
@@ -171,13 +188,9 @@ export async function composeDaemon(
       createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,
     ),
-    // A start check that passed is the healthcheck's first passing check, so status shows it at once.
-    // Every start and stop tells the health monitor as it begins, and a passed start check is its first passing check.
-    lifecycle: createTargetLifecycle(effects, undefined, {
-      changing: (target, service) => health?.invalidate(target.id, service),
-      activated: (target, service, incarnation) =>
-        health?.started(target, service, incarnation),
-    }),
+    lifecycle,
+    jobStops,
+    timeZone: hostTimeZone,
     healthTransitions: {
       invalidate: (targetId, service) => health?.invalidate(targetId, service),
     },
@@ -211,6 +224,19 @@ export async function composeDaemon(
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   const monitor = health;
+  // Scheduled job runs start as Operations on their Target; the scheduler itself only reads state and observes runs.
+  const jobs = createJobScheduler({
+    store,
+    lifecycle,
+    clock: { now: () => Date.now(), timeZone: hostTimeZone },
+    id: randomUUID,
+    busy: runtime.targetBusy,
+    start: runtime.runScheduledJob,
+    releaseRevision: runtime.releaseJobRevision,
+    stopJobsIfOff: runtime.stopJobsIfOff,
+    jobStops,
+    diagnostic: recordingDiagnostic(diagnostic, notices),
+  });
   const editor = createConfigEditor({
     async resolveProject(name) {
       return (await store.read()).projects.find(
@@ -245,6 +271,7 @@ export async function composeDaemon(
   let stopped = false;
   let stopMonitor: (() => Promise<void>) | undefined;
   let stopHealth: (() => Promise<void>) | undefined;
+  let stopJobs: (() => Promise<void>) | undefined;
   return {
     handle: runtime.command,
     editor,
@@ -265,11 +292,22 @@ export async function composeDaemon(
         channel: HEALTH_MONITOR,
         run: () => monitor.pass(),
       });
+      // Scheduled jobs start beside the operation queue's other work, each start waiting for its Target like a command.
+      stopJobs = startFailureMonitor({
+        intervalMs: JOB_SCHEDULER_TICK_MS,
+        notices,
+        channel: JOB_SCHEDULER,
+        run: () => jobs.pass(),
+      });
     },
     async shutdown() {
       stopped = true;
       stopMonitor?.();
       await stopHealth?.();
+      // No new run starts from here on; a run in progress keeps running under its capture wrapper, and the next rigd
+      // adopts it by lease and records how it ends.
+      await stopJobs?.();
+      const scheduler = jobs.stop();
       // The monitor writes nothing from here on; its probes are aborted (a command's process group killed) and waited for
       // within a bound, beside the drain, which detaches the stop of any health restart in flight.
       const health = monitor.stop();
@@ -277,6 +315,7 @@ export async function composeDaemon(
       shuttingDown.abort();
       await runtime.drain();
       await health;
+      await scheduler;
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();
     },

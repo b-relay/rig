@@ -1,5 +1,6 @@
 import {
   healthSummary,
+  type JobReport,
   type ProjectStatusReport,
 } from "../domain/project-status";
 import { killingText } from "./stop-display";
@@ -30,6 +31,8 @@ export function renderResult(action: string, value: unknown): string {
       action
     ];
   if (!outcome) return `${subject}: operation returned no final outcome.\n`;
+  if (action === "run")
+    return `${[subject, word(report.job)].filter(Boolean).join(" ")} ${outcome}\n`;
   const path =
     action === "init" && report.path ? `\nConfig: ${word(report.path)}` : "";
   const revision =
@@ -120,6 +123,21 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
       )
         lines.push(`    ${word(component.reason)}`);
     }
+    const jobs = Array.isArray(target.jobs) ? target.jobs : [];
+    if (jobs.length) lines.push("  Jobs");
+    for (const job of jobs) {
+      lines.push(
+        `    ${[word(job.name), jobSummary(job, now)].filter(Boolean).join("  ")}`,
+      );
+      if (job.reason) lines.push(`      ${word(job.reason)}`);
+      if (
+        job.last?.outcome &&
+        ["failed", "timed-out", "start-failed"].includes(job.last.outcome)
+      )
+        failures.push(
+          `${word(target.name)} ${word(job.name)}: last run ${word(job.last.summary)}`,
+        );
+    }
   }
   if (!report.targets.length) lines.push("", "No Targets configured.");
   if (failures.length)
@@ -136,6 +154,59 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
   for (const warning of report.warnings ?? [])
     lines.push(`Warning: ${word(warning)}`);
   return `${lines.join("\n")}\n`;
+}
+/** One line about a job: its schedule, what runs or last ran, and when it runs next, such as
+ * `17 0-23/6 * * * America/Chicago · last succeeded in 3m12s, 2h ago · next Sat 18:17 CDT (in 4h)`. */
+function jobSummary(job: JobReport, now: Date): string {
+  const zone = word(job.timeZone);
+  const parts = [`${word(job.schedule)} ${zone}`.trim()];
+  if (job.running)
+    parts.push(
+      `running since ${clock(job.running.startedAt, zone)} (${ago(job.running.startedAt, now)})`,
+    );
+  if (job.last)
+    parts.push(
+      `last ${word(job.last.summary)}, ${ago(job.last.finishedAt ?? job.last.startedAt, now)} ago`,
+    );
+  else if (!job.running) parts.push("not run yet");
+  if (job.nextRunAt)
+    parts.push(
+      `next ${clock(job.nextRunAt, zone)} (in ${until(job.nextRunAt, now)})`,
+    );
+  return parts.join(" · ");
+}
+/** `Sat 18:17 CDT`: a time as the job's zone reads it, or as given when it cannot be read. */
+function clock(at: unknown, timeZone: string): string {
+  const instant = typeof at === "string" ? Date.parse(at) : Number.NaN;
+  if (!Number.isFinite(instant)) return word(at);
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || undefined,
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "short",
+    }).format(new Date(instant));
+  } catch {
+    return word(at);
+  }
+}
+/** "45s", "12m", "3h", "2d" between two times. */
+function span(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 120) return `${seconds}s`;
+  if (seconds < 7200) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)}h`;
+  return `${Math.round(seconds / 86400)}d`;
+}
+function ago(at: unknown, now: Date): string {
+  const instant = typeof at === "string" ? Date.parse(at) : Number.NaN;
+  return Number.isFinite(instant) ? span(now.getTime() - instant) : "?";
+}
+function until(at: unknown, now: Date): string {
+  const instant = typeof at === "string" ? Date.parse(at) : Number.NaN;
+  return Number.isFinite(instant) ? span(instant - now.getTime()) : "?";
 }
 /** A deployed Target shows the Branch and Commit it serves; the Working copy shows neither. */
 function deployedFrom(

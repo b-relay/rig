@@ -29,7 +29,7 @@ const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
 function fixture() {
   const deadline = controlledDeadline();
   const state: RuntimeState = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [],
     activity: [],
@@ -125,6 +125,13 @@ function fixture() {
       async release() {},
     },
     lifecycle: {
+      async startJob() {},
+      async observeJob() {
+        return { state: "stopped" as const };
+      },
+      async stopJob() {
+        return { outcome: "unchanged" as const };
+      },
       async pruneCheckpoints() {
         return [];
       },
@@ -3757,7 +3764,7 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
     }),
   ).rejects.toMatchObject({
     code: "USAGE",
-    message: "Target 'working' has no Service or Tool named 'scheduler'.",
+    message: "Target 'working' has no Service, Tool or job named 'scheduler'.",
     hint: "Pass --service with one of: web, setup.",
   });
   expect(reads).toHaveLength(2);

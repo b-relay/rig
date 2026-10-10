@@ -4,7 +4,9 @@ import type {
 } from "../domain/project-status";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { ServiceStopView } from "../domain/operation-progress";
-import type { ProjectRecord, TargetRecord } from "../domain/runtime";
+import type { JobRecord, ProjectRecord, TargetRecord } from "../domain/runtime";
+import { hostTimeZone } from "../domain/cron";
+import { jobReports } from "./job-status";
 import { asRigError } from "../domain/errors";
 import { targetSelector } from "../domain/target-selector";
 import type { RuntimeDependencies } from "./contracts";
@@ -52,7 +54,12 @@ export async function projectStatus(
     | "observationDeadline"
     | "inspectProxy"
     | "healthResults"
+    | "timeZone"
   > & {
+    /** ISO timestamp; job reports count their next run from it. The system clock when absent. */
+    now?(): string;
+    /** What rigd recorded about job runs; absent, jobs show no runs. */
+    jobRecords?: readonly JobRecord[];
     documents: Pick<RuntimeDependencies["documents"], "read">;
     /** Whether the daemon is executing this operation right now. */
     inProgress(operationId: string): boolean;
@@ -113,6 +120,21 @@ export async function projectStatus(
           components: definitions,
         });
     }
+  }
+  // A job's runs are recorded, not observed: status reads them, and counts the next run from now.
+  const now = deps.now ? Date.parse(deps.now()) : Date.now();
+  for (const target of selected) {
+    const report = reports.find(
+      (r) => r.kind === target.kind && r.name === target.name,
+    );
+    const jobs = jobReports(
+      target,
+      deps.jobRecords,
+      now,
+      { timeZone: deps.timeZone ?? hostTimeZone },
+      document ? targetOn(document.config, target.kind) : undefined,
+    );
+    if (report && jobs) report.jobs = jobs;
   }
   // A stop in progress is a phase of an Operation, not something observation can see.
   for (const target of selected)

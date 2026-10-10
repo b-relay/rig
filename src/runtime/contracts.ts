@@ -23,6 +23,7 @@ import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
 import type { HealthResults } from "./health-monitor";
 import type { HealthTransitions } from "./health-transitions";
+import type { JobStopMarks } from "./jobs";
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
@@ -182,6 +183,11 @@ export interface RuntimeDependencies {
    * removed Target, a Service's new process) is reported to the health monitor, as it is applied; absent where no monitor
    * runs. */
   healthTransitions?: HealthTransitions;
+  /** Where the lifecycle notes each stop of a job run as it begins, so the run is recorded as stopped by Rig; absent, a run
+   * that ended without an exit record is recorded as unknown. */
+  jobStops?: JobStopMarks;
+  /** The Host's IANA time zone, which schedules a job without `timezone`; the system's own when absent. */
+  timeZone?(): string;
   /** Whether the runtime may start Services before its first pass has read the state: `closed` (the default, and what rigd
    * uses) until one has; `open` only for a runtime that is never reconciled, as in tests. */
   reconcileGate?: "closed" | "open";

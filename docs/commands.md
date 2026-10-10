@@ -58,6 +58,15 @@ rig
 │    --project <name>
 ├─ forget <name>                    drop a stopped Project's registration
 │
+├─ proxy                            Rig's own Caddy: its job, every served site, the custom files
+│    --json
+│  ├─ reload                        apply proxy/custom*.caddy and the proxy settings as they are now
+│  ├─ verify                        TLS handshake per served hostname; exits 1 when any is not ready
+│  │   --port <port>                default: proxy.ports.https
+│  │   --wait <seconds>             keep checking failing hostnames this long
+│  │   --staging-ok                 accept certificates from a staging CA
+│  └─ token                         store the DNS API token read from a pipe (pbpaste | rig proxy token)
+│
 └─ help [command...]                for example: rig help deploy preview
 ```
 
@@ -65,9 +74,11 @@ rig
 
 ```
 rigd
-├─ install                          install and verify the daemon
+├─ install                          install and verify the daemon, and Rig's Caddy with a proxy section;
+│                                   with daemon.start: boot, prints one sudo line per system job, once
 ├─ status                           installed, running, reachable
-├─ uninstall                        refused while Targets run or await recovery
+├─ uninstall                        refused while Targets run or await recovery; prints the sudo
+│                                   line that removes a system job
 └─ capture <request-file>           internal; see below
 ```
 

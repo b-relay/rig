@@ -9,7 +9,7 @@ import { RigError } from "../domain/errors";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
-import type { UserOutput } from "./types";
+import type { LocalCommands, UserOutput } from "./types";
 import { addLogsCommand } from "./logs-command";
 
 export type ExecuteCommand = (
@@ -31,6 +31,7 @@ export function createRigCommand(
   execute: ExecuteCommand,
   /** The clock relative `rig logs` times count back from. */
   now: () => Date = () => new Date(),
+  local?: LocalCommands,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -91,6 +92,7 @@ export function createRigCommand(
     nonEmpty,
     positiveInteger,
   });
+  addProxyCommands(command, cwd, execute, output, local);
   addHelpCommand(command, "rig");
   command
     .command("rename")
@@ -128,6 +130,99 @@ export function createRigCommand(
       execute({ action: "forget", repoPath: cwd, project }),
     );
   return command;
+}
+/** `rig proxy`: Rig's own Caddy (ADR 0014). */
+function addProxyCommands(
+  command: Command,
+  cwd: string,
+  execute: ExecuteCommand,
+  output: UserOutput,
+  local: LocalCommands | undefined,
+): void {
+  const unavailable = (name: string) =>
+    new RigError(
+      "COMMAND_UNAVAILABLE",
+      `rig proxy ${name} is unavailable here.`,
+      "Run it from a terminal on the Host.",
+    );
+  const proxy = command
+    .command("proxy")
+    .description(
+      "Show the Caddy Rig runs for this Host: its job, every site it serves and whether your custom files are applied.",
+    )
+    .option("--json", "Render the report as JSON")
+    .action(async (options: { json?: boolean }) =>
+      execute({ action: "proxy", repoPath: cwd }, { json: options.json }),
+    );
+  proxy
+    .command("reload")
+    .description(
+      "Apply proxy/custom.caddy, proxy/custom-global.caddy and the proxy section of Host config as they are now. A file Caddy rejects changes nothing that is served.",
+    )
+    .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
+  proxy
+    .command("verify")
+    .description(
+      "Check every served hostname with a real TLS handshake on this Host: a trusted certificate (Mozilla's root store), from a production CA, valid for more than 7 days. Exits 1 when any hostname fails.",
+    )
+    .option(
+      "--port <port>",
+      "HTTPS port to check (default: proxy.ports.https)",
+      positiveInteger,
+    )
+    .option(
+      "--wait <seconds>",
+      "Keep checking the failing hostnames for up to this long",
+      positiveInteger,
+    )
+    .option(
+      "--staging-ok",
+      "Accept a certificate from a staging CA, for the very name it was issued to",
+    )
+    .action(
+      async (options: {
+        port?: number;
+        wait?: number;
+        stagingOk?: boolean;
+      }) => {
+        if (!local) throw unavailable("verify");
+        const verdicts = await local.proxyVerify({
+          ...(options.port ? { port: options.port } : {}),
+          waitSeconds: options.wait ?? 0,
+          stagingOk: options.stagingOk === true,
+        });
+        for (const verdict of verdicts)
+          output.write(
+            verdict.ok
+              ? `ok    ${verdict.hostname}  ${verdict.issuer ?? ""}, until ${verdict.validTo?.slice(0, 10) ?? "?"}\n`
+              : `FAIL  ${verdict.hostname}  ${verdict.problem ?? "not ready"}\n`,
+          );
+        const failed = verdicts.filter((verdict) => !verdict.ok).length;
+        if (!verdicts.length)
+          throw new RigError(
+            "PROXY_NOT_READY",
+            "Rig's Caddy serves no hostname with a certificate.",
+            "Run rigd install, then deploy or start a Target with a hostname.",
+          );
+        if (failed)
+          throw new RigError(
+            "PROXY_NOT_READY",
+            `${failed} of ${verdicts.length} hostnames are not ready.`,
+            "A new certificate can take minutes while DNS propagates: retry with --wait 600. Otherwise run rig doctor and read Caddy's log under the Rig root (caddy/caddy.log).",
+          );
+        output.write(`All ${verdicts.length} hostnames are ready.\n`);
+      },
+    );
+  proxy
+    .command("token")
+    .description(
+      "Store the DNS provider API token Caddy uses for certificates, read from standard input (for example: pbpaste | rig proxy token).",
+    )
+    .action(async () => {
+      if (!local) throw unavailable("token");
+      const path = await local.proxyToken();
+      output.write(`Stored the DNS API token in ${path} (mode 600).\n`);
+    });
 }
 /** `help [command...]` shows one command's usage or names the command that does not exist;
  * commander's implicit help command would report an unknown name silently. */

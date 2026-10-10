@@ -158,6 +158,111 @@ When `rig` sends a command that the daemon does not accept, the error names
 both versions and says to run `rigd install`, because `rig` only sends commands
 its own grammar allows.
 
+### Rig's own Caddy
+
+Rig can run the Host's Caddy itself ([ADR 0014](adr/0014-rig-owned-caddy.md)).
+It terminates TLS with Let's Encrypt certificates from the ACME DNS-01
+challenge, and routes every Rig hostname. Write a `proxy` section in Host
+config, store the DNS provider's token, and run `rigd install`:
+
+```yaml
+# <RIG_ROOT>/config.yaml
+proxy:
+  caddy: /usr/local/bin/caddy # 2.10 or later, built with caddy-dns/cloudflare
+  tls:
+    email: you@example.com
+```
+
+```bash
+pbpaste | rig proxy token # a Cloudflare API token with Zone:DNS:Edit and Zone:Zone:Read on your zone
+rigd install
+```
+
+`rig proxy token` reads the token from a pipe, never the keyboard. It refuses
+anything but one run of letters, digits, `_` and `-`, and stores it in
+`<RIG_ROOT>/auth/acme-dns.token` with mode 600. Rig never prints the token, and
+removes it from any Caddy output it keeps or shows.
+
+`rigd install` copies the Caddy that `proxy.caddy` names into
+`<RIG_ROOT>/caddy/bin` and checks it: its version, its DNS module, and that it
+accepts the current configuration. It then starts that copy as its own job, a
+LaunchAgent beside rigd, and with `RIG_ROOT` set a detached process. A rigd
+restart or upgrade never stops it. Replacing the file `proxy.caddy` names
+changes nothing until the next `rigd install`. A new copy that does not start
+within 30 seconds is replaced by the previous one again (`PROXY_BINARY_START`).
+`rigd uninstall` stops the job and keeps the certificates and your files.
+
+Caddy listens on ports 80 and 443 on every interface. macOS allows a process
+that is not root to bind ports below 1024 only that way. Ports from 1024 up
+(`proxy.ports`) are served on 127.0.0.1 only, for trying a setup beside
+another Caddy. Each hostname gets its certificate from the wildcard of its
+parent, so `*.example.com` covers `app.example.com` and every Preview beside it,
+such as `app-feat-x-1a2b3c4d.example.com`. A Preview therefore has TLS at once,
+and no branch name appears in the public certificate logs. A name under such a
+parent that no site serves has its connection closed.
+
+Every change is published as a new configuration generation under
+`<RIG_ROOT>/caddy/generations`: Caddy validates it, Rig switches one link to
+it, and Caddy reloads, or restarts when `tls.ca` changed, because a reload keeps
+the certificates it already has. A change Caddy rejects switches nothing, and
+the rejected generation is kept beside the others. If Caddy's admin socket does
+not answer while its job may still be running, the change fails with
+`PROXY_UNREACHABLE` rather than assume an old route stopped serving.
+
+Your own sites and snippets, such as a route to something that is not a Rig
+Project, go in `<RIG_ROOT>/proxy/custom.caddy`, and global options in
+`<RIG_ROOT>/proxy/custom-global.caddy`. Rig creates both and never rewrites
+them. They take effect when applied, and a file Caddy rejects
+(`PROXY_CUSTOM_INVALID`, naming its file and line) changes nothing that is
+served. A Rig route whose hostname a custom site serves is refused as
+`ROUTE_CONFLICT`. `proxy.site` lists directives added to every site block Rig
+writes, and may use snippets `custom.caddy` defines.
+
+`rig doctor` checks the token (`proxy-token`), Rig's copy of Caddy
+(`proxy-binary`), whether the job runs and answers (`proxy-process`), and
+whether the custom files are applied (`proxy-custom`). With a `proxy` section
+it no longer needs `caddy` on `PATH`.
+
+`rig proxy` shows the job, every hostname it serves with the Project and
+Target (or `custom.caddy`) behind it, its routes and the certificate that covers
+it, and whether each custom file is applied. `rig proxy reload` applies the
+custom files and the `proxy` section of Host config. `rig proxy verify` makes a
+real TLS handshake with every served hostname on this Host's HTTPS port. A
+hostname passes only with a certificate trusted by Mozilla's root store, from a production
+CA, valid for more than seven days. A new certificate can take minutes while
+DNS propagates, so `--wait 600` keeps checking until then. A reload that
+succeeded does not mean the certificates are ready; `verify` is what says so.
+Changing `proxy.tls.ca` restarts Caddy rather than reloading it, because a
+reload keeps the certificates it already has. Let's Encrypt allows only five
+certificates for the same set of names per week, so keep `<RIG_ROOT>/caddy/data`
+across reinstalls, as `rigd uninstall` does.
+
+### Start at boot
+
+With `daemon.start: boot` in Host config, `rigd` and Rig's Caddy run as system
+jobs, as your user, from boot, before anyone logs in. `rigd install` cannot
+install a system job itself, so it prints one line per job for you to paste.
+Each line stops at its first failure. It copies the plist into a directory only
+root can write, checks its digest there, removes the LaunchAgent it replaces,
+and loads the job. Run `rigd install` again afterwards to confirm. Upgrades
+need no sudo: the jobs run programs at fixed paths under the Rig root, and
+launchd starts them again when they exit. `rigd uninstall`, and switching back
+to `daemon.start: login`, print the line that removes the jobs.
+
+A system job's environment is fixed: `HOME`, `USER`, `LANG`, `RIG_ROOT`, and a
+`PATH` of `<RIG_ROOT>/bin`, `~/.bun/bin`, `~/.local/bin`, `/opt/homebrew/bin`,
+`/usr/local/bin` and the system directories. A Service that needs a program
+elsewhere names its full path. Without a login session there is no login
+Keychain or GUI, and macOS may refuse protected folders such as Documents.
+FileVault holds everything until the disk is unlocked.
+
+### Another Caddy (`providers.caddy`, retiring)
+
+Without a `proxy` section, Rig only writes its route file for a Caddy it does
+not run. This mode retires once Hosts have moved to Rig's own Caddy. A Host
+config that writes both sections uses `proxy`, and `rig doctor` reports the
+other as ignored.
+
 Connect the Host Caddy once. Rig writes its marked route blocks to
 `<RIG_ROOT>/proxy/Caddyfile` (or `providers.caddy.caddyfile`) and never edits
 the Caddyfile the running Caddy loads. That Caddyfile must import the route
@@ -1070,8 +1175,12 @@ capability:
   (default `main`)
 - `deploy.previews.max` (default 25) and `deploy.previews.replace_policy`
   (default `oldest`): the Preview limit and what happens at it (see Deploy)
+- `proxy`: Rig's own Caddy, with its binary, ports, certificates and the
+  directives every site gets (see Setup)
 - `providers.caddy`: the route file, the Host Caddyfile, `extra_config`, and the
-  reload mode (see Setup)
+  reload mode, for a Caddy Rig does not run (retiring; see Setup)
+- `daemon.start` (default `login`): `boot` runs `rigd` and Rig's Caddy as
+  system jobs from boot (see Setup)
 - `diagnostics.retention_days` (default 14) and `diagnostics.level`
 - `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
   size at which a Target log file is rotated and how many rotated files are

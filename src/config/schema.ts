@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ConfigError } from "./errors";
+import { proxyModeOf, proxySettingsSchema } from "./proxy-schema";
 import { referenceResolver } from "./references";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import {
@@ -1053,7 +1054,21 @@ export const hostConfigSchema = z.strictObject({
         .describe("Caddy provider settings."),
     })
     .prefault({})
-    .describe("Provider settings."),
+    .describe(
+      "Provider settings. providers.caddy describes a Caddy Rig does not run; a written proxy section replaces it.",
+    ),
+  proxy: proxySettingsSchema.optional(),
+  daemon: z
+    .strictObject({
+      start: z
+        .enum(["login", "boot"])
+        .default("login")
+        .describe(
+          "When rigd and Rig's Caddy start. login: as LaunchAgents while you are logged in. boot: as system jobs that run as you from boot, before anyone logs in; rigd install prints one sudo line per job, once. Ignored when RIG_ROOT is set.",
+        ),
+    })
+    .prefault({})
+    .describe("How rigd is installed on this Host."),
   diagnostics: z
     .strictObject({
       retention_days: z
@@ -1100,10 +1115,12 @@ export const hostConfigSchema = z.strictObject({
       "No longer used: Rig sends no alerts. The section is ignored, and rig doctor asks you to delete it.",
   }),
 });
+/** The parsed Host config plus how it publishes routes, which only the document as written can tell (see `proxyModeOf`). */
 export function parseHostConfig(value: unknown) {
   const result = hostConfigSchema.safeParse(value);
   if (!result.success) throw validationError("Host", result.error.issues);
-  return result.data;
+  const { mode, externalIgnored } = proxyModeOf(value);
+  return { ...result.data, proxyMode: mode, externalIgnored };
 }
 
 /** Human guidance contains field paths and plain rules, never input values. */

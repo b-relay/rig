@@ -323,6 +323,12 @@ and `${ports.<name>}` a named one; elsewhere `${services.<name>.port}` and
 from Rig values to the application's own inputs
 ([ADR 0005](docs/adr/0005-services-use-platform-independent-inputs.md)).
 
+_Relationship_: A Service may have a **Service domain**, `domain` under the
+Service: a hostname of the Target whose every path reaches one port of that
+Service, beside the Project `domain`. It follows the per-role rule the Project
+`domain` follows, and every hostname of one Target must differ
+([ADR 0015](docs/adr/0015-service-domains.md)).
+
 ### Job
 
 A named command in `rig.yaml`'s `jobs` that `rigd` runs on a five-field cron
@@ -565,7 +571,8 @@ _Avoid_: live, production Target
 The stable Target coexists with generated Previews. It is not inherently a
 promotion stage.
 
-_Relationship_: The stable Target serves exactly `domain`. A Target with a
+_Relationship_: The stable Target serves exactly `domain`, and each Service
+domain as written. A Target with a
 hostname routes the paths `proxy` names, each to a Service (its only port) or
 one of its ports; without `proxy`, `/` goes to the one Service that declares
 ports when it declares exactly one, and otherwise a Target that is on is
@@ -583,7 +590,10 @@ reserved. Project config controls only its hostname. By default it is the
 domain with a dash and the Preview name after the first label, a sibling of
 the domain (`pantry2.dev.b-relay.com` gives
 `pantry2-feat-x-1a2b3c4d.dev.b-relay.com`); `targets.preview.domain` replaces
-it, with `${rig.target}` replaced by the Preview name. A label longer than 63
+it, with `${rig.target}` replaced by the Preview name. A Service domain gets
+the same flat form (`api.melody.b-relay.com` gives
+`api-feat-x-1a2b3c4d.melody.b-relay.com`), and
+`targets.preview.services.<name>.domain` replaces it. A label longer than 63
 characters is refused, never cut short.
 
 _Relationship_: A Preview is selected separately from the working and stable
@@ -934,7 +944,8 @@ validated when a Target is planned, not in preflight.
 The resolved Rig shape that runtime execution and provider adapters consume:
 the Project, the Target role and name, the workspace path, the Persistent
 storage root, Branch and Commit, the process supervisor, environment and env
-files, builds, the hostname with its proxy routes, and the components. Each
+files, builds, the hostname with its proxy routes, the Service domains
+(`serviceDomains`, absent when there are none), and the components. Each
 component carries its command, working directory when it is not the workspace
 root, ports, health check (`health`), start budget (`readyTimeout`, the
 healthcheck's `start_period`), ongoing checks (`healthcheck`, absent in plans

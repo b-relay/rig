@@ -63,7 +63,9 @@ jobs:
 ```
 
 `${port}` is the Service's one port, and with one Service that has one port the
-domain routes to it without a `proxy`. A Target is off unless `targets` turns
+domain routes to it without a `proxy`. A Service can also serve a hostname of
+its own, such as `domain: api.notes.example.com` under it; a Preview gets
+`api-<preview>.notes.example.com`. A Target is off unless `targets` turns
 it on, so this file runs its checkout and deploys the stable Target but makes
 no Previews; `rig init` writes `working` and `preview` on and `stable` off. The
 healthcheck gates start and keeps

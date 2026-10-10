@@ -54,6 +54,7 @@ capability interfaces without Effect TS. See the
 - `rig down`
 - `rig restart`
 - `rig logs`
+- `rig run`
 
 `rigd` is daemon administration only:
 
@@ -134,6 +135,17 @@ Doctor compares the working Target with the current `rig.yaml`, and each deploye
 Target with the config committed in its checkout.
 Final Operation activity is distinct from safe diagnostic JSONL and Target logs.
 
+## Scheduled Jobs
+
+`rigd` runs each Target's jobs on their cron schedules, in the job's time zone
+or the Mac's, behind a clock interface so tests drive it with a fake clock.
+A due time becomes an Operation on its Target that starts the run through the
+process supervisor, as a Service is started. Runs never overlap, missed times
+are not caught up, a deploy lets a run finish on its old checkout, and `rig
+down` stops it. Runs are recorded apart from Target records and appear in
+status, Activity and Target logs. See
+[ADR 0013](docs/adr/0013-scheduled-jobs.md).
+
 ## Config
 
 Project config owns:
@@ -143,6 +155,8 @@ Project config owns:
 - Target names
 - Services and Tools: commands, working directories, ports, healthchecks,
   builds, environment
+- scheduled jobs: commands, cron schedules and their time zones, timeouts, and
+  which Targets run them ([ADR 0013](docs/adr/0013-scheduled-jobs.md))
 - the hostname and the `proxy` routes, or the default route to the one Service
   with one port
 

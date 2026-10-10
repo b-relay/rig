@@ -77,12 +77,19 @@ targets:
       nextRunAt: expect.stringMatching(/:17:00\.000Z$/),
       running: { trigger: "manual" },
     });
-    // A job the working Target's plan does not run is named with the line that would add it.
-    const other = await f.rig(["run", "palettes", "working"]);
-    expect(other.code).toBe(1);
-    expect(other.stderr).toContain(
-      "jobs.palettes.targets in rig.yaml does not name working",
-    );
+    // targets decides scheduling only: a job scheduled in the stable Target alone still runs here on rig run.
+    expect(await f.rig(["run", "palettes", "working"])).toMatchObject({
+      code: 0,
+      stdout: "melody working palettes started\n",
+    });
+    expect(await jobStatus(f, "working", "palettes")).toMatchObject({
+      scheduled: false,
+      reason:
+        "jobs.palettes.targets does not name working, so only rig run runs it here.",
+    });
+    const unknown = await f.rig(["run", "nope", "working"]);
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain("Run one of: link-resolver, palettes.");
     await writeFile(release, "");
     const ended = await until(
       () => jobStatus(f, "working", "link-resolver"),
@@ -164,26 +171,38 @@ targets:
       ).flat(2);
     const first = await revisions();
     expect(first.length).toBe(1);
+    // The next Commit changes other code and drops the job from rig.yaml altogether.
     await writeFile(join(f.repo, "unrelated.txt"), "change\n");
+    const config = await Bun.file(join(f.repo, "rig.yaml")).text();
+    await writeFile(
+      join(f.repo, "rig.yaml"),
+      config.replace(/jobs:\n[\s\S]*?\ntargets:/, "targets:"),
+    );
     await f.commit();
     expect(await f.rig(["deploy"])).toMatchObject({ code: 0 });
-    // The run goes on, from the first checkout, which the deploy kept.
+    // The run goes on, from the first checkout, which the deploy kept; status and logs still name it, unscheduled.
     expect(await jobStatus(f, "stable", "mb-mirror")).toMatchObject({
       state: "running",
+      scheduled: false,
+      removed: true,
     });
     expect((await revisions()).sort()).toEqual(expect.arrayContaining(first));
     expect((await revisions()).length).toBe(2);
+    const logs = await f.rig(["logs", "stable", "--service", "mb-mirror"]);
+    expect(logs.code).toBe(0);
+    expect(logs.stdout).toContain(`/revisions/${first[0]}`);
     await writeFile(release, "");
-    const ended = await until(
-      () => jobStatus(f, "stable", "mb-mirror"),
-      (job) => job?.state === "idle",
+    const finished = await until(
+      async () =>
+        (await f.rig(["activity"])).stdout.includes("mb-mirror: succeeded"),
+      (done) => done,
     );
-    expect(ended).toMatchObject({ last: { outcome: "succeeded" } });
-    const logs = (await f.rig(["logs", "stable", "--service", "mb-mirror"]))
-      .stdout;
-    expect(logs).toContain(`/revisions/${first[0]}`);
+    expect(finished).toBe(true);
     const left = await until(revisions, (names) => names.length === 1);
     expect(left).not.toContain(first[0]);
+    expect((await f.rig(["status", "--json"])).stdout).not.toContain(
+      "mb-mirror",
+    );
     expect(await f.rig(["down", "stable"])).toMatchObject({ code: 0 });
     expect(await f.rigd(["uninstall"])).toMatchObject({ code: 0 });
   } finally {

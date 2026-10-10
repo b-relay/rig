@@ -16,7 +16,6 @@ import {
   JOB_SCHEDULER_TICK_MS,
   createJobScheduler,
 } from "../runtime/job-scheduler";
-import { createJobStopMarks } from "../runtime/jobs";
 import { hostTimeZone } from "../domain/cron";
 import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
@@ -163,15 +162,12 @@ export async function composeDaemon(
   });
   // Built after the runtime, which restarts what it finds unhealthy; the runtime reads its results for status and doctor.
   let health: HealthMonitor | undefined;
-  // Every stop of a job run is noted as it begins, so the run is recorded as stopped by Rig.
-  const jobStops = createJobStopMarks();
   // A start check that passed is the healthcheck's first passing check, so status shows it at once.
   // Every start and stop tells the health monitor as it begins, and a passed start check is its first passing check.
   const lifecycle = createTargetLifecycle(effects, undefined, {
     changing: (target, service) => health?.invalidate(target.id, service),
     activated: (target, service, incarnation) =>
       health?.started(target, service, incarnation),
-    stoppingJob: (target, job) => jobStops.mark(target.id, job, Date.now()),
   });
   const runtime = createRuntime({
     root,
@@ -189,7 +185,6 @@ export async function composeDaemon(
       runCommand,
     ),
     lifecycle,
-    jobStops,
     timeZone: hostTimeZone,
     healthTransitions: {
       invalidate: (targetId, service) => health?.invalidate(targetId, service),
@@ -224,7 +219,8 @@ export async function composeDaemon(
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   const monitor = health;
-  // Scheduled job runs start as Operations on their Target; the scheduler itself only reads state and observes runs.
+  // Scheduled job runs start, end and stop as Operations on their Target; the scheduler itself only reads state and
+  // observes runs.
   const jobs = createJobScheduler({
     store,
     lifecycle,
@@ -232,9 +228,9 @@ export async function composeDaemon(
     id: randomUUID,
     busy: runtime.targetBusy,
     start: runtime.runScheduledJob,
-    releaseRevision: runtime.releaseJobRevision,
+    settle: runtime.settleJob,
+    releaseCheckouts: runtime.releaseJobCheckouts,
     stopJobsIfOff: runtime.stopJobsIfOff,
-    jobStops,
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   const editor = createConfigEditor({

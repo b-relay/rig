@@ -97,8 +97,8 @@ export interface BuildUnit {
 }
 export type PlanComponent =
   ManagedComponent | InstalledComponent | PersistentComponent;
-/** A scheduled job as a Target's plan records it: one the Target's role runs (its `targets` name the role). Its command runs
- * at each time `schedule` names, and on `rig run`, from the plan's workspace. */
+/** A job as a Target's plan records it. Every role plans every job; its `targets` decide where the schedule runs it
+ * (`scheduled`), and `rig run` runs it in any Target. Its command runs from the plan's workspace. */
 export interface PlanJob {
   name: string;
   /** /bin/sh command, references resolved. */
@@ -113,6 +113,8 @@ export interface PlanJob {
   commandInputs?: PublicInput[];
   /** Five-field cron expression, read in `timeZone`. */
   schedule: string;
+  /** false when the job's `targets` do not name this role: the schedule does not run it here, only `rig run` does. */
+  scheduled?: false;
   /** IANA time zone the schedule is read in; absent means the Host's zone when each run is scheduled. */
   timeZone?: string;
   /** Seconds one run may take before it is stopped and recorded as timed out; absent means no limit. */
@@ -138,7 +140,8 @@ export interface TargetPlan {
   daemon?: { enabled?: boolean; keepAlive?: boolean };
   env?: Record<string, string>;
   components: PlanComponent[];
-  /** The scheduled jobs this Target runs, by name; absent when it runs none, as in every plan recorded before jobs. */
+  /** The Project's jobs, by name, with whether this Target's schedule runs each; absent when there are none, as in every
+   * plan recorded before jobs. */
   jobs?: PlanJob[];
   /** Build units in run order: shared, Services in dependency order, then Tools by name. Absent on plans recorded before builds were units. */
   builds?: BuildUnit[];

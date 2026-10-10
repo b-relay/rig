@@ -73,12 +73,7 @@ import {
 } from "./targets";
 import { sameConfigDigest } from "../config/config-digest";
 import { assertLogServices } from "./log-services";
-import {
-  DEFAULT_JOB_TARGETS,
-  PREVIEW_SELECTOR,
-  TARGET_ROLES,
-  targetOn,
-} from "../config/schema";
+import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
 import {
   assertSourceBuildsKnown,
   type TargetLifecycle,
@@ -123,10 +118,18 @@ import {
   type LockScope,
 } from "./operation-locks";
 import { createHostReservations } from "./host-reservations";
-import { recordSkippedRun, startJobRun, stopJobRuns } from "./jobs";
+import {
+  recordSkippedRun,
+  settleJobRun,
+  startJobRun,
+  stopJobRun,
+  stopJobRuns,
+} from "./jobs";
 import {
   JOB_LATE_LIMIT_MS,
+  pastTimeout,
   schedulesJobs,
+  type JobSettleRequest,
   type ScheduledRunRequest,
   type ScheduledRunResult,
 } from "./job-scheduler";
@@ -178,9 +181,12 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
   restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
-  /** Gives back `workspace`, a checkout of the Target `targetId` a job run kept after a deploy, once nothing uses it, under
-   * the Target's lease. Never rejects. */
-  releaseJobRevision(targetId: string, workspace: string): Promise<void>;
+  /** Gives back the checkouts job runs of the Target `targetId` kept after a deploy, once nothing uses them, under the
+   * Target's lease; drops those of a Target that is gone. Never rejects. */
+  releaseJobCheckouts(targetId: string): Promise<void>;
+  /** Settles a run the scheduler judged ended or past its timeout, under its Target's lease: reads the run again and acts
+   * only when the record still names it, stopping it (timed out) only while its own process runs. Never rejects. */
+  settleJob(request: JobSettleRequest): Promise<void>;
   /** Stops the job runs in progress of the Target `targetId` when rig.yaml turns its role off, under its lease, as rig down
    * would. Never rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
@@ -888,7 +894,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (!target) throw missingTarget(command, name);
         // Checked on the first page only: a follow carries on when a deploy removes a Service it filters by.
         if (command.after === undefined)
-          assertLogServices(target, command.logFilter);
+          assertLogServices(
+            target,
+            command.logFilter,
+            (await deps.store.read()).jobs,
+          );
         return {
           project: project.name,
           target: target.name,
@@ -905,13 +915,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (!target) throw missingTarget(command, name);
         const job = runnableJob(target, command.job, configured.document);
         attempted = true;
-        const { run, settled } = await startJobRun(
+        const run = await startJobRun(
           target,
           job,
           { id: operationId, trigger: "manual" },
           deps,
         );
-        if (settled) await releaseJobRevisions(target, [settled], deps);
+        await releaseJobCheckouts(target, deps);
         return await finish("started", {
           job: job.name,
           startedAt: run.startedAt,
@@ -1084,7 +1094,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // Its job runs first, with the stop budget each started with: a run may use the Services that stop after it. A job
         // that cannot be stopped never keeps the Services running; its failure is the Operation's once they stopped.
         let jobFailure: unknown;
-        let stoppedJobs: Awaited<ReturnType<typeof stopJobRuns>> = [];
+        let stoppedJobs = 0;
         try {
           stoppedJobs = await stopJobRuns(target, deps);
         } catch (error) {
@@ -1092,8 +1102,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           jobFailure = error;
         }
         outcome = (await stopKeepingKills(target)).outcome;
-        if (stoppedJobs.length) outcome = "stopped";
-        await releaseJobRevisions(target, stoppedJobs, deps);
+        if (stoppedJobs) outcome = "stopped";
+        await releaseJobCheckouts(target, deps);
         if (jobFailure !== undefined) throw jobFailure;
         recordStopKills(target, operations.get(operationId)!.view);
       } else {
@@ -1487,6 +1497,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (
           !target ||
           !job ||
+          job.scheduled === false ||
           !project ||
           !schedulesJobs(target) ||
           Date.parse(deps.now()) - request.scheduledFor > JOB_LATE_LIMIT_MS
@@ -1506,7 +1517,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         )
           return "passed";
         try {
-          const { settled } = await startJobRun(
+          await startJobRun(
             target,
             job,
             {
@@ -1516,7 +1527,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             },
             deps,
           );
-          if (settled) await releaseJobRevisions(target, [settled], deps);
+          await releaseJobCheckouts(target, deps);
           return "started";
         } catch (error) {
           if (!(error instanceof RigError) || error.code !== "JOB_RUNNING")
@@ -1611,10 +1622,42 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     status,
     restartUnhealthy,
     runScheduledJob,
-    releaseJobRevision: (targetId, workspace) =>
-      onTarget(targetId, "job-revision", (target) =>
-        releaseJobRevisions(target, [{ workspace }], deps),
-      ),
+    async releaseJobCheckouts(targetId) {
+      const state = await deps.store.read();
+      if (state.targets.some((target) => target.id === targetId))
+        return await onTarget(targetId, "job-checkout", (target) =>
+          releaseJobCheckouts(target, deps),
+        );
+      // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop.
+      try {
+        for (const kept of state.jobCheckouts ?? [])
+          if (kept.target === targetId)
+            await deps.sources
+              .release({ project: kept.project, workspacePath: kept.workspace })
+              .catch(() => {});
+        await deps.store.update((current) => {
+          current.jobCheckouts = current.jobCheckouts?.filter(
+            (kept) => kept.target !== targetId,
+          );
+        });
+      } catch {
+        /* Retried by the scheduler's next offer. */
+      }
+    },
+    settleJob: (request) =>
+      onTarget(request.targetId, "job", async (target, lifecycle) => {
+        const run = (await deps.store.read()).jobs?.find(
+          (record) =>
+            record.target === request.targetId && record.job === request.job,
+        )?.running;
+        // Another run by now, started after the scheduler looked: what it judged is not about this one.
+        if (run?.id !== request.runId) return;
+        const held = { ...deps, lifecycle };
+        if (pastTimeout(run, Date.parse(deps.now())))
+          await stopJobRun(target, request.job, run, "timed-out", held);
+        else await settleJobRun(target, request.job, run.id, held);
+        await releaseJobCheckouts(target, deps);
+      }),
     async stopJobsIfOff(targetId) {
       const state = await deps.store.read();
       const target = state.targets.find((t) => t.id === targetId);
@@ -1631,11 +1674,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const again = await checkoutConfig(undefined, project, deps);
         if (!again.document || targetOn(again.document.config, held.kind))
           return;
-        await releaseJobRevisions(
-          held,
-          await stopJobRuns(held, { ...deps, lifecycle }),
-          deps,
-        );
+        await stopJobRuns(held, { ...deps, lifecycle });
+        await releaseJobCheckouts(held, deps);
       });
     },
     targetBusy: (target) =>
@@ -1992,11 +2032,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // A job that cannot be stopped is a failure of this pass, after the Services stopped.
         let jobFailure: unknown;
         try {
-          await releaseJobRevisions(
-            target,
-            await stopJobRuns(target, { ...deps, lifecycle }),
-            deps,
-          );
+          await stopJobRuns(target, { ...deps, lifecycle });
+          await releaseJobCheckouts(target, deps);
         } catch (error) {
           if (isStopDetached(error)) throw error;
           jobFailure = error;
@@ -2070,9 +2107,10 @@ async function checkoutConfig(
     return { failure };
   }
 }
-/** The job `rig run` names in `target`'s recorded plan, once the Target can run one: deployed completely and in no
- * transition. A name the plan lacks fails JOB_UNKNOWN, naming the jobs it has, or the rig.yaml line that would give it the
- * job when the current rig.yaml declares one for other Targets only. */
+/** The job `rig run` names in `target`'s recorded plan, once the Target can run one: deployed completely, meant to run
+ * and in no transition (whether it is on was checked before). Every plan has every job of its rig.yaml, whatever the job's
+ * targets, which decide scheduling only. A name the plan lacks fails JOB_UNKNOWN, naming the jobs it has, or the command
+ * that plans the Target again when the current rig.yaml declares the job. */
 function runnableJob(
   target: TargetRecord,
   name: string | undefined,
@@ -2101,11 +2139,9 @@ function runnableJob(
   const job = jobs.find((candidate) => candidate.name === name);
   if (job) return job;
   const declared =
-    name !== undefined && document?.config.jobs
-      ? Object.hasOwn(document.config.jobs, name)
-        ? document.config.jobs[name]
-        : undefined
-      : undefined;
+    name !== undefined &&
+    document?.config.jobs !== undefined &&
+    Object.hasOwn(document.config.jobs, name);
   // The working Target is planned again by rig restart; a deployed one by a deploy of a Commit whose rig.yaml has the job.
   const replan =
     target.kind === "working"
@@ -2115,12 +2151,10 @@ function runnableJob(
     "JOB_UNKNOWN",
     `${target.name} has no job named '${name ?? ""}'.`,
     declared
-      ? (declared.targets ?? DEFAULT_JOB_TARGETS).includes(target.kind)
-        ? `rig.yaml declares it, but ${target.name} was planned before; ${replan}.`
-        : `jobs.${name}.targets in rig.yaml does not name ${target.kind} (it runs in ${(declared.targets ?? DEFAULT_JOB_TARGETS).join(", ")}); add ${target.kind} there, then ${replan}.`
+      ? `rig.yaml declares it, but ${target.name} was planned before it did; ${replan}.`
       : jobs.length
         ? `Run one of: ${jobs.map((candidate) => candidate.name).join(", ")}.`
-        : `${target.name} runs no jobs. Declare one under jobs in rig.yaml, then ${replan}.`,
+        : `${target.name} has no jobs. Declare one under jobs in rig.yaml, then ${replan}.`,
     { job: name, known: jobs.map((candidate) => candidate.name) },
   );
 }
@@ -2272,7 +2306,7 @@ async function destroyPreview(
   target.updatedAt = deps.now();
   await persistTarget(target, deps.store);
   // A job run, possibly on a checkout an earlier deploy kept for it, ends before the Preview's storage goes.
-  const stoppedJobs = await stopJobRuns(target, deps);
+  await stopJobRuns(target, deps);
   await retireForDestruction(target, deps);
   progress("destroying");
   await deps.files.destroyPreview({
@@ -2284,54 +2318,60 @@ async function destroyPreview(
   const workspacePath = ownedRevision(target);
   if (workspacePath)
     await deps.sources.release({ project: target.projectId, workspacePath });
-  for (const run of stoppedJobs)
-    if (
-      run.workspace &&
-      run.workspace !== workspacePath &&
-      ownedRevision({
-        ...target,
-        plan: { ...target.plan, workspacePath: run.workspace },
-      })
-    )
+  // Checkouts job runs kept went with the Preview root too; their registrations are dropped, and so are their records.
+  for (const kept of (await deps.store.read()).jobCheckouts ?? [])
+    if (kept.target === target.id)
       await deps.sources
-        .release({ project: target.projectId, workspacePath: run.workspace })
+        .release({ project: target.projectId, workspacePath: kept.workspace })
         .catch(() => {});
   await deps.store.update((s) => {
     s.targets = s.targets.filter((t) => t.id !== target.id);
+    s.jobCheckouts = s.jobCheckouts?.filter(
+      (kept) => kept.target !== target.id,
+    );
   });
 }
-/** Gives back the checkouts of `target` that the job runs in `ended` used and nothing uses any more: a deploy keeps the
- * checkout a run started in until the run ends. A failure to remove one is a diagnostic, never an Operation's failure. */
-async function releaseJobRevisions(
+/** Gives back the checkouts job runs of `target` kept after a deploy (recorded with each run's end), once nothing uses
+ * them, and forgets each one given back or no longer owned. The caller holds the Target. One that cannot be removed stays
+ * recorded for the next offer, and is a diagnostic, never an Operation's failure. */
+async function releaseJobCheckouts(
   target: TargetRecord,
-  ended: readonly { readonly workspace?: string }[],
   deps: RuntimeDependencies,
 ): Promise<void> {
-  const workspaces = new Set(
-    ended
-      .map((run) => run.workspace)
-      .filter(
-        (workspace): workspace is string =>
-          workspace !== undefined &&
-          workspace !== target.plan.workspacePath &&
-          workspace !== target.recovery?.plan.workspacePath,
-      ),
+  const kept = ((await deps.store.read()).jobCheckouts ?? []).filter(
+    (checkout) => checkout.target === target.id,
   );
-  for (const workspacePath of workspaces)
-    for (const retained of await releaseUnreferencedRevisions(
-      [{ ...target, plan: { ...target.plan, workspacePath } }],
+  for (const checkout of kept) {
+    const retained = await releaseUnreferencedRevisions(
+      [
+        {
+          ...target,
+          plan: { ...target.plan, workspacePath: checkout.workspace },
+        },
+      ],
       deps,
-    ))
+    );
+    for (const failure of retained)
       await deps
         .diagnostic({
           operationId: deps.id(),
-          action: "job-revision",
+          action: "job-checkout",
           outcome: "revision-retained",
           target: target.name,
-          path: retained.workspacePath,
-          ...retained.causes,
+          path: failure.workspacePath,
+          ...failure.causes,
         })
         .catch(() => {});
+    // Given back, or in use again (by a run, or as the Target's own checkout), which a later run end records anew.
+    if (!retained.length)
+      await deps.store.update((state) => {
+        state.jobCheckouts = state.jobCheckouts?.filter(
+          (other) =>
+            other.target !== checkout.target ||
+            other.workspace !== checkout.workspace,
+        );
+      });
+  }
 }
 /** Previews leave in this order at the limit: ones whose deploy never completed, then stopped ones, then running ones. */
 function evictionRank(target: TargetRecord): number {

@@ -313,9 +313,9 @@ export function resolveTargetPlan(
       }),
   ];
   const ordered = dependencyOrder(components);
-  // A job is planned only for the roles its targets name (the stable Target alone by default), by name.
+  // Every role plans every job, so rig run reaches it anywhere; its targets (the stable Target alone by default) decide
+  // where the schedule runs it.
   const jobs = Object.entries(settings.jobs ?? {})
-    .filter(([, job]) => (job.targets ?? DEFAULT_JOB_TARGETS).includes(role))
     .sort(([a], [b]) => (a < b ? -1 : 1))
     .map(([name, job]): PlanJob => {
       const at = `jobs.${name}`;
@@ -343,6 +343,9 @@ export function resolveTargetPlan(
         ],
         ...(inputs.length ? { commandInputs: inputs } : {}),
         schedule: job.schedule,
+        ...((job.targets ?? DEFAULT_JOB_TARGETS).includes(role)
+          ? {}
+          : { scheduled: false as const }),
         ...(job.timezone !== undefined ? { timeZone: job.timezone } : {}),
         ...(job.timeout !== undefined
           ? { timeout: durationSeconds(job.timeout) }

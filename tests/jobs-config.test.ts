@@ -51,7 +51,7 @@ function refusal(config: unknown): string | undefined {
   }
 }
 
-test("a job is planned with its command, schedule, zone and limits, in the stable Target only by default", () => {
+test("a job is planned with its command, schedule, zone and limits, scheduled in the stable Target only by default", () => {
   const config = melody({
     "link-resolver": {
       command: "pnpm --filter jobs run link-resolver",
@@ -83,9 +83,15 @@ test("a job is planned with its command, schedule, zone and limits, in the stabl
       stopTimeout: 60,
     },
   ]);
-  // Not in the working Target or a Preview unless its targets say so; a plan with no job records no `jobs` key.
-  expect(plan(config, "working")).not.toHaveProperty("jobs");
-  expect(plan(config, "preview")).not.toHaveProperty("jobs");
+  // Every Target plans it, so rig run reaches it there, but the schedule runs it only where its targets say.
+  for (const role of ["working", "preview"] as const)
+    expect(plan(config, role).jobs).toEqual([
+      expect.objectContaining({ name: "link-resolver", scheduled: false }),
+    ]);
+  // A plan with no job records no `jobs` key.
+  expect(
+    plan({ name: "pantry", services: { web: { command: "serve" } } }),
+  ).not.toHaveProperty("jobs");
 });
 
 test("targets opts a job into other Targets, and a job without timezone records none, so the Host's zone applies", () => {
@@ -96,12 +102,16 @@ test("targets opts a job into other Targets, and a job without timezone records 
       targets: ["working", "preview"],
     },
   });
-  for (const role of ["working", "preview"] as const)
+  for (const role of ["working", "preview"] as const) {
     expect(plan(config, role).jobs).toEqual([
       expect.objectContaining({ name: "palettes", schedule: "43 4 * * *" }),
     ]);
+    expect(plan(config, role).jobs![0]).not.toHaveProperty("scheduled");
+  }
   expect(plan(config, "working").jobs![0]).not.toHaveProperty("timeZone");
-  expect(plan(config, "stable")).not.toHaveProperty("jobs");
+  expect(plan(config, "stable").jobs).toEqual([
+    expect.objectContaining({ name: "palettes", scheduled: false }),
+  ]);
 });
 
 test("a job has the Target's references: Service ports, a Service's data directory, and its own", () => {

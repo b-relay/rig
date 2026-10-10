@@ -159,7 +159,9 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
  * `17 0-23/6 * * * America/Chicago · last succeeded in 3m12s, 2h ago · next Sat 18:17 CDT (in 4h)`. */
 function jobSummary(job: JobReport, now: Date): string {
   const zone = word(job.timeZone);
-  const parts = [`${word(job.schedule)} ${zone}`.trim()];
+  const parts = [
+    job.removed ? "removed" : `${word(job.schedule)} ${zone}`.trim(),
+  ];
   if (job.running)
     parts.push(
       `running since ${clock(job.running.startedAt, zone)} (${ago(job.running.startedAt, now)})`,

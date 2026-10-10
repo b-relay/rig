@@ -109,6 +109,12 @@ const planJob = z.object({
   envFiles,
   commandInputs,
   schedule: text.describe("Five-field cron expression, read in timeZone."),
+  scheduled: z
+    .literal(false)
+    .optional()
+    .describe(
+      "false when the job's targets do not name this Target's role: only rig run runs it here. Absent: the schedule runs it.",
+    ),
   timeZone: text
     .optional()
     .describe(
@@ -490,6 +496,19 @@ const jobRun = z.object({
     .positive()
     .optional()
     .describe("Scheduled times skipped because this run was still going."),
+  stopping: z
+    .object({
+      cause: z
+        .enum(["stopped", "timed-out"])
+        .describe(
+          "Stopped by Rig (rig down, a destroy, an off switch), or at its timeout.",
+        ),
+      at: text.describe("When Rig decided to stop it (ISO 8601)."),
+    })
+    .optional()
+    .describe(
+      "Rig's decision to stop the run, written before the stop signal, so its end is recorded with this cause even by a rigd that restarted in between.",
+    ),
 });
 const jobRecord = z.object({
   target: text.describe("The Target's id."),
@@ -503,7 +522,12 @@ const jobRecord = z.object({
   lastScheduled: text
     .optional()
     .describe(
-      "The latest scheduled time rigd acted on, run or skipped (ISO 8601); a new rigd never acts on it or an earlier one again.",
+      "The latest scheduled time rigd acted on, run, skipped or passed over (ISO 8601); a new rigd never acts on it or an earlier one again.",
+    ),
+  watchedFrom: text
+    .optional()
+    .describe(
+      "When rigd first saw the job in the Target's plan (ISO 8601); a new rigd counts scheduled times from it, within the late limit, until one was acted on.",
     ),
 });
 const operation = z.object({
@@ -577,6 +601,18 @@ export const runtimeStateSchema = z
       .optional()
       .describe(
         "Scheduled job runs per Target and job: the run in progress and the latest one that ended. Only rigd's job runner writes them, so no Target write replaces them.",
+      ),
+    jobCheckouts: z
+      .array(
+        z.object({
+          target: text.describe("The Target's id."),
+          project: text.describe("The Project's id."),
+          workspace: absolutePath.describe("The checkout to give back."),
+        }),
+      )
+      .optional()
+      .describe(
+        "Checkouts job runs kept after a deploy, recorded with the run's end and given back once nothing uses them; a rigd that stops first finds them again.",
       ),
     startSeq: z
       .number()

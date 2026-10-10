@@ -103,10 +103,11 @@ status` takes no Target.
   only.
 - `run` starts one run of a job from `jobs` in `rig.yaml` and answers once it
   started; it never waits for the run to end. Without a Target it means
-  `stable`, where jobs run by default. It is refused with `JOB_RUNNING` while a
+  `stable`, where jobs are scheduled by default; it runs the job in any Target
+  that is on and deployed, whatever the job's `targets` schedule. It is refused with `JOB_RUNNING` while a
   run of the job is going (runs never overlap), with `JOB_UNKNOWN` for a job the
-  Target's plan does not run (the hint names the jobs it runs, or the `targets`
-  line to add), with `JOB_UNAVAILABLE` for a stopped Target, and with
+  Target's plan does not have (the hint names the jobs it has, or the command
+  that plans it again), with `JOB_UNAVAILABLE` for a stopped Target, and with
   `TARGET_OFF` for an off Target. `status` lists each
   Target's jobs with their last and next run, `activity` has one `job` entry
   per ended run, and `logs --service <job>` reads a job's output.

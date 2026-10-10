@@ -11,8 +11,8 @@ import type { RuntimeDependencies } from "./contracts";
 import {
   findJobRecord,
   pruneJobRecords,
-  settleJobRun,
-  type JobStopMarks,
+  recordScheduling,
+  type SchedulingFact,
 } from "./jobs";
 import type { TargetLifecycle } from "./lifecycle";
 
@@ -23,6 +23,8 @@ export const JOB_SCHEDULER_TICK_MS = 1000;
 export const JOB_LATE_LIMIT_MS = 5 * 60_000;
 /** How often a Target with a job run in progress is checked for rig.yaml turning its role off. */
 export const JOB_OFF_CHECK_MS = 10_000;
+/** How often a checkout a job run kept is offered back again while it cannot be given back yet. */
+export const JOB_CHECKOUT_RETRY_MS = 30_000;
 /** How long `stop` waits for the work in flight. */
 const JOB_SCHEDULER_STOP_MS = 5000;
 
@@ -46,9 +48,17 @@ export interface ScheduledRunRequest {
  * Target is not meant to run it now (nothing recorded), or deferred because rigd cannot start anything yet. */
 export type ScheduledRunResult =
   "started" | "skipped" | "passed" | "deferred" | "failed";
+/** A run the scheduler saw ended or past its timeout, for the runtime to settle under the Target's lease. */
+export interface JobSettleRequest {
+  targetId: string;
+  job: string;
+  /** The run the scheduler judged; a record naming another run by then is left alone. */
+  runId: string;
+}
 export interface JobSchedulerDependencies {
   store: Pick<StateStore, "read" | "update">;
-  lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
+  /** Observes a run's process without holding its Target, only to decide whether the runtime needs to act. */
+  lifecycle: Pick<TargetLifecycle, "observeJob">;
   clock: JobClock;
   id(): string;
   /** Whether an Operation holds or waits for the Target, so a run of it may be starting or stopping. */
@@ -56,16 +66,18 @@ export interface JobSchedulerDependencies {
   /** Runs a due time as an Operation on its Target: waits for the Target like any command, checks it is still meant to run
    * the job, and starts a run, or records the time skipped while a run is still going. Never rejects. */
   start(request: ScheduledRunRequest): Promise<ScheduledRunResult>;
-  /** Gives back a checkout of the Target a deploy kept for a run that has ended, once nothing uses it. Never rejects. */
-  releaseRevision(targetId: string, workspace: string): Promise<void>;
+  /** Under the Target's lease, reads the run again and, when it is still the one judged, records its end, or stops it past
+   * its timeout and records it timed out. Never rejects. */
+  settle(request: JobSettleRequest): Promise<void>;
+  /** Gives back the checkouts job runs of the Target kept, once nothing uses them. Never rejects. */
+  releaseCheckouts(targetId: string): Promise<void>;
   /** Stops the Target's runs in progress when rig.yaml turns its role off. Never rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
-  jobStops?: JobStopMarks;
   diagnostic: RuntimeDependencies["diagnostic"];
 }
 export interface JobScheduler {
-  /** Settles the runs that ended, stops the ones past their timeout, and hands every due time to `start`, then returns
-   * without waiting for that work. */
+  /** Hands every due time to `start`, every run that ended or is past its timeout to `settle`, and every kept checkout to
+   * `releaseCheckouts`, then returns without waiting for that work. */
   pass(): Promise<void>;
   /** Resolves once the work started so far has settled. */
   idle(): Promise<void>;
@@ -110,17 +122,27 @@ export function nextJobRun(
   const schedule = jobSchedule(job);
   return schedule && nextRun(schedule, after, jobTimeZone(job, clock));
 }
+/** Whether `run` is past its timeout at `now` (Unix milliseconds). */
+export function pastTimeout(run: JobRun, now: number): boolean {
+  return (
+    run.timeout !== undefined &&
+    now >= Date.parse(run.startedAt) + run.timeout * 1000
+  );
+}
 
-/** rigd's job scheduler. Each pass reads the recorded Targets and job runs:
- * - the latest scheduled time of a job that came due since the last pass (within JOB_LATE_LIMIT_MS) is handed to `start`,
- *   which runs it, or records it skipped while a run still goes; earlier ones, and ones of a Target not meant to run, pass
- *   without a record;
- * - a run recorded in progress whose process is gone is settled (its exit recorded, with its Activity entry), and one past
- *   its timeout is stopped and recorded as timed out; neither while an Operation holds the Target, which may be starting
- *   or stopping it. A run a deploy left on its earlier checkout is settled too, and that checkout given back;
- * - a Target with a run in progress whose role rig.yaml turns off has its runs stopped.
- * Which times were handled lives in memory, seeded from each record's `lastScheduled`, so a new rigd never runs a time
- * twice and runs one it missed by less than the late limit. Work for one job never overlaps. */
+/** rigd's job scheduler. It reads state and observes processes but changes neither: whatever it finds is handed to the
+ * runtime, which acts under the Target's lease. Each pass reads the recorded Targets, job runs and kept checkouts:
+ * - the latest scheduled time of a job its Target's schedule runs that came due since the last pass (within
+ *   JOB_LATE_LIMIT_MS) goes to `start`, which runs it, or records it skipped while a run still goes; earlier ones are
+ *   dropped, and a Target not meant to run passes them over, recording only that it did;
+ * - a run recorded in progress whose process is gone, or which is past its timeout, goes to `settle`, never while an
+ *   Operation holds the Target, which may be starting or stopping it; a run a deploy left on its earlier checkout, or of a
+ *   job the new plan dropped, too;
+ * - a checkout a run kept goes to `releaseCheckouts`, again every JOB_CHECKOUT_RETRY_MS while it stays;
+ * - a Target with a run in progress goes to `stopJobsIfOff` every JOB_OFF_CHECK_MS.
+ * Which times were handled lives in memory, seeded from each record's `lastScheduled`, or its `watchedFrom` (written the
+ * first time a job is seen), so a new rigd never runs a time twice and runs one it missed by less than the late limit. Work
+ * for one job never overlaps. */
 export function createJobScheduler(
   deps: JobSchedulerDependencies,
 ): JobScheduler {
@@ -128,23 +150,18 @@ export function createJobScheduler(
   const watermarks = new Map<string, number>();
   /** When each Target with a run in progress was last checked for an off switch, Unix milliseconds. */
   const offChecks = new Map<string, number>();
+  /** When each Target's kept checkouts were last offered back, Unix milliseconds. */
+  const checkoutOffers = new Map<string, number>();
   const inFlight = new Set<string>();
   const work = new Set<Promise<void>>();
   let stopped = false;
   const idle = async () => {
     while (work.size) await Promise.allSettled([...work]);
   };
-  /** What settling a run needs: the store, the observation, and the clock as an ISO timestamp. */
-  const runDeps = {
-    store: deps.store,
-    lifecycle: deps.lifecycle,
-    now: () => new Date(deps.clock.now()).toISOString(),
-    ...(deps.jobStops ? { jobStops: deps.jobStops } : {}),
-  };
   const dispatch = (
     key: string,
     label: string,
-    target: TargetRecord,
+    target: string,
     task: () => Promise<void>,
   ) => {
     inFlight.add(key);
@@ -155,7 +172,7 @@ export function createJobScheduler(
             operationId: deps.id(),
             action: label,
             outcome: "failed",
-            target: target.name,
+            target,
             errorCode: diagnosticErrorCode(error),
           })
           .catch(() => {});
@@ -164,14 +181,11 @@ export function createJobScheduler(
     work.add(job);
     void job.finally(() => work.delete(job));
   };
-  /** Where the times of a job first seen count from: the last one a rigd handled, but never more than the late limit
-   * back, or now for a job that has never been scheduled or run. */
+  /** Where the times of a job count from when this rigd first meets it: the last one acted on, else when a rigd first saw
+   * the job, but never more than the late limit back. */
   const seed = (record: JobRecord | undefined, now: number): number => {
-    if (!record) return now;
-    const last = record.lastScheduled
-      ? Date.parse(record.lastScheduled)
-      : -Infinity;
-    return Math.max(last, now - JOB_LATE_LIMIT_MS);
+    const from = record?.lastScheduled ?? record?.watchedFrom;
+    return Math.max(from ? Date.parse(from) : now, now - JOB_LATE_LIMIT_MS);
   };
   /** The latest scheduled time due now that has not been handled, or undefined. Times older than the late limit are
    * dropped here, so a long sleep runs at most the one time that came due within the limit. */
@@ -213,38 +227,18 @@ export function createJobScheduler(
       const state = await deps.store.read();
       if (stopped) return;
       const now = deps.clock.now();
+      const at = new Date(now).toISOString();
       const planned = new Set<string>();
-      /** Settles a run whose process is gone, or stops one past its timeout and records it timed out, and gives back a
-       * checkout a deploy kept only for it. */
+      const facts: SchedulingFact[] = [];
+      /** Hands a run that may have ended, or is past its timeout, to the runtime; the process is observed first, unlocked,
+       * so a run that simply goes on costs no lease. */
       const settle = (target: TargetRecord, job: string, run: JobRun) => {
         const key = `${target.id}:${job}`;
-        const deadline =
-          run.timeout === undefined
-            ? undefined
-            : Date.parse(run.startedAt) + run.timeout * 1000;
-        const late = deadline !== undefined && now >= deadline;
-        dispatch(key, late ? "job-timeout" : "job", target, async () => {
-          // Timed out only when this stop ended it: a run that exited on its own before the check keeps its own exit.
-          const timedOut =
-            late &&
-            (
-              await deps.lifecycle.stopJob(target, {
-                name: job,
-                ...(run.stopTimeout !== undefined
-                  ? { stopTimeout: run.stopTimeout }
-                  : {}),
-              })
-            ).outcome === "stopped";
-          const settled = await settleJobRun(
-            target,
-            job,
-            run,
-            runDeps,
-            timedOut ? "timed-out" : undefined,
-          );
-          // The runtime checks again, under the Target's lease, that nothing uses the checkout any more.
-          if (settled.state === "settled" && settled.ended.workspace)
-            await deps.releaseRevision(target.id, settled.ended.workspace);
+        dispatch(key, "job", target.name, async () => {
+          const seen = await deps.lifecycle.observeJob(target, job);
+          if (seen.state === "running" && !pastTimeout(run, deps.clock.now()))
+            return;
+          await deps.settle({ targetId: target.id, job, runId: run.id });
         });
       };
       for (const target of state.targets)
@@ -254,22 +248,29 @@ export function createJobScheduler(
           if (inFlight.has(key)) continue;
           const record = findJobRecord(state, target.id, job.name);
           const running = record?.running;
-          const runningPastTimeout =
-            running?.timeout !== undefined &&
-            now >= Date.parse(running.startedAt) + running.timeout * 1000;
-          // A start or stop under the Target's lock may be under way; the next free pass looks again.
-          if (running && runningPastTimeout && !deps.busy(target)) {
-            settle(target, job.name, running);
+          // Only rig run runs a job its targets do not name for this Target.
+          if (job.scheduled === false) {
+            if (running && !deps.busy(target))
+              settle(target, job.name, running);
             continue;
           }
+          // Seen for the first time: a new rigd counts this job's times from now, not from when it first runs.
+          if (!record?.watchedFrom && !record?.lastScheduled)
+            facts.push({ target: target.id, job: job.name, watchedFrom: at });
           const scheduledFor = due(key, job, record, now);
           if (scheduledFor !== undefined) {
             const before = watermarks.get(key)!;
             watermarks.set(key, scheduledFor);
-            // A Target not meant to run lets its times pass, unrecorded.
-            if (schedulesJobs(target)) {
+            if (!schedulesJobs(target)) {
+              // A Target not meant to run passes its times over, and records it, so a later restart never runs one.
+              facts.push({
+                target: target.id,
+                job: job.name,
+                passedOver: new Date(scheduledFor).toISOString(),
+              });
+            } else {
               // The start settles a run that ended, or records the time skipped while it still goes.
-              dispatch(key, "job", target, async () => {
+              dispatch(key, "job", target.name, async () => {
                 const result = await deps.start({
                   targetId: target.id,
                   job: job.name,
@@ -293,11 +294,12 @@ export function createJobScheduler(
           settle(target, record.job, record.running);
       }
       // rig.yaml turning a Target's role off stops its runs, as rig down would; checked every JOB_OFF_CHECK_MS.
-      for (const targetId of new Set(
+      const withRuns = new Set(
         (state.jobs ?? [])
           .filter((record) => record.running)
           .map((record) => record.target),
-      )) {
+      );
+      for (const targetId of withRuns) {
         const key = `off:${targetId}`;
         const target = state.targets.find((t) => t.id === targetId);
         if (
@@ -307,25 +309,47 @@ export function createJobScheduler(
         )
           continue;
         offChecks.set(targetId, now);
-        dispatch(key, "job-off", target, () => deps.stopJobsIfOff(targetId));
+        dispatch(key, "job-off", target.name, () =>
+          deps.stopJobsIfOff(targetId),
+        );
       }
       for (const targetId of offChecks.keys())
-        if (!state.jobs?.some((r) => r.running && r.target === targetId))
-          offChecks.delete(targetId);
+        if (!withRuns.has(targetId)) offChecks.delete(targetId);
+      // Kept checkouts are offered back until they are gone, by this rigd or the next.
+      const keeping = new Set(
+        (state.jobCheckouts ?? []).map((kept) => kept.target),
+      );
+      for (const targetId of keeping) {
+        const key = `checkout:${targetId}`;
+        if (
+          inFlight.has(key) ||
+          now - (checkoutOffers.get(targetId) ?? -Infinity) <
+            JOB_CHECKOUT_RETRY_MS
+        )
+          continue;
+        checkoutOffers.set(targetId, now);
+        dispatch(key, "job-checkout", targetId, () =>
+          deps.releaseCheckouts(targetId),
+        );
+      }
+      for (const targetId of checkoutOffers.keys())
+        if (!keeping.has(targetId)) checkoutOffers.delete(targetId);
       for (const key of watermarks.keys())
         if (!planned.has(key)) watermarks.delete(key);
-      if (
-        state.jobs?.some(
-          (record) =>
-            !record.running &&
-            !state.targets.some(
-              (target) =>
-                target.id === record.target &&
-                target.plan.jobs?.some((job) => job.name === record.job),
-            ),
-        )
-      )
-        await deps.store.update(pruneJobRecords);
+      const prunable = state.jobs?.some(
+        (record) =>
+          !record.running &&
+          !state.targets.some(
+            (target) =>
+              target.id === record.target &&
+              target.plan.jobs?.some((job) => job.name === record.job),
+          ),
+      );
+      if (facts.length || prunable)
+        await deps.store.update((current) => {
+          recordScheduling(current, facts);
+          pruneJobRecords(current);
+        });
     },
   };
 }

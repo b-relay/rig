@@ -191,6 +191,9 @@ export interface JobRun {
   errorCode?: string;
   /** Scheduled times skipped because this run was still going. */
   skipped?: number;
+  /** Rig decided to stop the run, and why: written before the stop signal, so a rigd that restarts before the end is
+   * recorded still records it as stopped by Rig or timed out. */
+  stopping?: { cause: "stopped" | "timed-out"; at: string };
 }
 /** What rigd knows about one job of one Target. Kept apart from the Target record, so an Operation that saves its Target
  * never replaces what the job runner recorded meanwhile. */
@@ -203,8 +206,21 @@ export interface JobRecord {
   running?: JobRun;
   /** The latest run that ended. */
   last?: JobRun;
-  /** The latest scheduled time rigd acted on, by running or skipping it (ISO 8601). */
+  /** The latest scheduled time rigd acted on, by running, skipping or passing over it (ISO 8601). */
   lastScheduled?: string;
+  /** When rigd first saw the job in this Target's plan (ISO 8601), so a time due after it that a rigd restart missed still
+   * runs within the late limit, before any time was acted on. */
+  watchedFrom?: string;
+}
+/** A checkout a job run kept after a deploy, to give back once nothing uses it. Recorded with the run's end, in the same
+ * write, so a rigd that stops before giving it back finds it again. */
+export interface JobCheckout {
+  /** The Target's id. */
+  target: string;
+  /** The Project's id, for a Target removed meanwhile. */
+  project: string;
+  /** The checkout's absolute path. */
+  workspace: string;
 }
 
 export interface RuntimeState {
@@ -216,6 +232,8 @@ export interface RuntimeState {
   deployments?: DeploymentRecord[];
   /** Job runs per Target and job; absent until a job first ran or was scheduled. */
   jobs?: JobRecord[];
+  /** Checkouts job runs kept after a deploy, waiting to be given back. */
+  jobCheckouts?: JobCheckout[];
   /** The last value handed out to order starts and Host restarts: each journalled start takes the next one as its run's
    * `startSeq`, and a recorded Host restart notes the value it found as its `seq`. It only grows. */
   startSeq?: number;

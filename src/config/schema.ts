@@ -376,7 +376,7 @@ const jobFields = {
     )
     .optional()
     .describe(
-      "Which Targets run the job on its schedule, by their fixed names working, stable and preview (preview means every Preview). Default: [stable] only, so a job runs once, against the Production branch, and not again in the working copy and every Preview. A Target runs its jobs only while it is on in rig.yaml, deployed and meant to run (rig down stops its schedule and any run in progress).",
+      "Which Targets run the job on its schedule, by their fixed names working, stable and preview (preview means every Preview). Default: [stable] only, so the schedule runs it once, against the Production branch, and not again in the working copy and every Preview. targets decides scheduling only: rig run <job> <target> runs it now in any Target that is on and deployed, such as working to try it. A Target runs its jobs on schedule only while it is on in rig.yaml, deployed and meant to run (rig down stops its schedule and any run in progress).",
     ),
 };
 const job = z.strictObject(jobFields);

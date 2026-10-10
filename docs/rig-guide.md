@@ -1691,10 +1691,12 @@ jobs:
 - **`timeout`** (such as `2h`, at most `168h`) stops a run that is still going
   then, with SIGTERM and SIGKILL after its `stop_timeout` (default `10s`), and
   records it as timed out. Without it a run may take as long as it takes.
-- **`targets`** lists the Targets that run the job: `working`, `stable`,
-  `preview` (every Preview). The default is `[stable]`, so a job runs once,
-  against the Production branch, not again in the working copy and every
-  Preview. A job is planned only into the Targets it names.
+- **`targets`** lists the Targets whose schedule runs the job: `working`,
+  `stable`, `preview` (every Preview). The default is `[stable]`, so the
+  schedule runs it once, against the Production branch, not again in the
+  working copy and every Preview. It decides scheduling only: `rig run`
+  runs the job in any Target that is on and deployed, such as `working` to
+  try it.
 - **References** are the Target's, as in a Service: `${services.<name>.port}`
   and `${services.<name>.ports.<port>}` reach the Target's Services,
   `${services.<name>.data}` is a Service's persistent directory (to share a
@@ -1730,15 +1732,22 @@ for due times every second.
   Preview, turning the Target's role off in rig.yaml (noticed within about 10
   seconds), and its `timeout`. Each is recorded as stopped by Rig or timed out.
 - **rigd restarting** leaves a run going; the next rigd adopts it, never runs
-  it twice, and records its exit. A Mac restart ends it, and it is recorded as
-  ended with no recorded exit.
+  it twice, and records its exit. A stop Rig had decided on is recorded with
+  its cause even across a restart. A Mac restart ends a run, and it is
+  recorded as ended with no recorded exit. A time due just after rigd first
+  saw a job still runs when rigd restarts within the 5 minutes.
+- **A deploy that drops a job** lets its run finish; until then status lists
+  it as removed and `rig logs --service <job>` still reads it. The checkout
+  it ran in is removed once it ends, retried until that works.
 
 **Running a job now.** `rig run <job>` starts a run at once in the stable
 Target, or in the Target you name (`rig run <job> working`,
-`rig run <job> preview <branch>`). It answers as soon as the run started,
+`rig run <job> preview <branch>`), whether or not the job's `targets`
+schedule it there. It answers as soon as the run started,
 `melody stable link-resolver started`, and is refused with `JOB_RUNNING` while
-a run of the job is going, `JOB_UNKNOWN` (naming the jobs the Target runs, or
-the `targets` line to add) for a job the Target's plan does not have,
+a run of the job is going, `JOB_UNKNOWN` (naming the jobs the Target has, or
+the command that plans it again when rig.yaml gained the job since) for a job
+the Target's plan does not have,
 `JOB_UNAVAILABLE` for a Target stopped with `rig down` (or whose last deploy
 did not complete), and `TARGET_OFF` for an off Target. While a run is in
 progress, the Project cannot be renamed, repointed or forgotten. The working Target picks up a new or changed

@@ -185,19 +185,29 @@ const jobRunReportSchema = z
 const jobReportSchema = z
   .object({
     name: z.string().describe("The job's name under jobs in rig.yaml."),
-    schedule: z.string().describe("Its five-field cron expression."),
+    schedule: z
+      .string()
+      .optional()
+      .describe("Its five-field cron expression; absent for a removed job."),
     timeZone: z
       .string()
+      .optional()
       .describe(
         "The IANA time zone the schedule is read in: the job's timezone, else the Host's.",
       ),
     state: z
       .enum(["running", "idle"])
       .describe("running while a run is in progress, otherwise idle."),
+    removed: z
+      .literal(true)
+      .optional()
+      .describe(
+        "The job is gone from the Target's plan (a deploy dropped it), and this run of it still goes on its earlier checkout.",
+      ),
     scheduled: z
       .boolean()
       .describe(
-        "Whether its schedule runs it now: the Target is deployed, meant to run and on in rig.yaml. A Target stopped with rig down, or turned off, runs none of its jobs.",
+        "Whether its schedule runs it now: its targets name this Target's role, and the Target is deployed, meant to run and on in rig.yaml. A Target stopped with rig down, or turned off, runs none of its jobs; rig run runs a job its targets do not name.",
       ),
     nextRunAt: z
       .string()

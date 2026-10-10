@@ -332,9 +332,10 @@ _Avoid_: cron job, task, Service
 
 _Relationship_: A job runs from its Target's checkout with the Target's
 references (`${services.<name>.port}`, `${services.<name>.data}`, and
-`${rig.data}` as its own directory), in the stable Target unless its `targets`
-name others. A Target runs its jobs on schedule while it is deployed, meant to
-run and on in `rig.yaml`.
+`${rig.data}` as its own directory). Its `targets` decide where the schedule
+runs it (the stable Target unless they name others); `rig run` runs it in any
+Target that is on and deployed. A Target runs its jobs on schedule while it is
+deployed, meant to run and on in `rig.yaml`.
 
 _Relationship_: A **run** never overlaps the one before it: a time due while
 it goes is skipped. A time missed by more than 5 minutes (the Mac slept, rigd

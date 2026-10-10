@@ -295,9 +295,6 @@ export function jobProcessKey(
 export interface LifecycleObserver {
   changing(target: TargetRecord, service: string): void;
   activated(target: TargetRecord, service: string, incarnation: string): void;
-  /** A stop of `job`'s run in progress begins (rig down, a restart, a deploy, a timeout), so whoever records the run's end
-   * records it as stopped by Rig rather than as an end nothing explains. */
-  stoppingJob?(target: TargetRecord, job: string): void;
 }
 export function createTargetLifecycle(
   effects: TargetEffects,
@@ -675,7 +672,6 @@ export function createTargetLifecycle(
       return { outcome: "unchanged" };
     const graceMs = serviceGraceMs(job.stopTimeout);
     const kill = stops.kill?.(target);
-    observer?.stoppingJob?.(target, job.name);
     stops.observer?.stopping(target, job.name, graceMs);
     try {
       const result = await supervisor.stop(key, {

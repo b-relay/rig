@@ -3,7 +3,7 @@ import { attempt } from "@/lib/outcome";
 import type { ActivityResult } from "@/lib/types";
 import { read } from "@/server/daemon";
 import { ActivityTable, OperationRecord } from "@/components/activity-table";
-import { Empty, Failure } from "@/components/bits";
+import { Empty, Failure, PageHeader } from "@/components/bits";
 
 export const metadata: Metadata = { title: "Activity" };
 /** Every Operation on this Host, or one of them in full when `?operation=` names it. */
@@ -21,14 +21,14 @@ export default async function ActivityPage({
     : [];
   return (
     <>
-      <div>
-        <h1 className="title text-2xl">Activity</h1>
-        <p className="text-sm text-muted-foreground">
-          {operation
+      <PageHeader
+        title="Activity"
+        description={
+          operation
             ? "One Operation, by its id."
-            : "What rigd has done, newest first."}
-        </p>
-      </div>
+            : "What rigd has done on this Mac, newest first: deploys, starts and stops, crashes, registrations and secret changes."
+        }
+      />
       {!activity.ok ? <Failure failure={activity.failure} /> : null}
       {operation && activity.ok ? (
         operations.length === 0 ? (

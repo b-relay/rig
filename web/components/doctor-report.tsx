@@ -3,8 +3,8 @@ import type { DoctorReport } from "@/lib/types";
 import { Notice } from "./bits";
 
 const HEAD =
-  "px-3 py-2 text-left text-xs font-medium text-muted-foreground whitespace-nowrap";
-const CELL = "px-3 py-2 align-top";
+  "h-8 px-4 text-left text-[11px] font-medium tracking-wide whitespace-nowrap text-muted-foreground uppercase";
+const CELL = "px-4 py-2 align-top";
 /** Each check on one row; a failed check shows its reason and the hint that fixes it. */
 export function DoctorTable({ report }: { report: DoctorReport }) {
   return (
@@ -15,7 +15,7 @@ export function DoctorTable({ report }: { report: DoctorReport }) {
           : "Some checks failed; each row names what to do."}
         {report.note ? ` ${report.note}` : ""}
       </Notice>
-      <div className="-mx-4 overflow-x-auto sm:mx-0 sm:rounded-md sm:border sm:border-rule sm:bg-sheet">
+      <div className="-mx-4 overflow-x-auto bg-sheet sm:mx-0 sm:rounded-lg sm:border sm:border-rule sm:shadow-xs">
         <table className="w-full min-w-[36rem] text-sm">
           <thead className="border-b border-rule">
             <tr>

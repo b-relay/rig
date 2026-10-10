@@ -5,8 +5,8 @@ import { Empty, State } from "./bits";
 
 type Operation = ActivityResult["operations"][number];
 const HEAD =
-  "px-3 py-2 text-left text-xs font-medium text-muted-foreground whitespace-nowrap";
-const CELL = "px-3 py-2 align-top";
+  "h-8 px-4 text-left text-[11px] font-medium tracking-wide whitespace-nowrap text-muted-foreground uppercase";
+const CELL = "px-4 py-2 align-top";
 /** Operations newest first; each links to its own record. */
 export function ActivityTable({
   operations,
@@ -17,7 +17,7 @@ export function ActivityTable({
 }) {
   if (operations.length === 0) return <Empty>Nothing has happened yet.</Empty>;
   return (
-    <div className="-mx-4 overflow-x-auto sm:mx-0 sm:rounded-md sm:border sm:border-rule sm:bg-sheet">
+    <div className="-mx-4 overflow-x-auto bg-sheet sm:mx-0 sm:rounded-lg sm:border sm:border-rule sm:shadow-xs">
       <table className="w-full min-w-[40rem] text-sm">
         <thead className="border-b border-rule">
           <tr>

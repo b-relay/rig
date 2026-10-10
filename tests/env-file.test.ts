@@ -46,3 +46,19 @@ test("every rejection names the file and the line", () => {
     details: { path: "/work/.env", line: 1 },
   });
 });
+
+test("double-quoted escapes decode in one pass: an escaped backslash before n, r or a quote stays that backslash and letter", () => {
+  const values = parseEnvironmentFile(
+    [
+      'A="C:\\\\new"',
+      'B="line\\nnext"',
+      'C="\\\\\\n"',
+      'D="say \\"hi\\" \\\\r"',
+    ].join("\n"),
+    "test.env",
+  );
+  expect(values.A).toBe("C:\\new");
+  expect(values.B).toBe("line\nnext");
+  expect(values.C).toBe("\\\n");
+  expect(values.D).toBe('say "hi" \\r');
+});

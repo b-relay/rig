@@ -58,7 +58,7 @@ export function encodeEnvAssignment(key: string, value: string): string {
     throw new RigError(
       "ENV_VALUE",
       `The value for ${key} cannot be written to an env file so that it reads back the same.`,
-      "A value holding both a line break and a backslash, a single quote and a backslash before n, r or a quote, or a Unicode line or paragraph separator (U+2028, U+2029) has no single-line form. Store it another way, for example base64-encoded.",
+      "A value holding a Unicode line or paragraph separator (U+2028, U+2029) has no single-line form. Store it another way, for example base64-encoded.",
       { key },
     );
   return line;

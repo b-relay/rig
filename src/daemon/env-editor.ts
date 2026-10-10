@@ -2,6 +2,7 @@ import { z } from "zod";
 import { RigError } from "../domain/errors";
 import { TARGET_ROLES } from "../config/schema";
 import {
+  assertNoSymlinkBelow,
   describeEnvFile,
   envScopeFile,
   revealEnvValue,
@@ -168,7 +169,9 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
         "Choose one of the Services rig.yaml declares, or the Project's own files.",
         { service: scope.service },
       );
-    return envScopeFile(dependencies.envRoot, found.name, scope);
+    const path = envScopeFile(dependencies.envRoot, found.name, scope);
+    await assertNoSymlinkBelow(dependencies.envRoot, path);
+    return path;
   };
   return async (input: unknown): Promise<unknown> => {
     const parsed = envEditorRequestSchema.safeParse(input);
@@ -191,12 +194,11 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
         ),
         services,
         files: await Promise.all(
-          envScopes(services).map((scope) =>
-            describeEnvFile(
-              envScopeFile(dependencies.envRoot, found.name, scope),
-              scope,
-            ),
-          ),
+          envScopes(services).map(async (scope) => {
+            const path = envScopeFile(dependencies.envRoot, found.name, scope);
+            await assertNoSymlinkBelow(dependencies.envRoot, path);
+            return describeEnvFile(path, scope);
+          }),
         ),
       } satisfies EnvFiles;
     }

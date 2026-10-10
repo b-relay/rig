@@ -12,7 +12,7 @@ import {
   Trash2,
   Undo2,
 } from "lucide-react";
-import { scopeFile, scopeReaders } from "@/lib/env";
+import { own, scopeFile, scopeReaders } from "@/lib/env";
 import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
 import { transportFailure } from "@/lib/reconcile";
 import { targetSelector } from "@/lib/target";
@@ -187,14 +187,14 @@ export function SecretsEditor({
           </li>
         ) : null}
         {keys.map((key) => {
-          const change = pending[key];
+          const change = own(pending, key);
           const isNew = !file.keys.includes(key);
           const value =
             change?.op === "set"
-              ? visible[key]
+              ? own(visible, key)
                 ? change.value
                 : undefined
-              : revealed[key];
+              : own(revealed, key);
           const shown = editing?.key === key;
           return (
             <li
@@ -249,7 +249,7 @@ export function SecretsEditor({
                       }
                       aria-label={`New value for ${key}`}
                       placeholder={
-                        revealed[key] === undefined
+                        own(revealed, key) === undefined
                           ? "Type the new value"
                           : undefined
                       }
@@ -273,7 +273,7 @@ export function SecretsEditor({
                       className="h-8"
                       // An unrevealed value is never blanked by accident: keeping an empty field needs the old value seen.
                       disabled={
-                        editing.value === "" && revealed[key] === undefined
+                        editing.value === "" && own(revealed, key) === undefined
                       }
                     >
                       Keep
@@ -311,17 +311,20 @@ export function SecretsEditor({
                     {change.op === "set" ? (
                       <IconButton
                         label={
-                          visible[key]
+                          own(visible, key)
                             ? `Hide the new value of ${key}`
                             : `Show the new value of ${key}`
                         }
                         onClick={() =>
-                          setVisible(({ [key]: shownBefore, ...kept }) =>
-                            shownBefore ? kept : { ...kept, [key]: true },
-                          )
+                          setVisible((now) => {
+                            const { [key]: _shown, ...kept } = now;
+                            return own(now, key)
+                              ? kept
+                              : { ...kept, [key]: true as const };
+                          })
                         }
                       >
-                        {visible[key] ? <EyeOff /> : <Eye />}
+                        {own(visible, key) ? <EyeOff /> : <Eye />}
                       </IconButton>
                     ) : null}
                     <IconButton
@@ -333,7 +336,7 @@ export function SecretsEditor({
                   </>
                 ) : (
                   <>
-                    {revealed[key] === undefined ? (
+                    {own(revealed, key) === undefined ? (
                       <IconButton
                         label={`Reveal ${key}`}
                         disabled={locked}
@@ -353,8 +356,8 @@ export function SecretsEditor({
                       label={`Edit ${key}`}
                       disabled={locked}
                       onClick={() => {
-                        setEditVisible(revealed[key] !== undefined);
-                        setEditing({ key, value: revealed[key] ?? "" });
+                        setEditVisible(own(revealed, key) !== undefined);
+                        setEditing({ key, value: own(revealed, key) ?? "" });
                       }}
                     >
                       <Pencil />

@@ -196,8 +196,9 @@ export async function observeTargets(
     };
   });
 }
-/** Pure: how many times rigd started a Service again on its own since its last explicit start, crash restarts after a
- * known and after an unknown exit together; nothing when it made none or never ran the Service. */
+/** Pure: the automatic restart attempts still inside the Service's restart budget windows, after a known and after an
+ * unknown exit together; nothing when there are none or rigd never ran the Service. Attempts age out of the windows, so the
+ * count can fall, and an attempt the budget refused before spawning counts too: it is recent activity, not a lifetime total. */
 export function automaticRestarts(
   target: Pick<TargetRecord, "services">,
   service: string,

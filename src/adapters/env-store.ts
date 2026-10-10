@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   open,
   readFile,
-  realpath,
   rename,
   rm,
   stat,
@@ -153,9 +153,8 @@ export async function writeEnvFile(
   // A directory that existed before keeps whatever mode it had; the env tree is the operator's alone.
   for (const directory of privateDirectories(privateRoot, dirname(path)))
     await chmod(directory, 0o700).catch(() => {});
-  // An operator who made the file a symlink keeps it: the file it names is the one replaced.
-  const destination =
-    current === undefined ? path : await realpath(path).catch(() => path);
+  // The caller refused symlinks below the env root (assertNoSymlinkBelow), so this replaces the file the scope names.
+  const destination = path;
   const temporary = `${destination}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, "wx", 0o600);
@@ -188,6 +187,34 @@ export async function writeEnvFile(
   await directory?.close();
   await chmod(destination, 0o600);
   return describeEnvFile(path, scope);
+}
+/** Fails ENV_SCOPE_SYMLINK when `path` is not inside `root`, or when any directory or file below `root` on the way to it is
+ * a symlink: reading, revealing or replacing it would reach a file outside the env tree. `root` itself may be a symlink.
+ * A component that does not exist yet ends the check, since everything below it is created by Rig. */
+export async function assertNoSymlinkBelow(
+  root: string,
+  path: string,
+): Promise<void> {
+  const refuse = (at: string) =>
+    new RigError(
+      "ENV_SCOPE_SYMLINK",
+      `${at} is a symlink or lies outside ${root}; the dashboard reads and writes only files inside the env directory.`,
+      "Replace the symlink with the real file or directory, or edit that file in an editor.",
+      { path: at, root },
+    );
+  const inside = relative(root, path);
+  if (!inside || inside.startsWith("..") || isAbsolute(inside))
+    throw refuse(path);
+  let current = root;
+  for (const part of inside.split(sep)) {
+    current = join(current, part);
+    const info = await lstat(current).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (info === undefined) return;
+    if (info.isSymbolicLink()) throw refuse(current);
+  }
 }
 /** Pure: `root` and every directory below it down to `leaf`; nothing when `leaf` is not inside `root`. */
 export function privateDirectories(

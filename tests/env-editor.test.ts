@@ -7,7 +7,6 @@ import {
   stat,
   writeFile,
   readdir,
-  lstat,
   symlink,
 } from "node:fs/promises";
 import { join } from "node:path";
@@ -356,18 +355,92 @@ describe("env file hardening", () => {
     expect(privateDirectories(envRoot, "/elsewhere")).toEqual([]);
     expect(privateDirectories(undefined, envRoot)).toEqual([]);
   });
-  test("a symlinked env file stays a symlink and the file it names is the one written", async () => {
+  test("a symlink below the env root, to a file or a directory, is refused for read, reveal and write", async () => {
     const root = await scratch();
-    const real = join(root, "real.env");
-    await writeFile(real, "A=1\n", { mode: 0o600 });
-    const link = join(root, "all.env");
-    await symlink(real, link);
-    const before = await describeEnvFile(link, {});
-    await writeEnvFile(link, {}, before.revision, [
-      { op: "set", key: "B", value: "2" },
-    ]);
-    expect((await lstat(link)).isSymbolicLink()).toBe(true);
-    expect(await readFile(real, "utf8")).toBe("A=1\nB='2'\n");
+    const envRoot = join(root, "env");
+    const outside = join(root, "outside");
+    await mkdir(join(outside, "dir"), { recursive: true });
+    await writeFile(join(outside, "secret.env"), "A=outside\n", {
+      mode: 0o644,
+    });
+    await writeFile(join(outside, "dir", "all.env"), "B=outside\n");
+    const edit = createEnvEditor({
+      envRoot,
+      async resolveProject(name) {
+        return { id: "p1", name, repoPath: root };
+      },
+      async services() {
+        return ["web"];
+      },
+      exclusive: (_project, operation) => operation(),
+      async record() {},
+      now: () => "2026-10-10T00:00:00.000Z",
+      id: () => "op",
+    });
+    await mkdir(join(envRoot, "demo"), { recursive: true });
+    await symlink(
+      join(outside, "secret.env"),
+      join(envRoot, "demo", "all.env"),
+    );
+    await symlink(join(outside, "dir"), join(envRoot, "demo", "web"));
+    await expect(edit({ action: "read", project: "demo" })).rejects.toThrow(
+      /symlink/,
+    );
+    await expect(
+      edit({ action: "reveal", project: "demo", scope: {}, key: "A" }),
+    ).rejects.toThrow(/symlink/);
+    await expect(
+      edit({
+        action: "reveal",
+        project: "demo",
+        scope: { service: "web" },
+        key: "B",
+      }),
+    ).rejects.toThrow(/symlink/);
+    await expect(
+      edit({
+        action: "write",
+        project: "demo",
+        scope: {},
+        expectedRevision: envRevision("A=outside\n"),
+        changes: [{ op: "set", key: "A", value: "x" }],
+        actor: "dashboard (this Mac)",
+      }),
+    ).rejects.toThrow(/symlink/);
+    expect(await readFile(join(outside, "secret.env"), "utf8")).toBe(
+      "A=outside\n",
+    );
+    expect((await stat(join(outside, "secret.env"))).mode & 0o777).toBe(0o644);
+    expect((await stat(join(outside, "dir"))).mode & 0o777).not.toBe(0o700);
+  });
+  test("an env root that is itself a symlink is allowed", async () => {
+    const root = await scratch();
+    await mkdir(join(root, "real-env", "demo"), { recursive: true });
+    await symlink(join(root, "real-env"), join(root, "env"));
+    const edit = createEnvEditor({
+      envRoot: join(root, "env"),
+      async resolveProject(name) {
+        return { id: "p1", name, repoPath: root };
+      },
+      async services() {
+        return [];
+      },
+      exclusive: (_project, operation) => operation(),
+      async record() {},
+      now: () => "2026-10-10T00:00:00.000Z",
+      id: () => "op",
+    });
+    await edit({
+      action: "write",
+      project: "demo",
+      scope: {},
+      expectedRevision: ABSENT_REVISION,
+      changes: [{ op: "set", key: "A", value: "1" }],
+      actor: "dashboard (this Mac)",
+    });
+    expect(
+      await readFile(join(root, "real-env", "demo", "all.env"), "utf8"),
+    ).toBe("A='1'\n");
   });
   test("__proto__ is refused as a name, since the reader cannot hold it", () => {
     expect(() =>

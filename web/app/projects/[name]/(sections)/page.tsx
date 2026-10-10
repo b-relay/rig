@@ -142,7 +142,7 @@ function TargetCard({
                 {health ?? component.state}
                 {component.restarts ? (
                   <span className="ml-2 text-warn">
-                    {component.restarts} restart
+                    {component.restarts} recent restart
                     {component.restarts === 1 ? "" : "s"}
                   </span>
                 ) : null}

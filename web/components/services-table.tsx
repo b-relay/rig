@@ -34,7 +34,12 @@ export function ServicesTable({
             <TableHead className={HEAD}>Health</TableHead>
             <TableHead className={HEAD}>Ports</TableHead>
             <TableHead className={HEAD}>PID</TableHead>
-            <TableHead className={HEAD}>Restarts</TableHead>
+            <TableHead
+              className={HEAD}
+              title="Automatic restart attempts inside rigd's restart budget window; older ones drop off."
+            >
+              Recent restarts
+            </TableHead>
             <TableHead className={HEAD}>Detail</TableHead>
           </TableRow>
         </TableHeader>

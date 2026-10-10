@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   layeredKeys,
+  own,
   parseScopeKey,
   readersOf,
   scopeFile,
@@ -108,4 +109,13 @@ test("Activity names the client a change came from, not a person, in plain words
   expect(clientName({ admitted: true, by: "client" }, "fd7a::1<script>")).toBe(
     "dashboard (fd7a::1c)",
   );
+});
+
+test("own reads only a record's own entries, so names like constructor stay masked until revealed", () => {
+  const revealed: Record<string, string> = {};
+  expect(own(revealed, "constructor")).toBeUndefined();
+  expect(own(revealed, "toString")).toBeUndefined();
+  expect(
+    own({ constructor: "v" } as Record<string, string>, "constructor"),
+  ).toBe("v");
 });

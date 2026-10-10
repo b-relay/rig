@@ -12,8 +12,9 @@ dist
 coverage
 *.lcov
 
-# logs
-/logs
+# logs (every logs directory, except the dashboard's Logs routes)
+logs
+!web/app/**/logs/
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .rig/logs/

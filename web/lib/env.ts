@@ -84,3 +84,7 @@ export function readersOf(
         )),
   );
 }
+/** The entry `record` holds for `key` itself, so a name such as constructor or toString never reads an inherited property. */
+export function own<T>(record: Record<string, T>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}

@@ -1,6 +1,10 @@
-import type { ComponentReport, LogsResult } from "./types";
+import type { ComponentReport, LogsResult, TargetReport } from "./types";
 
 export type LogEntry = LogsResult["entries"][number];
+/** A Target whose log can be read, with the names its lines are recorded under. */
+export interface LogTarget extends Pick<TargetReport, "name" | "kind"> {
+  components: readonly string[];
+}
 /** What the log viewer asks rigd to narrow a read to; empty means every line. */
 export interface LogQuery {
   /** Component names; none means all. */

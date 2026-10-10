@@ -16,6 +16,13 @@ export type {
   TargetReport,
 } from "../../src/domain/project-status";
 export type { ConfigEditorRequest } from "../../src/daemon/config-editor";
+export type { DeploymentReport } from "../../src/domain/deployments";
+import type { DeploymentReport } from "../../src/domain/deployments";
+/** A Project's deploys, oldest first. */
+export interface DeploymentsResult {
+  project: string;
+  deployments: DeploymentReport[];
+}
 export type { DoctorReport };
 
 import type {
@@ -109,6 +116,7 @@ export interface Replies {
   queue: QueueResult;
   "initialization-info": InitializationInfo;
   "deployment-context": DeploymentContext;
+  deployments: DeploymentsResult;
   "prepare-uninstall": { ready: true };
   "cancel-uninstall": { cancelled: true };
 }

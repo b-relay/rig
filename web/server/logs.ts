@@ -1,5 +1,4 @@
-import type { LogTarget } from "../components/log-viewer";
-import { logComponentChoices } from "../lib/logs";
+import { logComponentChoices, type LogTarget } from "../lib/logs";
 import { attempt } from "../lib/outcome";
 import { orderedTargets } from "../lib/overview";
 import { targetSelector } from "../lib/target";

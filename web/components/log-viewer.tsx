@@ -19,10 +19,11 @@ import {
   matchesSearch,
   type LogEntry,
   type LogQuery,
+  type LogTarget,
 } from "@/lib/logs";
 import { transportFailure } from "@/lib/reconcile";
 import { targetKey, targetSelector } from "@/lib/target";
-import type { LogsResult, TargetReport } from "@/lib/types";
+import type { LogsResult } from "@/lib/types";
 import { runCommand } from "@/server/actions";
 import { Failure } from "./bits";
 import { Input } from "@/components/ui/input";
@@ -46,10 +47,6 @@ const SLOT_CLASS = [
   "text-pink-300",
   "text-cyan-300",
 ];
-/** A Target whose log can be read, with the names its lines are recorded under. */
-export interface LogTarget extends Pick<TargetReport, "name" | "kind"> {
-  components: readonly string[];
-}
 /** One Target's log, streamed a second at a time through rigd's cursor while following. The
  * component and stream filters narrow what rigd reads; the search box narrows what is shown. The
  * first page came with the server render; the Target choice lives in the URL so a refresh keeps it. */

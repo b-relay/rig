@@ -2,7 +2,10 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Empty, Facts, Mono, Panel } from "@/components/bits";
 import { ServicesTable } from "@/components/services-table";
+import { deploymentRows, formatDuration } from "@/lib/deployments";
+import { ago, when } from "@/lib/present";
 import { routeLines } from "@/lib/target-detail";
+import { deploymentHistory } from "@/server/deployments";
 import { targetHref } from "@/lib/target";
 import { target } from "@/server/target";
 
@@ -14,6 +17,19 @@ export default async function TargetOverviewPage({
 }) {
   const { project, target: report } = await target(params);
   const routes = routeLines(report);
+  // The deploy that put the running Commit in place, when rigd recorded it.
+  const history =
+    report.kind === "working"
+      ? undefined
+      : await deploymentHistory(project.name);
+  const current = history?.ok
+    ? deploymentRows(
+        history.value.deployments.filter(
+          (deploy) => deploy.target === report.name,
+        ),
+        [report],
+      ).find((row) => row.current)
+    : undefined;
   const href = targetHref(project.name, report.name);
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
@@ -106,6 +122,15 @@ export default async function TargetOverviewPage({
                   {report.commit}
                 </Mono>,
               ],
+              current
+                ? [
+                    "Deployed",
+                    <span key="w" title={when(current.finishedAt)}>
+                      {ago(current.finishedAt, Date.now())}, in{" "}
+                      {formatDuration(current.durationMs)}
+                    </span>,
+                  ]
+                : undefined,
               report.deploymentIncomplete
                 ? [
                     "Deploy",

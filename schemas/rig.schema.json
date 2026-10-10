@@ -148,7 +148,7 @@
                 "additionalProperties": false
               }
             ],
-            "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+            "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Under targets.preview it replaces the host for every Preview, so include ${rig.target}, such as ${rig.target}.api.preview.example.com. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
           },
           "healthcheck": {
             "type": "object",
@@ -585,7 +585,7 @@
                             "additionalProperties": false
                           }
                         ],
-                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Under targets.preview it replaces the host for every Preview, so include ${rig.target}, such as ${rig.target}.api.preview.example.com. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
                       },
                       "healthcheck": {
                         "type": "object",
@@ -905,7 +905,7 @@
                             "additionalProperties": false
                           }
                         ],
-                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Under targets.preview it replaces the host for every Preview, so include ${rig.target}, such as ${rig.target}.api.preview.example.com. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
                       },
                       "healthcheck": {
                         "type": "object",
@@ -1225,7 +1225,7 @@
                             "additionalProperties": false
                           }
                         ],
-                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Under targets.preview it replaces the host for every Preview, so include ${rig.target}, such as ${rig.target}.api.preview.example.com. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
                       },
                       "healthcheck": {
                         "type": "object",

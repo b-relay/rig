@@ -158,7 +158,7 @@ test("a Project with no domain may still give a Service one, and a plan without 
 test("a Service with several ports names the one its domain reaches; an unclear or unknown port is refused with the fix", () => {
   const twoPorts = { command: "api", ports: { http: "auto", admin: "auto" } };
   expect(issues(withApi(twoPorts))).toEqual([
-    "services.api.domain: Service 'api' has a domain but 2 ports (http, admin); name the one it reaches, such as domain: { host: api.melody.b-relay.com, port: http }.",
+    "services.api.domain: 'api' has 2 ports (http, admin); name the one this domain reaches, such as domain: { host: ..., port: http }.",
   ]);
   expect(
     plan(
@@ -176,7 +176,7 @@ test("a Service with several ports names the one its domain reaches; an unclear 
       withApi({ domain: { host: "api.melody.b-relay.com", port: "rpc" } }),
     ),
   ).toEqual([
-    "services.api.domain: Service 'api' has a domain that names the port 'rpc', which it does not declare; its ports are http.",
+    "services.api.domain: 'api' declares no port 'rpc'; its ports are http.",
   ]);
   expect(
     issues({
@@ -187,8 +187,32 @@ test("a Service with several ports names the one its domain reaches; an unclear 
       },
     }),
   ).toEqual([
-    "services.worker.domain: Service 'worker' has a domain but declares no port to route to; declare one, such as ports: { http: auto }, or remove the domain.",
+    "services.worker.domain: 'worker' declares no port for this domain to reach; declare one, such as ports: { http: auto }, or remove the domain.",
   ]);
+});
+
+test("a role that does not serve a Service domain is not checked for its port", () => {
+  // The working Target serves no Service domain its patch does not set, so a second port there is no ambiguity.
+  const config = withApi(
+    { command: "api --port ${ports.http}" },
+    {
+      targets: {
+        stable: true,
+        working: { services: { api: { ports: { debug: 9229 } } } },
+      },
+    },
+  );
+  expect(failureOf(config)).toBeUndefined();
+  expect(plan(config, "working")).not.toHaveProperty("serviceDomains");
+  // Messages fit the 160 characters a refusal shows, even with long names.
+  const long = withApi({
+    command: "api",
+    ports: { "http-public": "auto", "admin-internal": "auto" },
+    domain: "dashboard-api.staging.melody.b-relay.com",
+  });
+  const refused = failureOf(long)?.context.issues ?? [];
+  expect(refused.length).toBe(1);
+  for (const issue of refused) expect(issue.message.endsWith(".")).toBe(true);
 });
 
 test("a role patch replaces a Service's host and keeps the port the top level names", () => {
@@ -223,13 +247,13 @@ test("a role patch replaces a Service's host and keeps the port the top level na
     },
   );
   expect(issues(plain)).toEqual([
-    "targets.stable.services.api.domain: Service 'api' has a domain but 2 ports (http, admin); name the one it reaches, such as domain: { host: admin.melody.test, port: http }.",
+    "targets.stable.services.api.domain: 'api' has 2 ports (http, admin); name the one this domain reaches, such as domain: { host: ..., port: http }.",
   ]);
 });
 
 test("every hostname of a Target must differ, the Project domain included, ignoring case", () => {
   expect(issues(withApi({ domain: "Melody.b-relay.com" }))).toEqual([
-    "services.api.domain: The stable Target already serves Melody.b-relay.com from domain; each hostname of a Target must differ.",
+    "services.api.domain: domain gives this Target the same hostname; each hostname of a Target must differ.",
   ]);
   expect(
     issues({
@@ -240,7 +264,7 @@ test("every hostname of a Target must differ, the Project domain included, ignor
       },
     }),
   ).toContain(
-    "services.api.domain: The stable Target already serves api.melody.b-relay.com from services.web.domain; each hostname of a Target must differ.",
+    "services.api.domain: services.web.domain gives this Target the same hostname; each hostname of a Target must differ.",
   );
   // A role patch is checked against the hostnames of its own role.
   expect(
@@ -256,7 +280,7 @@ test("every hostname of a Target must differ, the Project domain included, ignor
       },
     }),
   ).toEqual([
-    "targets.working.services.api.domain: The working Target already serves melody.localhost from targets.working.domain; each hostname of a Target must differ.",
+    "targets.working.services.api.domain: targets.working.domain gives this Target the same hostname; each hostname of a Target must differ.",
   ]);
   // Hostnames that only meet once ${rig.target} is replaced are refused when the Target is planned.
   const meeting = {

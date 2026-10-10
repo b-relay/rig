@@ -1491,7 +1491,7 @@ services:
     command: ./web --port ${port}
     ports: { http: auto }
   api:
-    command: ./api --port ${port} --admin-port ${ports.admin}
+    command: ./api --port ${ports.http} --admin-port ${ports.admin}
     ports: { http: auto, admin: auto }
     domain: { host: api.melody.b-relay.com, port: http }
 targets: { working: true, stable: true, preview: true }

@@ -246,9 +246,13 @@ function configuredTarget(
     service: entry.service,
     hostname: named(entry.pattern),
   }));
+  // Two settings that meet only once ${rig.target} is replaced are refused when the Target is planned; until then each
+  // hostname is listed once.
   const reaching = (name: string) => [
-    ...(upstream === name && domain ? [domain] : []),
-    ...own.filter((entry) => entry.service === name).map((e) => e.hostname),
+    ...new Set([
+      ...(upstream === name && domain ? [domain] : []),
+      ...own.filter((entry) => entry.service === name).map((e) => e.hostname),
+    ]),
   ];
   return {
     components: [
@@ -271,8 +275,10 @@ function configuredTarget(
       })),
     ],
     hostnames: [
-      ...(domain && upstream ? [domain] : []),
-      ...own.map((entry) => entry.hostname),
+      ...new Set([
+        ...(domain && upstream ? [domain] : []),
+        ...own.map((entry) => entry.hostname),
+      ]),
     ],
   };
 }

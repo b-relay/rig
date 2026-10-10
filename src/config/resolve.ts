@@ -527,7 +527,8 @@ function uniqueSites(
       );
     seen.set(hostname.toLowerCase(), path);
   }
-} /** A Branch as a hostname label, for a Preview the caller did not name. */
+}
+/** A Branch as a hostname label, for a Preview the caller did not name. */
 function slug(branch: string): string {
   return (
     branch

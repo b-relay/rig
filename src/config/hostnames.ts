@@ -93,18 +93,18 @@ export function serviceDomainPort(
   ports: Readonly<Record<string, unknown>> | undefined,
 ): { port: string } | { problem: string } {
   const declared = Object.keys(ports ?? {});
-  const host = serviceDomainHost(setting);
   const named = typeof setting === "string" ? undefined : setting.port;
+  // The issue path names the setting, so a message names only what is wrong and the fix, within the 160 characters shown.
   if (named !== undefined)
     return declared.includes(named)
       ? { port: named }
       : {
-          problem: `Service '${service}' has a domain that names the port '${named}', which it does not declare${declared.length ? `; its ports are ${declared.join(", ")}` : ""}.`,
+          problem: `'${service}' declares no port '${named}'${declared.length ? `; its ports are ${declared.join(", ")}` : ""}.`,
         };
   if (declared.length === 1) return { port: declared[0]! };
   return {
     problem: declared.length
-      ? `Service '${service}' has a domain but ${declared.length} ports (${declared.join(", ")}); name the one it reaches, such as domain: { host: ${host}, port: ${declared[0]} }.`
-      : `Service '${service}' has a domain but declares no port to route to; declare one, such as ports: { http: auto }, or remove the domain.`,
+      ? `'${service}' has ${declared.length} ports (${declared.join(", ")}); name the one this domain reaches, such as domain: { host: ..., port: ${declared[0]} }.`
+      : `'${service}' declares no port for this domain to reach; declare one, such as ports: { http: auto }, or remove the domain.`,
   };
 }

@@ -206,7 +206,7 @@ const serviceDomain = z
     }),
   ])
   .describe(
-    `A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${DOMAIN_REFERENCE}`,
+    `A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Under targets.preview it replaces the host for every Preview, so include \${rig.target}, such as \${rig.target}.api.preview.example.com. Every hostname of one Target must differ. ${DOMAIN_REFERENCE}`,
   );
 const restart = z
   .enum(["always", "on-failure", "no"])
@@ -679,27 +679,22 @@ export const projectConfigSchema = z
       if (problem)
         report(patched ? ["targets", role, "domain"] : ["domain"], problem);
     }
-    // Every hostname of one Target is its own site, so no two settings may give a Target the same one. A setting two roles
-    // repeat is reported once, for the first of them.
-    const repeated = new Set<string>();
+    // Each Service domain a Target that is on serves must reach one port, and every hostname of one Target is its own site.
     for (const role of TARGET_ROLES)
-      if (targetOn(config, role))
-        uniqueHostnames(config, role, (path, message) => {
-          if (repeated.has(path.join("."))) return;
-          repeated.add(path.join("."));
-          report(path, message);
-        });
+      if (targetOn(config, role)) checkServiceDomains(config, role, report);
   });
-/** Reports a hostname that two settings give one Target of `role`: the Project domain and a Service domain, or two Service
- * domains. Patterns are compared as written, `${rig.target}` included, so the check holds for every Target of the role;
- * planning compares the resolved hostnames again. */
-function uniqueHostnames(
+/** Checks the Service domains a Target of `role` serves: each must name a port it can reach with the ports this role gives
+ * the Service (a domain the role does not serve is not checked), and no two settings may give the Target one hostname (the
+ * Project domain included). Patterns are compared as written, `${rig.target}` included, so the check holds for every Target
+ * of the role; planning compares the resolved hostnames again. */
+function checkServiceDomains(
   config: GraphConfig,
   role: TargetRole,
   report: Report,
 ): void {
   const patch = config.targets?.[role];
   const own = isRecord(patch) ? patch : {};
+  const services = (patchSettings(config, role) as GraphSettings).services;
   const domain = roleHostname(config.domain, own.domain, role);
   const seen = new Map<string, string>();
   if (domain)
@@ -710,16 +705,23 @@ function uniqueHostnames(
   for (const entry of roleServiceDomains(
     config.services,
     own.services,
-    (patchSettings(config, role) as GraphSettings).services,
+    services,
     role,
   )) {
+    // Only a domain this role serves needs a port it can reach, with the ports this role gives the Service.
+    const reached = serviceDomainPort(
+      entry.service,
+      services?.[entry.service]?.domain ?? entry.pattern,
+      services?.[entry.service]?.ports,
+    );
+    if ("problem" in reached) report(entry.path.split("."), reached.problem);
     const key = entry.pattern.toLowerCase();
     const first = seen.get(key);
     if (first === undefined) seen.set(key, entry.path);
     else
       report(
         entry.path.split("."),
-        `${role === "preview" ? "Every Preview" : `The ${role} Target`} already serves ${entry.pattern} from ${first}; each hostname of a Target must differ.`,
+        `${first} gives this Target the same hostname; each hostname of a Target must differ.`,
       );
   }
 }
@@ -888,13 +890,6 @@ function validateGraph(
         [...at, "services", key, "healthcheck"],
         `Service '${key}' declares no port, so its healthcheck needs a test, such as test: test -f /tmp/${key}.alive.`,
       );
-  // A Service's own hostname routes '/' to one of its ports, so it must be clear which.
-  for (const [key, entry] of Object.entries(services)) {
-    if (entry.domain === undefined) continue;
-    const reached = serviceDomainPort(key, entry.domain, entry.ports);
-    if ("problem" in reached)
-      report([...at, "services", key, "domain"], reached.problem);
-  }
   validateReferences(settings, at, report);
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))

@@ -1054,7 +1054,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           warnings,
           retired: replaced.retired,
           ...(target.plan.domain ? { route: target.plan.domain } : {}),
-          ...(target.plan.serviceDomains
+          ...(plannedSites(target.plan).length
             ? {
                 hostnames: plannedSites(target.plan).map(
                   (site) => site.hostname,

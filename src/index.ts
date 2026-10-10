@@ -20,6 +20,8 @@ import { runCommand } from "./providers/command-runner";
 import { inheritedEnvironment } from "./daemon/environment";
 import { homedir } from "node:os";
 import { writeProxyToken } from "./adapters/proxy-token";
+import { verifyProxyCertificates } from "./adapters/proxy-verify";
+import { readHostConfig } from "./config";
 import { RigError } from "./domain/errors";
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
@@ -74,6 +76,21 @@ export async function main(args: readonly string[]): Promise<number> {
               "Copy the token, then run: pbpaste | rig proxy token",
             );
           return writeProxyToken(root, await Bun.stdin.text());
+        },
+        async proxyVerify(options) {
+          const host = await readHostConfig(root);
+          if (!host.proxy)
+            throw new RigError(
+              "PROXY_UNMANAGED",
+              "Rig does not run its own Caddy on this Host.",
+              "Add a proxy section to config.yaml under the Rig root and run rigd install.",
+            );
+          return verifyProxyCertificates({
+            root,
+            port: options.port ?? host.proxy.ports.https,
+            stagingOk: options.stagingOk,
+            waitMs: options.waitSeconds * 1000,
+          });
         },
       },
     });

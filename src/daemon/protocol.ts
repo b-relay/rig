@@ -37,6 +37,8 @@ export const commandSchema = z
       "queue",
       "deployments",
       "run",
+      "proxy",
+      "proxy-apply",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
@@ -105,6 +107,7 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "activity",
   "queue",
   "deployments",
+  "proxy",
 ] as const);
 /** Replies to the reads whose collections rig renders. A missing or malformed
  * collection is a protocol failure, never an empty page; unknown top-level keys

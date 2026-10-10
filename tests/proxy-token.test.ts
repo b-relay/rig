@@ -70,7 +70,10 @@ test("rig proxy token stores what the local command reads and prints only the pa
     output,
     async () => {},
     () => new Date(),
-    { proxyToken: async () => "/r/auth/acme-dns.token" },
+    {
+      proxyToken: async () => "/r/auth/acme-dns.token",
+      proxyVerify: async () => [],
+    },
   );
   command.exitOverride();
   await command.parseAsync(["proxy", "token"], { from: "user" });

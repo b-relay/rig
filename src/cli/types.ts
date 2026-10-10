@@ -2,6 +2,7 @@ import type { ProjectStatusReader } from "../domain/project-status";
 import type { CliInteraction } from "./interaction";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { DiagnosticLog } from "../diagnostics/types";
+import type { CertificateVerdict } from "../domain/certificate-check";
 
 /** The only terminal effect; tests capture the same text a terminal receives. */
 export interface UserOutput {
@@ -12,6 +13,12 @@ export interface UserOutput {
 export interface LocalCommands {
   /** Stores the DNS provider token read from standard input; resolves to the path it was written to. */
   proxyToken(): Promise<string>;
+  /** Checks every hostname Rig's Caddy serves with a TLS handshake on this Host (`rig proxy verify`). */
+  proxyVerify(options: {
+    port?: number;
+    waitSeconds: number;
+    stagingOk: boolean;
+  }): Promise<CertificateVerdict[]>;
 }
 export interface CliDependencies {
   root: string;

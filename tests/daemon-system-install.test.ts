@@ -122,7 +122,7 @@ test("a first boot install prepares everything that needs no root and prints one
   // The line stages a copy root writes from what the user's shell reads, checks its digest (deleting it on a mismatch), then
   // removes the LaunchAgent, installs and bootstraps, in that order.
   expect(line).toMatch(
-    /sudo sh -c '.*' < '.*' && \{ echo '[0-9a-f]{64} {2}.*' \| sudo shasum -a 256 -c - \|\| \{ sudo rm -f .*; false; \}; \} && \{ launchctl bootout gui\/502\/.* && sudo install .* && .* && sudo launchctl bootstrap system /,
+    /sudo sh -c '.*' < '.*' && \{ echo '[0-9a-f]{64} {2}.*' \| sudo shasum -a 256 -c - \|\| \{ sudo rm -f .*; false; \}; \} && \{ ! launchctl print gui\/502\/.* && rm -f .* && sudo install .* && \{ ! sudo launchctl print system\/.* && sudo launchctl enable system\/.* && sudo launchctl bootstrap system /,
   );
   const plist = await readFile(
     join(w.root, "daemon", "launchd", `${label}.plist`),

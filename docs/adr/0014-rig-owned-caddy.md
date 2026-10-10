@@ -78,14 +78,24 @@ Today `rigd install` loads rigd as a LaunchAgent in `gui/<uid>`, which exists on
   3. If they differ, it stops with `DAEMON_SYSTEM_INSTALL` and prints **one line** per job:
 
      ```sh
-     sudo install -d -m 755 -o root -g wheel "/Library/Application Support/Rig" \
-     && sudo install -m 644 -o root -g wheel ~/.rig/daemon/launchd/com.b-relay.rig-caddy.d8063e9dcf1ba828.plist "/Library/Application Support/Rig/com.b-relay.rig-caddy.d8063e9dcf1ba828.plist" \
-     && echo "<sha256>  /Library/Application Support/Rig/com.b-relay.rig-caddy.d8063e9dcf1ba828.plist" | sudo shasum -a 256 -c - \
-     && sudo install -m 644 -o root -g wheel "/Library/Application Support/Rig/com.b-relay.rig-caddy.d8063e9dcf1ba828.plist" /Library/LaunchDaemons/ \
-     && sudo launchctl bootstrap system /Library/LaunchDaemons/com.b-relay.rig-caddy.d8063e9dcf1ba828.plist
+     sudo install -d -m 755 -o root -g wheel '/Library/Application Support/Rig' \
+     && sudo sh -c 'umask 077; cat > '\''/Library/Application Support/Rig/<label>.plist'\''' < ~/.rig/daemon/launchd/<label>.plist \
+     && { echo '<sha256>  /Library/Application Support/Rig/<label>.plist' | sudo shasum -a 256 -c - || { sudo rm -f '…/<label>.plist'; false; }; } \
+     && <stopped gui/<uid>/<label>> && rm -f ~/Library/LaunchAgents/<label>.plist \
+     && sudo install -m 644 -o root -g wheel '/Library/Application Support/Rig/<label>.plist' /Library/LaunchDaemons/<label>.plist \
+     && <stopped system/<label>> && sudo launchctl enable system/<label> \
+     && sudo launchctl bootstrap system /Library/LaunchDaemons/<label>.plist
      ```
-  - **What the chain guarantees.** The plist is copied into a directory only root can write, and its hash is checked there, before anything reaches `/Library/LaunchDaemons` or launchd. A source plist changed after rigd printed the line therefore fails the hash, and nothing after the failure runs. Rig never asks the owner to run a script, because a file the user can write, run with sudo, would be a way to gain root.
-  - **rigd's line.** It is the same chain. After the hash is verified, and before its bootstrap, it adds `&& { launchctl bootout gui/<uid>/com.b-relay.rigd.<hash> 2>/dev/null; rm -f ~/Library/LaunchAgents/com.b-relay.rigd.<hash>.plist; true; }`. The LaunchAgent is therefore removed only once the system plist is verified. A system job and a LaunchAgent are never both enabled for one root, which is what #287 requires.
+
+     `<stopped target>` is `{ ! launchctl print target >/dev/null 2>&1 || { launchctl bootout target && <wait up to 5 s until print fails> && ! launchctl print target >/dev/null 2>&1; }; }`.
+  - **What the chain guarantees.**
+    - The user's own shell reads the rendered plist, so root never opens a path the user controls. Root only writes what it is handed into a directory only it can write, privately.
+    - The digest is checked on that root-owned copy, before anything reaches `/Library/LaunchDaemons` or launchd. A plist changed after rigd printed the line fails the check, its staged copy is deleted, and nothing after the failure runs.
+    - A job is stopped only if it is loaded, and the line goes on only once launchd confirms it is gone. A bootout that fails, or that leaves the job loaded, ends the line (tested with a stubbed launchctl).
+    - `enable` undoes the emergency rollback's persistent `disable`.
+    - Rig never asks the owner to run a script, because a file the user can write, run with sudo, would be a way to gain root.
+  - **The LaunchAgent goes last.** Each line replaces the LaunchAgent of the same label, which it stops and removes only once the system plist is verified. A system job and a LaunchAgent are never both enabled for one root, which is what #287 requires.
+  - **The record waits.** `install.json` names the system mode only once both jobs are installed. Until then it names the rigd that runs, so a line never pasted leaves nothing recorded wrongly. launchd's rigd learns its mode from `RIG_DAEMON_MODE` in its plist.
   - **Order.** The Caddy line comes first.
   - **Confirming.** The owner runs `rigd install` again to confirm.
 
@@ -105,9 +115,14 @@ Rig's Caddy runs as its own job, `com.b-relay.rig-caddy.<hash>`, in the same dom
   - Without a `proxy` section, it removes a Caddy job left from before.
   - It records the proxy mode (`none`, `external` or `managed`) in `install.json`. A different mode restarts rigd even when its build is unchanged, because rigd chooses its router when it starts.
   - It always keeps `caddy/data`, the certificate storage, and the custom files and the token.
-- **Serving state is never guessed.** Every publication ends by reloading Caddy, and an operation may depend on that reload. A withdrawal, for example, must have taken effect before the upstream is stopped. When the reload cannot reach the admin socket, Rig asks the job manager what state Caddy is in:
-  - **Stopped, confirmed.** In launchd the job is not loaded or has no pid; in `process` mode the recorded process is gone. Then the change is complete, because Caddy reads the current generation when it starts.
-  - **Running but unreachable, or unknown.** The socket may be deleted, refuse permission or hang while HTTPS still serves the old config. Then the publication fails with `PROXY_UNREACHABLE`, the previous generation stays current, and the operation that needed the change fails before it touches an upstream.
+- **Serving state is never guessed.** An operation may depend on what Caddy serves. A withdrawal, for example, must have taken effect before the upstream is stopped. Rig reads what Caddy runs from `GET /config/` on its admin socket. That equals `caddy adapt` of the generation's main file (checked on 2.10.2), which each generation keeps as `adapted.json`.
+  - **Activation is confirmed.** After a reload or restart, Rig reads the config back. A Caddy that answers but does not run the new generation fails the change with `PROXY_ACTIVATION`, and the previous generation is served again.
+  - **Every change reconciles first.** Before a route change edits anything, Rig makes Caddy serve the current generation if it does not: a reload, or a restart when the CA differs. A crash between switching `current` and reloading therefore never outlives the next change or rigd's startup.
+  - **The route file has to be served too.** A route file ahead of the current generation (a crash between writing it and publishing) is published before any change resolves, even one that adds nothing. A removal never resolves while Caddy may still route to the upstream.
+  - **When the socket does not answer,** Rig asks the job manager:
+    - **Stopped, confirmed.** In launchd the job is not loaded or has no pid; in `process` mode the recorded process is gone. Caddy reads the current generation when it starts, so the change is complete.
+    - **Running but unreachable, or unknown.** The socket may be deleted, refuse permission or hang while HTTPS still serves the old config. The change fails with `PROXY_UNREACHABLE`, the previous generation stays current, and the operation that needed it fails before it touches an upstream.
+  - **Doctor reads the same.** Its `proxy-serving` check compares what Caddy runs with the current generation.
 - **Process mode.** This mode exists for e2e tests that opt in with `proxy`, high ports and `ca: internal` under an isolated `RIG_ROOT`. Nothing restarts the process there. Existing tests and dashboard sandboxes have no `proxy` section and run no Caddy.
 - **Ports.** macOS lets a non-root process bind ports below 1024 only on the wildcard address (checked: `*:444` bound, while `127.0.0.1:444` and the Tailscale address failed with `EACCES`).
   - **Listening on all interfaces.** Rig's Caddy therefore listens on all interfaces for 80 and 443, as b-caddy does. This is a deliberate, narrow exception to the localhost-only rule: the edge must be reachable from the tailnet, and there is no narrower binding without root. Upstreams stay localhost-only.
@@ -127,7 +142,8 @@ Only then does Rig point the `bin/caddy` symlink at the new file, by renaming a 
 
 Version 2.10 is the floor because, from 2.10 on, a managed wildcard covers its subdomains by default (checked on 2.10.2 and 2.11.7). 2.11 refuses `auto_https prefer_wildcard`, so Rig never writes it.
 
-- **Activation has a deadline.** Rig restarts Caddy (stop, and launchd starts it again) and waits up to 30 s for the admin socket to answer with the current generation loaded. If the new binary passed validation but fails to run, Rig points the symlink back at the previous file and restarts again. The failure is reported as `PROXY_BINARY_START` with the new binary's last log lines, with the token redacted.
+- **Activation has a deadline.** Rig restarts Caddy (stop, and launchd starts it again) and waits up to 30 s for the admin socket to answer. The answering process started after the switch, so it runs the new copy. If the new binary passed validation but fails to run, Rig points the symlink back at the last copy that served and restarts again. The failure is reported as `PROXY_BINARY_START` with the new binary's last log lines, the token redacted.
+- **Activation is durable.** `bin/state.json` records the last copy that served and the copy switched to but not yet confirmed running, and is written before the switch. An install killed after the switch is picked up by the next one, which starts and confirms the copy, or goes back. A copy that keeps failing is reverted to the last good one, never to another unconfirmed copy.
 - **Downtime.** A restart costs about one second when Caddy had been running longer than `ThrottleInterval`. Otherwise launchd waits up to the rest of those 10 s before starting it again. A failed upgrade can cost up to about 40 s: the deadline, then a restart of the previous binary.
 - **Already in place.** The Host already has a suitable binary: `/usr/local/bin/caddy` is v2.10.2 with `dns.providers.cloudflare` v0.2.4.
 
@@ -189,14 +205,26 @@ The rest of the layout:
 
 Publishing one change goes like this:
 
-1. Render a new generation into `generations/<id>.tmp/` and rename it to `generations/<id>/`.
-2. Run `caddy validate` on its main file with Rig's binary. If it fails, delete the generation; nothing else has changed.
-3. Rename a new `current` link over the old one.
-4. Reload Caddy with the generation's main file. If the reload fails, put `current` back and reload the previous generation. If Caddy is unreachable, follow the rule under **The Caddy process**.
+1. **Build.** Render a new generation into `generations/<id>.tmp/`.
+   - The custom site inventory comes from `caddy adapt` of the custom file alone. It is recorded in `generation.json` and is the one inventory that wildcard planning, conflicts, `rig proxy` and `verify` use.
+   - Then rename the directory to `generations/<id>/`.
+2. **Validate.** Run `caddy validate`, then `caddy adapt`, on its main file with Rig's binary.
+   - The adapted JSON is kept as `adapted.json`, and must hold the admin socket, storage and ports Rig set.
+   - If either step fails, the generation is set aside as `.rejected`; nothing else has changed.
+3. **Switch.** Rename a new `current` link over the old one.
+4. **Activate.** Reload Caddy with the generation's main file, or restart it when the CA changed, then confirm from `GET /config/` that it runs `adapted.json`.
+   - If that fails, put `current` back and make Caddy serve the previous generation, again confirmed.
+   - If Caddy is unreachable, follow the rule under **The Caddy process**.
 
 The route file keeps its role. The Router edits its marked blocks, keeping the `.rig-backup` copy and its rollback, and a generation copies it. Rig keeps the current generation, the previous one and three more, and deletes older ones.
 
-**Recovery.** A crash can leave an unfinished `.tmp` generation, which nothing points at and the next publication deletes. It can also leave a route file that is newer than `current`. At startup rigd builds a fresh generation from the route file and the current generation's custom copies, and switches to it. A missing or dangling `current` is rebuilt the same way. If no generation validates, rigd starts and doctor reports the problem; it never deletes a working `current`.
+**Recovery.** What Caddy serves is read from Caddy, so a crash at any step is recovered by the next change or by rigd's startup, whichever comes first:
+
+- **An unfinished `.tmp` generation.** Nothing points at it, and the next publication deletes it.
+- **A route file ahead of `current`.** It is published before any change resolves.
+- **A `current` that Caddy does not run** (a crash between steps 3 and 4). Caddy is reloaded, or restarted for a new CA.
+- **A missing or dangling `current`.** It is rebuilt from the route file and the accepted custom files.
+- **Serving cannot be confirmed.** Route changes fail, and doctor says why. rigd still starts, and never deletes a working `current`.
 
 The main file of a generation, with the current hostnames:
 
@@ -252,15 +280,32 @@ The owner writes sites and snippets in `proxy/custom.caddy`, and global options 
 - **Each failure has one cause.** A route change always builds against the accepted custom copies, so its failure is a route problem. A custom apply changes only the custom files, so its failure is a custom problem.
   - A new Rig route whose hostname an accepted custom site serves is refused as `ROUTE_CONFLICT`, naming `custom.caddy`.
   - Rig leaves out its own wildcard block for any parent whose wildcard the custom files already serve.
-- **Rig's own global options are protected.** A candidate whose adapted `admin`, `storage` or listener ports differ from what Rig rendered is refused.
+- **Custom files read no other files.** A generation must be complete in itself, so its meaning never changes behind Rig's back, and Rig checks everything that can move its protected options. Refused with the file and line (`PROXY_CUSTOM_INVALID`, hint: "inline the snippet into custom.caddy"):
+  - an `import` of anything but a snippet `custom.caddy` defines (by name);
+  - a `{file.*}` placeholder;
+  - certificate or key paths outside the Rig root (`tls <cert> <key>`, `load`, `ca_root`, `trusted_*_file`, `pem_file`).
+- **Rig's own global options are protected.**
+  - **In the text:** custom global options that set `admin`, `storage`, the ports, the CA, `email`, `auto_https` or `log default` are refused.
+  - **In the adapted config:** as defence in depth, a generation whose adapted `admin`, `storage` or ports differ from what Rig rendered is refused too.
 - **Pending edits are visible.** While a custom file differs from its accepted copy, `rig proxy` and `rig doctor` report it as pending, or as rejected with the last error.
 
 ## Token: written by Rig, never echoed
 
 `rig proxy token` reads the token from standard input and writes it to `<root>/auth/acme-dns.token` with mode 0600, atomically. The token is a Cloudflare API token with **Zone:DNS:Edit** and **Zone:Zone:Read** on `b-relay.com` only. The command never asks rigd and never sends the token over the control plane.
 
-- **A malformed token is refused before Caddy sees it.** The command trims surrounding whitespace and accepts only `[A-Za-z0-9_-]`, 20 to 512 characters long. caddy-dns/cloudflare v0.2.4 quotes a token it rejects in its own error, so a pasted newline or stray space would otherwise put the token into logs. Doctor reads the file only to check the same format and its mode. It never shows any part of the token.
-- **Rig redacts every Caddy output it keeps or shows.** That covers validate and reload errors, start failures, diagnostics and Activity: the token's value, and anything Caddy quotes after `token`, become `[redacted]`. This is tested with synthetic tokens, including malformed ones.
+- **A malformed token is refused before Caddy sees it.** caddy-dns/cloudflare v0.2.4 quotes a token it rejects in its own error (`API token '%s' appears invalid`), so a pasted newline or stray space would put the token into logs. Rig therefore accepts exactly the forms the plugin's `validCloudflareToken` accepts, after trimming surrounding whitespace:
+  - `^[A-Za-z0-9_-]{35,50}$`, a classic token;
+  - `^cf(ut|at)_[A-Za-z0-9_-]{32,256}$`, a user or account token.
+
+  Doctor reads the file only to check the same format and its mode. It never shows any part of the token.
+
+- **Caddy never starts on a malformed token.** A token edited by hand would reach the plugin when Caddy starts, and Caddy's startup error goes straight to the job's log, where Rig cannot redact it. So the job runs Caddy through a short `/bin/sh` guard:
+  - **The check.** It compares the token file's exact bytes (a trailing newline counts) with those two forms, and refuses to start when they do not match. It says which file to fix, never what is in it.
+  - **The start.** Otherwise it `exec`s Caddy, so launchd's pid and signals are Caddy's.
+
+  Tested with synthetic tokens.
+
+- **Rig redacts every Caddy output it keeps or shows.** That covers validate, adapt and reload errors, start failures, diagnostics and Activity: the token's value, and anything Caddy quotes after `token`, become `[redacted]`.
 - **Limits, honestly.** Caddy runs as clay, and clay can edit its config. A custom `respond {file.…}` or `file_server` could serve the token, and any process running as clay can read the file directly. Mode 0600 keeps out other macOS users and nothing more. That is why b-secret is removed rather than kept.
 - **What a leak can do.** A leaked token edits the records of one zone, which is enough to take over its traffic and certificates. Nothing else.
 - **The token is required.** Without a readable token Caddy cannot provision, even with stored certificates (checked), so doctor checks it and Rig refuses to render without it.
@@ -358,30 +403,55 @@ This Host's cutover requires boot mode. Do steps 1 to 6 in advance; they do not 
 
 **Cut over (seconds of downtime; restores itself on failure)**
 
-7. Set `ports: { http: 80, https: 443 }` in `~/.rig/config.yaml`, then paste:
+7. **Define the two shell functions** in the terminal you will use, with Rig's Caddy label filled in.
+   - Each step runs only if the one before succeeded, and each ends by printing what it did, or exactly which step stopped it.
+   - `gone` succeeds only once launchd confirms a job is not loaded, waiting up to 10 s after a bootout.
+   - **`rollback`** returns the Host to b-caddy and the router. It needs neither rigd, Rig's Caddy nor the token:
+     - It **disables** Rig's Caddy persistently, so a reboot cannot bring it back to fight b-caddy for ports 80 and 443.
+     - It confirms Rig's Caddy is gone before enabling and starting b-caddy, and confirms b-caddy runs.
+     - It reloads the router, and checks a real handshake on port 443.
 
    ```sh
-   sudo launchctl bootout system/com.b-relay.b-caddy && sudo launchctl disable system/com.b-relay.b-caddy \
-   && rig proxy reload && rig proxy verify --wait 30 \
-   || { sudo launchctl bootout system/com.b-relay.rig-caddy.d8063e9dcf1ba828; \
-        sudo launchctl enable system/com.b-relay.b-caddy; \
-        sudo launchctl bootstrap system /Library/LaunchDaemons/com.b-relay.b-caddy.plist; \
-        /usr/local/bin/caddy reload --config /usr/local/etc/caddy-router.caddyfile; \
-        echo "Cutover failed and was rolled back"; }
+   RC=com.b-relay.rig-caddy.d8063e9dcf1ba828; BC=com.b-relay.b-caddy
+   gone() { ! sudo launchctl print "system/$1" >/dev/null 2>&1 && return 0
+            sudo launchctl bootout "system/$1" || return 1
+            for i in 1 2 3 4 5 6 7 8 9 10; do ! sudo launchctl print "system/$1" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+   rollback() {
+     sudo launchctl disable "system/$RC" && gone "$RC" \
+     && sudo launchctl enable "system/$BC" \
+     && sudo launchctl bootstrap system "/Library/LaunchDaemons/$BC.plist" \
+     && sleep 2 && sudo launchctl print "system/$BC" | grep -q 'state = running' \
+     && /usr/local/bin/caddy reload --config /usr/local/etc/caddy-router.caddyfile \
+     && curl -sS -o /dev/null --max-time 10 https://pantry.b-relay.com/ \
+     && echo "ROLLED BACK: b-caddy and the router serve; Rig's Caddy is disabled." \
+     || echo "ROLLBACK INCOMPLETE: run each step of rollback by hand and read its error."
+   }
    ```
 
-8. From another tailnet device, check pantry, vitals, design, the rig dashboard (including sign-in, since `X-Forwarded-For` now comes straight from Rig's Caddy) and one Preview. Then run `rig doctor`.
+8. **Cut over.** Set `ports: { http: 80, https: 443 }` in `~/.rig/config.yaml`, then paste the line below. It stops and disables b-caddy, confirmed. It then enables Rig's Caddy (in case an earlier rollback disabled it), has Rig serve on 80 and 443, and checks every hostname. If any step fails, it rolls back.
+
+   ```sh
+   sudo launchctl disable "system/$BC" && gone "$BC" \
+   && sudo launchctl enable "system/$RC" \
+   && { sudo launchctl print "system/$RC" >/dev/null 2>&1 || sudo launchctl bootstrap system "/Library/LaunchDaemons/$RC.plist"; } \
+   && rig proxy reload && rig proxy verify --wait 60 \
+   && echo "CUT OVER: Rig's Caddy serves 80 and 443." \
+   || { echo "Cutover failed; rolling back."; rollback; }
+   ```
+
+9. From another tailnet device, check pantry, vitals, design, the rig dashboard (including sign-in, since `X-Forwarded-For` now comes straight from Rig's Caddy) and one Preview. Then run `rig doctor`.
 
 **Emergency rollback (needs neither rigd, Rig's Caddy nor the token)**
 
-9. Run the block after `||` in step 7. It stops Rig's Caddy with launchd, re-enables and starts b-caddy, and reloads the router.
-   - **If the route file itself is suspect.** First run `cp -p ~/.rig/proxy.pre-0014/Caddyfile ~/.rig/proxy/Caddyfile`. The snapshot may name old upstream ports, so prefer the live file.
-   - **While Rig's Caddy job is booted out.** rigd sees Caddy as stopped and keeps writing routes, so after a deploy, reload the router by hand.
-10. **Full rollback.** Restore `~/.rig/config.yaml.pre-0014` and run `rigd install`. It prints the chain that removes Rig's Caddy job.
+10. Define the functions from step 7 if this is a new terminal, and run `rollback`. It survives a reboot, because Rig's Caddy stays disabled until step 8's line enables it again.
+    - **If the route file itself is suspect.** First run `cp -p ~/.rig/proxy.pre-0014/Caddyfile ~/.rig/proxy/Caddyfile`. The snapshot may name old upstream ports, so prefer the live file.
+    - **While Rig's Caddy is disabled.** rigd sees Caddy as stopped and keeps writing routes, so after a deploy, reload the router by hand.
+    - **To cut over again,** fix the cause and run step 8 again.
+11. **Full rollback.** Restore `~/.rig/config.yaml.pre-0014` and run `rigd install`. It prints the line that removes Rig's Caddy job, which only goes on once the job is confirmed stopped.
 
 **Decommission (after a quiet week)**
 
-11. Run:
+12. Run:
 
     ```sh
     sudo launchctl bootout system/com.b-relay.caddy-router; sudo launchctl bootout system/com.b-relay.caddy-ask; sudo rm /Library/LaunchDaemons/com.b-relay.{b-caddy,caddy-router,caddy-ask}.plist; sudo launchctl enable system/com.b-relay.b-caddy
@@ -389,7 +459,7 @@ This Host's cutover requires boot mode. Do steps 1 to 6 in advance; they do not 
 
     Then remove b-secret and its users, delete `/usr/local/etc/caddy-router.caddyfile*`, and revoke b-secret's token. Only Rig's Caddy remains, and `127.0.0.1:2019` is free.
 
-12. Drop `import cloudflare` from `site` and `(cloudflare)` from `custom.caddy`, then run `rig proxy reload`.
+13. Drop `import cloudflare` from `site` and `(cloudflare)` from `custom.caddy`, then run `rig proxy reload`.
 
 ## Open questions for the owner
 

@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, Rocket } from "lucide-react";
-import { Mono, PageHeader } from "@/components/bits";
+import { Failure, Mono, PageHeader } from "@/components/bits";
 import { ProjectTabs } from "@/components/project-tabs";
 import { Button } from "@/components/ui/button";
 import { projectHref } from "@/lib/target";
 import { project } from "@/server/project";
+import { settled } from "@/server/settled";
 
 export async function generateMetadata({
   params,
@@ -22,7 +23,15 @@ export default async function ProjectLayout({
   params: Promise<{ name: string }>;
   children: ReactNode;
 }) {
-  const found = await project(params);
+  const read = await settled(project(params));
+  if (!read.ok)
+    return (
+      <>
+        <PageHeader title={(await params).name} />
+        <Failure failure={read.failure} />
+      </>
+    );
+  const found = read.value;
   return (
     <>
       <PageHeader

@@ -97,7 +97,7 @@ describe("target actions", () => {
   test("a stable Target that was never deployed only deploys; a configured working Target only starts", () => {
     expect(targetVerbs(target({ state: "configured" }))).toEqual({
       primary: ["deploy"],
-      all: ["up", "restart", "down", "deploy"],
+      all: ["deploy"],
     });
     expect(
       targetVerbs(target({ kind: "working", state: "configured" })),

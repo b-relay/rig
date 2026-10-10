@@ -169,6 +169,8 @@ export function ConfigEditor({
   const [checked, setChecked] = useState<{
     patch: string;
     issues: readonly ConfigIssue[];
+    /** rig.yaml changed on disk since this page read it, so no check can speak until it is read again. */
+    stale?: true;
   }>({ patch: "[]", issues: [] });
   const patchText = JSON.stringify(patch);
   // A review's problems describe the draft it saw; once the draft changes, the next check speaks.
@@ -190,6 +192,10 @@ export function ConfigEditor({
             setChecked({
               patch: patchText,
               issues: outcome.ok ? [] : (outcome.failure.issues ?? []),
+              ...(!outcome.ok &&
+              outcome.failure.code.toUpperCase() === "REVISION_CONFLICT"
+                ? { stale: true as const }
+                : {}),
             });
         })
         .catch(() => {});
@@ -297,14 +303,26 @@ export function ConfigEditor({
             your edits re-applied on top; review them before applying.
           </Notice>
         ) : null}
-        {reviewing ? null : issues.length ? (
-          <IssueList
-            issues={issues}
-            hint={change.failure?.hint}
-            onShow={(section) => setSection(section)}
-          />
-        ) : (
-          <Failure failure={change.failure} />
+        {checked.stale && checked.patch === patchText && !rebased ? (
+          <Notice tone="warn">
+            rig.yaml changed on disk since this page read it. Review your
+            changes to read it again; your edits are kept and re-applied on top.
+          </Notice>
+        ) : null}
+        {reviewing ? null : (
+          <>
+            {issues.length ? (
+              <IssueList
+                issues={issues}
+                hint={change.failure?.hint}
+                onShow={(section) => setSection(section)}
+              />
+            ) : null}
+            {/* A review that failed for another reason says so even while the live check lists problems. */}
+            {change.failure && !change.failure.issues ? (
+              <Failure failure={change.failure} />
+            ) : null}
+          </>
         )}
         <Tabs
           value={section}

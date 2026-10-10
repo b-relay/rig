@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { TriangleAlert } from "lucide-react";
-import { KindTag, PageHeader, StatePill } from "@/components/bits";
+import { Failure, KindTag, PageHeader, StatePill } from "@/components/bits";
 import { Revision } from "@/components/project-card";
 import { TargetTabs } from "@/components/project-tabs";
 import { TargetActions } from "@/components/target-actions";
 import { targetWarnings } from "@/lib/present";
 import { projectHref, routeUrl } from "@/lib/target";
+import { settled } from "@/server/settled";
 import { target } from "@/server/target";
 
 export async function generateMetadata({
@@ -15,7 +16,7 @@ export async function generateMetadata({
   params: Promise<{ name: string; target: string }>;
 }) {
   const { name, target: shown } = await params;
-  return { title: `${decodeURIComponent(shown)} · ${name}` };
+  return { title: `${shown} · ${name}` };
 }
 /** One Target's own sections: its state, hostname and revision on top, with its actions. */
 export default async function TargetLayout({
@@ -25,7 +26,15 @@ export default async function TargetLayout({
   params: Promise<{ name: string; target: string }>;
   children: ReactNode;
 }) {
-  const { project, target: report } = await target(params);
+  const read = await settled(target(params));
+  if (!read.ok)
+    return (
+      <>
+        <PageHeader title={(await params).target} />
+        <Failure failure={read.failure} />
+      </>
+    );
+  const { project, target: report } = read.value;
   const warnings = targetWarnings(report);
   return (
     <>

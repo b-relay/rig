@@ -79,6 +79,8 @@ export function TargetActions({
   useEffect(() => setHost(window.location.host), []);
   const servesThisPage = servesHost(target.route, host);
   const [confirming, setConfirming] = useState<TargetVerb>();
+  // The verb the dialog was opened for; it outlives the close animation so the text never changes mid-fade.
+  const [asked, setAsked] = useState<TargetVerb>("down");
   const verbs = targetVerbs(target);
   const send = (verb: TargetVerb) =>
     void act.run(
@@ -98,9 +100,13 @@ export function TargetActions({
     const risky =
       verb === "destroy" ||
       verb === "deploy" ||
-      (verb !== "up" && servesThisPage);
-    if (risky) setConfirming(verb);
-    else send(verb);
+      (verb !== "up" && servesThisPage) ||
+      // Stopping or restarting production takes a second click.
+      (verb !== "up" && target.kind === "stable");
+    if (risky) {
+      setAsked(verb);
+      setConfirming(verb);
+    } else send(verb);
   };
   const menu = (
     <DropdownMenu>
@@ -213,30 +219,37 @@ export function TargetActions({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirming === "destroy"
+              {asked === "destroy"
                 ? `Destroy Preview ${target.name}?`
-                : confirming === "deploy"
+                : asked === "deploy"
                   ? `Deploy the latest ${target.kind === "preview" ? (target.branch ?? "Branch") : "Production Branch"} to ${target.name}?`
-                  : `${LABEL[confirming ?? "down"]} ${target.name}?`}
+                  : `${LABEL[asked]} ${target.name}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              {confirming === "destroy"
-                ? `Its data, logs, and source history are removed.${servesThisPage ? ` ${SERVES_NOTE}` : ""}`
-                : confirming === "deploy"
-                  ? `rigd deploys the head Commit of ${target.kind === "preview" ? (target.branch ?? "its Branch") : "the Production Branch"} and starts it; a Commit already deployed is left as it is.${servesThisPage ? ` ${SERVES_NOTE}` : ""}`
-                  : SERVES_NOTE}
+              {[
+                asked === "destroy"
+                  ? "Its data, logs, and source history are removed."
+                  : asked === "deploy"
+                    ? `rigd deploys the head Commit of ${target.kind === "preview" ? (target.branch ?? "its Branch") : "the Production Branch"} and starts it; a Commit already deployed is left as it is.`
+                    : target.kind === "stable"
+                      ? `This is the stable Target${target.route ? `, serving ${target.route}` : ""}; it ${asked === "down" ? "stays down until it is started again" : "is unavailable while it restarts"}.`
+                      : undefined,
+                servesThisPage ? SERVES_NOTE : undefined,
+              ]
+                .filter(Boolean)
+                .join(" ")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              variant={confirming === "destroy" ? "destructive" : "default"}
+              variant={asked === "destroy" ? "destructive" : "default"}
               onClick={() => {
                 if (confirming) send(confirming);
                 setConfirming(undefined);
               }}
             >
-              {LABEL[confirming ?? "down"]}
+              {LABEL[asked]}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

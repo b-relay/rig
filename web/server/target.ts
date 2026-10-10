@@ -19,7 +19,8 @@ export async function target(
   if (!status.ok)
     throw Object.assign(new Error(status.failure.message), status.failure);
   const report = status.value.targets.find(
-    (each) => each.name === decodeURIComponent(name),
+    // Next has decoded the segment already; decoding again would turn a crafted %25 into a URIError.
+    (each) => each.name === name,
   );
   if (!report) notFound();
   return { project: found, status: status.value, target: report };

@@ -11,7 +11,7 @@ import {
   Search,
   WrapText,
 } from "lucide-react";
-import type { Failure as FailureShape } from "@/lib/outcome";
+import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
 import {
   componentSlot,
   logFilter,
@@ -24,7 +24,6 @@ import {
 import { transportFailure } from "@/lib/reconcile";
 import { targetKey, targetSelector } from "@/lib/target";
 import type { LogsResult } from "@/lib/types";
-import { runCommand } from "@/server/actions";
 import { Failure } from "./bits";
 import { Input } from "@/components/ui/input";
 import {
@@ -92,32 +91,43 @@ export function LogViewer({
     if (!selector) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const reading = new AbortController();
     const narrowed = JSON.parse(filter) as ReturnType<typeof logFilter> | null;
+    const identity = `${project}\n${selector}\n${lines}\n${filter}`;
     const next = () => {
       if (follow && !stopped)
         timer = setTimeout(() => void read(cursor.current), FOLLOW_MS);
     };
     const read = async (after: string | undefined) => {
       try {
-        const outcome = await runCommand({
-          action: "logs",
-          project,
-          ...(JSON.parse(selector) as ReturnType<typeof targetSelector>),
-          ...(after === undefined ? { lines } : { after, lines: 1000 }),
-          ...(narrowed ? { logFilter: narrowed } : {}),
-        });
+        const outcome = await readLogs(
+          {
+            project,
+            ...(JSON.parse(selector) as ReturnType<typeof targetSelector>),
+            ...(after === undefined ? { lines } : { after, lines: 1000 }),
+            ...(narrowed ? { logFilter: narrowed } : {}),
+          },
+          reading.signal,
+        );
         if (stopped) return;
         if (outcome.ok) {
           const page = outcome.value as LogsResult;
           cursor.current = page.cursor;
           setFailure(undefined);
-          if (after === undefined) setEntries(page.entries);
-          else if (page.entries.length)
+          if (after === undefined) {
+            // Only a first page that arrived counts as adopted; one cut short is read again.
+            adopted.current = identity;
+            setEntries(page.entries);
+          } else if (page.entries.length)
             setEntries((kept) => [...kept, ...page.entries].slice(-KEPT_LINES));
         } else {
           setFailure(outcome.failure);
-          // A redeployed Preview is a new Target, so its old cursor never becomes valid again.
-          if (after !== undefined) {
+          // A redeployed Preview is a new Target, so its old cursor never becomes valid again; any
+          // other refusal (rigd restarting, say) keeps the lines and the cursor for the next try.
+          if (
+            after !== undefined &&
+            ["LOG_CURSOR", "TARGET_MISSING"].includes(outcome.failure.code)
+          ) {
             cursor.current = undefined;
             setEntries([]);
           }
@@ -128,29 +138,29 @@ export function LogViewer({
       }
       next();
     };
-    const identity = `${project}\n${selector}\n${lines}\n${filter}`;
+    const stop = () => {
+      stopped = true;
+      clearTimeout(timer);
+      reading.abort();
+    };
     if (adopted.current !== identity) {
-      adopted.current = identity;
       const page =
         lines === FIRST_LINES && !narrowed ? served.current : undefined;
       if (page) {
+        adopted.current = identity;
         setEntries(page.entries);
         setFailure(undefined);
         cursor.current = page.cursor;
       } else {
+        // The lines of another Target or filter never stand beside this one's while it loads.
         cursor.current = undefined;
+        setEntries([]);
         void read(undefined);
-        return () => {
-          stopped = true;
-          clearTimeout(timer);
-        };
+        return stop;
       }
     }
     next();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
+    return stop;
   }, [project, selector, lines, follow, filter]);
   const shown = useMemo(
     () => entries.filter((entry) => matchesSearch(entry, search)),
@@ -465,6 +475,22 @@ function Chip({
       {children}
     </button>
   );
+}
+/** One page of the log through the site's GET route, not a Server Action: Next runs those one at a
+ * time, so a follow would otherwise wait behind a deploy started from this page. */
+async function readLogs(
+  command: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<Outcome<unknown>> {
+  const response = await fetch(
+    `/log-lines?q=${encodeURIComponent(JSON.stringify(command))}`,
+    { cache: "no-store", signal },
+  );
+  const body = (await response.json().catch(() => undefined)) as
+    Outcome<unknown> | undefined;
+  if (!body || typeof body !== "object" || !("ok" in body))
+    throw new Error(`The log read answered ${response.status}.`);
+  return body;
 }
 /** The time of day of an instant on the reader's clock, to the second. */
 function clock(iso: string): string {

@@ -25,7 +25,8 @@ export function targetVerbs(
     return {
       primary:
         target.kind === "working" ? ["up"] : deployable ? ["deploy"] : [],
-      all: target.kind === "working" ? ["up"] : all,
+      // Nothing is recorded yet, so only what creates it applies: a start of the working copy, or a deploy.
+      all: target.kind === "working" ? ["up"] : deployable ? ["deploy"] : [],
     };
   const stopped = ["stopped", "failed"].includes(target.state);
   return {

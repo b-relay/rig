@@ -1,11 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   readlink,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -322,4 +324,67 @@ test("old generations are pruned to the current one and four before it", async (
     "g009",
   ]);
   expect(await w.current()).toBe("g009");
+});
+
+test("custom global options may not set what Rig sets itself, such as the admin socket, storage or ports", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  const accepted = await w.current();
+  for (const [text, option, line] of [
+    ["# moved\nadmin localhost:2999\n", "admin", 2],
+    [
+      "servers {\n\ttimeouts {\n\t\tidle 2m\n\t}\n}\nhttps_port 8443\n",
+      "https_port",
+      6,
+    ],
+    ["log default {\n\tlevel DEBUG\n}\n", "log default", 1],
+  ] as const) {
+    await writeFile(join(w.root, "proxy", "custom-global.caddy"), text);
+    await expect(w.caddy.applyCustom()).rejects.toMatchObject({
+      code: "PROXY_CUSTOM_INVALID",
+      message: expect.stringContaining(`:${line} sets ${option}`),
+    });
+    expect(await w.current()).toBe(accepted);
+  }
+  // Options Rig does not set are the owner's.
+  await writeFile(
+    join(w.root, "proxy", "custom-global.caddy"),
+    "servers {\n\ttimeouts {\n\t\tidle 2m\n\t}\n}\nlog access {\n\toutput stderr\n}\n",
+  );
+  await w.caddy.applyCustom();
+  expect(await w.file("caddy", "current", "custom-global.caddy")).toContain(
+    "idle 2m",
+  );
+});
+
+test("an apply takes the current site lines too, and a failed rollback reload is reported, not claimed", async () => {
+  const w = await world({ site: ["import cloudflare"] });
+  await w.caddy.router.apply(app());
+  w.setSettings({ site: [] });
+  await w.caddy.applyCustom();
+  expect(await w.routes()).not.toContain("import cloudflare");
+
+  w.failures.reload = "Error: loading new config: boom";
+  const error = await w.caddy.router
+    .apply(app("127.0.0.1:3002"))
+    .catch((caught) => caught);
+  expect(error).toMatchObject({
+    code: "ROUTE_RELOAD",
+    details: { rollbackReloaded: false },
+  });
+  expect(error.message).not.toContain("was restored");
+});
+
+test("the route file is written through a symlink and keeps its mode, so the old router can still read it", async () => {
+  const w = await world();
+  const real = join(w.root, "shared-routes.caddy");
+  await writeFile(real, "", { mode: 0o644 });
+  await mkdir(join(w.root, "proxy"), { recursive: true });
+  await symlink(real, join(w.root, "proxy", "Caddyfile"));
+  await w.caddy.router.apply(app());
+  expect(await readFile(real, "utf8")).toContain("app.example.test {");
+  expect((await stat(real)).mode & 0o777).toBe(0o644);
+  expect(
+    (await lstat(join(w.root, "proxy", "Caddyfile"))).isSymbolicLink(),
+  ).toBe(true);
 });

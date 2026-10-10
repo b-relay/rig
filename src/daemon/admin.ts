@@ -349,6 +349,8 @@ export class DaemonAdmin {
     // rigd chooses its router as it starts, so a different proxy mode needs a restart, as does a managed Caddy that is not
     // installed the way Host config asks: it is installed only while no rigd publishes.
     const proxyMode = await this.options.proxy?.mode();
+    // What Host config alone can refuse is refused while rigd still runs, so a refusal never costs a restart.
+    if (proxyMode === "managed") await this.options.proxy!.preflight();
     if (prior.reachable && serving) {
       const recorded = prior.installed
         ? await this.readInstallation()
@@ -409,10 +411,17 @@ export class DaemonAdmin {
     // any credential a dead daemon's stale port may have exposed.
     await this.issueToken();
     // No rigd runs now, so Rig's Caddy is set up (or taken down) with nothing else publishing, before rigd starts.
-    const proxyWarnings =
-      proxyMode === "managed"
-        ? await this.options.proxy!.install()
-        : (await this.options.proxy?.remove(), []);
+    // A proxy failure from here on must not leave the Host without rigd: rigd starts anyway, its startup republish fails
+    // closed and doctor reports it, and the failure is still this command's outcome.
+    let proxyWarnings: string[] = [];
+    let proxyFailure: unknown;
+    try {
+      if (proxyMode === "managed")
+        proxyWarnings = await this.options.proxy!.install();
+      else await this.options.proxy?.remove();
+    } catch (error) {
+      proxyFailure = error;
+    }
     await this.writeInstallation(this.options.bun, proxyMode);
     await clearStartupFailure(root);
     try {
@@ -428,6 +437,7 @@ export class DaemonAdmin {
     for (let attempt = 0; attempt < 100; attempt++) {
       const status = await this.status();
       if (status.reachable) {
+        if (proxyFailure) throw proxyFailure;
         const warnings = [...(status.warnings ?? []), ...proxyWarnings];
         return {
           ...status,

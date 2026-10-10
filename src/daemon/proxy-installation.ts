@@ -14,6 +14,7 @@ import {
   type CaddyAdminClient,
 } from "../providers/caddy-admin";
 import {
+  checkCaddyBinary,
   installCaddyBinary,
   installedBinary,
   switchBinary,
@@ -37,6 +38,9 @@ export interface ProxyInstallation {
   inSync(): Promise<boolean>;
   /** Installs Rig's Caddy and has it serve the current routes and custom files; resolves to warnings. */
   install(): Promise<string[]>;
+  /** Refuses, before anything stops, what install would refuse from Host config alone: a missing proxy section, both
+   * sections written, the token, and a proxy.caddy that is not Caddy 2.10 or later with the DNS module. */
+  preflight(): Promise<void>;
   /** Removes Rig's Caddy job, if one is defined. Certificates, generations, custom files and the token stay. */
   remove(): Promise<void>;
 }
@@ -134,18 +138,29 @@ export function createProxyInstallation(
           await validateWith(file, paths, options.run, options.root);
         },
       });
-      // The custom files on disk are applied; when Caddy rejects them, install still succeeds with the accepted ones.
+      // Until the new binary serves, any failure puts the previous one back, so the link never names a binary the running
+      // Caddy is not, and the next install sees the change again.
+      const restoreBinary = async () => {
+        if (binary.changed && binary.previous)
+          await switchBinary(paths, binary.previous);
+      };
       try {
-        await caddy.applyCustom();
+        // The custom files on disk are applied; when Caddy rejects them, install still succeeds with the accepted ones.
+        try {
+          await caddy.applyCustom();
+        } catch (error) {
+          if (!(
+            error instanceof RigError && error.code === "PROXY_CUSTOM_INVALID"
+          ))
+            throw error;
+          warnings.push(
+            `${error.message} The previously accepted custom files are used; fix them and run rig proxy reload.`,
+          );
+          await caddy.republish();
+        }
       } catch (error) {
-        if (!(
-          error instanceof RigError && error.code === "PROXY_CUSTOM_INVALID"
-        ))
-          throw error;
-        warnings.push(
-          `${error.message} The previously accepted custom files are used; fix them and run rig proxy reload.`,
-        );
-        await caddy.republish();
+        await restoreBinary();
+        throw error;
       }
       try {
         const defined = await job.install();
@@ -153,8 +168,14 @@ export function createProxyInstallation(
         if (binary.changed && wasRunning && !defined.changed)
           await job.restart();
       } catch (error) {
-        if (!binary.changed || !binary.previous) throw error;
-        await switchBinary(paths, binary.previous);
+        await restoreBinary();
+        // Only a Caddy that did not come up blames the new binary; launchd refusing the job does not.
+        if (
+          !binary.changed ||
+          !binary.previous ||
+          !(error instanceof RigError && error.code === "PROXY_START")
+        )
+          throw error;
         await job.restart().catch(() => job.install().catch(() => {}));
         throw new RigError(
           "PROXY_BINARY_START",
@@ -168,6 +189,23 @@ export function createProxyInstallation(
         );
       }
       return warnings;
+    },
+    async preflight() {
+      const wanted = await settings();
+      await requireToken(options.root, wanted);
+      if (!(await stat(wanted.caddy).catch(() => undefined))?.isFile())
+        throw new RigError(
+          "PROXY_BINARY",
+          `proxy.caddy names ${wanted.caddy}, which is not a file.`,
+          "Set proxy.caddy in Host config to a Caddy executable built with the DNS module.",
+          { source: wanted.caddy },
+        );
+      await checkCaddyBinary({
+        file: wanted.caddy,
+        source: wanted.caddy,
+        dns: wanted.tls.dns,
+        run: options.run,
+      });
     },
     remove: () => job.remove(),
   };

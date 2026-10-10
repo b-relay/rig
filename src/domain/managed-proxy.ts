@@ -216,6 +216,49 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
   ].join("\n");
 }
 
+/** Global options Rig renders itself. Caddy lets a later one win, so one in the owner's global options could move the admin
+ * API off its private socket, the storage or the listeners, and take the proxy away from Rig. */
+export const PROTECTED_GLOBAL_OPTIONS = [
+  "admin",
+  "persist_config",
+  "storage",
+  "http_port",
+  "https_port",
+  "default_bind",
+  "email",
+  "cert_issuer",
+  "acme_ca",
+  "acme_ca_root",
+  "acme_dns",
+  "acme_eab",
+  "local_certs",
+  "skip_install_trust",
+  "auto_https",
+] as const;
+/** Each top-level line of the owner's global options that sets an option Rig renders, with its 1-based line number. */
+export function protectedGlobalOptions(
+  text: string,
+): { readonly option: string; readonly line: number }[] {
+  const found: { option: string; line: number }[] = [];
+  let depth = 0;
+  text.split(/\r?\n/).forEach((raw, index) => {
+    const line = raw.replace(/(^|\s)#.*$/, "").trim();
+    const first = line.split(/\s+/)[0] ?? "";
+    if (
+      depth === 0 &&
+      (PROTECTED_GLOBAL_OPTIONS as readonly string[]).includes(first)
+    )
+      found.push({ option: first, line: index + 1 });
+    // A `log default` block would replace where Caddy logs, which doctor and rig proxy read.
+    if (depth === 0 && /^log\s+default\b/.test(line))
+      found.push({ option: "log default", line: index + 1 });
+    for (const character of line)
+      if (character === "{") depth++;
+      else if (character === "}") depth = Math.max(0, depth - 1);
+  });
+  return found;
+}
+
 /** The header Rig writes into a custom file it creates. */
 export function customFileHeader(kind: "sites" | "global"): string {
   return kind === "sites"

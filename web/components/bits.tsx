@@ -92,6 +92,87 @@ export function State({
     </span>
   );
 }
+const PILL = {
+  good: "bg-good-fill text-good",
+  warn: "bg-warn-fill text-warn",
+  bad: "bg-bad-fill text-bad",
+  busy: "bg-link/10 text-link",
+  idle: "bg-muted text-muted-foreground ring-1 ring-inset ring-rule",
+};
+/** A lifecycle or outcome word as a tinted pill, for headers and cards where it must stand out. */
+export function StatePill({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const tone = toneOf(value);
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-xs font-medium whitespace-nowrap",
+        PILL[tone],
+        className,
+      )}
+    >
+      <span
+        aria-hidden
+        className={cn(
+          "size-1.5 shrink-0 rounded-full bg-current",
+          tone === "busy" && "busy-dot",
+        )}
+      />
+      {value}
+    </span>
+  );
+}
+/** A small coloured dot standing for a state, with the word for screen readers. */
+export function Dot({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-block size-2 shrink-0 rounded-full",
+        DOT[toneOf(value)],
+        className,
+      )}
+      title={value}
+    >
+      <span className="sr-only">{value}</span>
+    </span>
+  );
+}
+const KIND_CLASS = {
+  working: "text-muted-foreground ring-rule",
+  stable: "text-ink ring-ink/30",
+  preview: "text-link ring-link/30",
+};
+/** The Target role, as a quiet outlined tag. */
+export function KindTag({
+  kind,
+  className,
+}: {
+  kind: "working" | "stable" | "preview";
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-5 items-center rounded px-1.5 text-[11px] font-medium tracking-wide uppercase ring-1 ring-inset",
+        KIND_CLASS[kind],
+        className,
+      )}
+    >
+      {kind}
+    </span>
+  );
+}
 export function Field({
   label,
   help,
@@ -154,6 +235,103 @@ export function Mono({
 }
 export function Empty({ children }: { children: ReactNode }) {
   return <p className="text-sm text-muted-foreground">{children}</p>;
+}
+/** The top of a page: its title, a line about it, and the page's own actions on the right. */
+export function PageHeader({
+  title,
+  description,
+  actions,
+  eyebrow,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  /** A small line above the title, such as the Project a Target belongs to. */
+  eyebrow?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+      <div className="flex min-w-0 flex-col gap-1">
+        {eyebrow ? (
+          <div className="text-xs text-muted-foreground">{eyebrow}</div>
+        ) : null}
+        <h1 className="title text-2xl leading-tight">{title}</h1>
+        {description ? (
+          <div className="text-sm text-muted-foreground">{description}</div>
+        ) : null}
+      </div>
+      {actions ? (
+        <div className="flex flex-wrap items-center gap-2">{actions}</div>
+      ) : null}
+    </div>
+  );
+}
+/** A bordered surface for one group of content, with an optional titled header. */
+export function Panel({
+  title,
+  description,
+  actions,
+  children,
+  className,
+  flush = false,
+}: {
+  title?: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  /** The content reaches the panel's edges, as a table does. */
+  flush?: boolean;
+}) {
+  return (
+    <section
+      className={cn(
+        "flex min-w-0 flex-col overflow-hidden rounded-lg border border-rule bg-sheet shadow-xs",
+        className,
+      )}
+    >
+      {title ? (
+        <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule px-4 py-2.5">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold">{title}</h2>
+            {description ? (
+              <p className="text-xs text-muted-foreground">{description}</p>
+            ) : null}
+          </div>
+          {actions ? (
+            <div className="flex flex-wrap items-center gap-2">{actions}</div>
+          ) : null}
+        </header>
+      ) : null}
+      <div className={flush ? undefined : "p-4"}>{children}</div>
+    </section>
+  );
+}
+/** One number with its label, for a page's summary row. */
+export function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: ReactNode;
+  value: ReactNode;
+  tone?: "good" | "bad" | "warn";
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 rounded-lg border border-rule bg-sheet px-4 py-3 shadow-xs">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "text-2xl font-semibold tabular-nums",
+          tone === "good" && "text-good",
+          tone === "bad" && "text-bad",
+          tone === "warn" && "text-warn",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
 }
 /** A section of a page: a ruled heading and its content, no card around it. */
 export function Section({

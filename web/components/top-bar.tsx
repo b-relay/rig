@@ -1,25 +1,44 @@
 import Link from "next/link";
-import { Suspense } from "react";
+import { Suspense, type ReactNode } from "react";
 import { daemon, read } from "@/server/daemon";
 import { attempt } from "@/lib/outcome";
+import type { Theme } from "@/lib/theme";
 import type { DaemonHealth, QueueResult } from "@/lib/types";
 import { LiveRefresh } from "./live-refresh";
-import { NavLinks } from "./nav";
+import { MobileMenu } from "./shell/mobile-menu";
+import { ThemeSwitch } from "./theme-switch";
 import { cn } from "@/lib/utils";
 
-/** The deck: wordmark, sections, and what rigd is doing right now. `bare` keeps the wordmark
- * alone, for a browser that has not signed in and must learn nothing about this Mac. */
-export function TopBar({ bare = false }: { bare?: boolean }) {
+/** The bar above every page: the menu on narrow screens, what rigd is doing right now, the live
+ * refresh and the theme switch. `bare` keeps the wordmark alone, for a browser that has not signed
+ * in and must learn nothing about this Mac. */
+export function TopBar({
+  bare = false,
+  menu,
+  theme,
+}: {
+  bare?: boolean;
+  /** The sidebar, shown in a drawer below the width where it stays open. */
+  menu?: ReactNode;
+  theme: Theme | undefined;
+}) {
   return (
-    <header className="sticky top-0 z-20 border-b border-rule bg-deck text-on-deck">
-      <div className="mx-auto flex h-12 w-full max-w-6xl items-center gap-4 px-4 sm:px-6">
-        <Link href="/" className="wordmark text-lg text-on-deck no-underline">
-          RIG
-        </Link>
-        {bare ? null : (
+    <header className="sticky top-0 z-20 border-b border-rule bg-background/85 backdrop-blur-sm">
+      <div className="flex h-12 items-center gap-2 px-4 sm:px-6 lg:px-8">
+        {bare ? (
+          <Link href="/" className="wordmark text-lg text-ink no-underline">
+            RIG
+          </Link>
+        ) : (
           <>
-            <NavLinks />
-            <div className="ml-auto flex items-center gap-3">
+            <MobileMenu>{menu}</MobileMenu>
+            <Link
+              href="/"
+              className="wordmark text-lg text-ink no-underline lg:hidden"
+            >
+              RIG
+            </Link>
+            <div className="ml-auto flex items-center gap-1">
               <Suspense fallback={<DaemonMark state="probing" />}>
                 <DaemonStatus />
               </Suspense>
@@ -27,6 +46,7 @@ export function TopBar({ bare = false }: { bare?: boolean }) {
             </div>
           </>
         )}
+        <ThemeSwitch initial={theme} className={bare ? "ml-auto" : undefined} />
       </div>
     </header>
   );
@@ -65,7 +85,7 @@ function DaemonMark({
   return (
     <Link
       href="/rigd"
-      className="flex items-center gap-2 text-xs text-deck-muted no-underline hover:text-on-deck"
+      className="flex h-8 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground no-underline hover:bg-muted hover:text-foreground"
       title={detail ?? (state === "down" ? "rigd is not reachable" : "rigd")}
     >
       <span
@@ -73,9 +93,9 @@ function DaemonMark({
         className={cn(
           "size-2 rounded-full",
           state === "up" && "bg-good",
-          state === "busy" && "bg-busy busy-dot",
+          state === "busy" && "busy-dot bg-busy",
           state === "down" && "bg-bad",
-          state === "probing" && "bg-deck-muted",
+          state === "probing" && "bg-muted-ink",
         )}
       />
       <span className="hidden md:inline">

@@ -88,7 +88,7 @@ export function LiveRefresh() {
         startTransition(() => router.refresh());
         setRefreshedAt(Date.now());
       }}
-      className="inline-flex h-8 items-center gap-1.5 rounded px-2 text-xs text-deck-muted hover:text-on-deck"
+      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
       title={
         refreshedAt
           ? `Refreshed ${at(refreshedAt)}`

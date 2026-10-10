@@ -1043,10 +1043,17 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (!target) throw missingTarget(command, name);
         attempted = true;
         admission.phase("stopping", target);
-        // Job runs are confirmed stopped before a recovery stop changes the Target: one that cannot be leaves the
-        // Preview, its recovery and its Services as they were.
-        await stopJobRuns(target, deps);
-        if (target.recovery) target = await stopForRecovery(target, deps);
+        if (target.recovery) {
+          // Before a recovery stop changes the Target, the Preview's storage must be Rig's to delete and its job runs
+          // confirmed stopped: a failure of either leaves the Preview, its recovery and its Services as they were.
+          await deps.files.inspectPreviewDeletion({
+            root: deps.root,
+            target,
+            state: await deps.store.read(),
+          });
+          await stopJobRuns(target, deps);
+          target = await stopForRecovery(target, deps);
+        }
         await destroyPreview(target, deps, admission.phase);
         return await finish("stopped");
       }

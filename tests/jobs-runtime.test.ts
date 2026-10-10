@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { RigError } from "../src/domain/errors";
 import { rm } from "node:fs/promises";
 import { parseProjectConfig } from "../src/config";
 import type { ProjectConfig } from "../src/config/types";
@@ -38,6 +39,7 @@ async function fixture() {
   const processes = new Map<string, ProcessObservation>();
   /** Each stop, with what the state file said about the run when the signal went out. */
   const signalled: { key: string; state: RuntimeState }[] = [];
+  const ownership = { refuse: false };
   /** Checkouts the mirror was asked to drop; `failReleases` makes the next ones fail. */
   const released: string[] = [];
   const failReleases = { count: 0 };
@@ -105,7 +107,10 @@ async function fixture() {
             input.requests.map((request) => [request.name, request.preferred!]),
           );
         },
-        async inspectPreviewDeletion() {},
+        async inspectPreviewDeletion() {
+          if (ownership.refuse)
+            throw new RigError("DESTROY_OWNERSHIP", "Not Rig's", "Check it");
+        },
         async destroyPreview() {},
       } as unknown as RuntimeDependencies["files"],
     }),
@@ -140,6 +145,7 @@ async function fixture() {
     key,
     target,
     signalled,
+    ownership,
     released,
     failReleases,
     starts: () => starts,
@@ -606,6 +612,31 @@ test("a Preview with a recovery to settle keeps its recovery and Services when a
     `${f.target.id}:api`,
   );
 });
+
+test.each([false, true])(
+  "a Preview whose storage is not Rig's to delete keeps its job run going (recovery to settle: %p)",
+  async (withRecovery) => {
+    const f = await fixture();
+    expect(await f.scheduled("run-a")).toBe("started");
+    f.ownership.refuse = true;
+    if (withRecovery)
+      await f.world.store.update((state) => {
+        const recorded = state.targets[0]!;
+        recorded.recovery = {
+          plan: recorded.plan,
+          desired: "running",
+          stage: "blocked",
+        };
+      });
+    const target = (await f.world.store.read()).targets[0]!;
+    await expect(destroyPreviewOf(f.world, target)).rejects.toMatchObject({
+      code: "DESTROY_OWNERSHIP",
+    });
+    expect(f.signalled).toEqual([]);
+    expect((await f.record())?.running).toMatchObject({ id: "run-a" });
+    expect((await f.world.store.read()).targets[0]!.desired).toBe("running");
+  },
+);
 
 test("a removed Target's kept checkouts are forgotten only once given back", async () => {
   const f = await fixture();

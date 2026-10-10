@@ -61,6 +61,8 @@ export function generationFiles(directory: string) {
     custom: join(directory, "custom.caddy"),
     customGlobal: join(directory, "custom-global.caddy"),
     metadata: join(directory, "generation.json"),
+    /** `caddy adapt` of the main file: what a running Caddy reports at GET /config/ once it serves this generation. */
+    adapted: join(directory, "adapted.json"),
   };
 }
 /** Caddyfile tokens Rig writes unquoted must not need quoting, so a root with whitespace, quotes or braces is refused. */
@@ -259,6 +261,69 @@ export function protectedGlobalOptions(
   return found;
 }
 
+/** Directives whose arguments name certificate or key files Caddy reads when it loads its config. */
+const FILE_DIRECTIVES = new Set([
+  "load",
+  "ca_root",
+  "trusted_ca_cert_file",
+  "trusted_leaf_cert_file",
+  "pem_file",
+]);
+/** One thing in a custom file that would make a generation depend on a file outside it. */
+export interface CustomFileProblem {
+  readonly file: "sites" | "global";
+  readonly line: number;
+  readonly problem: string;
+}
+/** Everything in the owner's custom files that reads another file when Caddy loads its config: an `import` of anything but
+ * a snippet `custom.caddy` defines, a `{file.*}` placeholder, and certificate or key paths outside the Rig root. A
+ * generation must be complete in itself, so its meaning never changes behind Rig's back, and Rig's protected options can
+ * only come from files it checks. */
+export function customFileProblems(
+  custom: { readonly sites: string; readonly global: string },
+  root: string,
+): CustomFileProblem[] {
+  const snippets = new Set(
+    [...custom.sites.matchAll(/^\s*\(([^()\s]+)\)\s*\{/gm)].map((m) => m[1]!),
+  );
+  const outside = (path: string) =>
+    !path.startsWith(`${root}/`) && !/^[a-z_]+$/.test(path);
+  const problems: CustomFileProblem[] = [];
+  for (const [file, text] of [
+    ["sites", custom.sites],
+    ["global", custom.global],
+  ] as const)
+    text.split(/\r?\n/).forEach((raw, index) => {
+      const line = raw.replace(/(^|\s)#.*$/, "").trim();
+      if (!line) return;
+      const words = line
+        .split(/\s+/)
+        .filter((word) => word !== "{" && word !== "}")
+        .map((word) => word.replace(/^"|"$/g, ""));
+      const report = (problem: string) =>
+        problems.push({ file, line: index + 1, problem });
+      if (line.includes("{file."))
+        report("reads a file through a {file.*} placeholder");
+      if (
+        words[0] === "import" &&
+        !(file === "sites" && snippets.has(words[1] ?? ""))
+      )
+        report(`imports ${words[1] ?? "nothing"}`);
+      if (
+        words[0] === "tls" &&
+        words.length >= 3 &&
+        words.slice(1, 3).some(outside)
+      )
+        report("names certificate files outside the Rig root");
+      if (
+        FILE_DIRECTIVES.has(words[0]!) &&
+        words.slice(1).some((word) => word.includes("/") && outside(word))
+      )
+        report(`names files outside the Rig root in ${words[0]}`);
+    });
+  return problems;
+}
+
 /** The header Rig writes into a custom file it creates. */
 export function customFileHeader(kind: "sites" | "global"): string {
   return kind === "sites"
@@ -266,14 +331,20 @@ export function customFileHeader(kind: "sites" | "global"): string {
     : "# Your own Caddy global options, placed inside Rig's global options block. Rig never rewrites this file; apply an edit\n# with rig proxy reload.\n";
 }
 
-/** A DNS provider API token as Rig stores it: trimmed of surrounding whitespace, then only letters, digits, '_' and '-',
- * 20 to 512 characters. A token Caddy's DNS plugin rejects is quoted in its error, so a malformed one never reaches Caddy. */
+/** The token forms caddy-dns/cloudflare v0.2.4 accepts (`validCloudflareToken`): a classic API token of 35 to 50 letters,
+ * digits, '_' or '-', or a user (cfut_) or account (cfat_) token. The plugin quotes any other value in its error, so Rig
+ * accepts exactly these and nothing it would reject. */
+export const CLOUDFLARE_TOKEN_FORMS = [
+  /^[A-Za-z0-9_-]{35,50}$/,
+  /^cf(ut|at)_[A-Za-z0-9_-]{32,256}$/,
+] as const;
+/** A DNS provider API token as Rig stores it: trimmed of surrounding whitespace, then one of `CLOUDFLARE_TOKEN_FORMS`. */
 export function normalizeToken(input: string): string {
   const token = input.trim();
-  if (!/^[A-Za-z0-9_-]{20,512}$/.test(token))
+  if (!CLOUDFLARE_TOKEN_FORMS.some((form) => form.test(token)))
     throw new RigError(
       "PROXY_TOKEN",
-      "The DNS API token is malformed: a token has 20 to 512 letters, digits, '_' or '-' and nothing else.",
+      "The DNS API token is malformed: Cloudflare API tokens are 35 to 50 letters, digits, '_' or '-', or start with cfut_ or cfat_.",
       "Copy the token again from the Cloudflare dashboard, without spaces or quotes, and pipe it to rig proxy token.",
     );
   return token;

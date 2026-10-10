@@ -1,11 +1,11 @@
-import { attempt } from "@/lib/outcome";
-import { targetKey, targetSelector } from "@/lib/target";
-import type { LogsResult, ProjectStatusReport } from "@/lib/types";
-import { read } from "@/server/daemon";
+import { targetKey } from "@/lib/target";
 import { project } from "@/server/project";
+import { projectStatus } from "@/server/status";
+import { firstLogPage, logTargets } from "@/server/logs";
 import { Failure } from "@/components/bits";
-import { LogsFollower } from "@/components/logs-follower";
+import { LogViewer } from "@/components/log-viewer";
 
+/** Any of the Project's Targets' logs, chosen with the picker; `?target=` keeps the choice. */
 export default async function LogsPage({
   params,
   searchParams,
@@ -17,27 +17,17 @@ export default async function LogsPage({
     project(params),
     searchParams,
   ]);
-  const status = await attempt(read({ action: "status", project: found.name }));
+  const status = await projectStatus(found.name);
   if (!status.ok) return <Failure failure={status.failure} />;
-  const targets = (status.value as ProjectStatusReport).targets;
+  const targets = logTargets(status.value.targets);
   const target =
     targets.find((each) => targetKey(each) === selected) ?? targets[0];
-  const first = target
-    ? await attempt(
-        read({
-          action: "logs",
-          project: found.name,
-          ...targetSelector(target),
-          lines: 200,
-        }),
-      )
-    : undefined;
   return (
-    <LogsFollower
+    <LogViewer
       project={found.name}
-      targets={targets.map(({ name, kind }) => ({ name, kind }))}
+      targets={targets}
       selected={target ? targetKey(target) : undefined}
-      first={first?.ok ? (first.value as LogsResult) : undefined}
+      first={await firstLogPage(found.name, target)}
     />
   );
 }

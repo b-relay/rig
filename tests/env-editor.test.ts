@@ -71,6 +71,8 @@ describe("editing env file text", () => {
       'say "hi"',
       "line\nbreak",
       "back\\slash",
+      "it's\\n-literal",
+      "C:\\new\nline",
       "",
       "p@ss=w0rd;$HOME",
     ]) {
@@ -79,7 +81,7 @@ describe("editing env file text", () => {
     }
   });
   test("a value with no single-line form and a bad name are refused without the value", () => {
-    const secret = "it's\\n-secret";
+    const secret = "line\u2028-secret";
     let message = "";
     try {
       encodeEnvAssignment("KEY", secret);

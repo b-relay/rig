@@ -157,11 +157,10 @@ export function parseEnvironmentFile(
     const inner = raw.slice(1, closing);
     values[match[1]!] =
       quote === '"'
-        ? inner
-            .replaceAll("\\n", "\n")
-            .replaceAll("\\r", "\r")
-            .replaceAll('\\"', '"')
-            .replaceAll("\\\\", "\\")
+        ? // One pass, so an escaped backslash before n, r or a quote stays a backslash and that letter.
+          inner.replace(/\\([nr"\\])/g, (_escape, letter: string) =>
+            letter === "n" ? "\n" : letter === "r" ? "\r" : letter,
+          )
         : inner;
   }
   return values;

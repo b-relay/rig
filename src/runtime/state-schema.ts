@@ -414,12 +414,44 @@ export const STATE_VERSION = 5;
 /** The older state version this rigd still reads: version 4 named the working and stable Targets local and live, or what
  * rig.yaml renamed them to, and is normalized as it is read (see state-store). The next write saves version 5. */
 export const MIGRATED_STATE_VERSION = 4;
+const deployment = z.object({
+  id: text.describe("The deploy's Operation id, as Activity records it."),
+  projectId: text.describe("The Project's identity."),
+  project: text.describe("The Project's name when it deployed."),
+  target: text.describe("The Target's name: stable or the Preview's name."),
+  kind: z.enum(["stable", "preview"]).describe("The Target's role."),
+  branch: text.optional().describe("The Branch deployed."),
+  commit: text
+    .optional()
+    .describe(
+      "The Commit deployed, or the one asked for when the deploy failed after resolving it.",
+    ),
+  previousCommit: text
+    .optional()
+    .describe("The Commit the Target ran before, when it had one."),
+  outcome: z
+    .enum(["deployed", "unchanged", "failed"])
+    .describe("How the deploy ended."),
+  startedAt: text.describe("When rigd began the deploy (ISO 8601)."),
+  finishedAt: text.describe("When it recorded the outcome (ISO 8601)."),
+  message: z
+    .string()
+    .optional()
+    .describe("A failed deploy's error code; never an environment value."),
+});
 export const runtimeStateSchema = z
   .object({
     version: z.literal(STATE_VERSION),
     projects: z.array(project),
     targets: z.array(target),
     activity: z.array(operation),
+    // A new optional top-level key, so no STATE_VERSION bump (see there): an older rigd keeps it as it is.
+    deployments: z
+      .array(deployment)
+      .optional()
+      .describe(
+        "Deploys rigd attempted, oldest first and bounded, with the Branch and Commit each deployed and how it ended; the dashboard's history and rollback read them.",
+      ),
     startSeq: z
       .number()
       .int()

@@ -4623,3 +4623,71 @@ test("a Working copy whose rig.yaml text is unchanged, or changed only in commen
     ).warnings,
   ).toEqual([expect.stringContaining("Run rig restart working")]);
 });
+test("every deploy is recorded with its source, the Commit it replaced, its outcome and its duration, and a rollback deploys an earlier Commit", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  deps.sources.preflight = async () => ({ commit: "c2", warnings: [] });
+  deps.sources.resolve = async (_repository, ref) => ref;
+  deps.sources.prepare = async (request) => ({
+    workspacePath: request.destination,
+    commit: request.ref,
+  });
+  const deploy = (extra: Record<string, string> = {}) =>
+    runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "stable",
+      branch: "main",
+      ...extra,
+    });
+  await deploy();
+  await deploy();
+  // Rolling back is deploying an earlier Commit of the Branch.
+  await deploy({ commit: "c1" });
+  deps.sources.preflight = async () => {
+    throw new RigError("GIT_SOURCE", "Unable to resolve.", "Check it.");
+  };
+  await expect(deploy()).rejects.toMatchObject({ code: "GIT_SOURCE" });
+  const { deployments } = (await runtime.command({
+    action: "deployments",
+    project: "demo",
+  })) as { deployments: Record<string, unknown>[] };
+  expect(deployments).toEqual([
+    expect.objectContaining({
+      project: "demo",
+      target: "stable",
+      kind: "stable",
+      branch: "main",
+      commit: "c2",
+      outcome: "deployed",
+    }),
+    expect.objectContaining({
+      commit: "c2",
+      previousCommit: "c2",
+      outcome: "unchanged",
+    }),
+    expect.objectContaining({
+      commit: "c1",
+      previousCommit: "c2",
+      outcome: "deployed",
+    }),
+    expect.objectContaining({
+      branch: "main",
+      previousCommit: "c1",
+      outcome: "failed",
+      message: "GIT_SOURCE",
+    }),
+  ]);
+  expect(deployments[0]).not.toHaveProperty("previousCommit");
+  expect(deployments[3]).not.toHaveProperty("commit");
+  for (const entry of deployments) {
+    expect(entry).not.toHaveProperty("projectId");
+    expect(entry.durationMs).toBeGreaterThanOrEqual(0);
+  }
+  // Each deploy is the Operation Activity records under the same id.
+  expect(deployments.map((entry) => entry.id)).toEqual(
+    state.activity
+      .filter((operation) => operation.action === "deploy")
+      .map((operation) => operation.id),
+  );
+});

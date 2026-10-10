@@ -12,6 +12,7 @@ import {
   updateRegistration,
 } from "./registration";
 import { recordActivity } from "../domain/activity";
+import { deploymentHistory, recordDeployment } from "../domain/deployments";
 import { ConfigError } from "../config/errors";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import {
@@ -491,6 +492,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     // Set once selection and argument checks are done: a failure after this point is an
     // Operation outcome and is recorded in activity; one before it is a usage mistake and is not.
     let attempted = false;
+    // What a deploy set out to deploy, so its history names the source even when it fails before a Target records it.
+    let deploySource:
+      { branch: string; commit?: string; previousCommit?: string } | undefined;
     try {
       if (command.action === "cancel-uninstall") {
         draining = false;
@@ -701,6 +705,15 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           state.activity.filter((o) => o.projectId === project!.id),
           command,
         );
+      if (command.action === "deployments")
+        return {
+          project: project.name,
+          deployments: deploymentHistory(
+            state.deployments,
+            project.id,
+            command.lines ?? 100,
+          ),
+        };
       if (command.action === "doctor")
         return await doctor(project, targets, { ...deps, inProgress });
       if (command.action === "rename" || command.action === "repoint") {
@@ -864,6 +877,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               (await deps.documents.host()).deploy.production_branch)
             : await deps.sources.currentBranch(selection.checkout));
         attempted = true;
+        deploySource = {
+          branch,
+          ...(target?.commit ? { previousCommit: target.commit } : {}),
+        };
         const preflight = await deps.sources.preflight({
           repoPath: project.repoPath,
           branch,
@@ -874,6 +891,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const commit = command.commit
           ? await deps.sources.resolve(project.repoPath, command.commit)
           : preflight.commit;
+        deploySource = { ...deploySource, commit };
         assertDeploymentRecovered(target);
         const previous = target?.commit
           ? { previousCommit: target.commit }
@@ -1123,6 +1141,39 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               .join(": "),
           ),
         });
+        if (
+          command.action === "deploy" &&
+          project &&
+          (outcome === "deployed" ||
+            outcome === "unchanged" ||
+            outcome === "failed")
+        ) {
+          // A deploy that finished names what its Target now runs; a failed one names what it set out to deploy.
+          const source =
+            outcome === "failed" || !target
+              ? deploySource
+              : {
+                  ...(target.branch ? { branch: target.branch } : {}),
+                  ...(target.commit ? { commit: target.commit } : {}),
+                };
+          recordDeployment(state, {
+            id: operationId,
+            projectId: project.id,
+            project: project.name,
+            target: target?.name ?? aimed ?? String(command.target),
+            kind: command.target === PREVIEW_SELECTOR ? "preview" : "stable",
+            ...(source?.branch ? { branch: source.branch } : {}),
+            ...(source?.commit ? { commit: source.commit } : {}),
+            ...(deploySource?.previousCommit
+              ? { previousCommit: deploySource.previousCommit }
+              : {}),
+            outcome,
+            startedAt:
+              operations.get(operationId)?.view.startedAt ?? deps.now(),
+            finishedAt: deps.now(),
+            ...(errorCode ? { message: errorCode } : {}),
+          });
+        }
       });
       try {
         await deps.diagnostic({

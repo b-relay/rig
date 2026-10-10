@@ -218,14 +218,19 @@ is refused as `ROUTE_CONFLICT`. `proxy.site` lists directives added to every
 site block Rig writes, and may use snippets `custom.caddy` defines.
 
 `custom.caddy` holds site blocks for its own hostnames, served on Rig's HTTPS
-port. Rig sets every global option itself. It compares what Caddy makes of the
+port. Name each site by its bare hostname (no scheme, port, path or wildcard);
+a hostname Rig serves is refused however it is spelled. Rig sets every global
+option itself. It compares what Caddy makes of the
 whole config with the same config without your sites, and refuses anything
 beyond routes for your hostnames: another port or a plain `http://` site, a
 wildcard site, certificates, issuers, logging, storage or any other setting.
 Your sites may use `reverse_proxy` to `127.0.0.1`, `localhost` or `[::1]`,
 `respond`, `abort`, `header`, `rewrite`, `uri`, `encode`, `handle` and
 `route`; anything else, such as `file_server`, is refused, and so is a
-`{file.*}` or `{env.*}` placeholder. The same rules hold for snippets that
+`{file.*}` or `{env.*}` placeholder. Named matchers may use `host`, `path`,
+`path_regexp`, `method`, `header`, `header_regexp`, `query`, `protocol` and
+`not`; others, such as `file`, `remote_ip` or `expression`, are refused. Rig
+checks all of this before Caddy provisions anything. The same rules hold for snippets that
 `proxy.site` lines use. An `import` of anything but a snippet `custom.caddy`
 defines is refused early; inline the snippet instead. An earlier build read
 `proxy/custom-global.caddy`; if that file still sets anything, delete it.

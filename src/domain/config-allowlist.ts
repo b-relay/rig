@@ -49,7 +49,9 @@ const HANDLERS: Record<string, ReadonlySet<string>> = {
   encode: new Set(["handler", "encodings", "prefer", "minimum_length"]),
   subroute: new Set(["handler", "routes", "errors"]),
 };
-/** Request matchers a nested route may use. Hosts are checked against the allowed hosts; `expression` (CEL) is not allowed. */
+/** Request matchers a nested route may use, at any depth inside `not`: each reads only the request. Hosts are checked
+ * against the allowed hosts. Everything else is refused: `file` and `vars*` read state outside the request, `remote_ip` and
+ * `client_ip` are not needed by a site that only serves loopback, and `expression` (CEL) can call any of them. */
 const MATCHERS = new Set([
   "host",
   "path",
@@ -58,6 +60,7 @@ const MATCHERS = new Set([
   "header",
   "header_regexp",
   "query",
+  "protocol",
   "not",
 ]);
 
@@ -215,48 +218,51 @@ function checkRoute(
       `${path}.match`,
       "matches no hostname; a site must name the hostnames it serves",
     );
-  list(route.match).forEach((set, index) => {
-    const matcher = record(set);
-    for (const [name, argument] of Object.entries(matcher)) {
-      const at = `${path}.match[${index}].${name}`;
-      if (top ? name !== "host" : !MATCHERS.has(name))
-        refuse(
-          at,
-          `is not an allowed matcher${top ? "; a site matches its hostname only" : ""}`,
-        );
-      if (name === "host")
-        for (const host of list(argument).map(String))
-          if (!hosts.has(host.toLowerCase()))
-            refuse(
-              at,
-              `matches ${host}, which is not a hostname Rig or the custom sites serve`,
-            );
-      if (name === "not")
-        list(argument).forEach((inner, position) =>
-          checkMatcherSet(inner, `${at}[${position}]`, hosts, refuse),
-        );
-    }
-  });
+  // A placeholder that reads a file or the environment would make a response, or a match, depend on something outside the
+  // generation.
+  if (top && /\{(?:file|env)\./.test(JSON.stringify(route)))
+    refuse(path, "reads a file or the environment through a placeholder");
+  list(route.match).forEach((set, index) =>
+    checkMatcherSet(set, `${path}.match[${index}]`, hosts, top, refuse),
+  );
   list(route.handle).forEach((handler, index) =>
     checkHandler(handler, `${path}.handle[${index}]`, hosts, refuse),
   );
 }
+/** One matcher set, and every set inside its `not`, to any depth. A site route's own sets match by hostname only. */
 function checkMatcherSet(
   value: unknown,
   path: string,
   hosts: ReadonlySet<string>,
+  top: boolean,
   refuse: (path: string, problem: string) => void,
 ): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    refuse(path, "is not a matcher set");
+    return;
+  }
   for (const [name, argument] of Object.entries(record(value))) {
-    if (!MATCHERS.has(name))
-      refuse(`${path}.${name}`, "is not an allowed matcher");
+    const at = `${path}.${name}`;
+    if (top ? name !== "host" : !MATCHERS.has(name)) {
+      refuse(
+        at,
+        `is not an allowed matcher${top ? "; a site matches its hostname only" : ""}`,
+      );
+      continue;
+    }
     if (name === "host")
       for (const host of list(argument).map(String))
         if (!hosts.has(host.toLowerCase()))
           refuse(
-            `${path}.${name}`,
+            at,
             `matches ${host}, which is not a hostname Rig or the custom sites serve`,
           );
+    if (name === "not") {
+      if (!Array.isArray(argument)) refuse(at, "is not a list of matcher sets");
+      list(argument).forEach((inner, position) =>
+        checkMatcherSet(inner, `${at}[${position}]`, hosts, false, refuse),
+      );
+    }
   }
 }
 function checkHandler(
@@ -278,9 +284,7 @@ function checkHandler(
   for (const key of Object.keys(handler))
     if (!fields.has(key))
       refuse(`${path}.${key}`, `is not a ${name} field custom sites may set`);
-  // A placeholder that reads a file or the environment would make a response depend on something outside the generation.
-  const text = JSON.stringify(handler);
-  if (/\{(?:file|env)\./.test(text))
+  if (/\{(?:file|env)\./.test(JSON.stringify(handler)))
     refuse(path, "reads a file or the environment through a placeholder");
   if (name === "reverse_proxy")
     list(handler.upstreams).forEach((upstream, index) => {

@@ -103,10 +103,10 @@ async function observeLaunchd(
 ): Promise<{ state: CaddyJobState; pid?: number }> {
   const result = await launchctl(["print", target]).catch(() => undefined);
   if (!result) return { state: "unknown" };
-  // Only "no such service" (exit 113) is a confirmed stop; any other failure leaves the state unknown.
+  // Only launchd's exit code for "no such service" (113) is a confirmed stop. Its words are not: another failure can carry
+  // them, so any other exit leaves the state unknown.
   if (result.code !== 0)
-    return result.code === LAUNCHCTL_NOT_FOUND ||
-      /could not find service/i.test(result.stderr + result.stdout)
+    return result.code === LAUNCHCTL_NOT_FOUND
       ? { state: "stopped" }
       : { state: "unknown" };
   const pid = /^\s*pid = (\d+)\s*$/m.exec(result.stdout)?.[1];

@@ -252,7 +252,7 @@ async function world(
   };
 }
 
-test("a route change is published as a generation: validated, adapted, switched to, then reloaded and confirmed from what Caddy runs", async () => {
+test("a route change is published as a generation: adapted, allowlisted, validated, switched to, then reloaded and confirmed from what Caddy runs", async () => {
   const w = await world({ site: ["import backend_errors"] });
   await w.caddy.router.apply(app());
   expect(await w.current()).toBe("g001");
@@ -264,14 +264,6 @@ test("a route change is published as a generation: validated, adapted, switched 
       "adapt",
       "--config",
       join(generation + ".tmp", "custom.caddy"),
-      "--adapter",
-      "caddyfile",
-    ],
-    [
-      binary,
-      "validate",
-      "--config",
-      join(generation, "Caddyfile"),
       "--adapter",
       "caddyfile",
     ],
@@ -292,6 +284,8 @@ test("a route change is published as a generation: validated, adapted, switched 
       "--adapter",
       "caddyfile",
     ],
+    // Only the accepted JSON is provisioned: validation comes after the allowlist, never before it.
+    [binary, "validate", "--config", join(generation, "adapted.json")],
     [binary, "reload", "--config", join(generation, "adapted.json")],
   ]);
   // The base imports Rig's routes without their site lines, and no custom sites.
@@ -513,7 +507,7 @@ test("the custom file may not read other files: a file import or a {file.*} plac
     expect(error).toMatchObject({
       code: "PROXY_CUSTOM_INVALID",
       message: expect.stringContaining(said),
-      hint: expect.stringContaining("Inline the snippet into custom.caddy"),
+      hint: expect.stringContaining("inline the snippet into custom.caddy"),
     });
     expect(await w.current()).toBe(accepted);
   }

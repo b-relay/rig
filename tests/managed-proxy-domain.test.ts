@@ -251,6 +251,29 @@ test("the custom file's early text check names, by line, an import of anything b
     { line: 3, problem: "imports missing" },
     { line: 4, problem: "reads a file through a {file.*} placeholder" },
   ]);
+  // Site addresses are bare hostnames: no scheme, port, path or wildcard, quoted or not.
+  expect(
+    customFileProblems(
+      [
+        "a.test, B.example.test {",
+        "\t@m path /x",
+        "}",
+        "https://app.test {",
+        "}",
+        '"app.test:8443" {',
+        "}",
+        "*.example.test {",
+        "}",
+        "http://c.test/x, d.test {",
+        "}",
+      ].join("\n"),
+    ).map((problem) => [problem.line, problem.problem.split(";")[0]]),
+  ).toEqual([
+    [4, "names the site https://app.test"],
+    [6, "names the site app.test:8443"],
+    [8, "names the site *.example.test"],
+    [10, "names the site http://c.test/x"],
+  ]);
 });
 
 test("Caddy's JSON tells the sites it serves, what Rig protects, and the CAs it issues from", () => {

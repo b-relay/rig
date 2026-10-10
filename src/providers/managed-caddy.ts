@@ -251,8 +251,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (problems.length)
       throw new RigError(
         "PROXY_CUSTOM_INVALID",
-        `${paths.custom}:${problems[0]!.line} ${problems[0]!.problem}; the custom file may not read other files.`,
-        `Inline the snippet into custom.caddy (define it there as (name) { ... } and import it by name), then run rig proxy reload again. Nothing changed. All: ${problems.map((problem) => `line ${problem.line} ${problem.problem}`).join("; ")}.`,
+        `${paths.custom}:${problems[0]!.line} ${problems[0]!.problem}.`,
+        `The custom file may not read other files: inline the snippet into custom.caddy (define it there as (name) { ... } and import it by name). Name each site by its bare hostname. Then run rig proxy reload again. Nothing changed. All: ${problems.map((problem) => `line ${problem.line} ${problem.problem}`).join("; ")}.`,
         { problems },
       );
   }
@@ -361,15 +361,26 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const inventory = await adapt(executable, staged.custom, secret);
     if (inventory.config === undefined)
       throw await rejectedAs(inventory.reason, inventory.reason ?? "");
-    const customSites = adaptedSiteAddresses(inventory.config);
-    const wildcard = customSites.find((site) => site.includes("*"));
-    if (wildcard)
-      throw await rejectedAs(
-        `it serves ${wildcard}, a wildcard; custom sites name each hostname`,
-        "",
-        "allowlist",
-      );
+    const customSites = adaptedSiteAddresses(inventory.config).map((site) =>
+      site.toLowerCase(),
+    );
     const rigHosts = routeFileHostnames(routes);
+    // Checked on what Caddy made of the file, so no spelling of an address (a scheme, a port, quotes, case) gets past it.
+    // Caddy merges two site blocks for one hostname when their addresses are spelled differently, so a custom site that
+    // names a Rig hostname would take over its route instead of failing as ambiguous.
+    const rigOwned = new Set(rigHosts.map((host) => host.toLowerCase()));
+    const refusedSite = customSites
+      .map((site) =>
+        site.includes("*")
+          ? `it serves ${site}, a wildcard; custom sites name each hostname`
+          : site.startsWith("http://")
+            ? `it serves ${site} over plain HTTP; custom sites are served on Rig's HTTPS port`
+            : rigOwned.has(site)
+              ? `it serves ${site}, which Rig serves; a custom site may not serve a Rig hostname`
+              : undefined,
+      )
+      .find((problem) => problem !== undefined);
+    if (refusedSite) throw await rejectedAs(refusedSite, "", "allowlist");
     const hostnames = [...rigHosts, ...customSites];
     const metadata: GenerationMetadata = {
       id,
@@ -400,24 +411,9 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await writeFile(staged.metadata, JSON.stringify(metadata, null, 2) + "\n");
     await rename(building, directory);
 
-    const validation = await caddy(
-      [
-        executable,
-        "validate",
-        "--config",
-        files.main,
-        "--adapter",
-        "caddyfile",
-      ],
-      secret,
-    );
-    if (validation.exitCode !== 0)
-      throw await rejectedAs(
-        lastOutputLine(validation.stderr),
-        validation.stderr,
-      );
     // What Caddy will run, kept beside the generation: activation is confirmed against it. It may add to Rig's own config
-    // only what the allowlist lets custom sites add, checked against Rig's config alone.
+    // only what the allowlist lets custom sites add, checked against Rig's config alone. Adapting provisions nothing, so
+    // nothing the allowlist refuses (a log file, certificates, a transport) is opened or created before it is refused.
     const adapted = await adapt(executable, files.main, secret);
     if (adapted.config === undefined)
       throw await rejectedAs(adapted.reason, adapted.reason ?? "");
@@ -471,6 +467,16 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         "allowlist",
       );
     await writeFile(files.adapted, JSON.stringify(adapted.config) + "\n");
+    // Only the accepted, frozen JSON is provisioned, by validation, and it is exactly what Caddy will load.
+    const validation = await caddy(
+      [executable, "validate", "--config", files.adapted],
+      secret,
+    );
+    if (validation.exitCode !== 0)
+      throw await rejectedAs(
+        lastOutputLine(validation.stderr),
+        validation.stderr,
+      );
     await switchTo(directory);
     try {
       await activate(directory, executable, secret, kind, "publish");

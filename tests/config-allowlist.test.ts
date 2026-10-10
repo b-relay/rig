@@ -147,6 +147,75 @@ test("any other handler, a remote upstream, a placeholder that reads files, or a
   ).toMatchObject({ path: "$.apps.http.servers.srv0.routes[2].match" });
 });
 
+test("matchers are an allowlist at every depth: a file, vars, client address or CEL matcher is refused however deep its not", () => {
+  const nested = (match: unknown) =>
+    config([
+      rigRoute("rig.example.test", "127.0.0.1:3001"),
+      abortRoute,
+      {
+        match: [{ host: ["custom.example.test"] }],
+        handle: [
+          {
+            handler: "subroute",
+            routes: [
+              {
+                match: [match],
+                handle: [{ handler: "static_response", body: "x" }],
+              },
+            ],
+          },
+        ],
+        terminal: true,
+      },
+    ]);
+  const at = "$.apps.http.servers.srv0.routes[2].handle[0].routes[0].match[0]";
+  // What the reviewer used to learn whether a file exists: `not { not { file … } }`.
+  expect(
+    check(
+      nested({
+        not: [{ not: [{ file: { root: "/tmp/x", try_files: ["marker"] } }] }],
+      }),
+    ),
+  ).toEqual([
+    {
+      path: `${at}.not[0].not[0].file`,
+      problem: "is not an allowed matcher",
+    },
+  ]);
+  for (const name of [
+    "expression",
+    "vars",
+    "vars_regexp",
+    "remote_ip",
+    "client_ip",
+    "file",
+  ])
+    expect(check(nested({ [name]: {} }))).toEqual([
+      { path: `${at}.${name}`, problem: "is not an allowed matcher" },
+    ]);
+  expect(check(nested({ not: { path: ["/x"] } }))[0]).toMatchObject({
+    path: `${at}.not`,
+  });
+  expect(check(nested({ header: { "X-A": ["{env.HOME}"] } }))[0]).toMatchObject(
+    {
+      path: "$.apps.http.servers.srv0.routes[2]",
+      problem: expect.stringContaining("placeholder"),
+    },
+  );
+  expect(
+    check(
+      nested({
+        path: ["/a/*"],
+        method: ["GET"],
+        protocol: "https",
+        query: { a: ["1"] },
+        header_regexp: { "X-A": { pattern: "^b" } },
+        not: [{ not: [{ path_regexp: { pattern: "^/c" } }] }],
+      }),
+    ),
+  ).toEqual([]);
+});
+
 test("certificates from files, changed TLS policies, new listeners and changed globals are refused", () => {
   // tls {$CERT_PATH} {$KEY_PATH}: Caddy adds a connection policy and loads files.
   const withFiles = config(

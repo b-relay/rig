@@ -224,21 +224,25 @@ export interface CustomFileProblem {
   readonly line: number;
   readonly problem: string;
 }
+/** A site address the custom file may use: a bare hostname, with no scheme, port, path or wildcard. */
+const BARE_HOSTNAME =
+  /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i;
 /** Early, friendly errors for the custom file, by line: an `import` of anything but a snippet the file defines, which would
- * read another file, and a `{file.*}` placeholder. The authority is the allowlist on the adapted JSON
- * (`configProblems`); these only say it sooner and in the file's own terms. */
+ * read another file, a `{file.*}` placeholder, and a site address that is not a bare hostname. The authority is the
+ * allowlist on the adapted JSON (`configProblems`) and the site inventory Caddy adapts; these only say it sooner and in the
+ * file's own terms. */
 export function customFileProblems(sites: string): CustomFileProblem[] {
   const snippets = new Set(
     [...sites.matchAll(/^\s*\(([^()\s]+)\)\s*\{/gm)].map((m) => m[1]!),
   );
   const problems: CustomFileProblem[] = [];
+  let depth = 0;
   sites.split(/\r?\n/).forEach((raw, index) => {
     const line = raw.replace(/(^|\s)#.*$/, "").trim();
     if (!line) return;
     // Caddyfile tokens may be quoted with double quotes or backticks.
-    const words = line
-      .split(/\s+/)
-      .map((word) => word.replace(/^["`]|["`]$/g, ""));
+    const unquote = (word: string) => word.replace(/^["`]|["`]$/g, "");
+    const words = line.split(/\s+/).map(unquote);
     if (line.includes("{file."))
       problems.push({
         line: index + 1,
@@ -249,6 +253,20 @@ export function customFileProblems(sites: string): CustomFileProblem[] {
         line: index + 1,
         problem: `imports ${words[1] ?? "nothing"}`,
       });
+    const head = line.endsWith("{") ? line.slice(0, -1).trim() : "";
+    if (depth === 0 && head && !head.startsWith("(") && words[0] !== "import")
+      for (const address of head
+        .split(/[\s,]+/)
+        .filter(Boolean)
+        .map(unquote))
+        if (!BARE_HOSTNAME.test(address))
+          problems.push({
+            line: index + 1,
+            problem: `names the site ${address}; a custom site names a bare hostname, with no scheme, port, path or wildcard`,
+          });
+    for (const character of line)
+      if (character === "{") depth++;
+      else if (character === "}") depth = Math.max(0, depth - 1);
   });
   return problems;
 }

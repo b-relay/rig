@@ -188,9 +188,36 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
         "remote.example.test {\n\treverse_proxy 10.0.0.5:80\n}\n",
         "is not a loopback upstream",
       ],
+      // Spelled differently from Rig's address, Caddy would merge it into Rig's site rather than call it ambiguous. The text
+      // check says so first; a site block inside a snippet is out of its sight, and Caddy's own inventory still catches it.
       [
-        `http://plain.example.test:${freePort()} {\n\trespond ok\n}\n`,
+        "https://app.example.test {\n\trespond takeover\n}\n",
+        "names the site https://app.example.test",
+      ],
+      [
+        "(s) {\n\thttps://app.example.test {\n\t\trespond takeover\n\t}\n}\nimport s\n",
+        "app.example.test, which Rig serves",
+      ],
+      [
+        `(s) {\n\t"APP.example.test:${https}" {\n\t\trespond takeover\n\t}\n}\nimport s\n`,
+        "app.example.test, which Rig serves",
+      ],
+      [
+        `(s) {\n\thttp://plain.example.test:${freePort()} {\n\t\trespond ok\n\t}\n}\nimport s\n`,
+        "plain HTTP",
+      ],
+      [
+        `(s) {\n\tplain.example.test:${freePort()} {\n\t\trespond ok\n\t}\n}\nimport s\n`,
         "custom sites are served on Rig's HTTPS port only",
+      ],
+      // Refused before anything is provisioned: the log file is never created.
+      [
+        `logs.example.test {\n\tlog {\n\t\toutput file ${join(root, "leak.log")}\n\t}\n\trespond ok\n}\n`,
+        "$.logging",
+      ],
+      [
+        "probe.example.test {\n\t@p not {\n\t\tnot {\n\t\t\tfile {\n\t\t\t\troot /tmp\n\t\t\t\ttry_files marker\n\t\t\t}\n\t\t}\n\t}\n\trespond @p yes\n\trespond no\n}\n",
+        ".file is not an allowed matcher",
       ],
     ] as const) {
       await writeFile(paths.custom, text);
@@ -214,8 +241,13 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
     delete process.env.RIG_TEST_KEY;
     settings = { ...settings, site: [] };
   }
-  // None of it reached what is served.
+  // None of it reached what is served, or the disk.
   expect((await get("custom.example.test", https)).body).toBe("custom");
+  expect(await get("app.example.test", https, "/x")).toEqual({
+    status: 200,
+    body: "app /x",
+  });
+  expect(existsSync(join(root, "leak.log"))).toBe(false);
   await writeFile(paths.custom, acceptedCustom);
   await writeFile(
     paths.custom,

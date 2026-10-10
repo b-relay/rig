@@ -1043,6 +1043,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (!target) throw missingTarget(command, name);
         attempted = true;
         admission.phase("stopping", target);
+        // Job runs are confirmed stopped before a recovery stop changes the Target: one that cannot be leaves the
+        // Preview, its recovery and its Services as they were.
+        await stopJobRuns(target, deps);
         if (target.recovery) target = await stopForRecovery(target, deps);
         await destroyPreview(target, deps, admission.phase);
         return await finish("stopped");

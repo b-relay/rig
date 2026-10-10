@@ -582,6 +582,31 @@ test("a run that cannot be confirmed stopped keeps a Preview from being destroye
   expect(after.desired).toBe("running");
 });
 
+test("a Preview with a recovery to settle keeps its recovery and Services when a run cannot be confirmed stopped", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  f.processes.set(f.key, { state: "unknown" });
+  await f.world.store.update((state) => {
+    const recorded = state.targets[0]!;
+    recorded.recovery = {
+      plan: recorded.plan,
+      desired: "running",
+      stage: "blocked",
+    };
+  });
+  const target = (await f.world.store.read()).targets[0]!;
+  await expect(destroyPreviewOf(f.world, target)).rejects.toMatchObject({
+    code: "JOB_STOP_UNVERIFIED",
+  });
+  const after = (await f.world.store.read()).targets[0]!;
+  expect(after.recovery).toMatchObject({ stage: "blocked" });
+  expect(after.desired).toBe("running");
+  expect(after.destructionPending).toBeUndefined();
+  expect(f.signalled.map((stop) => stop.key)).not.toContain(
+    `${f.target.id}:api`,
+  );
+});
+
 test("a removed Target's kept checkouts are forgotten only once given back", async () => {
   const f = await fixture();
   await f.world.store.update((state) => {

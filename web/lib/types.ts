@@ -17,6 +17,9 @@ export type {
 } from "../../src/domain/project-status";
 export type { ConfigEditorRequest } from "../../src/daemon/config-editor";
 export type { DeploymentReport } from "../../src/domain/deployments";
+export type { EnvEditorRequest, EnvFiles } from "../../src/daemon/env-editor";
+export type { EnvFileView, EnvScope } from "../../src/adapters/env-store";
+export type { EnvChange } from "../../src/adapters/env-file-edit";
 import type { DeploymentReport } from "../../src/domain/deployments";
 /** A Project's deploys, oldest first. */
 export interface DeploymentsResult {

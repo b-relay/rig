@@ -221,6 +221,20 @@ export function admit(
   if (moment.signingIn) return { admitted: true, by: "signingIn" };
   return refused(401, "KEY_REQUIRED", "Sign in with this Host's access key.");
 }
+/** Pure: who an admitted request came from, in the words Activity records beside a change: a signed-in
+ * browser, this Mac, or the trusted address it came from. There are no user accounts; this is the
+ * client, not a person. */
+export function clientName(
+  admission: Extract<Admission, { admitted: true }>,
+  forwardedFor: string | null,
+): string {
+  if (admission.by !== "client") return "dashboard (signed in)";
+  const address = forwardedFor?.split(",")[0]?.trim() ?? "";
+  if (!address || LOOPBACK.test(address)) return "dashboard (this Mac)";
+  // Activity accepts a short, plain name; an address is digits, dots, colons and hex letters.
+  const plain = address.replace(/[^0-9A-Fa-f.:]/g, "").slice(0, 45);
+  return `dashboard (${plain || "trusted client"})`;
+}
 /** Pure: the policy for a site published as `publicHost` and listening on a loopback port. */
 export function accessPolicy(site: {
   publicHost?: string;

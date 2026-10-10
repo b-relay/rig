@@ -49,6 +49,8 @@ import {
   type ManagedCaddy,
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
+import { proxyReport } from "../adapters/proxy-report";
+import type { ProxyControl } from "../runtime/contracts";
 import { RigError } from "../domain/errors";
 import { runCommand } from "../providers/command-runner";
 import { createListenerInspection } from "../providers/listener-inspection";
@@ -136,7 +138,7 @@ export async function composeDaemon(
       bunExecutable: toolBun,
     }),
     router:
-      managed?.router ??
+      managed?.caddy.router ??
       createCaddyRouter({
         caddyfile:
           host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
@@ -179,6 +181,7 @@ export async function composeDaemon(
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
+    ...(managed ? { proxy: managed.control } : {}),
     store,
     documents: createProjectDocuments(root, runCommand, environment, homedir()),
     sources: createDeploymentSources(
@@ -247,7 +250,7 @@ export async function composeDaemon(
     async start() {
       // Queued ahead of anything the first pass publishes: Host config's site lines and settings may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
-      void managed?.republish().catch((error: unknown) =>
+      void managed?.caddy.republish().catch((error: unknown) =>
         diagnostic.record({
           event: "proxy.republish",
           level: "error",
@@ -296,7 +299,7 @@ export async function composeDaemon(
 function composeManagedCaddy(
   root: string,
   mode: "process" | "launchd",
-): ManagedCaddy {
+): { caddy: ManagedCaddy; control: ProxyControl } {
   const paths = proxyPaths(root);
   const admin = createCaddyAdmin(paths.socket);
   const job =
@@ -309,20 +312,29 @@ function composeManagedCaddy(
           uid: process.getuid?.() ?? 501,
           admin,
         });
-  return createManagedCaddy({
+  const settings = async () => {
+    const host = await readHostConfig(root);
+    if (!host.proxy)
+      throw new RigError(
+        "PROXY_CONFIG",
+        "Host config no longer has a proxy section, but this rigd publishes through Rig's Caddy.",
+        "Run rigd install to switch how routes are published.",
+      );
+    return host.proxy;
+  };
+  const caddy = createManagedCaddy({
     root,
-    settings: async () => {
-      const host = await readHostConfig(root);
-      if (!host.proxy)
-        throw new RigError(
-          "PROXY_CONFIG",
-          "Host config no longer has a proxy section, but this rigd publishes through Rig's Caddy.",
-          "Run rigd install to switch how routes are published.",
-        );
-      return host.proxy;
-    },
+    settings,
     run: runCommand,
     job,
     admin,
   });
+  return {
+    caddy,
+    control: {
+      report: async (targets) =>
+        proxyReport({ root, settings: await settings(), job, admin, targets }),
+      apply: () => caddy.applyCustom(),
+    },
+  };
 }

@@ -84,7 +84,7 @@ export function caDirectory(
 
 /** The bare hostname Caddy serves for a site address, or undefined when the site has no certificate: plain `http://`, an IP
  * address, localhost, or a wildcard (whose certificate is its own). */
-function certificateName(address: string): string | undefined {
+export function certificateName(address: string): string | undefined {
   if (/^http:\/\//i.test(address)) return undefined;
   const host = address
     .replace(/^https:\/\//i, "")

@@ -543,6 +543,29 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         return { ready: true };
       }
       if (command.action === "queue") return queueReport(command.operation);
+      if (command.action === "proxy" || command.action === "proxy-apply") {
+        if (!deps.proxy)
+          throw new RigError(
+            "PROXY_UNMANAGED",
+            "Rig does not run its own Caddy on this Host.",
+            "Add a proxy section to config.yaml under the Rig root and run rigd install (rig-guide: Rig's own Caddy).",
+          );
+        if (command.action === "proxy-apply") {
+          // Publication runs in the router's own queue, so it never interleaves with a route change; no Target scope is held.
+          await deps.proxy.apply();
+          return { outcome: "applied" };
+        }
+        const state = await deps.store.read();
+        return deps.proxy.report(
+          state.targets.map((target) => ({
+            id: target.id,
+            name: target.name,
+            project:
+              state.projects.find((p) => p.id === target.projectId)?.name ??
+              target.projectId,
+          })),
+        );
+      }
       if (command.action === "list") {
         const state = await deps.store.read();
         // An inventory listing reads the record only; Target liveness is status's job and is not observed here.

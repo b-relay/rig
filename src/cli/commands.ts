@@ -92,7 +92,7 @@ export function createRigCommand(
     nonEmpty,
     positiveInteger,
   });
-  addProxyCommands(command, output, local);
+  addProxyCommands(command, cwd, execute, output, local);
   addHelpCommand(command, "rig");
   command
     .command("rename")
@@ -134,24 +134,89 @@ export function createRigCommand(
 /** `rig proxy`: Rig's own Caddy (ADR 0014). */
 function addProxyCommands(
   command: Command,
+  cwd: string,
+  execute: ExecuteCommand,
   output: UserOutput,
   local: LocalCommands | undefined,
 ): void {
+  const unavailable = (name: string) =>
+    new RigError(
+      "COMMAND_UNAVAILABLE",
+      `rig proxy ${name} is unavailable here.`,
+      "Run it from a terminal on the Host.",
+    );
   const proxy = command
     .command("proxy")
-    .description("Manage the Caddy Rig runs for this Host.");
+    .description(
+      "Show the Caddy Rig runs for this Host: its job, every site it serves and whether your custom files are applied.",
+    )
+    .option("--json", "Render the report as JSON")
+    .action(async (options: { json?: boolean }) =>
+      execute({ action: "proxy", repoPath: cwd }, { json: options.json }),
+    );
+  proxy
+    .command("reload")
+    .description(
+      "Apply proxy/custom.caddy, proxy/custom-global.caddy and the proxy section of Host config as they are now. A file Caddy rejects changes nothing that is served.",
+    )
+    .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
+  proxy
+    .command("verify")
+    .description(
+      "Check every served hostname with a real TLS handshake on this Host: a certificate the system trusts, from a production CA, valid for more than 7 days. Exits 1 when any hostname fails.",
+    )
+    .option(
+      "--port <port>",
+      "HTTPS port to check (default: proxy.ports.https)",
+      positiveInteger,
+    )
+    .option(
+      "--wait <seconds>",
+      "Keep checking the failing hostnames for up to this long",
+      positiveInteger,
+    )
+    .option("--staging-ok", "Accept certificates from a staging CA")
+    .action(
+      async (options: {
+        port?: number;
+        wait?: number;
+        stagingOk?: boolean;
+      }) => {
+        if (!local) throw unavailable("verify");
+        const verdicts = await local.proxyVerify({
+          ...(options.port ? { port: options.port } : {}),
+          waitSeconds: options.wait ?? 0,
+          stagingOk: options.stagingOk === true,
+        });
+        for (const verdict of verdicts)
+          output.write(
+            verdict.ok
+              ? `ok    ${verdict.hostname}  ${verdict.issuer ?? ""}, until ${verdict.validTo?.slice(0, 10) ?? "?"}\n`
+              : `FAIL  ${verdict.hostname}  ${verdict.problem ?? "not ready"}\n`,
+          );
+        const failed = verdicts.filter((verdict) => !verdict.ok).length;
+        if (!verdicts.length)
+          throw new RigError(
+            "PROXY_NOT_READY",
+            "Rig's Caddy serves no hostname with a certificate.",
+            "Run rigd install, then deploy or start a Target with a hostname.",
+          );
+        if (failed)
+          throw new RigError(
+            "PROXY_NOT_READY",
+            `${failed} of ${verdicts.length} hostnames are not ready.`,
+            "A new certificate can take minutes while DNS propagates: retry with --wait 600. Otherwise run rig doctor and read Caddy's log under the Rig root (caddy/caddy.log).",
+          );
+        output.write(`All ${verdicts.length} hostnames are ready.\n`);
+      },
+    );
   proxy
     .command("token")
     .description(
       "Store the DNS provider API token Caddy uses for certificates, read from standard input (for example: pbpaste | rig proxy token).",
     )
     .action(async () => {
-      if (!local)
-        throw new RigError(
-          "COMMAND_UNAVAILABLE",
-          "rig proxy token is unavailable here.",
-          "Run it from a terminal on the Host.",
-        );
+      if (!local) throw unavailable("token");
       const path = await local.proxyToken();
       output.write(`Stored the DNS API token in ${path} (mode 600).\n`);
     });

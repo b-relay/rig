@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { verifyProxyCertificates } from "../src/adapters/proxy-verify";
+import { proxyReport } from "../src/adapters/proxy-report";
 import { join } from "node:path";
 import { parseHostConfig } from "../src/config";
 import { proxyPaths } from "../src/domain/managed-proxy";
@@ -149,6 +151,65 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
   // The rejected file changed nothing that is served.
   expect((await get("custom.example.test", https)).body).toBe("custom");
   expect((await get("app.example.test", https)).status).toBe(200);
+
+  // rig proxy verify does real handshakes: Caddy's internal CA is not trusted by the system, so it fails until trusted, and
+  // its 12-hour certificates pass the 7-day rule only when the clock is set back.
+  const untrusted = await verifyProxyCertificates({
+    root,
+    port: https,
+    stagingOk: false,
+    waitMs: 0,
+  });
+  expect(untrusted.map((verdict) => verdict.hostname)).toEqual([
+    "app.example.test",
+    "custom.example.test",
+  ]);
+  expect(untrusted[0]).toMatchObject({
+    ok: false,
+    problem: expect.stringContaining("not trusted"),
+  });
+  const internalRoot = await readFile(
+    join(paths.data, "pki", "authorities", "local", "root.crt"),
+    "utf8",
+  );
+  expect(
+    await verifyProxyCertificates({
+      root,
+      port: https,
+      stagingOk: false,
+      waitMs: 0,
+      trust: [internalRoot],
+      now: () => new Date(Date.now() - 8 * 86_400_000),
+    }),
+  ).toEqual([
+    expect.objectContaining({ hostname: "app.example.test", ok: true }),
+    expect.objectContaining({ hostname: "custom.example.test", ok: true }),
+  ]);
+  const report = await proxyReport({
+    root,
+    settings,
+    job,
+    admin,
+    targets: [{ id: "app", project: "demo", name: "stable" }],
+  });
+  expect(report.caddy).toMatchObject({ state: "running", ca: "internal" });
+  expect(report.sites).toEqual([
+    {
+      hostname: "app.example.test",
+      source: "target",
+      project: "demo",
+      target: "stable",
+      routes: [{ prefix: "/", upstream: `127.0.0.1:${upstream.port}` }],
+      certificate: "*.example.test",
+    },
+    {
+      hostname: "custom.example.test",
+      source: "custom",
+      certificate: "*.example.test",
+    },
+  ]);
+  // The broken edit is still on disk, unapplied.
+  expect(report.custom[0]).toMatchObject({ state: "pending" });
 
   await job.restart();
   expect((await get("app.example.test", https)).status).toBe(200);

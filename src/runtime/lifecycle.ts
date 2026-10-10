@@ -2,6 +2,7 @@ import type {
   BuildUnit,
   InstalledComponent,
   ManagedComponent,
+  PlanJob,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import { deploySelector, targetSelector } from "../domain/target-selector";
@@ -15,7 +16,7 @@ import { isStopDetached, serviceGraceMs } from "../domain/stop-budget";
 import type { ListenerEvidence } from "../providers/listener-inspection";
 import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
-import { componentDirectory } from "../config/working-dir";
+import { componentDirectory, jobDirectory } from "../config/working-dir";
 import { randomUUID } from "node:crypto";
 
 export interface TargetEffectCheckpoint {
@@ -51,7 +52,7 @@ export interface TargetEffects {
   prepare(target: TargetRecord): Promise<void>;
   environment(
     target: TargetRecord,
-    component: ManagedComponent | InstalledComponent,
+    component: ManagedComponent | InstalledComponent | PlanJob,
   ): Promise<Record<string, string>>;
   /** The Service's own check, or without one a connection to every port it declares.
    * May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
@@ -169,7 +170,8 @@ export interface TargetLifecycle {
     stops?: StopControl,
   ): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout. Every Service is attempted, and
-   * STOP_INCOMPLETE names the failures, except when the stop is detached: STOP_DETACHED ends it at once. */
+   * STOP_INCOMPLETE names the failures, except when the stop is detached: STOP_DETACHED ends it at once. A job run is not
+   * stopped here, so a deploy, which stops the previous plan this way, never cuts one off: `stopJob` stops one. */
   down(
     target: TargetRecord,
     stops?: StopControl,
@@ -183,6 +185,27 @@ export interface TargetLifecycle {
     publishRemoval?: () => Promise<void>,
     stops?: StopControl,
   ): Promise<void>;
+  /** Starts one run of `job` of the recorded plan as `incarnation`: a freshly composed environment (its env files read
+   * now), then its command under the Target's supervisor, with its output in the Target log under the job's name. Returns
+   * once the process started; never waits for it to end. Fails PROCESS_START (and the like) with nothing left running. */
+  startJob(
+    target: TargetRecord,
+    job: PlanJob,
+    incarnation: string,
+  ): Promise<void>;
+  /** What runs for `job` of `target` now: its process while one runs, or how the last one ended when that was recorded. */
+  observeJob(
+    target: TargetRecord,
+    job: string,
+    signal?: AbortSignal,
+  ): Promise<ProcessObservation>;
+  /** Stops the run of `job` in progress within its stop_timeout (the one it started with), telling the stop's observer;
+   * `unchanged` when none runs. */
+  stopJob(
+    target: TargetRecord,
+    job: Pick<PlanJob, "name" | "stopTimeout">,
+    stops?: StopControl,
+  ): Promise<StopResult>;
 }
 export interface ReadinessTiming {
   /** Schedule once after delayMs; never inline. Return an idempotent cancellation.
@@ -251,7 +274,20 @@ export function withStops(
     down: (target, control) => lifecycle.down(target, control ?? stops),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
+    startJob: (target, job, incarnation) =>
+      lifecycle.startJob(target, job, incarnation),
+    observeJob: (target, job, signal) =>
+      lifecycle.observeJob(target, job, signal),
+    stopJob: (target, job, control) =>
+      lifecycle.stopJob(target, job, control ?? stops),
   };
+}
+/** The supervisor key of a Target's job runs. A Service name never holds ':', so it never collides with a Service's. */
+export function jobProcessKey(
+  target: Pick<TargetRecord, "id">,
+  job: string,
+): string {
+  return `${target.id}:job:${job}`;
 }
 /** Applies an already recorded plan. Changing config cannot change lifecycle identity or policy. */
 /** Told about each Service's lifecycle transitions, synchronously and while the caller holds the Target: as a start or a
@@ -572,6 +608,34 @@ export function createTargetLifecycle(
         outcome: result.outcome === "stopped" ? "stopped" : "unchanged",
       };
     },
+    async startJob(target, job, incarnation) {
+      // Read before anything is spawned, so an unreadable env file leaves nothing running.
+      const env = await effects.environment(target, job);
+      const result = await effects.supervisor(target).ensureRunning({
+        key: jobProcessKey(target, job.name),
+        componentName: job.name,
+        command: ["/bin/sh", "-c", job.command],
+        cwd: jobDirectory(target.plan, job),
+        ...(job.workingDir !== undefined
+          ? { cwdWithin: target.plan.workspacePath }
+          : {}),
+        env,
+        logRoot: target.logRoot,
+        incarnation,
+        stopGraceMs: serviceGraceMs(job.stopTimeout),
+      });
+      // A process already running under the job's key is another run's, which this run must never be recorded as.
+      if (result.outcome !== "started")
+        throw new RigError(
+          "JOB_RUNNING",
+          `A process of ${job.name} is already running on ${target.name}, so no new run was started.`,
+          `Wait for it to end, or stop it with rig down ${targetSelector(target)}.`,
+          { job: job.name },
+        );
+    },
+    observeJob: (target, job, signal) =>
+      effects.supervisor(target).observe(jobProcessKey(target, job), signal),
+    stopJob: (target, job, stops) => stopJob(target, job, stops),
     async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
@@ -595,6 +659,33 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
+  /** Stops `job`'s run in progress within its stop_timeout under `stops`, telling the observers as the stop begins and ends;
+   * a job with nothing running is left alone, unannounced. */
+  async function stopJob(
+    target: TargetRecord,
+    job: Pick<PlanJob, "name" | "stopTimeout">,
+    stops: StopControl = {},
+  ): Promise<StopResult> {
+    const supervisor = effects.supervisor(target),
+      key = jobProcessKey(target, job.name);
+    if ((await supervisor.observe(key)).state === "stopped")
+      return { outcome: "unchanged" };
+    const graceMs = serviceGraceMs(job.stopTimeout);
+    const kill = stops.kill?.(target);
+    stops.observer?.stopping(target, job.name, graceMs);
+    try {
+      const result = await supervisor.stop(key, {
+        graceMs,
+        ...(kill ? { kill } : {}),
+        ...(stops.detach ? { detach: stops.detach } : {}),
+      });
+      stops.observer?.stopped(target, job.name, result);
+      return result;
+    } catch (error) {
+      stops.observer?.stopped(target, job.name, { outcome: "failed" });
+      throw error;
+    }
+  }
   /** Stops one Service within its stop_timeout under `stops`, telling its observer as the stop begins and ends. */
   async function stopService(
     target: TargetRecord,

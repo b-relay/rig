@@ -5,7 +5,7 @@ import { z } from "zod";
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
 export const projectName = z.string().min(1).max(128);
 export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
-/** A component name `rig logs --service` may send: the shape every Service and Tool name has. Like config, it sets no
+/** A component name `rig logs --service` or `rig run` may send: the shape every Service, Tool and job name has. Like config, it sets no
  * length limit of its own; the control plane's request size bounds it. */
 export const logComponentName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 /** rig resolves paths against the caller's directory before sending; rigd never resolves against its own. */
@@ -36,6 +36,7 @@ export const commandSchema = z
       "cancel-uninstall",
       "queue",
       "deployments",
+      "run",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
@@ -82,6 +83,8 @@ export const commandSchema = z
         until: z.iso.datetime({ offset: true }).optional(),
       })
       .optional(),
+    /** The job `run` starts: a name under jobs in rig.yaml that the selected Target's plan runs. */
+    job: logComponentName.optional(),
     /** An Operation id (or unambiguous prefix) that activity narrows to; the id a failed command prints. */
     operation: z.string().min(1).optional(),
     after: z.string().optional(),

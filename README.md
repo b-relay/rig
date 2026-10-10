@@ -16,6 +16,7 @@ rig down
 
 rig deploy
 rig deploy preview feature/login
+rig run nightly-import
 rig doctor
 ```
 
@@ -44,6 +45,21 @@ services:
     healthcheck:
       test: http://127.0.0.1:${port}/health
 targets: { working: true, stable: true }
+```
+
+A `jobs:` map beside `services:` runs commands on a cron schedule from the
+same checkout and with the same references, in the stable Target unless a
+job's `targets` say otherwise; `rig run <job>` runs one now, `rig status`
+shows each job's last and next run, and a run's output is in `rig logs`
+([ADR 0013](docs/adr/0013-scheduled-jobs.md)):
+
+```yaml
+jobs:
+  nightly-import:
+    command: ./notes import --db 127.0.0.1:${services.api.port}
+    schedule: "30 3 * * *" # cron: 03:30 every day
+    timezone: America/Chicago # default: the Mac's own time zone
+    timeout: 2h
 ```
 
 `${port}` is the Service's one port, and with one Service that has one port the

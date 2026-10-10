@@ -61,7 +61,7 @@ const target = (): TargetRecord => ({
 
 test("every state write that is a lifecycle transition is reported as it is applied, and no other write is", async () => {
   let state = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [target(), { ...target(), id: "t2", name: "feature" }],
     activity: [],

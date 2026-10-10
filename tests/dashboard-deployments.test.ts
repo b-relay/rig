@@ -92,7 +92,7 @@ test("durations read in the two largest units that say something", () => {
 
 test("rigd keeps a bounded history and reports one Project's deploys without its internal id", () => {
   const state = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [],
     activity: [],

@@ -16,9 +16,7 @@ export default async function JobsPage({
   if (!status.ok) return <Failure failure={status.failure} />;
   const withJobs = orderedTargets(status.value.targets).flatMap((target) => {
     const jobs = targetJobs(target);
-    return jobs.supported && jobs.jobs.length
-      ? [{ target, jobs: jobs.jobs }]
-      : [];
+    return jobs.length ? [{ target, jobs }] : [];
   });
   if (withJobs.length === 0)
     return (
@@ -33,7 +31,7 @@ export default async function JobsPage({
         <Panel key={target.name} title={target.name} flush>
           <JobsTable
             project={found.name}
-            target={target.name}
+            target={target}
             jobs={jobs}
             now={now}
           />

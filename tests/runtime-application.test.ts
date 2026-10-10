@@ -29,7 +29,7 @@ const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
 function fixture() {
   const deadline = controlledDeadline();
   const state: RuntimeState = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [],
     activity: [],
@@ -125,6 +125,13 @@ function fixture() {
       async release() {},
     },
     lifecycle: {
+      async startJob() {},
+      async observeJob() {
+        return { state: "stopped" as const };
+      },
+      async stopJob() {
+        return { outcome: "unchanged" as const };
+      },
       async pruneCheckpoints() {
         return [];
       },
@@ -2988,6 +2995,24 @@ async function destroyFixture() {
   };
 }
 
+test("destroy settles a Preview's recovery first, then passes the real ownership preflight", async () => {
+  const f = await destroyFixture();
+  try {
+    f.target.recovery = {
+      plan: structuredClone(f.target.plan),
+      desired: "running",
+      stage: "blocked",
+    };
+    await f.destroy();
+    expect(f.state.targets.map((t) => t.name)).toEqual(["other"]);
+    expect(
+      await readFile(join(f.other.plan.dataRoot, "precious"), "utf8"),
+    ).toBe("other");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("destroy preserves other Targets, external shared storage, and symlink destinations", async () => {
   const f = await destroyFixture();
   const { symlink } = await import("node:fs/promises");
@@ -3757,7 +3782,7 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
     }),
   ).rejects.toMatchObject({
     code: "USAGE",
-    message: "Target 'working' has no Service or Tool named 'scheduler'.",
+    message: "Target 'working' has no Service, Tool or job named 'scheduler'.",
     hint: "Pass --service with one of: web, setup.",
   });
   expect(reads).toHaveLength(2);

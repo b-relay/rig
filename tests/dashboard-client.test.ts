@@ -80,6 +80,20 @@ test("a lost reply waits while the Operation runs, then answers as the command w
   });
 });
 
+test("a lost reply to a command that succeeded with its own outcome, such as Run now's started, resolves as a success", () => {
+  for (const outcome of ["started", "deployed", "stopped", "unchanged"])
+    expect(
+      resolveSettlement(
+        { state: "finished", outcome, occurredAt: "2026-10-10T10:00:00Z" },
+        { ...operation, action: "run" },
+        "load failed",
+      ),
+    ).toEqual({
+      ok: true,
+      value: { ...operation, action: "run", outcome },
+    });
+});
+
 test("an Operation rigd never saw is reported as a lost reply naming the transport error", () => {
   const lost = resolveSettlement(
     { state: "unknown" },

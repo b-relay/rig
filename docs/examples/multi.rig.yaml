@@ -59,6 +59,18 @@ tools:
     build: go build -o .rig-build/acmectl ./cmd/acmectl
     bin: .rig-build/acmectl
 
+# Runs in the stable Target only (the default) at 03:30 Chicago time, from the deployed checkout. A run still going at
+# the next 03:30 makes that one skip, and an hour-long run is stopped.
+jobs:
+  reindex:
+    command: ./.rig-build/acmectl reindex --db 127.0.0.1:${services.db.port}
+    schedule: "30 3 * * *"
+    timezone: America/Chicago
+    timeout: 1h
+    environment:
+      # The api Service's persistent directory, shared with it.
+      CACHE_DIR: ${services.api.data}/cache
+
 # Two Services declare ports, so the proxy names which one serves each path.
 proxy:
   /api: api

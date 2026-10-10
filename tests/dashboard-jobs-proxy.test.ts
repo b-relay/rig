@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { RUN_JOB_SUPPORTED, runJobCommand, targetJobs } from "../web/lib/jobs";
+import { canRunNow, runJobCommand, targetJobs } from "../web/lib/jobs";
+import { commandSchema } from "../src/daemon/protocol";
 import { customCaddyFile, proxyRoutes } from "../web/lib/proxy";
 import type { TargetReport } from "../web/lib/types";
 
@@ -12,11 +13,8 @@ const target = (fields: Partial<TargetReport> & Record<string, unknown> = {}) =>
     ...fields,
   }) as TargetReport;
 
-test("a status without jobs comes from a rigd without scheduled jobs; a well-formed list is read as the jobs branch reports it", () => {
-  expect(targetJobs(target())).toEqual({ supported: false });
-  expect(targetJobs(target({ jobs: [{ name: 1 }] }))).toEqual({
-    supported: false,
-  });
+test("a Target's jobs are read from its status as rigd reports them; a Target with none reports none", () => {
+  expect(targetJobs(target())).toEqual([]);
   const jobs = targetJobs(
     target({
       jobs: [
@@ -39,15 +37,45 @@ test("a status without jobs comes from a rigd without scheduled jobs; a well-for
       ],
     }),
   );
-  expect(jobs).toMatchObject({
-    supported: true,
-    jobs: [{ name: "backup", last: { outcome: "succeeded" } }],
-  });
+  expect(jobs).toMatchObject([
+    { name: "backup", last: { outcome: "succeeded" } },
+  ]);
 });
 
-test("running a job now waits for rigd to accept it", () => {
-  expect(RUN_JOB_SUPPORTED).toBe(false);
-  expect(runJobCommand("demo", target(), "backup")).toBeUndefined();
+test("Run now sends rig run's command for the Target, and is offered unless a run goes or the job was removed", () => {
+  expect(runJobCommand("demo", target(), "backup")).toEqual({
+    action: "run",
+    project: "demo",
+    target: "stable",
+    job: "backup",
+  });
+  expect(
+    runJobCommand(
+      "demo",
+      target({ kind: "preview", name: "feat-1a2b3c4d" }),
+      "backup",
+    ),
+  ).toEqual({
+    action: "run",
+    project: "demo",
+    target: "preview",
+    deployment: "feat-1a2b3c4d",
+    job: "backup",
+  });
+  // The command is one the control plane accepts.
+  expect(
+    commandSchema.safeParse(runJobCommand("demo", target(), "backup")).success,
+  ).toBe(true);
+  const job = {
+    name: "backup",
+    schedule: "0 3 * * *",
+    timeZone: "UTC",
+    state: "idle" as const,
+    scheduled: false,
+  };
+  expect(canRunNow(job)).toBe(true);
+  expect(canRunNow({ ...job, state: "running" })).toBe(false);
+  expect(canRunNow({ ...job, removed: true })).toBe(false);
 });
 
 test("every hostname and path on the Host leads to its Target's Service, by host then longest prefix", () => {

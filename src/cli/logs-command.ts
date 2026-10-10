@@ -76,7 +76,7 @@ export function addLogsCommand(
     )
     .option(
       "--service <name>",
-      "Only this Service's or Tool's lines (repeat for more than one)",
+      "Only this Service's, Tool's or job's lines (repeat for more than one)",
       (value: string, previous: string[] | undefined) => [
         ...(previous ?? []),
         value,
@@ -139,7 +139,7 @@ function logsFilter(
       throw new RigError(
         "USAGE",
         `--service '${terminalText(name)}' is not a Service name.`,
-        "Pass a Service or Tool name from rig.yaml, such as --service web.",
+        "Pass a Service, Tool or job name from rig.yaml, such as --service web.",
       );
   if (options.until !== undefined && options.follow)
     throw new RigError(

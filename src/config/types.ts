@@ -97,6 +97,31 @@ export interface BuildUnit {
 }
 export type PlanComponent =
   ManagedComponent | InstalledComponent | PersistentComponent;
+/** A job as a Target's plan records it. Every role plans every job; its `targets` decide where the schedule runs it
+ * (`scheduled`), and `rig run` runs it in any Target. Its command runs from the plan's workspace. */
+export interface PlanJob {
+  name: string;
+  /** /bin/sh command, references resolved. */
+  command: string;
+  /** The directory it runs in, relative to the plan's workspacePath; absent means the workspace root. */
+  workingDir?: string;
+  /** Public values only: the Project's `environment`, then the job's. */
+  env: Record<string, string>;
+  /** Lowest to highest precedence; every file beats `env`. */
+  envFiles?: EnvFileRef[];
+  /** Public environment leaves the command was built from; a file may not change them. */
+  commandInputs?: PublicInput[];
+  /** Five-field cron expression, read in `timeZone`. */
+  schedule: string;
+  /** false when the job's `targets` do not name this role: the schedule does not run it here, only `rig run` does. */
+  scheduled?: false;
+  /** IANA time zone the schedule is read in; absent means the Host's zone when each run is scheduled. */
+  timeZone?: string;
+  /** Seconds one run may take before it is stopped and recorded as timed out; absent means no limit. */
+  timeout?: number;
+  /** Seconds a run may take to exit after SIGTERM before SIGKILL; absent means the 10 s default. */
+  stopTimeout?: number;
+}
 export type PreparedComponent =
   | { name: string; uses: "sqlite"; path: string }
   | { name: string; uses: "convex"; stateDir: string }
@@ -115,6 +140,9 @@ export interface TargetPlan {
   daemon?: { enabled?: boolean; keepAlive?: boolean };
   env?: Record<string, string>;
   components: PlanComponent[];
+  /** The Project's jobs, by name, with whether this Target's schedule runs each; absent when there are none, as in every
+   * plan recorded before jobs. */
+  jobs?: PlanJob[];
   /** Build units in run order: shared, Services in dependency order, then Tools by name. Absent on plans recorded before builds were units. */
   builds?: BuildUnit[];
   preparedComponents: PreparedComponent[];

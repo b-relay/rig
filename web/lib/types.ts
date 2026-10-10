@@ -12,6 +12,8 @@ export type {
 } from "../../src/daemon/protocol";
 export type {
   ComponentReport,
+  JobReport,
+  JobRunReport,
   ProjectStatusReport,
   TargetReport,
 } from "../../src/domain/project-status";

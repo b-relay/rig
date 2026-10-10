@@ -220,18 +220,23 @@ export interface RetainedRevision {
   readonly warning: string;
   readonly causes: FailureCauses;
 }
-/** Give back the revisions among `records` that no inventory record uses any more, once the deployment
- * outcome is saved. Each failure is reported, never thrown: the outcome stands and the checkout stays. */
+/** Give back the revisions among `records` that no inventory record and no job run in progress uses any more, once the
+ * deployment outcome is saved. Each failure is reported, never thrown: the outcome stands and the checkout stays. */
 export async function releaseUnreferencedRevisions(
   records: readonly TargetRecord[],
   deps: Pick<RuntimeDependencies, "sources" | "store">,
 ): Promise<RetainedRevision[]> {
-  const referenced = new Set(
-    (await deps.store.read()).targets.flatMap((record) => [
+  const state = await deps.store.read();
+  // A job run keeps the checkout it started in until it ends, so a deploy never removes it from under the run.
+  const referenced = new Set([
+    ...state.targets.flatMap((record) => [
       record.plan.workspacePath,
       ...(record.recovery ? [record.recovery.plan.workspacePath] : []),
     ]),
-  );
+    ...(state.jobs ?? []).flatMap((record) =>
+      record.running?.workspace ? [record.running.workspace] : [],
+    ),
+  ]);
   const retained: RetainedRevision[] = [];
   for (const record of records) {
     const workspacePath = ownedRevision(record);

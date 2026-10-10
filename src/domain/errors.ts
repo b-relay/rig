@@ -88,6 +88,10 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "UNAUTHORIZED",
   "CADDY_UNAVAILABLE",
   "PROVIDER_MISSING",
+  "JOB_UNKNOWN",
+  "JOB_RUNNING",
+  "JOB_UNAVAILABLE",
+  "JOB_STOP_UNVERIFIED",
 ]);
 /** The user ended the command before it changed anything; the hint says what, if anything, still runs. */
 export function cancelled(hint = "No runtime change was requested."): RigError {

@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 function fixture() {
   const state: RuntimeState = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [],
     activity: [],

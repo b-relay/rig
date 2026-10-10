@@ -195,6 +195,13 @@ async function fixture(host: Record<string, unknown> = {}) {
       async release() {},
     },
     lifecycle: {
+      async startJob() {},
+      async observeJob() {
+        return { state: "stopped" as const };
+      },
+      async stopJob() {
+        return { outcome: "unchanged" as const };
+      },
       async pruneCheckpoints() {
         return [];
       },

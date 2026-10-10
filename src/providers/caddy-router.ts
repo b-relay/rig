@@ -19,10 +19,20 @@ export interface RoutePath {
 }
 /** The whole route map of one hostname, in matching order: the first path that matches a request takes it, so the caller lists
  * longer prefixes first. '/' must be among them. */
-export interface RouteRequest {
-  readonly key: string;
+export interface RouteSite {
   readonly hostname: string;
   readonly routes: readonly RoutePath[];
+}
+/** Every hostname one owner (a Target) publishes. They are written, checkpointed, restored and withdrawn together, so a Target
+ * with several hostnames is never half published. */
+export interface RouteRequest {
+  readonly key: string;
+  readonly sites: readonly RouteSite[];
+}
+/** One withheld path of a published site. */
+export interface WithheldPath {
+  readonly hostname: string;
+  readonly prefix: string;
 }
 export interface RouteCheckpoint {
   readonly key: string;
@@ -31,8 +41,8 @@ export interface RouteCheckpoint {
 export interface Router {
   apply(route: RouteRequest): Promise<void>;
   remove(key: string): Promise<void>;
-  /** The prefixes of the published route that reach no process; empty without a route. */
-  withheld(key: string): Promise<string[]>;
+  /** The paths of the published sites that reach no process; empty without a route. */
+  withheld(key: string): Promise<WithheldPath[]>;
   checkpoint(key: string): Promise<RouteCheckpoint>;
   restore(saved: RouteCheckpoint, expected: RouteCheckpoint): Promise<void>;
 }
@@ -56,26 +66,7 @@ export function createCaddyRouter(options: {
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ): Promise<void> {
-    if (
-      route &&
-      (!/^(?:https?:\/\/)?[a-zA-Z0-9][a-zA-Z0-9.\-]*(?::\d{1,5})?$/.test(
-        route.hostname,
-      ) ||
-        !route.routes.some((path) => path.prefix === "/") ||
-        route.routes.some(
-          (path) =>
-            !/^\/[A-Za-z0-9._~\/-]*$/.test(path.prefix) ||
-            (path.upstream !== null &&
-              !/^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):\d{1,5}$/.test(
-                path.upstream,
-              )),
-        ))
-    )
-      throw new RigError(
-        "ROUTE_INVALID",
-        "The route address is invalid.",
-        "Use a valid hostname and a localhost upstream.",
-      );
+    if (route) validateRequest(route);
     await mkdir(dirname(options.caddyfile), { recursive: true });
     const before = await readFile(options.caddyfile, "utf8").catch((error) => {
       if (error.code === "ENOENT") return "";
@@ -96,18 +87,21 @@ export function createCaddyRouter(options: {
       ? restoration.expected.value
       : ownedBlock(before, key);
     const without = existing === null ? before : before.replace(existing, "");
-    if (route && hostnamePresent(without, route.hostname))
+    const taken = route?.sites.find((site) =>
+      hostnamePresent(without, site.hostname),
+    );
+    if (taken)
       throw new RigError(
         "ROUTE_CONFLICT",
         "This hostname is already owned by another route.",
         "Choose a different hostname or explicitly migrate its existing owner.",
-        { hostname: route.hostname },
+        { hostname: taken.hostname },
       );
     const { begin, end } = routeMarkers(key);
     const block = restoration
       ? (restoration.saved.value ?? "")
       : route
-        ? `${begin}\n${route.hostname} {\n${siteRoutes(route.routes)}${(options.extraConfig ?? []).map((line) => "  " + line + "\n").join("")}}\n${end}\n`
+        ? `${begin}\n${route.sites.map((site) => siteBlock(site, options.extraConfig ?? [])).join("")}${end}\n`
         : "";
     // Nothing owned to remove and nothing to add leaves the file, and Caddy, untouched.
     if (!block && existing === null) return;
@@ -115,7 +109,9 @@ export function createCaddyRouter(options: {
       without + (without && !without.endsWith("\n") ? "\n" : "") + block;
     // A withdrawal is reloaded even when the file already says it: what Caddy serves can differ from the file after a reload
     // that failed, and a process is about to start behind whatever Caddy serves now.
-    const withdrawing = route?.routes.some((path) => path.upstream === null);
+    const withdrawing = route?.sites.some((site) =>
+      site.routes.some((path) => path.upstream === null),
+    );
     if (after === before && !withdrawing) return;
     // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
     const file = await realpath(options.caddyfile).catch(
@@ -248,7 +244,7 @@ export function createCaddyRouter(options: {
         if (error.code === "ENOENT") return "";
         throw error;
       });
-      return withheldPrefixes(ownedBlock(text, key) ?? "");
+      return withheldPaths(ownedBlock(text, key) ?? "");
     },
     async checkpoint(key) {
       await pending.catch(() => {});
@@ -274,6 +270,49 @@ function describeStartFailure(error: unknown): string {
   }
   return error instanceof Error ? error.message : String(error);
 }
+/** Refuses a request Caddy could misread or that would reach beyond this machine: every site needs a valid hostname that no
+ * other site of the request repeats, a '/' path and localhost upstreams. */
+function validateRequest(route: RouteRequest): void {
+  const invalid = () =>
+    new RigError(
+      "ROUTE_INVALID",
+      "The route address is invalid.",
+      "Use a valid hostname and a localhost upstream.",
+    );
+  if (!route.sites.length) throw invalid();
+  const seen = new Set<string>();
+  for (const site of route.sites) {
+    if (
+      !/^(?:https?:\/\/)?[a-zA-Z0-9][a-zA-Z0-9.\-]*(?::\d{1,5})?$/.test(
+        site.hostname,
+      ) ||
+      !site.routes.some((path) => path.prefix === "/") ||
+      site.routes.some(
+        (path) =>
+          !/^\/[A-Za-z0-9._~\/-]*$/.test(path.prefix) ||
+          (path.upstream !== null &&
+            !/^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):\d{1,5}$/.test(
+              path.upstream,
+            )),
+      )
+    )
+      throw invalid();
+    const address = siteAddress(site.hostname);
+    if (seen.has(address))
+      throw new RigError(
+        "ROUTE_INVALID",
+        `The hostname ${site.hostname} is listed twice for one Target.`,
+        "Give each hostname of a Target one entry.",
+        { hostname: site.hostname },
+      );
+    seen.add(address);
+  }
+}
+/** One Caddy site: its paths, then the Host's extra directives. Its header is the only line of a Rig block that starts at
+ * column 0 and ends with `{`, which is how `withheldPaths` tells the sites apart. */
+function siteBlock(site: RouteSite, extraConfig: readonly string[]): string {
+  return `${site.hostname} {\n${siteRoutes(site.routes)}${extraConfig.map((line) => "  " + line + "\n").join("")}}\n`;
+}
 /** A lone '/' is the site's one handler. Several paths become mutually exclusive `handle` blocks in the given order; each
  * matcher names the prefix and its subtree, so '/api' never takes '/apix'. */
 function siteRoutes(routes: readonly RoutePath[]): string {
@@ -288,17 +327,26 @@ function siteRoutes(routes: readonly RoutePath[]): string {
     )
     .join("");
 }
-/** Reads back what `siteRoutes` wrote: the prefixes whose handler is `respond 503`. */
-function withheldPrefixes(block: string): string[] {
-  const matchers = new Map<string, string>();
-  const withheld: string[] = [];
+/** Reads back what `siteBlock` wrote: for each site, the prefixes whose handler is `respond 503`. */
+function withheldPaths(block: string): WithheldPath[] {
+  const withheld: WithheldPath[] = [];
+  let hostname = "";
+  let matchers = new Map<string, string>();
   let prefix = "/";
-  for (const line of block.split("\n").map((text) => text.trim())) {
+  for (const raw of block.split(/\r?\n/)) {
+    const header = /^(\S+) \{$/.exec(raw);
+    if (header) {
+      hostname = header[1]!;
+      matchers = new Map();
+      prefix = "/";
+      continue;
+    }
+    const line = raw.trim();
     const matcher = /^(@rig\d+) path (\S+) /.exec(line);
     if (matcher) matchers.set(matcher[1]!, matcher[2]!);
     const handle = /^handle(?: (@rig\d+))? \{$/.exec(line);
     if (handle) prefix = handle[1] ? (matchers.get(handle[1]) ?? "/") : "/";
-    if (line === "respond 503") withheld.push(prefix);
+    if (line === "respond 503") withheld.push({ hostname, prefix });
   }
   return withheld;
 }

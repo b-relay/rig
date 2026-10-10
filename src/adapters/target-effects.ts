@@ -36,7 +36,7 @@ import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
-import { declaredPorts, plannedRoutes } from "../runtime/ports";
+import { declaredPorts, plannedSites } from "../runtime/ports";
 import type { TargetEffects } from "../runtime/lifecycle";
 /** The last non-empty output line, trimmed to fit one log line, or undefined. */
 function lastLine(output: string): string | undefined {
@@ -650,23 +650,29 @@ export function createTargetEffects(
     },
     listeners: (pid, signal) => options.listeners.inspect(pid, signal),
     async route(target, change) {
-      if (!target.plan.domain || !target.plan.proxy)
+      const sites = plannedSites(target.plan);
+      if (!sites.length)
         return transactions.withRouteChange(target.id, () =>
           options.router.remove(target.id),
         );
-      const routes = plannedRoutes(target.plan);
-      if (!routes.length)
+      if (sites.some((site) => !site.routes.length))
         throw new RigError(
           "ROUTE_UPSTREAM",
           "The route upstream is not a managed Component.",
           "Correct the Project proxy configuration.",
         );
-      const domain = target.plan.domain;
-      const held = new Set(await options.router.withheld(target.id));
+      // A Service is withheld on every hostname it serves, so a path withheld on one site withholds it on all.
+      const held = new Set(
+        (await options.router.withheld(target.id)).map(
+          (path) => `${path.hostname} ${path.prefix}`,
+        ),
+      );
       const withheld = new Set([
-        ...routes
-          .filter((route) => held.has(route.prefix))
-          .map((route) => route.service),
+        ...sites.flatMap((site) =>
+          site.routes
+            .filter((route) => held.has(`${site.hostname} ${route.prefix}`))
+            .map((route) => route.service),
+        ),
         ...("withhold" in change ? change.withhold : []),
       ]);
       if ("verified" in change)
@@ -674,12 +680,14 @@ export function createTargetEffects(
       await transactions.withRouteChange(target.id, () =>
         options.router.apply({
           key: target.id,
-          hostname: domain,
-          routes: routes.map((route) => ({
-            prefix: route.prefix,
-            upstream: withheld.has(route.service)
-              ? null
-              : `127.0.0.1:${route.port}`,
+          sites: sites.map((site) => ({
+            hostname: site.hostname,
+            routes: site.routes.map((route) => ({
+              prefix: route.prefix,
+              upstream: withheld.has(route.service)
+                ? null
+                : `127.0.0.1:${route.port}`,
+            })),
           })),
         }),
       );

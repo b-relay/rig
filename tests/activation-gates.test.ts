@@ -88,9 +88,11 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       published.delete(key);
     },
     async withheld(key) {
-      return (published.get(key)?.routes ?? [])
-        .filter((route) => route.upstream === null)
-        .map((route) => route.prefix);
+      return (published.get(key)?.sites ?? []).flatMap((site) =>
+        site.routes
+          .filter((route) => route.upstream === null)
+          .map((route) => ({ hostname: site.hostname, prefix: route.prefix })),
+      );
     },
     async checkpoint(key) {
       return { key, value: JSON.stringify(published.get(key) ?? null) };
@@ -174,7 +176,7 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     routed: async () => published.has((await target()).id),
     async reach(path: string): Promise<string | null | undefined> {
       const route = published.get((await target()).id);
-      return route?.routes.find(
+      return route?.sites[0]?.routes.find(
         ({ prefix }) =>
           prefix === "/" || path === prefix || path.startsWith(`${prefix}/`),
       )?.upstream;
@@ -360,7 +362,9 @@ test("when the verified replacement's route cannot be published it is stopped, i
   await f.up();
   await f.exit("api", 3);
   f.routerFailure.apply = (route) =>
-    route.routes.every(({ upstream }) => upstream !== null);
+    route.sites.every((site) =>
+      site.routes.every(({ upstream }) => upstream !== null),
+    );
   await retry(f);
   expect(await f.running("api")).toBe(false);
   expect(await f.reach("/api")).toBeNull();

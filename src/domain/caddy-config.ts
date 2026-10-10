@@ -7,32 +7,6 @@ const record = (value: unknown): Json =>
     : {};
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-/** Every site address the config's HTTP servers match on, from the host matchers of their top-level routes. A host is served
- * without TLS, and given as `http://<host>`, when its server's automatic HTTPS skips it or is disabled, or when the server
- * listens only on the config's own HTTP port: what Caddy itself decides from, not an assumed port 80. */
-export function adaptedSiteAddresses(config: unknown): string[] {
-  const http = record(record(record(config).apps).http);
-  const httpPort = Number(http.http_port ?? 80);
-  const addresses: string[] = [];
-  for (const server of Object.values(record(http.servers))) {
-    const automatic = record(record(server).automatic_https);
-    const skipped = new Set(list(automatic.skip).map(String));
-    const listen = list(record(server).listen).map(String);
-    const plainServer =
-      automatic.disable === true ||
-      (listen.length > 0 &&
-        listen.every((address) => address.endsWith(`:${httpPort}`)));
-    for (const route of list(record(server).routes))
-      for (const match of list(record(route).match))
-        for (const host of list(record(match).host))
-          addresses.push(
-            plainServer || skipped.has(String(host))
-              ? `http://${String(host)}`
-              : String(host),
-          );
-  }
-  return [...new Set(addresses)];
-}
 /** What Rig sets in every generation and the owner's files must not change: the admin endpoint, the storage, and the HTTP
  * and HTTPS ports. */
 export interface ProtectedSettings {

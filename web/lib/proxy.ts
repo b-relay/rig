@@ -6,18 +6,19 @@ import { routeLines } from "./target-detail";
 import type { TargetReport } from "./types";
 
 /* The Proxy page reads through this module. With Rig's own Caddy (ADR 0014), rigd's proxy read is the
- * authority on every hostname served, its upstream, and the custom file the operator owns beside Rig's
- * routes; each Target's status adds the Service and state. Without it, the Host's Caddy serves Rig's
- * route file and every hostname comes from status alone. The custom file is shown read-only: it is
- * edited on disk and applied with rig proxy reload. */
+ * authority on every hostname served: each Target's paths and the owner's own routes from proxy.routes
+ * in Host config; each Target's status adds the Service and state. Without it, the Host's Caddy serves
+ * Rig's route file and every hostname comes from status alone. proxy.routes is read-only here: it is
+ * edited in config.yaml and applied with rig proxy reload. */
 
 /** One hostname and path Caddy serves, and what it reaches. */
 export interface ProxyRoute {
+  /** The hostname, with a port when it is not the scheme's default. */
   host: string;
   /** The URL a browser opens. */
   url: string;
   prefix: string;
-  /** A Target's route, or a site in the operator's custom Caddy file. */
+  /** A Target's route, or one of the owner's own routes from proxy.routes. */
   source: "target" | "custom";
   project?: string;
   target?: string;
@@ -34,6 +35,26 @@ export interface ProxyRoute {
 }
 const byHostThenPrefix = (a: ProxyRoute, b: ProxyRoute) =>
   a.host.localeCompare(b.host) || b.prefix.length - a.prefix.length;
+/** Pure: the bare hostname of a site address as Caddy matches it: no scheme, no port, lowercase. */
+export function bareHostname(address: string): string {
+  return address
+    .replace(/^https?:\/\//i, "")
+    .replace(/:\d+$/, "")
+    .toLowerCase();
+}
+/** Pure: the URL of `prefix` on a site address, which may carry a scheme and a port. Without a port it is
+ * the one Caddy serves that scheme on, written only when it is not the scheme's default. */
+export function siteUrl(
+  address: string,
+  ports: { http: number; https: number },
+  prefix = "/",
+): string {
+  const scheme = /^http:\/\//i.test(address) ? "http" : "https";
+  const explicit = /:(\d+)$/.exec(address.replace(/^https?:\/\//i, ""))?.[1];
+  const port = explicit ? Number(explicit) : ports[scheme];
+  const standard = scheme === "https" ? 443 : 80;
+  return `${scheme}://${bareHostname(address)}${port === standard ? "" : `:${port}`}${prefix}`;
+}
 /** Pure: every route on the Host from each Project's status, by host and then longest prefix first. */
 export function proxyRoutes(entries: readonly ProjectEntry[]): ProxyRoute[] {
   return entries
@@ -60,35 +81,42 @@ export function proxyRoutes(entries: readonly ProjectEntry[]): ProxyRoute[] {
     )
     .sort(byHostThenPrefix);
 }
-/** Pure: what Rig's own Caddy reports it serves, every Target path and custom site, with the Service and
- * state the Targets' status adds where it names the same hostname and path. */
+/** Pure: what Rig's own Caddy reports it serves, every Target path and every one of the owner's routes, with
+ * the Service and state the Targets' status adds where it names the same hostname and path. Hostnames are
+ * compared bare and lowercase, and links carry the HTTPS port Caddy serves on when it is not 443. */
 export function managedProxyRoutes(
   report: ProxyReport,
   fromStatus: readonly ProxyRoute[],
 ): ProxyRoute[] {
+  const ports = report.caddy.ports;
   return report.sites
     .flatMap((site): ProxyRoute[] => {
-      if (site.source === "custom")
+      if (site.source === "custom") {
+        const url = siteUrl(site.hostname, ports);
         return [
           {
-            host: site.hostname,
-            url: `https://${site.hostname}/`,
+            host: new URL(url).host,
+            url,
             prefix: "/",
             source: "custom",
+            upstream: site.upstream,
             published: true,
           },
         ];
+      }
       return site.routes.map((path): ProxyRoute => {
         const known = fromStatus.find(
           (route) =>
-            new URL(route.url).hostname === site.hostname &&
+            bareHostname(new URL(route.url).host) ===
+              bareHostname(site.hostname) &&
             route.prefix === path.prefix &&
             route.project === site.project &&
             route.target === site.target,
         );
+        const url = siteUrl(site.hostname, ports, path.prefix);
         return {
-          host: known?.host ?? site.hostname,
-          url: known?.url ?? `https://${site.hostname}${path.prefix}`,
+          host: new URL(url).host,
+          url,
           prefix: path.prefix,
           source: "target",
           project: site.project,
@@ -105,33 +133,11 @@ export function managedProxyRoutes(
     })
     .sort(byHostThenPrefix);
 }
-/** What the Proxy page can say about the custom Caddy file. */
-export type CustomCaddy =
-  | { supported: false; reason: string }
-  | {
-      supported: true;
-      path: string;
-      /** Pending: changed on disk since rig proxy reload last applied it. */
-      state: "applied" | "pending";
-      text: string;
-    };
-/** Pure: the custom Caddy file from rigd's proxy read, or why there is none. */
-export function customCaddyFile(read: Outcome<ProxyReport>): CustomCaddy {
-  if (!read.ok)
-    return {
-      supported: false,
-      reason:
-        read.failure.code === "PROXY_UNMANAGED"
-          ? "The Host's Caddy serves Rig's routes, so there is no custom file here. With a proxy section in config.yaml, Rig runs its own Caddy (ADR 0014) and the Caddy file you own beside its routes shows here."
-          : `rigd could not report its Caddy: ${read.failure.message}`,
-    };
-  const file = read.value.custom[0];
-  if (!file)
-    return { supported: false, reason: "rigd reported no custom file." };
-  return {
-    supported: true,
-    path: file.file,
-    state: file.state,
-    text: file.text ?? "",
-  };
+/** Pure: how the owner's own routes are set, or why this Host has none: they need Rig's own Caddy. */
+export function ownRoutesNote(read: Outcome<ProxyReport>): string {
+  if (read.ok)
+    return "Set them under proxy.routes in config.yaml, as hostname: port (or 127.0.0.1:<port>), and run rig proxy reload to apply them.";
+  return read.failure.code === "PROXY_UNMANAGED"
+    ? "The Host's Caddy serves Rig's routes. With a proxy section in config.yaml, Rig runs its own Caddy (ADR 0014) and your own hostnames go under proxy.routes."
+    : `rigd could not report its Caddy: ${read.failure.message}`;
 }

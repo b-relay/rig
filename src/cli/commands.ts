@@ -150,7 +150,7 @@ function addProxyCommands(
   const proxy = command
     .command("proxy")
     .description(
-      "Show the Caddy Rig runs for this Host: its job, every site it serves and whether your custom files are applied.",
+      "Show the Caddy Rig runs for this Host: its job and every hostname it serves, each Target's and your own proxy.routes.",
     )
     .option("--json", "Render the report as JSON")
     .action(async (options: { json?: boolean }) =>
@@ -159,7 +159,7 @@ function addProxyCommands(
   proxy
     .command("reload")
     .description(
-      "Apply proxy/custom.caddy and the proxy section of Host config as they are now. A custom file Caddy rejects, or that adds more than routes for its own hostnames, changes nothing that is served.",
+      "Apply the proxy section of Host config as it is now: proxy.routes, site lines and certificate settings. rigd also applies it when it starts. A configuration Caddy rejects or Rig refuses changes nothing that is served.",
     )
     .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
   proxy

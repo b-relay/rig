@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
+import { bareHostname } from "../domain/managed-proxy";
 
 /** One path prefix of a hostname. It matches the prefix itself and everything below its next slash, and the upstream sees the
  * path unchanged. A `null` upstream is withheld: its requests are answered 503 and reach no process. */
@@ -58,7 +59,7 @@ export function editRouteFile(input: {
   };
   /** Directives added inside every site block, after its paths. */
   readonly siteConfig: readonly string[];
-  /** Hostnames served outside the route file, such as the owner's custom sites, with what to name as their owner. */
+  /** Hostnames served outside the route file, such as the owner's proxy.routes, with what to name as their owner. */
   readonly reserved?: {
     readonly sites: readonly string[];
     readonly owner: string;
@@ -91,16 +92,18 @@ export function editRouteFile(input: {
       "Choose a different hostname or explicitly migrate its existing owner.",
       { hostname: taken.hostname },
     );
+  // By bare hostname: Caddy merges two blocks for one name written with different schemes or ports, so a port does not set
+  // them apart.
   const reserved = route?.sites.find((site) =>
     input.reserved?.sites.some(
-      (address) => siteAddress(address) === siteAddress(site.hostname),
+      (address) => bareHostname(address) === bareHostname(site.hostname),
     ),
   );
   if (reserved)
     throw new RigError(
       "ROUTE_CONFLICT",
       `The hostname ${reserved.hostname} is served by ${input.reserved!.owner}.`,
-      `Remove its site from ${input.reserved!.owner} and run rig proxy reload, or choose a different hostname.`,
+      `Remove it from ${input.reserved!.owner} and run rig proxy reload, or choose a different hostname.`,
       { hostname: reserved.hostname, owner: input.reserved!.owner },
     );
   const block = restoration

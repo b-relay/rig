@@ -33,7 +33,7 @@ export const runLaunchctlCommand: LaunchctlCommand = async (args) => {
 export interface InstallableCaddyJob extends CaddyJob {
   /** Defines the job when it is missing or differs, and starts it. Resolves once Caddy answers, or fails at the deadline. */
   install(): Promise<{ changed: boolean }>;
-  /** Stops the job and removes its definition. Certificates, generations and custom files stay. */
+  /** Stops the job and removes its definition. Certificates and generations stay. */
   remove(): Promise<void>;
   /** Where the job is defined, for messages. */
   readonly description: string;

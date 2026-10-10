@@ -209,41 +209,46 @@ the rejected generation is kept beside the others. If Caddy's admin socket does
 not answer while its job may still be running, the change fails with
 `PROXY_UNREACHABLE` rather than assume an old route stopped serving.
 
-Your own sites and snippets, such as a route to something that is not a Rig
-Project, go in `<RIG_ROOT>/proxy/custom.caddy`. Rig creates it and never
-rewrites it. It takes effect when applied, and a file Caddy rejects or Rig
-refuses (`PROXY_CUSTOM_INVALID`, naming the file and line or the JSON path)
-changes nothing that is served. A Rig route whose hostname a custom site serves
-is refused as `ROUTE_CONFLICT`. `proxy.site` lists directives added to every
-site block Rig writes, and may use snippets `custom.caddy` defines.
+Your own hostnames, outside any Rig Project, go under `proxy.routes` in Host
+config, each sent to a service on this Mac:
 
-`custom.caddy` holds site blocks for its own hostnames, served on Rig's HTTPS
-port. Name each site by its bare hostname (no scheme, port, path or wildcard);
-a hostname Rig serves is refused however it is spelled. Rig sets every global
-option itself. It compares what Caddy makes of the
-whole config with the same config without your sites, and refuses anything
-beyond routes for your hostnames: another port or a plain `http://` site, a
-wildcard site, certificates, issuers, logging, storage or any other setting.
-Your sites may use `reverse_proxy` to `127.0.0.1`, `localhost` or `[::1]`,
-`respond`, `abort`, `header`, `rewrite`, `uri`, `encode`, `handle` and
-`route`; anything else, such as `file_server`, is refused, and so is a
-`{file.*}` or `{env.*}` placeholder. Named matchers may use `host`, `path`,
-`path_regexp`, `method`, `header`, `header_regexp`, `query`, `protocol` and
-`not`; others, such as `file`, `remote_ip` or `expression`, are refused. Rig
-checks all of this before Caddy provisions anything. The same rules hold for snippets that
-`proxy.site` lines use. An `import` of anything but a snippet `custom.caddy`
-defines is refused early; inline the snippet instead. An earlier build read
-`proxy/custom-global.caddy`; if that file still sets anything, delete it.
+```yaml
+proxy:
+  routes:
+    grafana.example.com: 3000 # 127.0.0.1:3000
+    files.example.com: localhost:8080 # or 127.0.0.1:<port>
+```
+
+Each hostname is lowercase, with no scheme, port, path or wildcard, and Rig
+serves it with a certificate like its own and nothing but a reverse proxy to
+the upstream. `rig proxy reload` applies an edit, and rigd applies the current
+Host config when it starts. A hostname a Target serves is refused
+(`PROXY_CONFIG_INVALID`) and changes nothing that is served; a Target or Preview
+asking for one of your hostnames is refused as `ROUTE_CONFLICT`. Rig reads no
+Caddyfile of yours: `proxy/custom.caddy` and `proxy/custom-global.caddy` from
+earlier builds are ignored, and doctor names one left on disk.
+
+`proxy.site` lists directives added to every site block Rig writes for a
+Target, one complete line each, such as `encode gzip`: no `import`, and nothing
+read from the environment or a file. Rig compares what Caddy makes of them with
+its routes without them, before Caddy provisions anything, and refuses anything
+beyond handling requests: they may use `reverse_proxy` to `127.0.0.1`,
+`localhost` or `[::1]`, `respond`, `abort`, `header`, `rewrite`, `uri`,
+`encode`, `handle` and `route`, matchers on the request (`path`, `method`,
+`header`, `query`, `protocol`, `not` and their regexp forms), and placeholders
+that read the request. Logging, certificates, `file_server`, `{system.*}` or
+`{vars.*}` placeholders and the like are refused, naming the JSON path.
 
 `rig doctor` checks whether Caddy runs the current configuration (`proxy-serving`), the token (`proxy-token`), Rig's copy of Caddy
 (`proxy-binary`), whether the job runs and answers (`proxy-process`), and
-whether the custom file is applied (`proxy-custom`). With a `proxy` section
+whether `proxy.routes` is applied (`proxy-routes`), and any custom Caddy file
+left from an earlier build (`proxy-custom-file`). With a `proxy` section
 it no longer needs `caddy` on `PATH`.
 
 `rig proxy` shows the job, every hostname it serves with the Project and
-Target (or `custom.caddy`) behind it, its routes and the certificate that covers
-it, and whether each custom file is applied. `rig proxy reload` applies the
-custom files and the `proxy` section of Host config. `rig proxy verify` makes a
+Target behind it, or `proxy.routes` and its upstream, its routes and the
+certificate that covers it. `rig proxy reload` applies the `proxy` section of
+Host config as it is now. `rig proxy verify` makes a
 real TLS handshake with every served hostname on this Host's HTTPS port. A
 hostname passes only with a certificate trusted by Mozilla's root store, from a production
 CA, valid for more than seven days. A new certificate can take minutes while

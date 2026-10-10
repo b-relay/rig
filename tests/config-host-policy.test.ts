@@ -34,6 +34,7 @@ test("a written proxy section makes Rig run its own Caddy, with every default re
       resolvers: ["1.1.1.1", "1.0.0.1"],
     },
     site: [],
+    routes: {},
   });
   // providers.caddy written beside it is ignored, and said to be.
   expect(
@@ -47,12 +48,18 @@ test("a written proxy section makes Rig run its own Caddy, with every default re
   );
 });
 
-test("proxy refuses a relative Caddy, ports that cannot be served together, a multi-line site directive, and an unknown CA", () => {
+test("proxy refuses a relative Caddy, ports that cannot be served together, a site line that is not complete in itself, and an unknown CA", () => {
   for (const proxy of [
     { caddy: "caddy" },
     { caddy: "/c", ports: { http: 80, https: 80 } },
     { caddy: "/c", ports: { http: 80, https: 8443 } },
-    { caddy: "/c", site: ["import a\nimport b"] },
+    { caddy: "/c", site: ["encode gzip\nencode zstd"] },
+    // No file of snippets exists to import from, and a site line reads nothing outside the generation.
+    { caddy: "/c", site: ["import backend_errors"] },
+    { caddy: "/c", site: ["`import` /tmp/x.caddy"] },
+    { caddy: "/c", site: ["header X-A {$SECRET}"] },
+    { caddy: "/c", site: ["header X-A {env.SECRET}"] },
+    { caddy: "/c", site: ["respond {file./etc/passwd}"] },
     { caddy: "/c", tls: { ca: "zerossl" } },
     { caddy: "/c", tls: { ca: "http://acme.test/directory" } },
     { caddy: "/c", tls: { resolvers: ["one.one.one.one"] } },
@@ -70,13 +77,47 @@ test("proxy refuses a relative Caddy, ports that cannot be served together, a mu
           email: "ops@example.com",
           certificates: "hostname",
         },
-        site: ["import backend_errors"],
+        site: ["encode gzip"],
       },
     }).proxy,
   ).toMatchObject({
     ports: { http: 28080, https: 28443 },
     tls: { ca: "https://acme.test/directory", certificates: "hostname" },
   });
+});
+
+test("proxy.routes sends each lowercase hostname to a loopback port; anything else is refused", () => {
+  expect(
+    parseHostConfig({
+      proxy: {
+        caddy: "/c",
+        routes: {
+          "grafana.example.com": 3000,
+          "files.example.com": "127.0.0.1:8080",
+          "docs.example.com": "localhost:4000",
+        },
+      },
+    }).proxy?.routes,
+  ).toEqual({
+    "grafana.example.com": 3000,
+    "files.example.com": "127.0.0.1:8080",
+    "docs.example.com": "localhost:4000",
+  });
+  for (const routes of [
+    { "Grafana.example.com": 3000 },
+    { "https://grafana.example.com": 3000 },
+    { "grafana.example.com:8443": 3000 },
+    { "*.example.com": 3000 },
+    { "grafana.example.com/x": 3000 },
+    { "grafana.example.com": 0 },
+    { "grafana.example.com": 70000 },
+    { "grafana.example.com": "10.0.0.5:80" },
+    { "grafana.example.com": "0.0.0.0:3000" },
+    { "grafana.example.com": "127.0.0.1:99999" },
+    { "grafana.example.com": "http://127.0.0.1:3000" },
+    { "grafana.example.com": "127.0.0.1" },
+  ])
+    expect(() => parseHostConfig({ proxy: { caddy: "/c", routes } })).toThrow();
 });
 
 test("Target log retention takes a size of at least 1 MiB and 0 to 20 kept generations", () => {

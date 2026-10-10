@@ -204,11 +204,33 @@
         },
         "site": {
           "default": [],
-          "description": "Caddy directives added inside every site block Rig writes, such as import backend_errors. They may use snippets proxy/custom.caddy defines.",
+          "description": "Caddy directives added inside every site block Rig writes for a Target, one per line, such as encode gzip. Each must be complete in itself: no import, and nothing read from the environment or a file. Rig refuses a generation in which they do more than handle requests to the loopback services (ADR 0014).",
           "type": "array",
           "items": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "routes": {
+          "default": {},
+          "description": "Your own hostnames, outside any Rig Project, each sent to a service on this Mac, such as grafana.example.com: 3000. Rig serves each with a certificate like its own and nothing but a reverse proxy to the upstream. A hostname a Target serves is refused, and a Target asking for one of these is refused as ROUTE_CONFLICT. Applied by rig proxy reload and when rigd starts.",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              {
+                "type": "string",
+                "pattern": "^(?:127\\.0\\.0\\.1|localhost):\\d{1,5}$"
+              }
+            ],
+            "description": "Where requests go: a port on 127.0.0.1, such as 3000, or 127.0.0.1:<port> or localhost:<port>."
           }
         }
       },

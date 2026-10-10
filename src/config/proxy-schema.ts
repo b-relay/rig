@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { validHostname } from "./hostname";
 
 const text = z.string().min(1);
 const port = z.number().int().min(1).max(65535);
@@ -93,14 +94,52 @@ export const proxySettingsSchema = z
       .describe("Certificates."),
     site: z
       .array(
-        text.refine(
-          (line) => !/[\r\n]/.test(line),
-          "must be one line; put longer configuration in a snippet in proxy/custom.caddy and import it here",
-        ),
+        text
+          .refine((line) => !/[\r\n]/.test(line), "must be one line")
+          .refine(
+            (line) => !/^\s*["`]?import\b/.test(line),
+            "may not import: there is no file of snippets to import from, so write the directive itself",
+          )
+          .refine(
+            (line) => !/\{\$|\{(?:env|file)\./.test(line),
+            "may not read the environment or a file ({$NAME}, {env.*} or {file.*})",
+          ),
       )
       .default([])
       .describe(
-        "Caddy directives added inside every site block Rig writes, such as import backend_errors. They may use snippets proxy/custom.caddy defines.",
+        "Caddy directives added inside every site block Rig writes for a Target, one per line, such as encode gzip. Each must be complete in itself: no import, and nothing read from the environment or a file. Rig refuses a generation in which they do more than handle requests to the loopback services (ADR 0014).",
+      ),
+    routes: z
+      .record(
+        z
+          .string()
+          .refine(
+            (hostname) =>
+              validHostname(hostname) && hostname === hostname.toLowerCase(),
+            "must be a lowercase hostname such as grafana.example.com; schemes, ports, paths and wildcards are not allowed",
+          ),
+        z
+          .union([
+            port,
+            z
+              .string()
+              .regex(
+                /^(?:127\.0\.0\.1|localhost):\d{1,5}$/,
+                "must be a port, or 127.0.0.1:<port> or localhost:<port>",
+              )
+              .refine(
+                (address) =>
+                  port.safeParse(Number(address.split(":")[1])).success,
+                "must name a port from 1 to 65535",
+              ),
+          ])
+          .describe(
+            "Where requests go: a port on 127.0.0.1, such as 3000, or 127.0.0.1:<port> or localhost:<port>.",
+          ),
+      )
+      .default({})
+      .describe(
+        "Your own hostnames, outside any Rig Project, each sent to a service on this Mac, such as grafana.example.com: 3000. Rig serves each with a certificate like its own and nothing but a reverse proxy to the upstream. A hostname a Target serves is refused, and a Target asking for one of these is refused as ROUTE_CONFLICT. Applied by rig proxy reload and when rigd starts.",
       ),
   })
   .describe(

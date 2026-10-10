@@ -27,10 +27,9 @@ export interface ProxyPaths {
   readonly processRecord: string;
   /** Rig's marked route blocks: the source of truth for routes. */
   readonly routes: string;
-  /** The owner's sites and snippets. Rig creates it once and never rewrites it. */
-  readonly custom: string;
-  /** The custom global options file an earlier Rig read; no longer read, and refused while it holds anything. */
-  readonly retiredCustomGlobal: string;
+  /** Custom Caddy files an earlier build of Rig read (custom.caddy, custom-global.caddy). Rig no longer reads them; doctor
+   * reports one left on disk, since its routes belong under proxy.routes now. */
+  readonly retiredCustomFiles: readonly string[];
   /** The DNS provider's API token, mode 0600. */
   readonly token: string;
 }
@@ -49,8 +48,10 @@ export function proxyPaths(root: string): ProxyPaths {
     jobLog: join(caddy, "launchd.log"),
     processRecord: join(caddy, "process.json"),
     routes: join(root, "proxy", "Caddyfile"),
-    custom: join(root, "proxy", "custom.caddy"),
-    retiredCustomGlobal: join(root, "proxy", "custom-global.caddy"),
+    retiredCustomFiles: [
+      join(root, "proxy", "custom.caddy"),
+      join(root, "proxy", "custom-global.caddy"),
+    ],
     token: join(root, "auth", "acme-dns.token"),
   };
 }
@@ -59,11 +60,9 @@ export function generationFiles(directory: string) {
   return {
     main: join(directory, "Caddyfile"),
     routes: join(directory, "routes.caddy"),
-    custom: join(directory, "custom.caddy"),
-    /** Rig's main file with Rig's routes alone (no `site` lines, no custom sites), adapted to check the full one against. */
+    /** The same main file with Rig's routes rendered without their `site` lines, adapted to check the full one against. */
     base: join(directory, "base.Caddyfile"),
     baseRoutes: join(directory, "base-routes.caddy"),
-    empty: join(directory, "empty.caddy"),
     metadata: join(directory, "generation.json"),
     /** `caddy adapt` of the main file: what a running Caddy reports at GET /config/ once it serves this generation. */
     adapted: join(directory, "adapted.json"),
@@ -120,24 +119,29 @@ export function wildcardParents(hostnames: readonly string[]): string[] {
   return [...parents].sort();
 }
 
-/** Every site address a Caddyfile declares at its top level, in order, read from its text: the addresses before a `{` at
- * brace depth 0, skipping the global options block and snippet definitions. Comments are ignored. */
-export function caddyfileSites(text: string): string[] {
-  const sites: string[] = [];
-  let depth = 0;
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.replace(/(^|\s)#.*$/, "").trim();
-    if (!line) continue;
-    if (depth === 0 && line.endsWith("{")) {
-      const head = line.slice(0, -1).trim();
-      if (head && !head.startsWith("(") && !head.startsWith("import "))
-        sites.push(...head.split(/[\s,]+/).filter(Boolean));
-    }
-    for (const character of line)
-      if (character === "{") depth++;
-      else if (character === "}") depth = Math.max(0, depth - 1);
-  }
-  return sites;
+/** The bare hostname of a site address, as Caddy matches requests to it: no scheme, no port, lowercase. Two addresses with
+ * one bare hostname are one name to a client, whatever port or scheme each is written with. */
+export function bareHostname(address: string): string {
+  return address
+    .replace(/^https?:\/\//i, "")
+    .replace(/:\d+$/, "")
+    .toLowerCase();
+}
+/** One of the owner's own routes from `proxy.routes`: a hostname outside any Project and the loopback address it reaches. */
+export interface HostRoute {
+  readonly hostname: string;
+  /** `127.0.0.1:<port>` or `localhost:<port>`. */
+  readonly upstream: string;
+}
+/** `proxy.routes` as Rig serves it, sorted by hostname: a bare port means that port on 127.0.0.1. */
+export function hostRoutes(settings: ProxySettings): HostRoute[] {
+  return Object.entries(settings.routes)
+    .map(([hostname, upstream]) => ({
+      hostname,
+      upstream:
+        typeof upstream === "number" ? `127.0.0.1:${upstream}` : upstream,
+    }))
+    .sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
 
 /** What a generation's main file is rendered from. */
@@ -146,11 +150,11 @@ export interface MainCaddyfileInput {
   readonly paths: ProxyPaths;
   /** The generation directory; every import names a file inside it. */
   readonly generation: string;
-  /** Every hostname served, Rig's and the custom sites', for the wildcard certificates. */
+  /** Every hostname Rig's route file serves; with `proxy.routes`, what the wildcard certificates cover. */
   readonly hostnames: readonly string[];
-  /** The route and custom files to import; the generation's own by default. The allowlist's base imports Rig's routes
-   * without their site lines and an empty custom file. */
-  readonly imports?: { readonly routes: string; readonly custom: string };
+  /** The route file to import; the generation's own by default. The allowlist's base imports Rig's routes without their
+   * site lines. */
+  readonly routes?: string;
 }
 /** The main Caddyfile of one generation. Pure: the same input renders the same text. */
 export function renderMainCaddyfile(input: MainCaddyfileInput): string {
@@ -176,16 +180,16 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
         "\t}",
       ]
     : ["\tlocal_certs", "\tskip_install_trust"];
+  const owned = hostRoutes(settings);
   const parents =
     settings.tls.certificates === "wildcard"
-      ? wildcardParents(input.hostnames)
+      ? wildcardParents([
+          ...input.hostnames,
+          ...owned.map((route) => route.hostname),
+        ])
       : [];
-  const imports = input.imports ?? {
-    routes: files.routes,
-    custom: files.custom,
-  };
   return [
-    `# Generated by Rig from Host config. Do not edit: your sites go in ${paths.custom}.`,
+    "# Generated by Rig from Host config. Do not edit: your own hostnames go under proxy.routes in config.yaml.",
     "{",
     `\tadmin "unix/${paths.socket}|0600"`,
     "\tpersist_config off",
@@ -203,7 +207,6 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
     "\t\t}",
     "\t}",
     "}",
-    `import ${imports.custom}`,
     ...(parents.length
       ? [
           "",
@@ -214,66 +217,16 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
         ]
       : []),
     "",
-    `import ${imports.routes}`,
+    `import ${input.routes ?? files.routes}`,
+    // Validated by the schema: a lowercase hostname and a loopback address, so nothing here is the owner's Caddyfile.
+    ...owned.flatMap((route) => [
+      "",
+      `${route.hostname} {`,
+      `\treverse_proxy ${route.upstream}`,
+      "}",
+    ]),
     "",
   ].join("\n");
-}
-
-/** One thing in the custom file that Rig refuses before Caddy reads it. */
-export interface CustomFileProblem {
-  readonly line: number;
-  readonly problem: string;
-}
-/** A site address the custom file may use: a bare hostname, with no scheme, port, path or wildcard. */
-const BARE_HOSTNAME =
-  /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/i;
-/** Early, friendly errors for the custom file, by line: an `import` of anything but a snippet the file defines, which would
- * read another file, a `{file.*}` placeholder, and a site address that is not a bare hostname. The authority is the
- * allowlist on the adapted JSON (`configProblems`) and the site inventory Caddy adapts; these only say it sooner and in the
- * file's own terms. */
-export function customFileProblems(sites: string): CustomFileProblem[] {
-  const snippets = new Set(
-    [...sites.matchAll(/^\s*\(([^()\s]+)\)\s*\{/gm)].map((m) => m[1]!),
-  );
-  const problems: CustomFileProblem[] = [];
-  let depth = 0;
-  sites.split(/\r?\n/).forEach((raw, index) => {
-    const line = raw.replace(/(^|\s)#.*$/, "").trim();
-    if (!line) return;
-    // Caddyfile tokens may be quoted with double quotes or backticks.
-    const unquote = (word: string) => word.replace(/^["`]|["`]$/g, "");
-    const words = line.split(/\s+/).map(unquote);
-    if (line.includes("{file."))
-      problems.push({
-        line: index + 1,
-        problem: "reads a file through a {file.*} placeholder",
-      });
-    if (words[0] === "import" && !snippets.has(words[1] ?? ""))
-      problems.push({
-        line: index + 1,
-        problem: `imports ${words[1] ?? "nothing"}`,
-      });
-    const head = line.endsWith("{") ? line.slice(0, -1).trim() : "";
-    if (depth === 0 && head && !head.startsWith("(") && words[0] !== "import")
-      for (const address of head
-        .split(/[\s,]+/)
-        .filter(Boolean)
-        .map(unquote))
-        if (!BARE_HOSTNAME.test(address))
-          problems.push({
-            line: index + 1,
-            problem: `names the site ${address}; a custom site names a bare hostname, with no scheme, port, path or wildcard`,
-          });
-    for (const character of line)
-      if (character === "{") depth++;
-      else if (character === "}") depth = Math.max(0, depth - 1);
-  });
-  return problems;
-}
-
-/** The header Rig writes into the custom file it creates. */
-export function customFileHeader(): string {
-  return "# Your own Caddy sites, and snippets they or proxy.site lines import. Only site blocks that route hostnames to\n# loopback services, respond, set headers, rewrite or encode are accepted. Rig never rewrites this file; apply an edit\n# with rig proxy reload.\n";
 }
 
 /** The token forms caddy-dns/cloudflare v0.2.4 accepts (`validCloudflareToken`): a classic API token of 35 to 50 letters,

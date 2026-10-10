@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, FileCode2, TriangleAlert } from "lucide-react";
 import type { ProjectEntry } from "@/lib/board-rows";
-import { customCaddyFile, managedProxyRoutes, proxyRoutes } from "@/lib/proxy";
+import { managedProxyRoutes, ownRoutesNote, proxyRoutes } from "@/lib/proxy";
 import { projectHref, targetHref } from "@/lib/target";
 import { projectList, projectStatus, proxyReport } from "@/server/status";
 import {
@@ -28,7 +28,7 @@ export const metadata: Metadata = { title: "Proxy" };
 const HEAD =
   "h-8 px-4 text-[11px] font-medium tracking-wide text-muted-foreground uppercase";
 /** Every hostname and path Caddy serves for this Host, the Target and Service each reaches, and, with
- * Rig's own Caddy, the operator's custom Caddy file, read-only. */
+ * Rig's own Caddy, the owner's own routes from proxy.routes, read-only. */
 export default async function ProxyPage() {
   const list = await projectList();
   if (!list.ok)
@@ -51,7 +51,7 @@ export default async function ProxyPage() {
     : proxyRoutes(entries);
   const hosts = new Set(routes.map((route) => route.host));
   const unpublished = routes.filter((route) => !route.published).length;
-  const custom = customCaddyFile(proxy);
+  const ownRoutes = routes.filter((route) => route.source === "custom");
   return (
     <>
       <PageHeader
@@ -125,9 +125,7 @@ export default async function ProxyPage() {
                           className="size-3.5 text-muted-foreground"
                           aria-hidden
                         />
-                        {route.source === "custom"
-                          ? "custom.caddy"
-                          : route.service}
+                        {route.source === "custom" ? null : route.service}
                         {route.upstream ? (
                           <Mono className="break-normal text-muted-foreground">
                             {route.upstream}
@@ -154,7 +152,7 @@ export default async function ProxyPage() {
                         </span>
                       ) : (
                         <span className="text-muted-foreground">
-                          Your custom site
+                          Your own route (proxy.routes)
                         </span>
                       )}
                     </TableCell>
@@ -169,31 +167,18 @@ export default async function ProxyPage() {
         )}
       </Panel>
       <Panel
-        title="Custom Caddy config"
-        description="Sites you own, served beside Rig's routes. Edit the file on this Mac and run rig proxy reload to apply it."
+        title="Your own routes"
+        description="Hostnames outside any Project, each sent to a service on this Mac."
       >
-        {custom.supported ? (
-          <div className="space-y-2">
-            <p className="flex flex-wrap items-center gap-2 text-sm">
-              <Mono>{custom.path}</Mono>
-              {custom.state === "applied" ? (
-                <span className="text-muted-foreground">applied</span>
-              ) : (
-                <span className="text-warn">
-                  changed since applied; run <code>rig proxy reload</code>
-                </span>
-              )}
-            </p>
-            <pre className="overflow-x-auto rounded-md bg-pane p-3 font-mono text-xs leading-5 text-on-pane">
-              {custom.text}
-            </pre>
-          </div>
-        ) : (
-          <p className="flex items-start gap-3 text-sm text-muted-foreground">
-            <FileCode2 className="mt-0.5 size-5 shrink-0" aria-hidden />
-            {custom.reason}
-          </p>
-        )}
+        <p className="flex items-start gap-3 text-sm text-muted-foreground">
+          <FileCode2 className="mt-0.5 size-5 shrink-0" aria-hidden />
+          <span>
+            {proxy.ok
+              ? `${ownRoutes.length === 0 ? "None yet." : `${ownRoutes.length} served, listed above.`} `
+              : null}
+            {ownRoutesNote(proxy)}
+          </span>
+        </p>
       </Panel>
     </>
   );

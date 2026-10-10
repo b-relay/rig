@@ -63,7 +63,7 @@ async function get(
   };
 }
 
-test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a rejected custom file and a restart", async () => {
+test("real Caddy runs Rig's generations: routes, a withdrawal, the owner's own route, refused site lines and a restart", async () => {
   const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
     existsSync,
   );
@@ -138,128 +138,61 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
   expect((await get("app.example.test", https)).status).toBe(503);
   await caddy.router.apply(route(`127.0.0.1:${upstream.port}`));
 
+  // The owner's own route, from proxy.routes: a plain reverse proxy, applied by a republish (rig proxy reload). A custom
+  // Caddy file an earlier build read is ignored, even one that would take over Rig's hostname.
+  await mkdir(join(root, "proxy"), { recursive: true });
   await writeFile(
-    paths.custom,
-    'custom.example.test {\n\trespond "custom"\n}\n',
+    paths.retiredCustomFiles[0]!,
+    "app.example.test {\n\trespond takeover\n}\n",
   );
-  await caddy.applyCustom();
-  expect(await get("custom.example.test", https)).toEqual({
+  settings = { ...settings, routes: { "own.example.test": upstream.port! } };
+  expect(await caddy.republish()).toEqual({ published: true });
+  expect(await get("own.example.test", https, "/mine")).toEqual({
     status: 200,
-    body: "custom",
+    body: "app /mine",
   });
-  // What real Caddy makes of these is held to the allowlist, whatever the Caddyfile text looks like.
-  const acceptedCustom = await readFile(paths.custom, "utf8");
-  // A real key pair, so Caddy loads it and only the allowlist stands between it and what is served.
-  process.env.RIG_TEST_CERT = join(root, "c.pem");
-  process.env.RIG_TEST_KEY = join(root, "k.pem");
-  await runCommand({
-    command: [
-      "/usr/bin/openssl",
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "1",
-      "-subj",
-      "/CN=certs.example.test",
-      "-keyout",
-      process.env.RIG_TEST_KEY,
-      "-out",
-      process.env.RIG_TEST_CERT,
+  expect((await get("app.example.test", https)).body).not.toContain("takeover");
+  const accepted = settings;
+  // One of the owner's routes may not name a Target's hostname: Caddy would merge the two sites.
+  settings = { ...accepted, routes: { "app.example.test": upstream.port! } };
+  await expect(caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_CONFIG_INVALID",
+    message: expect.stringContaining("which a Target serves"),
+  });
+  // What real Caddy makes of the Host's site lines is held to the allowlist. These bypass the schema, which refuses some of
+  // them first, to show the allowlist holds on its own.
+  for (const [site, refused] of [
+    [["file_server"], "file_server is not allowed"],
+    [["reverse_proxy /x/* 10.0.0.5:80"], "is not a loopback upstream"],
+    [
+      ["header X-Host {system.hostname}"],
+      "uses the placeholder {system.hostname}",
     ],
-  });
-  try {
-    for (const [text, refused] of [
-      [
-        "files.example.test {\n\tfile_server\n}\n",
-        "file_server is not allowed",
-      ],
-      [
-        "certs.example.test {\n\ttls {$RIG_TEST_CERT} {$RIG_TEST_KEY}\n\trespond ok\n}\n",
-        "$.apps.tls.certificates",
-      ],
-      [
-        "certs.example.test {\n\t`tls` `{$RIG_TEST_CERT}` `{$RIG_TEST_KEY}`\n\trespond ok\n}\n",
-        "$.apps.tls.certificates",
-      ],
-      [
-        "remote.example.test {\n\treverse_proxy 10.0.0.5:80\n}\n",
-        "is not a loopback upstream",
-      ],
-      // Spelled differently from Rig's address, Caddy would merge it into Rig's site rather than call it ambiguous. The text
-      // check says so first; a site block inside a snippet is out of its sight, and Caddy's own inventory still catches it.
-      [
-        "https://app.example.test {\n\trespond takeover\n}\n",
-        "names the site https://app.example.test",
-      ],
-      [
-        "(s) {\n\thttps://app.example.test {\n\t\trespond takeover\n\t}\n}\nimport s\n",
-        "app.example.test, which Rig serves",
-      ],
-      [
-        `(s) {\n\t"APP.example.test:${https}" {\n\t\trespond takeover\n\t}\n}\nimport s\n`,
-        "app.example.test, which Rig serves",
-      ],
-      [
-        `(s) {\n\thttp://plain.example.test:${freePort()} {\n\t\trespond ok\n\t}\n}\nimport s\n`,
-        "plain HTTP",
-      ],
-      [
-        `(s) {\n\tplain.example.test:${freePort()} {\n\t\trespond ok\n\t}\n}\nimport s\n`,
-        "custom sites are served on Rig's HTTPS port only",
-      ],
-      // Refused before anything is provisioned: the log file is never created.
-      [
-        `logs.example.test {\n\tlog {\n\t\toutput file ${join(root, "leak.log")}\n\t}\n\trespond ok\n}\n`,
-        "$.logging",
-      ],
-      [
-        "probe.example.test {\n\t@p not {\n\t\tnot {\n\t\t\tfile {\n\t\t\t\troot /tmp\n\t\t\t\ttry_files marker\n\t\t\t}\n\t\t}\n\t}\n\trespond @p yes\n\trespond no\n}\n",
-        ".file is not an allowed matcher",
-      ],
-    ] as const) {
-      await writeFile(paths.custom, text);
-      await expect(caddy.applyCustom()).rejects.toMatchObject({
-        code: "PROXY_CUSTOM_INVALID",
-        message: expect.stringContaining(refused),
-      });
-    }
-    // A snippet Rig's own site lines import cannot slip a handler past it either.
-    settings = { ...settings, site: ["import sneaky"] };
-    await writeFile(
-      paths.custom,
-      `(sneaky) {\n\tfile_server\n}\n${acceptedCustom}`,
-    );
-    await expect(caddy.applyCustom()).rejects.toMatchObject({
-      code: "PROXY_CUSTOM_INVALID",
-      message: expect.stringContaining("file_server is not allowed"),
+    [["header X-Var {vars.secret}"], "uses the placeholder {http.vars.secret}"],
+    [
+      ["@p not file /tmp/marker", "respond @p yes"],
+      "file is not an allowed matcher",
+    ],
+    [["log"], "srv0.logs differs from what Rig sets"],
+  ] as const) {
+    settings = { ...accepted, site: [...site] };
+    await expect(caddy.republish()).rejects.toMatchObject({
+      code: "PROXY_CONFIG_INVALID",
+      message: expect.stringContaining(refused),
     });
-  } finally {
-    delete process.env.RIG_TEST_CERT;
-    delete process.env.RIG_TEST_KEY;
-    settings = { ...settings, site: [] };
   }
-  // None of it reached what is served, or the disk.
-  expect((await get("custom.example.test", https)).body).toBe("custom");
+  settings = { ...accepted, site: ["not_a_directive"] };
+  await expect(caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_CONFIG_INVALID",
+    message: expect.stringContaining("not_a_directive"),
+  });
+  settings = accepted;
+  // None of it changed what is served.
+  expect((await get("own.example.test", https)).body).toBe("app /");
   expect(await get("app.example.test", https, "/x")).toEqual({
     status: 200,
     body: "app /x",
   });
-  expect(existsSync(join(root, "leak.log"))).toBe(false);
-  await writeFile(paths.custom, acceptedCustom);
-  await writeFile(
-    paths.custom,
-    "broken.example.test {\n\tnot_a_directive\n}\n",
-  );
-  await expect(caddy.applyCustom()).rejects.toMatchObject({
-    code: "PROXY_CUSTOM_INVALID",
-    message: expect.stringContaining("not_a_directive"),
-  });
-  // The rejected file changed nothing that is served.
-  expect((await get("custom.example.test", https)).body).toBe("custom");
-  expect((await get("app.example.test", https)).status).toBe(200);
 
   // rig proxy verify does real handshakes: Caddy's internal CA is not trusted by the system, so it fails until trusted, and
   // its 12-hour certificates pass the 7-day rule only when the clock is set back.
@@ -271,7 +204,7 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
   });
   expect(untrusted.map((verdict) => verdict.hostname)).toEqual([
     "app.example.test",
-    "custom.example.test",
+    "own.example.test",
   ]);
   expect(untrusted[0]).toMatchObject({
     ok: false,
@@ -292,7 +225,7 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
     }),
   ).toEqual([
     expect.objectContaining({ hostname: "app.example.test", ok: true }),
-    expect.objectContaining({ hostname: "custom.example.test", ok: true }),
+    expect.objectContaining({ hostname: "own.example.test", ok: true }),
   ]);
   const report = await proxyReport({
     root,
@@ -312,13 +245,12 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
       certificate: "*.example.test",
     },
     {
-      hostname: "custom.example.test",
+      hostname: "own.example.test",
       source: "custom",
+      upstream: `127.0.0.1:${upstream.port}`,
       certificate: "*.example.test",
     },
   ]);
-  // The broken edit is still on disk, unapplied.
-  expect(report.custom[0]).toMatchObject({ state: "pending" });
 
   // A crash between switching generations and reloading: real Caddy still runs an older generation. Startup's republish sees
   // that from what Caddy reports, not from the files, and makes it serve the current one.

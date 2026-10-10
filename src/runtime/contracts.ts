@@ -3,9 +3,9 @@ import type { FailureCauses } from "../domain/errors";
 import type { ProxyReport, ReportedTarget } from "../adapters/proxy-report";
 /** What the runtime asks of Rig's own Caddy beyond routing, which goes through the Router. */
 export interface ProxyControl {
-  /** The job, every served site and whether the custom files are applied, for `rig proxy`. */
+  /** The job and every served site, Rig's and the owner's proxy.routes, for `rig proxy`. */
   report(targets: readonly ReportedTarget[]): Promise<ProxyReport>;
-  /** Publishes the custom files and proxy settings as they are on disk (`rig proxy reload`). */
+  /** Publishes the proxy section of Host config as it is now, proxy.routes included (`rig proxy reload`). */
   apply(): Promise<void>;
 }
 import type {

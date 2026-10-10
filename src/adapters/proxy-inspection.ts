@@ -3,14 +3,19 @@ import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
-import { generationFiles, proxyPaths } from "../domain/managed-proxy";
+import {
+  generationFiles,
+  hostRoutes,
+  proxyPaths,
+} from "../domain/managed-proxy";
 import { createCaddyAdmin } from "../providers/caddy-admin";
 import { installedBinary } from "../providers/caddy-binary";
 import { createCaddyJob } from "../providers/caddy-job";
 import type { DaemonMode } from "../daemon/installation";
 import { inspectProxyToken } from "./proxy-token";
 
-/** Doctor's view of Rig's own Caddy (ADR 0014): the token, the binary, the job and the custom files. It reads files and asks
+/** Doctor's view of Rig's own Caddy (ADR 0014): the token, the binary, the job, the owner's routes and any retired custom
+ * Caddy file left on disk. It reads files and asks
  * launchd and the admin socket; it changes nothing and contacts nothing beyond this machine. */
 export async function inspectManagedProxy(
   root: string,
@@ -99,7 +104,7 @@ export async function inspectManagedProxy(
             hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
           },
   );
-  checks.push(...(await customChecks(paths)));
+  checks.push(...(await generationChecks(paths, settings)));
   // What Caddy runs, not what the files say: after a crash between switching and activating they differ.
   if (reachable) {
     const [loaded, expected] = await Promise.all([
@@ -129,13 +134,26 @@ export async function inspectManagedProxy(
   }
   return checks;
 }
-/** Whether the current generation exists and serves the custom files as they are on disk. */
-async function customChecks(
+/** Whether the current generation exists and serves `proxy.routes` as Host config says now, and which retired custom Caddy
+ * files are left on disk, ignored. */
+async function generationChecks(
   paths: ReturnType<typeof proxyPaths>,
+  settings: ProxySettings,
 ): Promise<DoctorCheck[]> {
+  const checks: DoctorCheck[] = [];
+  for (const file of paths.retiredCustomFiles)
+    if (await stat(file).catch(() => undefined))
+      checks.push({
+        name: "proxy-custom-file",
+        ok: false,
+        message: `Rig no longer reads ${file}, so nothing in it is served.`,
+        reason: "proxy-custom-retired",
+        hint: "Put each of its hostnames under proxy.routes in config.yaml, as hostname: port, run rig proxy reload, then delete the file.",
+      });
   const target = await readlink(paths.current).catch(() => undefined);
   if (!target)
     return [
+      ...checks,
       {
         name: "proxy-config",
         ok: false,
@@ -147,27 +165,29 @@ async function customChecks(
   const files = generationFiles(
     target.startsWith("/") ? target : join(dirname(paths.current), target),
   );
-  const pending: string[] = [];
-  for (const [disk, served] of [[paths.custom, files.custom]] as const) {
-    const [onDisk, accepted] = await Promise.all([
-      readFile(disk, "utf8").catch(() => ""),
-      readFile(served, "utf8").catch(() => ""),
-    ]);
-    if (onDisk !== accepted) pending.push(disk);
-  }
-  return [
-    pending.length
-      ? {
-          name: "proxy-custom",
-          ok: false,
-          message: `${pending.join(" and ")} changed since it was last applied; Caddy serves the accepted copy.`,
-          reason: "proxy-custom-pending",
-          hint: "Run rig proxy reload to apply it.",
-        }
-      : {
-          name: "proxy-custom",
-          ok: true,
-          message: "The custom file is applied.",
-        },
-  ];
+  const served = await readFile(files.metadata, "utf8")
+    .then(
+      (text) =>
+        (JSON.parse(text) as { customRoutes?: unknown }).customRoutes ?? [],
+    )
+    .catch(() => []);
+  const wanted = hostRoutes(settings);
+  if (wanted.length || (Array.isArray(served) && served.length))
+    checks.push(
+      Bun.deepEquals(served, wanted)
+        ? {
+            name: "proxy-routes",
+            ok: true,
+            message: `Your ${wanted.length === 1 ? "route" : `${wanted.length} routes`} in proxy.routes ${wanted.length === 1 ? "is" : "are"} served.`,
+          }
+        : {
+            name: "proxy-routes",
+            ok: false,
+            message:
+              "proxy.routes in config.yaml changed since Rig's Caddy last applied it.",
+            reason: "proxy-routes-pending",
+            hint: "Run rig proxy reload to apply it.",
+          },
+    );
+  return checks;
 }

@@ -6,6 +6,7 @@ import {
   readFile,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -113,4 +114,55 @@ test("doctor checks Rig's own Caddy instead of a Host Caddyfile, and no longer n
     ok: false,
     reason: "proxy-unconfigured",
   });
+});
+
+test("doctor names a custom Caddy file an earlier build read as ignored, and proxy.routes Caddy does not serve yet", async () => {
+  const r = await root();
+  await mkdir(join(r, "daemon"), { recursive: true });
+  await writeFile(
+    join(r, "daemon", "install.json"),
+    JSON.stringify({ mode: "process" }),
+  );
+  await writeFile(
+    join(r, "config.yaml"),
+    "proxy:\n  caddy: /usr/local/bin/caddy\n  routes:\n    grafana.example.com: 3000\n",
+  );
+  await mkdir(join(r, "proxy"), { recursive: true });
+  await writeFile(
+    join(r, "proxy", "custom.caddy"),
+    "grafana.example.com {\n\treverse_proxy 127.0.0.1:3000\n}\n",
+  );
+  // A generation built before the route was added.
+  const generation = join(r, "caddy", "generations", "g1");
+  await mkdir(generation, { recursive: true });
+  await writeFile(
+    join(generation, "generation.json"),
+    JSON.stringify({ customRoutes: [] }),
+  );
+  await symlink(join("generations", "g1"), join(r, "caddy", "current"));
+  const checks = await inspectHost(r);
+  expect(checks.filter((check) => check.name === "proxy-custom-file")).toEqual([
+    {
+      name: "proxy-custom-file",
+      ok: false,
+      message: `Rig no longer reads ${join(r, "proxy", "custom.caddy")}, so nothing in it is served.`,
+      reason: "proxy-custom-retired",
+      hint: expect.stringContaining("proxy.routes in config.yaml"),
+    },
+  ]);
+  expect(checks.find((check) => check.name === "proxy-routes")).toMatchObject({
+    ok: false,
+    reason: "proxy-routes-pending",
+  });
+  await writeFile(
+    join(generation, "generation.json"),
+    JSON.stringify({
+      customRoutes: [
+        { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
+      ],
+    }),
+  );
+  expect(
+    (await inspectHost(r)).find((check) => check.name === "proxy-routes"),
+  ).toMatchObject({ ok: true });
 });

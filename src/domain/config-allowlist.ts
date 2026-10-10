@@ -1,5 +1,7 @@
-/** The structural allowlist on Caddy's adapted JSON (ADR 0014): the one authority on what the owner's custom sites, and the
- * snippets Rig's own sites import, may add to what Rig renders. Text checks on the Caddyfile only give earlier errors. */
+/** The structural allowlist on Caddy's adapted JSON (ADR 0014). Rig renders every generation itself, but the Host's
+ * `proxy.site` lines are Caddy directives placed inside Rig's site blocks, so a generation is held to what Rig's routes
+ * without them would be: only its HTTP routes may differ, and every route may only match requests by allowed matchers and
+ * handle them with allowed handlers, reading nothing but the request. */
 type Json = Record<string, unknown>;
 const record = (value: unknown): Json =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -13,17 +15,21 @@ export interface ConfigProblem {
   readonly problem: string;
 }
 export interface AllowlistInput {
-  /** `caddy adapt` of Rig's main file with Rig's routes alone: no custom sites, no `site` lines. */
+  /** `caddy adapt` of the generation's main file with Rig's routes rendered without `site` lines. */
   readonly base: unknown;
-  /** `caddy adapt` of the generation's main file: Rig's routes with their `site` lines, and the custom sites. */
+  /** `caddy adapt` of the generation's main file: what Caddy will run. */
   readonly full: unknown;
-  /** Every host a route may match: Rig's hostnames, the custom hostnames, and Rig's wildcard parents. */
+  /** Every host a route may match: the hostnames served and Rig's wildcard parents. */
   readonly hosts: readonly string[];
-  /** TLS automation subjects a custom site may add: its hostnames and the wildcards Rig would derive for them. */
-  readonly subjects: readonly string[];
-  /** The one listener a server may have that Rig's base does not: Rig's HTTPS port, for a Host serving only custom sites. */
-  readonly httpsListen: readonly string[];
 }
+/** Placeholders a route may use: each reads the request being handled or the proxy's answer to it. `{system.*}`,
+ * `{env.*}`, `{file.*}`, `{time.*}`, `{http.vars.*}` and every other kind read state outside the request. */
+const PLACEHOLDERS = [
+  "http.request.",
+  "http.error.",
+  "http.regexp.",
+  "http.reverse_proxy.",
+];
 const LOOPBACK_DIAL = /^(?:127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/;
 /** Handlers a route may use, each with the fields it may set. */
 const HANDLERS: Record<string, ReadonlySet<string>> = {
@@ -64,7 +70,7 @@ const MATCHERS = new Set([
   "not",
 ]);
 
-/** Everything the full config does that the allowlist refuses; empty when it only adds what is allowed. */
+/** Everything the full config does that the allowlist refuses; empty when it differs from the base only by allowed routes. */
 export function configProblems(input: AllowlistInput): ConfigProblem[] {
   const problems: ConfigProblem[] = [];
   const refuse = (path: string, problem: string) =>
@@ -78,21 +84,16 @@ export function configProblems(input: AllowlistInput): ConfigProblem[] {
       refuse(`$.${key}`, "differs from what Rig sets");
   const baseApps = record(base.apps);
   const fullApps = record(full.apps);
-  for (const key of union(baseApps, fullApps)) {
-    if (key === "http") continue;
-    if (key === "tls") {
-      checkTls(baseApps.tls, fullApps.tls, new Set(input.subjects), refuse);
-      continue;
-    }
-    if (!Bun.deepEquals(baseApps[key], fullApps[key]))
-      refuse(`$.apps.${key}`, "is not an app custom sites may add or change");
-  }
+  for (const key of union(baseApps, fullApps))
+    if (key !== "http" && !Bun.deepEquals(baseApps[key], fullApps[key]))
+      refuse(`$.apps.${key}`, "differs from what Rig sets");
   const baseHttp = record(baseApps.http);
   const fullHttp = record(fullApps.http);
   for (const key of union(baseHttp, fullHttp))
     if (key !== "servers" && !Bun.deepEquals(baseHttp[key], fullHttp[key]))
       refuse(`$.apps.http.${key}`, "differs from what Rig sets");
 
+  // Caddy names servers srv0, srv1... in an order of its own, so they are matched by what they listen on.
   const listenKey = (server: unknown) =>
     JSON.stringify(list(record(server).listen).map(String).sort());
   const baseServers = new Map(
@@ -106,36 +107,27 @@ export function configProblems(input: AllowlistInput): ConfigProblem[] {
     const server = record(value);
     const path = `$.apps.http.servers.${name}`;
     const matched = baseServers.get(listenKey(server));
-    if (matched) {
-      seen.add(listenKey(server));
-      for (const key of union(matched, server))
-        if (
-          key !== "routes" &&
-          key !== "errors" &&
-          !Bun.deepEquals(matched[key], server[key])
-        )
-          refuse(`${path}.${key}`, "differs from what Rig sets");
-    } else if (listenKey(server) !== listenKey({ listen: input.httpsListen }))
+    if (!matched) {
       refuse(
         `${path}.listen`,
-        `adds a server listening on ${list(server.listen).join(", ")}; custom sites are served on Rig's HTTPS port only`,
+        `adds a server listening on ${list(server.listen).join(", ")}`,
       );
-    else
-      for (const key of Object.keys(server))
-        if (!["listen", "routes", "errors"].includes(key))
-          refuse(
-            `${path}.${key}`,
-            "is not a server setting custom sites may set",
-          );
+      continue;
+    }
+    seen.add(listenKey(server));
+    for (const key of union(matched, server))
+      if (
+        key !== "routes" &&
+        key !== "errors" &&
+        !Bun.deepEquals(matched[key], server[key])
+      )
+        refuse(`${path}.${key}`, "differs from what Rig sets");
     list(server.routes).forEach((route, index) =>
       checkRoute(route, `${path}.routes[${index}]`, hosts, true, refuse),
     );
     for (const key of Object.keys(record(server.errors)))
       if (key !== "routes")
-        refuse(
-          `${path}.errors.${key}`,
-          "is not an error setting custom sites may set",
-        );
+        refuse(`${path}.errors.${key}`, "is not an allowed error setting");
     list(record(server.errors).routes).forEach((route, index) =>
       checkRoute(route, `${path}.errors.routes[${index}]`, hosts, true, refuse),
     );
@@ -144,58 +136,6 @@ export function configProblems(input: AllowlistInput): ConfigProblem[] {
     if (!seen.has(key))
       refuse("$.apps.http.servers", `drops Rig's server listening on ${key}`);
   return problems;
-}
-/** The TLS app must be Rig's, except for automation subjects a custom site may add. */
-function checkTls(
-  base: unknown,
-  full: unknown,
-  allowed: ReadonlySet<string>,
-  refuse: (path: string, problem: string) => void,
-): void {
-  const baseTls = record(base);
-  const fullTls = record(full);
-  for (const key of union(baseTls, fullTls)) {
-    if (key === "automation") continue;
-    if (!Bun.deepEquals(baseTls[key], fullTls[key]))
-      refuse(`$.apps.tls.${key}`, "differs from what Rig sets");
-  }
-  const baseAutomation = record(baseTls.automation);
-  const fullAutomation = record(fullTls.automation);
-  for (const key of union(baseAutomation, fullAutomation))
-    if (
-      key !== "policies" &&
-      !Bun.deepEquals(baseAutomation[key], fullAutomation[key])
-    )
-      refuse(`$.apps.tls.automation.${key}`, "differs from what Rig sets");
-  const basePolicies = list(baseAutomation.policies);
-  const fullPolicies = list(fullAutomation.policies);
-  if (basePolicies.length !== fullPolicies.length) {
-    refuse(
-      "$.apps.tls.automation.policies",
-      "adds or drops a certificate policy",
-    );
-    return;
-  }
-  fullPolicies.forEach((policy, index) => {
-    const before = record(basePolicies[index]);
-    const after = record(policy);
-    const added = list(after.subjects)
-      .map(String)
-      .filter(
-        (subject) => !list(before.subjects).map(String).includes(subject),
-      );
-    const path = `$.apps.tls.automation.policies[${index}]`;
-    for (const subject of added)
-      if (!allowed.has(subject.toLowerCase()))
-        refuse(
-          `${path}.subjects`,
-          `adds ${subject}, which Rig would not manage`,
-        );
-    const { subjects: _, ...rest } = after;
-    const { subjects: __, ...expected } = before;
-    if (!Bun.deepEquals(rest, expected))
-      refuse(path, "changes how certificates are issued");
-  });
 }
 function checkRoute(
   value: unknown,
@@ -207,7 +147,7 @@ function checkRoute(
   const route = record(value);
   for (const key of Object.keys(route))
     if (!["match", "handle", "terminal", "group"].includes(key))
-      refuse(`${path}.${key}`, "is not a route field custom sites may use");
+      refuse(`${path}.${key}`, "is not an allowed route field");
   // A site route that matches no hostname would catch every request on the port: a wildcard route, which Rig never serves.
   if (
     top &&
@@ -218,10 +158,17 @@ function checkRoute(
       `${path}.match`,
       "matches no hostname; a site must name the hostnames it serves",
     );
-  // A placeholder that reads a file or the environment would make a response, or a match, depend on something outside the
-  // generation.
-  if (top && /\{(?:file|env)\./.test(JSON.stringify(route)))
-    refuse(path, "reads a file or the environment through a placeholder");
+  // A placeholder that reads anything but the request would make a response, or a match, depend on state outside the
+  // generation: the machine, the environment, a file or a variable another handler set.
+  if (top)
+    for (const [, name] of JSON.stringify(route).matchAll(
+      /\{([A-Za-z_$][^{}\s"]*)\}/g,
+    ))
+      if (!PLACEHOLDERS.some((prefix) => name!.startsWith(prefix)))
+        refuse(
+          path,
+          `uses the placeholder {${name}}, which reads more than the request`,
+        );
   list(route.match).forEach((set, index) =>
     checkMatcherSet(set, `${path}.match[${index}]`, hosts, top, refuse),
   );
@@ -253,10 +200,7 @@ function checkMatcherSet(
     if (name === "host")
       for (const host of list(argument).map(String))
         if (!hosts.has(host.toLowerCase()))
-          refuse(
-            at,
-            `matches ${host}, which is not a hostname Rig or the custom sites serve`,
-          );
+          refuse(at, `matches ${host}, which is not a hostname Rig serves`);
     if (name === "not") {
       if (!Array.isArray(argument)) refuse(at, "is not a list of matcher sets");
       list(argument).forEach((inner, position) =>
@@ -277,15 +221,13 @@ function checkHandler(
   if (!fields) {
     refuse(
       `${path}.handler`,
-      `${name || "a handler"} is not allowed; custom sites may use reverse_proxy to loopback, respond, header, rewrite, encode and handle`,
+      `${name || "a handler"} is not allowed; routes may use reverse_proxy to loopback, respond, header, rewrite, encode and handle`,
     );
     return;
   }
   for (const key of Object.keys(handler))
     if (!fields.has(key))
-      refuse(`${path}.${key}`, `is not a ${name} field custom sites may set`);
-  if (/\{(?:file|env)\./.test(JSON.stringify(handler)))
-    refuse(path, "reads a file or the environment through a placeholder");
+      refuse(`${path}.${key}`, `is not an allowed ${name} field`);
   if (name === "reverse_proxy")
     list(handler.upstreams).forEach((upstream, index) => {
       const entry = record(upstream);

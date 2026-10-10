@@ -100,7 +100,10 @@ async function world(hostnames: string[]) {
       )
       .join(""),
   );
-  await writeFile(join(generation, "custom.caddy"), "");
+  await writeFile(
+    join(generation, "generation.json"),
+    JSON.stringify({ customRoutes: [] }),
+  );
   await symlink(join("generations", "g1"), join(root, "caddy", "current"));
   return { root, port: server.port! };
 }

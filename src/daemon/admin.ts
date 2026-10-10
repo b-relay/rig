@@ -824,7 +824,7 @@ export class DaemonAdmin {
       throw error;
     }
     await this.removeInstallation(installation.data.mode);
-    // Uninstall leaves no Rig process behind; Caddy's certificates, generations and custom files stay for the next install.
+    // Uninstall leaves no Rig process behind; Caddy's certificates and generations stay for the next install.
     await this.options.proxy?.remove();
     return {
       installed: false,

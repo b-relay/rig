@@ -107,9 +107,8 @@ test("rigd install sets up Rig's Caddy before rigd starts, is unchanged when not
   expect(await readFile(w.paths.entry, "utf8")).toContain(
     '"module":"internal"',
   );
-  expect(await readFile(w.paths.custom, "utf8")).toContain(
-    "Rig never rewrites this file",
-  );
+  // No custom Caddy file: the owner's own hostnames are proxy.routes in Host config.
+  expect(existsSync(join(w.root, "proxy", "custom.caddy"))).toBe(false);
   expect(await w.admin.install()).toMatchObject({ outcome: "unchanged" });
 
   await w.admin.uninstall();
@@ -146,16 +145,14 @@ test("without a stored token a production CA refuses the install before anything
   expect(await w.caddyAdmin.reachable()).toBe(false);
 }, 30_000);
 
-test("a custom file Caddy rejects does not block the install: the accepted copies serve and the install warns", async () => {
+test("rigd install serves proxy.routes from Host config", async () => {
   const w = await world();
-  await w.config({ tls: { ca: "internal" } });
-  await mkdir(join(w.root, "proxy"), { recursive: true });
-  await writeFile(
-    w.paths.custom,
-    "broken.example.test {\n\tnot_a_directive\n}\n",
-  );
-  const installed = (await w.admin.install()) as { warnings?: string[] };
-  expect(installed.warnings?.join("\n")).toContain("not_a_directive");
+  await w.config({
+    tls: { ca: "internal" },
+    routes: { "own.example.test": 3999 },
+  });
+  await w.admin.install();
+  expect(await readFile(w.paths.entry, "utf8")).toContain("127.0.0.1:3999");
   expect(await w.caddyAdmin.reachable()).toBe(true);
 }, 60_000);
 

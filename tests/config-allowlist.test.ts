@@ -71,8 +71,6 @@ const check = (full: unknown, from: unknown = base) =>
     base: from,
     full,
     hosts: ["rig.example.test", "custom.example.test", "*.example.test"],
-    subjects: ["custom.example.test", "*.example.test"],
-    httpsListen: [":443"],
   });
 const customRoute = (handle: unknown[], host = "custom.example.test") => ({
   match: [{ host: [host] }],
@@ -80,7 +78,7 @@ const customRoute = (handle: unknown[], host = "custom.example.test") => ({
   terminal: true,
 });
 
-test("custom sites may add routes for their own hostnames to loopback services, responses, headers, rewrites and encoding", () => {
+test("routes may reach loopback services, respond, set headers, rewrite and encode, reading only the request", () => {
   expect(
     check(
       config([
@@ -98,7 +96,7 @@ test("custom sites may add routes for their own hostnames to loopback services, 
   ).toEqual([]);
 });
 
-test("any other handler, a remote upstream, a placeholder that reads files, or a foreign hostname is refused at its JSON path", () => {
+test("any other handler, a remote upstream, a placeholder that reads more than the request, or a foreign hostname is refused at its JSON path", () => {
   const routes = (route: unknown) =>
     config([rigRoute("rig.example.test", "127.0.0.1:3001"), abortRoute, route]);
   expect(
@@ -129,6 +127,61 @@ test("any other handler, a remote upstream, a placeholder that reads files, or a
       ),
     )[0],
   ).toMatchObject({ problem: expect.stringContaining("placeholder") });
+  // The machine, the working directory, another handler's variables and the clock are not the request.
+  for (const placeholder of [
+    "{system.hostname}",
+    "{system.wd}",
+    "{http.vars.secret}",
+    "{env.HOME}",
+    "{time.now}",
+  ]) {
+    expect(
+      check(
+        routes(
+          customRoute([
+            {
+              handler: "headers",
+              response: { set: { "X-A": [placeholder] } },
+            },
+          ]),
+        ),
+      ),
+    ).toEqual([
+      {
+        path: "$.apps.http.servers.srv0.routes[2]",
+        problem: `uses the placeholder ${placeholder}, which reads more than the request`,
+      },
+    ]);
+    expect(
+      check(
+        routes(customRoute([{ handler: "rewrite", uri: `/x${placeholder}` }])),
+      )[0],
+    ).toMatchObject({ problem: expect.stringContaining(placeholder) });
+  }
+  // A regular expression's repetition count is not a placeholder.
+  expect(
+    check(
+      routes({
+        match: [{ host: ["custom.example.test"] }],
+        handle: [
+          {
+            handler: "subroute",
+            routes: [
+              {
+                match: [{ path_regexp: { pattern: "^/a{2,3}$" } }],
+                handle: [
+                  {
+                    handler: "headers",
+                    request: { set: { "X-Host": ["{http.request.host}"] } },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    ),
+  ).toEqual([]);
   expect(
     check(
       routes(
@@ -216,7 +269,7 @@ test("matchers are an allowlist at every depth: a file, vars, client address or 
   ).toEqual([]);
 });
 
-test("certificates from files, changed TLS policies, new listeners and changed globals are refused", () => {
+test("certificates from files, any TLS change, new listeners and changed globals are refused", () => {
   // tls {$CERT_PATH} {$KEY_PATH}: Caddy adds a connection policy and loads files.
   const withFiles = config(
     [rigRoute("rig.example.test", "127.0.0.1:3001"), abortRoute],
@@ -234,7 +287,7 @@ test("certificates from files, changed TLS policies, new listeners and changed g
     tls_connection_policies: [{ match: { sni: ["custom.example.test"] } }],
   } as typeof withFiles.apps.http.servers.srv0;
   expect(check(withFiles).map((problem) => problem.path)).toEqual([
-    "$.apps.tls.certificates",
+    "$.apps.tls",
     "$.apps.http.servers.srv0.tls_connection_policies",
   ]);
   // Another issuer for the same policy.
@@ -248,7 +301,7 @@ test("certificates from files, changed TLS policies, new listeners and changed g
         },
       }),
     )[0],
-  ).toMatchObject({ path: "$.apps.tls.automation.policies[0]" });
+  ).toMatchObject({ path: "$.apps.tls" });
   // A server on another port (an http:// site on :28080).
   expect(
     check(
@@ -273,7 +326,7 @@ test("certificates from files, changed TLS policies, new listeners and changed g
   ).toEqual([{ path: "$.logging", problem: "differs from what Rig sets" }]);
 });
 
-test("servers are matched by what they listen on, since Caddy renumbers them, and TLS subjects a custom host needs are allowed", () => {
+test("servers are matched by what they listen on, since Caddy renumbers them; the TLS app must be Rig's exactly", () => {
   const renamed = {
     ...base,
     apps: {
@@ -314,19 +367,13 @@ test("servers are matched by what they listen on, since Caddy renumbers them, an
       },
     },
   );
-  expect(check(withSubject)).toEqual([]);
-  const foreignSubject = structuredClone(withSubject);
-  (
-    foreignSubject.apps.tls as {
-      automation: { policies: { subjects: string[] }[] };
-    }
-  ).automation.policies[0]!.subjects = ["other.example.org"];
-  expect(check(foreignSubject)[0]).toMatchObject({
-    path: "$.apps.tls.automation.policies[0].subjects",
-  });
+  // Rig renders every subject itself, so even one more is not the site lines' to add.
+  expect(check(withSubject)).toEqual([
+    { path: "$.apps.tls", problem: "differs from what Rig sets" },
+  ]);
 });
 
-test("Rig's own routes are held to the allowlist too, so a snippet its site lines import cannot slip anything past it", () => {
+test("every route is held to the allowlist, even one the base has too", () => {
   // Both configs carry it, so only the allowlist on every route can see it.
   const snippetAdded = config([
     {

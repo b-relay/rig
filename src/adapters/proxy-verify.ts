@@ -6,34 +6,40 @@ import {
   type CertificateVerdict,
 } from "../domain/certificate-check";
 import {
-  caddyfileSites,
   certificateName,
   generationFiles,
   proxyPaths,
+  type HostRoute,
 } from "../domain/managed-proxy";
 import { routeFileHostnames } from "../providers/route-file";
 
-/** The custom site addresses of the current generation: the inventory Caddy's own parse gave when it was published, kept in
- * its metadata. A generation from before that falls back to reading the file's text. */
-export async function currentCustomSites(root: string): Promise<string[]> {
+/** The owner's `proxy.routes` the current generation serves, as its metadata recorded them when it was published; none
+ * before the first generation. */
+export async function currentCustomRoutes(root: string): Promise<HostRoute[]> {
   const files = generationFiles(proxyPaths(root).current);
   try {
     const metadata = JSON.parse(await readFile(files.metadata, "utf8")) as {
-      customSites?: unknown;
+      customRoutes?: unknown;
     };
-    if (Array.isArray(metadata.customSites))
-      return metadata.customSites.map(String);
+    if (Array.isArray(metadata.customRoutes))
+      return metadata.customRoutes.flatMap((entry: unknown) => {
+        const route = entry as Partial<HostRoute> | null;
+        return typeof route?.hostname === "string" &&
+          typeof route.upstream === "string"
+          ? [{ hostname: route.hostname, upstream: route.upstream }]
+          : [];
+      });
   } catch {}
-  return caddyfileSites(await readFile(files.custom, "utf8").catch(() => ""));
+  return [];
 }
-/** Every hostname with a certificate that the current generation serves: Rig's sites and the owner's custom ones. Read from
+/** Every hostname with a certificate that the current generation serves: Rig's sites and the owner's own routes. Read from
  * the generation itself, so it needs no rigd and names exactly what Caddy was given. */
 export async function servedHostnames(root: string): Promise<string[]> {
   const files = generationFiles(proxyPaths(root).current);
   const routes = await readFile(files.routes, "utf8").catch(() => "");
   const names = [
     ...routeFileHostnames(routes),
-    ...(await currentCustomSites(root)),
+    ...(await currentCustomRoutes(root)).map((route) => route.hostname),
   ]
     .map(certificateName)
     .filter((name): name is string => name !== undefined);

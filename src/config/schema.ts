@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ConfigError } from "./errors";
+import { validHostname } from "./hostname";
 import { proxyModeOf, proxySettingsSchema } from "./proxy-schema";
 import { referenceResolver } from "./references";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
@@ -80,15 +81,7 @@ export function localhostHealth(value: string): boolean {
     return false;
   }
 }
-/** A hostname Caddy will serve as one site: labels of letters, digits and '-', joined by dots.
- * Schemes, ports, paths, wildcards and comma lists would be rejected by Caddy at deploy time
- * or, for a catch-all, would take every request on the Host. */
-export function validHostname(value: string): boolean {
-  return (
-    value.length <= 253 &&
-    /^[a-zA-Z0-9-]{1,63}(\.[a-zA-Z0-9-]{1,63})*$/.test(value)
-  );
-}
+export { validHostname };
 /** The one hostname substitution: the actual Target name, which is always a single valid label. */
 const TARGET_REFERENCE = "${rig.target}";
 const DOMAIN_REFERENCE = `${TARGET_REFERENCE} is the only reference a hostname may contain.`;

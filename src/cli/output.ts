@@ -16,7 +16,7 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "activity") return renderActivity(report);
   if (action === "proxy") return renderProxy(report);
   if (action === "proxy-apply")
-    return "Rig's Caddy serves the custom files and proxy settings as they are now.\n";
+    return "Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n";
   if (action === "daemon-status")
     return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
       report.version ? `Version    ${word(report.version)}\n` : ""
@@ -226,7 +226,8 @@ function deployedFrom(
   if (branch || commit) return branch || commit;
   return target.kind === "working" ? "working copy" : "";
 }
-/** `rig proxy`: the job, then one line per served hostname with what it reaches, then the custom files. */
+/** `rig proxy`: the job, then one line per served hostname with what it reaches: a Target's paths, or one of the owner's
+ * proxy.routes. */
 function renderProxy(report: Record<string, unknown>): string {
   const caddy = object(report.caddy);
   const ports = object(caddy.ports);
@@ -240,25 +241,21 @@ function renderProxy(report: Record<string, unknown>): string {
   for (const site of sites) {
     const owner =
       site.source === "custom"
-        ? "custom.caddy"
+        ? "proxy.routes"
         : `${word(site.project)} ${word(site.target)}`;
-    const routes = rows(site.routes)
-      .map(
-        (route) =>
-          `${word(route.prefix)} -> ${route.upstream === null ? "withheld (503)" : word(route.upstream)}`,
-      )
-      .join(", ");
+    const routes =
+      site.source === "custom"
+        ? `/ -> ${word(site.upstream)}`
+        : rows(site.routes)
+            .map(
+              (route) =>
+                `${word(route.prefix)} -> ${route.upstream === null ? "withheld (503)" : word(route.upstream)}`,
+            )
+            .join(", ");
     lines.push(
       `${word(site.hostname)}  ${owner}${routes ? `  ${routes}` : ""}${site.certificate ? `  [${word(site.certificate)}]` : ""}`,
     );
   }
-  lines.push("");
-  for (const file of rows(report.custom))
-    lines.push(
-      file.state === "applied"
-        ? `${word(file.file)}  applied`
-        : `${word(file.file)}  changed since applied; run rig proxy reload`,
-    );
   return `${lines.join("\n")}\n`;
 }
 function renderDoctor(report: Record<string, unknown>): string {

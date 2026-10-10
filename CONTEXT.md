@@ -952,8 +952,9 @@ helpers.
 
 The one Caddy Rig runs for a Host when Host config has a `proxy` section
 ([ADR 0014](docs/adr/0014-rig-owned-caddy.md)). It terminates TLS with ACME
-DNS-01 certificates and routes every Rig hostname, plus the owner's own sites
-from `proxy/custom.caddy`. It runs as its own job beside `rigd`, never as a
+DNS-01 certificates and routes every Rig hostname, plus the owner's own
+hostnames from `proxy.routes` in Host config, each a plain reverse proxy to a
+loopback port. It runs as its own job beside `rigd`, never as a
 child of it, so a `rigd` restart never stops serving.
 _Avoid_: router Caddy, front Caddy (the two-Caddy setup it replaces)
 
@@ -963,9 +964,9 @@ its own route map, and a Target's sites are published and withdrawn together.
 ### Config generation
 
 One complete, self-contained configuration of Rig's Caddy: its main file, a
-copy of the route file, the accepted custom file, and the adapted JSON Caddy
-runs. Rig validates a generation, and holds the custom sites in it to an
-allowlist on that JSON, before switching one link to it, so Caddy never reads a
+copy of the route file, the owner's `proxy.routes`, and the adapted JSON Caddy
+runs. Rig holds that JSON to an allowlist on what the Host's `site` lines add,
+then validates it, before switching one link to it, so Caddy never reads a
 set of files from two changes.
 
 ### Provider contract

@@ -27,7 +27,6 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "PROXY_TOKEN",
   "PROXY_BINARY",
   "PROXY_CONFIG",
-  "PROXY_CUSTOM_INVALID",
   "PROXY_PATH",
   "PROXY_PORT_BUSY",
   "PROXY_UNMANAGED",

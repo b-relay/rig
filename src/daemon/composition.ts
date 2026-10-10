@@ -392,7 +392,9 @@ function composeManagedCaddy(
     control: {
       report: async (targets) =>
         proxyReport({ root, settings: await settings(), job, admin, targets }),
-      apply: () => caddy.applyCustom(),
+      apply: async () => {
+        await caddy.republish();
+      },
     },
   };
 }

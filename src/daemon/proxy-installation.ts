@@ -38,7 +38,7 @@ export interface ProxyInstallation {
   /** Whether Rig's Caddy is installed as Host config asks: the binary proxy.caddy names, the job defined as this Rig defines
    * it and answering, and a current generation. */
   inSync(): Promise<boolean>;
-  /** Installs Rig's Caddy and has it serve the current routes and custom files; resolves to warnings. `publish` replaces
+  /** Installs Rig's Caddy and has it serve the current routes and proxy.routes; resolves to warnings. `publish` replaces
    * publishing here, for a system rigd that keeps running and publishes itself (proxy-apply); `defineJob: false` stops
    * before the job, for a system job that needs the owner's sudo first. */
   install(how?: {
@@ -51,7 +51,7 @@ export interface ProxyInstallation {
    * sections written, the token, and a proxy.caddy that is not Caddy 2.10 or later with the DNS module. */
   preflight(): Promise<void>;
   /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined. Certificates,
-   * generations, custom files and the token stay. */
+   * generations and the token stay. */
   remove(): Promise<void>;
 }
 export interface ProxyInstallationOptions {
@@ -162,19 +162,8 @@ export function createProxyInstallation(
         if (binary.changed) await revertBinary(paths);
       };
       try {
-        // The custom files on disk are applied; when Caddy rejects them, install still succeeds with the accepted ones.
-        try {
-          await (how.publish ? how.publish() : caddy.applyCustom());
-        } catch (error) {
-          if (!(
-            error instanceof RigError && error.code === "PROXY_CUSTOM_INVALID"
-          ))
-            throw error;
-          warnings.push(
-            `${error.message} The previously accepted custom files are used; fix them and run rig proxy reload.`,
-          );
-          if (!how.publish) await caddy.republish();
-        }
+        // The current settings, proxy.routes included, are published.
+        await (how.publish ? how.publish() : caddy.republish());
       } catch (error) {
         await restoreBinary();
         throw error;

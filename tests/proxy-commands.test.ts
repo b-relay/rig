@@ -146,7 +146,7 @@ test("rig proxy verify prints each hostname and fails when any is not ready", as
   expect(failing.error).toMatchObject({ code: "PROXY_NOT_READY" });
 });
 
-test("the proxy report names each site's owner, routes and certificate, and a pending custom file", () => {
+test("the proxy report names each site's owner, routes and certificate, the owner's proxy.routes among them", () => {
   expect(
     renderResult("proxy", {
       caddy: {
@@ -170,10 +170,10 @@ test("the proxy report names each site's owner, routes and certificate, and a pe
         {
           hostname: "code.example.com",
           source: "custom",
+          upstream: "127.0.0.1:8080",
           certificate: "*.example.com",
         },
       ],
-      custom: [{ file: "/r/proxy/custom.caddy", state: "pending", text: "" }],
     }),
   ).toBe(
     [
@@ -181,9 +181,7 @@ test("the proxy report names each site's owner, routes and certificate, and a pe
       "Generation g7",
       "",
       "api.melody.example.com  melody stable  /v1 -> withheld (503), / -> 127.0.0.1:3002  [*.melody.example.com]",
-      "code.example.com  custom.caddy  [*.example.com]",
-      "",
-      "/r/proxy/custom.caddy  changed since applied; run rig proxy reload",
+      "code.example.com  proxy.routes  / -> 127.0.0.1:8080  [*.example.com]",
       "",
     ].join("\n"),
   );

@@ -1,5 +1,5 @@
 import { readFile, readlink } from "node:fs/promises";
-import { currentCustomSites } from "./proxy-verify";
+import { currentCustomRoutes } from "./proxy-verify";
 import type { ProxySettings } from "../config/proxy-schema";
 import {
   certificateName,
@@ -29,10 +29,13 @@ export type ProxySite =
     }
   | {
       readonly hostname: string;
+      /** One of the owner's own routes, from proxy.routes in Host config. */
       readonly source: "custom";
+      /** The loopback address it reaches. */
+      readonly upstream: string;
       readonly certificate?: string;
     };
-/** What `rig proxy` shows: the job, every served site and whether the custom files are applied. */
+/** What `rig proxy` shows: the job and every served site, Rig's Targets' and the owner's own routes. */
 export interface ProxyReport {
   readonly caddy: {
     /** running answers on its socket; unreachable runs (or may) but does not answer; stopped is confirmed. */
@@ -44,12 +47,6 @@ export interface ProxyReport {
     readonly generation?: string;
   };
   readonly sites: readonly ProxySite[];
-  readonly custom: readonly {
-    readonly file: string;
-    readonly state: "applied" | "pending";
-    /** The file as it is on disk, for display; pending until rig proxy reload applies it. */
-    readonly text: string;
-  }[];
 }
 /** A Target as the report names it. */
 export interface ReportedTarget {
@@ -69,21 +66,21 @@ export async function proxyReport(options: {
   const generation = await readlink(paths.current).catch(() => undefined);
   const files = generationFiles(paths.current);
   const read = (path: string) => readFile(path, "utf8").catch(() => "");
-  const [routes, custom, diskCustom] = await Promise.all([
-    read(files.routes),
-    read(files.custom),
-    read(paths.custom),
-  ]);
+  const routes = await read(files.routes);
   const [reachable, state] = await Promise.all([
     options.admin.reachable(),
     options.job.state(),
   ]);
-  const customSites = await currentCustomSites(options.root);
+  const customRoutes = await currentCustomRoutes(options.root);
   const parents =
     options.settings.tls.certificates === "wildcard"
-      ? new Set(wildcardParents(routeFileHostnames(routes)))
+      ? new Set(
+          wildcardParents([
+            ...routeFileHostnames(routes),
+            ...customRoutes.map((route) => route.hostname),
+          ]),
+        )
       : new Set<string>();
-  for (const site of customSites) parents.add(site.toLowerCase());
   const certificate = (hostname: string) => {
     const name = certificateName(hostname);
     if (!name) return {};
@@ -104,8 +101,13 @@ export async function proxyReport(options: {
         ...certificate(site.hostname),
       });
   }
-  for (const hostname of customSites.filter((site) => !site.includes("*")))
-    sites.push({ hostname, source: "custom", ...certificate(hostname) });
+  for (const route of customRoutes)
+    sites.push({
+      hostname: route.hostname,
+      source: "custom",
+      upstream: route.upstream,
+      ...certificate(route.hostname),
+    });
   const binary = await installedBinary(paths);
   return {
     caddy: {
@@ -120,12 +122,5 @@ export async function proxyReport(options: {
       ...(generation ? { generation: generation.split("/").at(-1)! } : {}),
     },
     sites: sites.sort((a, b) => a.hostname.localeCompare(b.hostname)),
-    custom: [
-      {
-        file: paths.custom,
-        state: diskCustom === custom ? "applied" : "pending",
-        text: diskCustom,
-      },
-    ],
   };
 }

@@ -14,10 +14,12 @@ import {
   type CaddyAdminClient,
 } from "../providers/caddy-admin";
 import {
+  binaryPending,
   checkCaddyBinary,
+  confirmBinary,
   installCaddyBinary,
   installedBinary,
-  switchBinary,
+  revertBinary,
 } from "../providers/caddy-binary";
 import {
   caddySystemPlist,
@@ -126,6 +128,7 @@ export function createProxyInstallation(
           true &&
         (await stat(paths.entry).catch(() => undefined)) !== undefined &&
         (await job.matches()) &&
+        !(await binaryPending(paths)) &&
         (await job.state()) === "running" &&
         (await admin.reachable())
       );
@@ -156,8 +159,7 @@ export function createProxyInstallation(
       // Until the new binary serves, any failure puts the previous one back, so the link never names a binary the running
       // Caddy is not, and the next install sees the change again.
       const restoreBinary = async () => {
-        if (binary.changed && binary.previous)
-          await switchBinary(paths, binary.previous);
+        if (binary.changed) await revertBinary(paths);
       };
       try {
         // The custom files on disk are applied; when Caddy rejects them, install still succeeds with the accepted ones.
@@ -183,6 +185,8 @@ export function createProxyInstallation(
         // A job that kept running still runs the old binary until it starts again.
         if (binary.changed && wasRunning && !defined.changed)
           await job.restart();
+        // The job answers from a process started after the switch, so it runs the new copy: it is the one to go back to now.
+        if (binary.changed) await confirmBinary(paths);
       } catch (error) {
         await restoreBinary();
         // Only a Caddy that did not come up blames the new binary; launchd refusing the job does not.

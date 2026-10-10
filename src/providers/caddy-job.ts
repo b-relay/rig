@@ -43,16 +43,27 @@ export interface InstallableCaddyJob extends CaddyJob {
 export function caddyJobLabel(root: string): string {
   return `com.b-relay.rig-caddy.${Bun.hash(root).toString(16)}`;
 }
-/** The program and environment of the job: Rig's copy of Caddy running the current generation. */
+/** The program of the job: Rig's copy of Caddy running the current generation, behind a guard on the DNS token. Caddy's
+ * DNS plugin quotes a token it rejects in its startup error, which goes straight to the job's log, so the guard starts
+ * Caddy only when the token file holds exactly one of the forms the plugin accepts (bytes and all: a trailing newline is a
+ * rejection too), or does not exist. Otherwise it says why and exits without starting Caddy. `exec` hands Caddy the job's
+ * own process, so launchd's signals and pid are Caddy's. */
 export function caddyCommand(paths: ProxyPaths): string[] {
-  return [
-    paths.binary,
-    "run",
-    "--config",
-    paths.entry,
-    "--adapter",
-    "caddyfile",
-  ];
+  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
+  const token = quote(paths.token);
+  const script = [
+    `if [ -e ${token} ]; then`,
+    // BSD grep allows no repetition count above 255, so the longest form's 261 bytes are checked by wc.
+    `  if [ "$(LC_ALL=C /usr/bin/tr -d '\\n\\r' < ${token} | /usr/bin/wc -c)" -ne "$(/usr/bin/wc -c < ${token})" ] ||`,
+    `     [ "$(/usr/bin/wc -c < ${token})" -gt 261 ] ||`,
+    `     ! LC_ALL=C /usr/bin/grep -Eq '^([A-Za-z0-9_-]{35,50}|cf(ut|at)_[A-Za-z0-9_-]{32,})$' ${token}; then`,
+    `    echo "rig: ${paths.token} holds no well-formed Cloudflare API token, so Caddy was not started; pipe the token to rig proxy token." >&2`,
+    "    exit 78",
+    "  fi",
+    "fi",
+    `exec ${quote(paths.binary)} run --config ${quote(paths.entry)} --adapter caddyfile`,
+  ].join("\n");
+  return ["/bin/sh", "-c", script];
 }
 function caddyEnvironment(home: string): Record<string, string> {
   return { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };

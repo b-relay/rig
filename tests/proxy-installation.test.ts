@@ -1,13 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
+  readlink,
   rm,
   writeFile,
 } from "node:fs/promises";
+import { binaryPending } from "../src/providers/caddy-binary";
 import { join } from "node:path";
 import { DaemonAdmin } from "../src/daemon/admin";
 import { createProxyInstallation } from "../src/daemon/proxy-installation";
@@ -54,6 +57,7 @@ async function world() {
     userName: "test",
     mode: "process",
     run: runCommand,
+    startDeadlineMs: 8000,
   });
   const admin = new DaemonAdmin({
     root,
@@ -74,11 +78,14 @@ async function world() {
     proxy,
     paths: proxyPaths(root),
     caddyAdmin: createCaddyAdmin(proxyPaths(root).socket),
-    async config(proxySection: Record<string, unknown> | undefined) {
+    async config(
+      proxySection: Record<string, unknown> | undefined,
+      binary = caddy,
+    ) {
       await writeFile(
         join(root, "config.yaml"),
         proxySection
-          ? `proxy:\n  caddy: ${caddy}\n  ports: { http: ${ports.http}, https: ${ports.https} }\n${Object.entries(
+          ? `proxy:\n  caddy: ${binary}\n  ports: { http: ${ports.http}, https: ${ports.https} }\n${Object.entries(
               proxySection,
             )
               .map(([key, value]) => `  ${key}: ${JSON.stringify(value)}\n`)
@@ -163,3 +170,26 @@ test("switching to Rig's Caddy without a token is refused while rigd keeps runni
     proxy: "external",
   });
 }, 60_000);
+
+test("a new Caddy that passes every check but cannot run is swapped back: the previous one serves again and nothing is left pending", async () => {
+  const w = await world();
+  await w.config({ tls: { ca: "internal" } });
+  await w.admin.install();
+  const good = await readlink(w.paths.binary);
+  // Answers version, modules, validate, adapt and reload as Caddy does, and fails when started.
+  const broken = join(w.root, "broken-caddy");
+  await writeFile(
+    broken,
+    `#!/bin/sh\ncase "$1" in run) echo "this Caddy cannot start" >&2; exit 1;; *) exec ${caddy} "$@";; esac\n`,
+  );
+  await chmod(broken, 0o755);
+  await w.config({ tls: { ca: "internal" } }, broken);
+  await expect(w.admin.install()).rejects.toMatchObject({
+    code: "PROXY_BINARY_START",
+  });
+  expect(await readlink(w.paths.binary)).toBe(good);
+  expect(await binaryPending(w.paths)).toBe(false);
+  expect(await w.caddyAdmin.reachable()).toBe(true);
+  // rigd was started again despite the failure.
+  expect(await w.admin.status()).toMatchObject({ reachable: true });
+}, 90_000);

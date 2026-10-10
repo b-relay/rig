@@ -4,11 +4,12 @@ import {
   mkdir,
   open,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { RigError } from "../domain/errors";
 import type { TargetRole } from "../config/schema";
 import { parseEnvironmentFile } from "./env-file";
@@ -125,15 +126,18 @@ export async function writeEnvFile(
   scope: EnvScope,
   expectedRevision: string,
   changes: readonly EnvChange[],
+  /** The directory every directory down to the file's is kept private under, such as `<RIG_ROOT>/env`. */
+  privateRoot?: string,
 ): Promise<EnvFileView> {
-  const current = await readText(path);
-  if (envRevision(current) !== expectedRevision)
-    throw new RigError(
+  const conflict = () =>
+    new RigError(
       "ENV_REVISION_CONFLICT",
       `${path} changed since it was read.`,
       "Reload the page to read the current file, then make the change again.",
       { path },
     );
+  const current = await readText(path);
+  if (envRevision(current) !== expectedRevision) throw conflict();
   if (current !== undefined) {
     const problem = problemOf(current, path);
     if (problem)
@@ -146,7 +150,13 @@ export async function writeEnvFile(
   }
   const next = editEnvText(current ?? "", changes);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
+  // A directory that existed before keeps whatever mode it had; the env tree is the operator's alone.
+  for (const directory of privateDirectories(privateRoot, dirname(path)))
+    await chmod(directory, 0o700).catch(() => {});
+  // An operator who made the file a symlink keeps it: the file it names is the one replaced.
+  const destination =
+    current === undefined ? path : await realpath(path).catch(() => path);
+  const temporary = `${destination}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporary, "wx", 0o600);
     try {
@@ -156,9 +166,13 @@ export async function writeEnvFile(
     } finally {
       await file.close();
     }
-    await rename(temporary, path);
+    // Checked again just before the rename, so an edit saved meanwhile in an editor is not overwritten.
+    if (envRevision(await readText(path)) !== expectedRevision)
+      throw conflict();
+    await rename(temporary, destination);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {});
+    if (error instanceof RigError) throw error;
     throw new RigError(
       "ENV_WRITE",
       `${path} could not be written (${(error as NodeJS.ErrnoException).code ?? "error"}).`,
@@ -167,9 +181,25 @@ export async function writeEnvFile(
     );
   }
   // The rename is durable once the directory entry is.
-  const directory = await open(dirname(path), "r").catch(() => undefined);
+  const directory = await open(dirname(destination), "r").catch(
+    () => undefined,
+  );
   await directory?.sync().catch(() => {});
   await directory?.close();
-  await chmod(path, 0o600);
+  await chmod(destination, 0o600);
   return describeEnvFile(path, scope);
+}
+/** Pure: `root` and every directory below it down to `leaf`; nothing when `leaf` is not inside `root`. */
+export function privateDirectories(
+  root: string | undefined,
+  leaf: string,
+): string[] {
+  if (!root) return [];
+  const inside = relative(root, leaf);
+  if (inside.startsWith("..") || isAbsolute(inside)) return [];
+  const parts = inside ? inside.split(sep) : [];
+  return [
+    root,
+    ...parts.map((_, index) => join(root, ...parts.slice(0, index + 1))),
+  ];
 }

@@ -494,7 +494,14 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     let attempted = false;
     // What a deploy set out to deploy, so its history names the source even when it fails before a Target records it.
     let deploySource:
-      { branch: string; commit?: string; previousCommit?: string } | undefined;
+      | {
+          branch: string;
+          commit?: string;
+          previousCommit?: string;
+          /** When the deploy began its work, once its Target was free: time queued behind another Operation is not its duration. */
+          startedAt: string;
+        }
+      | undefined;
     try {
       if (command.action === "cancel-uninstall") {
         draining = false;
@@ -880,6 +887,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         deploySource = {
           branch,
           ...(target?.commit ? { previousCommit: target.commit } : {}),
+          startedAt: deps.now(),
         };
         const preflight = await deps.sources.preflight({
           repoPath: project.repoPath,
@@ -1169,7 +1177,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               : {}),
             outcome,
             startedAt:
-              operations.get(operationId)?.view.startedAt ?? deps.now(),
+              deploySource?.startedAt ??
+              operations.get(operationId)?.view.startedAt ??
+              deps.now(),
             finishedAt: deps.now(),
             ...(errorCode ? { message: errorCode } : {}),
           });

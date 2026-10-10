@@ -65,7 +65,10 @@ export function SecretsEditor({
   const [failure, setFailure] = useState<FailureShape>();
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const [saved, setSaved] = useState<string[]>();
+  const [saved, setSaved] = useState<{ keys: string[]; warning?: string }>();
+  // Staged values are masked like stored ones until shown; the edit field hides what is typed unless asked.
+  const [visible, setVisible] = useState<Record<string, true>>({});
+  const [editVisible, setEditVisible] = useState(false);
   const locked = file.problem !== undefined;
   const keys = [
     ...file.keys,
@@ -113,7 +116,12 @@ export function SecretsEditor({
       setFailure(outcome.failure);
       return;
     }
-    setSaved(changes.map((change) => change.key));
+    const warning = (outcome.value as { warning?: unknown }).warning;
+    setSaved({
+      keys: changes.map((change) => change.key),
+      ...(typeof warning === "string" ? { warning } : {}),
+    });
+    setVisible({});
     setPending({});
     setRevealed({});
     router.refresh();
@@ -155,11 +163,14 @@ export function SecretsEditor({
         <div className="border-b border-rule p-4">
           <Notice tone="good" title="Saved">
             <p>
-              {saved.join(", ")} {saved.length === 1 ? "was" : "were"} written.
-              Activity records the names, never the values. Processes read env
-              files when they start, so restart what reads this file to apply
-              it.
+              {saved.keys.join(", ")} {saved.keys.length === 1 ? "was" : "were"}{" "}
+              written. Activity records the names, never the values. Processes
+              read env files when they start, so restart what reads this file to
+              apply it.
             </p>
+            {saved.warning ? (
+              <p className="text-warn">{saved.warning}</p>
+            ) : null}
             <RestartReaders project={project} readers={readers} />
           </Notice>
         </div>
@@ -178,7 +189,12 @@ export function SecretsEditor({
         {keys.map((key) => {
           const change = pending[key];
           const isNew = !file.keys.includes(key);
-          const value = change?.op === "set" ? change.value : revealed[key];
+          const value =
+            change?.op === "set"
+              ? visible[key]
+                ? change.value
+                : undefined
+              : revealed[key];
           const shown = editing?.key === key;
           return (
             <li
@@ -226,6 +242,7 @@ export function SecretsEditor({
                   >
                     <Input
                       autoFocus
+                      type={editVisible ? "text" : "password"}
                       value={editing.value}
                       onChange={(event) =>
                         setEditing({ key, value: event.target.value })
@@ -236,11 +253,29 @@ export function SecretsEditor({
                           ? "Type the new value"
                           : undefined
                       }
-                      autoComplete="off"
+                      autoComplete="new-password"
                       spellCheck={false}
                       className="h-8 font-mono text-xs"
                     />
-                    <Button type="submit" size="sm" className="h-8">
+                    <IconButton
+                      label={
+                        editVisible
+                          ? "Hide what you type"
+                          : "Show what you type"
+                      }
+                      onClick={() => setEditVisible((now) => !now)}
+                    >
+                      {editVisible ? <EyeOff /> : <Eye />}
+                    </IconButton>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      className="h-8"
+                      // An unrevealed value is never blanked by accident: keeping an empty field needs the old value seen.
+                      disabled={
+                        editing.value === "" && revealed[key] === undefined
+                      }
+                    >
                       Keep
                     </Button>
                     <Button
@@ -272,12 +307,30 @@ export function SecretsEditor({
               </div>
               <span className="row-start-1 flex items-center justify-end gap-0.5 sm:col-start-3">
                 {change ? (
-                  <IconButton
-                    label={`Undo the change to ${key}`}
-                    onClick={() => stage(key, undefined)}
-                  >
-                    <Undo2 />
-                  </IconButton>
+                  <>
+                    {change.op === "set" ? (
+                      <IconButton
+                        label={
+                          visible[key]
+                            ? `Hide the new value of ${key}`
+                            : `Show the new value of ${key}`
+                        }
+                        onClick={() =>
+                          setVisible(({ [key]: shownBefore, ...kept }) =>
+                            shownBefore ? kept : { ...kept, [key]: true },
+                          )
+                        }
+                      >
+                        {visible[key] ? <EyeOff /> : <Eye />}
+                      </IconButton>
+                    ) : null}
+                    <IconButton
+                      label={`Undo the change to ${key}`}
+                      onClick={() => stage(key, undefined)}
+                    >
+                      <Undo2 />
+                    </IconButton>
+                  </>
                 ) : (
                   <>
                     {revealed[key] === undefined ? (
@@ -299,9 +352,10 @@ export function SecretsEditor({
                     <IconButton
                       label={`Edit ${key}`}
                       disabled={locked}
-                      onClick={() =>
-                        setEditing({ key, value: revealed[key] ?? "" })
-                      }
+                      onClick={() => {
+                        setEditVisible(revealed[key] !== undefined);
+                        setEditing({ key, value: revealed[key] ?? "" });
+                      }}
                     >
                       <Pencil />
                     </IconButton>
@@ -429,6 +483,9 @@ export function SecretsEditor({
                 <Mono className="text-[13px] text-foreground">
                   {change.key}
                 </Mono>
+                {change.op === "set" && change.value === "" ? (
+                  <span className="text-xs text-warn">to an empty value</span>
+                ) : null}
               </li>
             ))}
           </ul>

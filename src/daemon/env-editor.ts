@@ -9,7 +9,7 @@ import {
   type EnvFileView,
   type EnvScope,
 } from "../adapters/env-store";
-import { ABSENT_REVISION } from "../adapters/env-file-edit";
+import { ABSENT_REVISION, ENV_KEY } from "../adapters/env-file-edit";
 import type { OperationRecord } from "../domain/runtime";
 
 const name = z
@@ -31,7 +31,7 @@ const scopeSchema = z
   .describe("Which operator env file under <RIG_ROOT>/env/<project>.");
 const key = z
   .string()
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+  .regex(ENV_KEY)
   .max(256)
   .describe("A name the file assigns.");
 const changeSchema = z.discriminatedUnion("op", [
@@ -209,21 +209,34 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
         request.scope,
         request.expectedRevision,
         request.changes,
+        dependencies.envRoot,
       );
-      await dependencies.record({
-        id: dependencies.id(),
-        projectId: found.id,
-        project: found.name,
-        ...(request.scope.role ? { target: request.scope.role } : {}),
-        action: "env",
-        outcome: "updated",
-        occurredAt: dependencies.now(),
-        message: envChangeMessage(
-          request.actor,
-          request.scope,
-          request.changes,
-        ),
-      });
+      try {
+        await dependencies.record({
+          id: dependencies.id(),
+          projectId: found.id,
+          project: found.name,
+          // working and stable name their Target; preview.env is every Preview's, which the message names.
+          ...(request.scope.role && request.scope.role !== "preview"
+            ? { target: request.scope.role }
+            : {}),
+          action: "env",
+          outcome: "updated",
+          occurredAt: dependencies.now(),
+          message: envChangeMessage(
+            request.actor,
+            request.scope,
+            request.changes,
+          ),
+        });
+      } catch {
+        // The file is written; a lost record must not make the save look failed and its retry conflict.
+        return {
+          ...view,
+          warning:
+            "Saved, but Activity could not record it; rig doctor and the rigd diagnostic log say why.",
+        };
+      }
       return view;
     });
   };

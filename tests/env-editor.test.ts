@@ -7,6 +7,8 @@ import {
   stat,
   writeFile,
   readdir,
+  lstat,
+  symlink,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -23,6 +25,7 @@ import {
   envScopeFile,
   writeEnvFile,
 } from "../src/adapters/env-store";
+import { privateDirectories } from "../src/adapters/env-store";
 import {
   createEnvEditor,
   envChangeMessage,
@@ -328,5 +331,97 @@ describe("the env editor", () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe("env file hardening", () => {
+  test("directories that already existed are made private, from the env root down to the file's", async () => {
+    const root = await scratch();
+    const envRoot = join(root, "env");
+    await mkdir(join(envRoot, "demo", "web"), { recursive: true, mode: 0o755 });
+    const path = envScopeFile(envRoot, "demo", { service: "web" });
+    await writeEnvFile(
+      path,
+      {},
+      ABSENT_REVISION,
+      [{ op: "set", key: "A", value: "1" }],
+      envRoot,
+    );
+    for (const directory of [
+      envRoot,
+      join(envRoot, "demo"),
+      join(envRoot, "demo", "web"),
+    ])
+      expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    expect(privateDirectories(envRoot, "/elsewhere")).toEqual([]);
+    expect(privateDirectories(undefined, envRoot)).toEqual([]);
+  });
+  test("a symlinked env file stays a symlink and the file it names is the one written", async () => {
+    const root = await scratch();
+    const real = join(root, "real.env");
+    await writeFile(real, "A=1\n", { mode: 0o600 });
+    const link = join(root, "all.env");
+    await symlink(real, link);
+    const before = await describeEnvFile(link, {});
+    await writeEnvFile(link, {}, before.revision, [
+      { op: "set", key: "B", value: "2" },
+    ]);
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readFile(real, "utf8")).toBe("A=1\nB='2'\n");
+  });
+  test("__proto__ is refused as a name, since the reader cannot hold it", () => {
+    expect(() =>
+      editEnvText("", [{ op: "set", key: "__proto__", value: "x" }]),
+    ).toThrow(/not a name/);
+  });
+  test("a Preview file's change names no Target, and a save whose Activity record fails is still a save", async () => {
+    const root = await scratch();
+    const recorded: OperationRecord[] = [];
+    let failRecord = false;
+    const edit = createEnvEditor({
+      envRoot: join(root, "env"),
+      async resolveProject(name) {
+        return { id: "p1", name, repoPath: root };
+      },
+      async services() {
+        return [];
+      },
+      exclusive: (_project, operation) => operation(),
+      async record(operation) {
+        if (failRecord) throw new Error("disk full");
+        recorded.push(operation);
+      },
+      now: () => "2026-10-10T00:00:00.000Z",
+      id: () => "op",
+    });
+    await edit({
+      action: "write",
+      project: "demo",
+      scope: { role: "preview" },
+      expectedRevision: ABSENT_REVISION,
+      changes: [{ op: "set", key: "A", value: "1" }],
+      actor: "dashboard (this Mac)",
+    });
+    expect(recorded[0]).not.toHaveProperty("target");
+    failRecord = true;
+    const read = (await edit({ action: "read", project: "demo" })) as {
+      files: { scope: { role?: string }; revision: string }[];
+    };
+    const revision = read.files.find(
+      (each) => each.scope.role === "preview",
+    )!.revision;
+    expect(
+      await edit({
+        action: "write",
+        project: "demo",
+        scope: { role: "preview" },
+        expectedRevision: revision,
+        changes: [{ op: "set", key: "B", value: "2" }],
+        actor: "dashboard (this Mac)",
+      }),
+    ).toMatchObject({
+      keys: ["A", "B"],
+      warning: expect.stringContaining("Activity"),
+    });
   });
 });

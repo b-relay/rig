@@ -3,7 +3,8 @@ import { RigError } from "../domain/errors";
 import { parseEnvironmentFile } from "./env-file";
 
 /** A name an env file may assign, as the env-file reader accepts it. */
-export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** `__proto__` is refused too: the reader keeps values in a plain object, where that name assigns nothing. */
+export const ENV_KEY = /^(?!__proto__$)[A-Za-z_][A-Za-z0-9_]*$/;
 /** One change to an env file: set a name to a value, or remove every assignment of it. */
 export type EnvChange =
   { op: "set"; key: string; value: string } | { op: "remove"; key: string };
@@ -57,7 +58,7 @@ export function encodeEnvAssignment(key: string, value: string): string {
     throw new RigError(
       "ENV_VALUE",
       `The value for ${key} cannot be written to an env file so that it reads back the same.`,
-      "A value holding both a line break and a backslash, or a single quote and a backslash before n, r or a quote, has no single-line form. Store it another way, for example base64-encoded.",
+      "A value holding both a line break and a backslash, a single quote and a backslash before n, r or a quote, or a Unicode line or paragraph separator (U+2028, U+2029) has no single-line form. Store it another way, for example base64-encoded.",
       { key },
     );
   return line;

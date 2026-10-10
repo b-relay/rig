@@ -97,6 +97,10 @@ export async function installCaddyBinary(options: {
         ...(lastGood ? { previous: lastGood } : {}),
         version,
       };
+    // A pending copy the link never reached (a crash between recording it and switching) was abandoned: the link still
+    // names a copy that served, which this one is.
+    if (state.pending !== undefined)
+      await writeBinaryState(paths, { lastGood: basename(file) });
     return { changed: false, file, version };
   }
   await options.validate?.(file);
@@ -137,7 +141,14 @@ async function writeBinaryState(
 }
 /** Whether a switched-to copy still waits to be confirmed running. */
 export async function binaryPending(paths: ProxyPaths): Promise<boolean> {
-  return (await readBinaryState(paths)).pending !== undefined;
+  // Only the copy the link names can be waiting: a pending record the link never reached was abandoned.
+  const pending = (await readBinaryState(paths)).pending;
+  const linked = await installedBinary(paths);
+  return (
+    pending !== undefined &&
+    linked !== undefined &&
+    basename(linked) === pending
+  );
 }
 /** Records that the switched-to copy started and serves: it becomes the one to go back to. */
 export async function confirmBinary(paths: ProxyPaths): Promise<void> {

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readlink, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proxyPaths } from "../src/domain/managed-proxy";
@@ -63,6 +63,26 @@ test("a new copy stays pending until confirmed; an install killed before confirm
   expect(await revertBinary(w.paths)).toBe(true);
   expect(await w.linked()).toBe(a.file.split("/").at(-1));
   expect(await binaryPending(w.paths)).toBe(false);
+});
+
+test("a pending copy the link never reached is abandoned, not waited for: going back to the running copy clears it", async () => {
+  const w = await world();
+  const a = await w.install(await w.source("a"));
+  await confirmBinary(w.paths);
+  // The crash: B was recorded as pending, then Rig died before switching the link away from A.
+  await writeFile(
+    join(w.paths.bin, "state.json"),
+    JSON.stringify({
+      lastGood: a.file.split("/").at(-1),
+      pending: "caddy-0000000000000000",
+    }),
+  );
+  expect(await binaryPending(w.paths)).toBe(false);
+  // The desired binary is A again: nothing changes, and the stale record is gone.
+  expect((await w.install(await w.source("a"))).changed).toBe(false);
+  expect(
+    JSON.parse(await readFile(join(w.paths.bin, "state.json"), "utf8")),
+  ).toEqual({ lastGood: a.file.split("/").at(-1) });
 });
 
 test("with nothing that ever served, or only a copy since deleted, there is nothing to go back to", async () => {

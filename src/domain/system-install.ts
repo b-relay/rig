@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 /** Where a system job's plist is staged where only root can write, then installed for launchd. */
 export const SYSTEM_STAGING = "/Library/Application Support/Rig";
 export const SYSTEM_DAEMONS = "/Library/LaunchDaemons";
+/** What `launchctl print` exits with when launchd has no such service ("Could not find service", macOS 15). */
+export const LAUNCHCTL_NOT_FOUND = 113;
 /** Where system plists are staged and installed; tests pass temporary directories. */
 export interface SystemPlaces {
   readonly staging: string;
@@ -63,7 +65,9 @@ export function systemInstallLine(
  * end fails the step, so nothing after it runs. */
 export function stopped(target: string, sudo: boolean): string {
   const launchctl = `${sudo ? "sudo " : ""}launchctl`;
-  const absent = `! ${launchctl} print ${target} >/dev/null 2>&1`;
+  // Only launchd saying it has no such service is absence: `print` exits 113 ("Could not find service", checked on macOS
+  // 15). A failed sudo, a refused IPC or any other error is not, so the step fails closed.
+  const absent = `{ ${launchctl} print ${target} >/dev/null 2>&1; [ $? -eq ${LAUNCHCTL_NOT_FOUND} ]; }`;
   const waits = Array.from({ length: 20 }, (_, index) => index + 1).join(" ");
   return `{ ${absent} || { ${launchctl} bootout ${target}; for wait in ${waits}; do ${absent} && break; sleep 1; done; ${absent}; }; }`;
 }

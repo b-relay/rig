@@ -59,6 +59,14 @@ test("a malformed token never reaches Caddy, so nothing the job logs contains it
     `"${TOKEN}"`,
     `${TOKEN}${TOKEN}`,
     `${TOKEN}\n${TOKEN}`,
+    // Bytes BSD grep lets through as binary input: a NUL, a carriage return, high bytes.
+    `${"x".repeat(40)}\0`,
+    `${"x".repeat(20)}\0${"x".repeat(20)}`,
+    `${TOKEN}\r`,
+    `${"x".repeat(40)}ÿ`,
+    // A prefix other than cfut_/cfat_ is held to the classic length.
+    `cfxx_${"x".repeat(60)}`,
+    "x".repeat(34),
   ]) {
     const refused = await start(malformed);
     expect(refused.code).toBe(78);

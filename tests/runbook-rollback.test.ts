@@ -37,6 +37,8 @@ async function sandbox(options: {
   stuck?: string[];
   /** Labels whose bootstrap fails. */
   refused?: string[];
+  /** Labels launchd cannot be asked about: print fails, but not with "no such service". */
+  blind?: string[];
 }) {
   const root = await mkdtemp(join(tmpdir(), "rig-runbook-"));
   roots.push(root);
@@ -61,7 +63,9 @@ async function sandbox(options: {
       `loaded=${JSON.stringify(loaded)}; disabled=${JSON.stringify(disabled)}; log=${JSON.stringify(log)}`,
       'case "$1" in print) ;; *) echo "launchctl $*" >> "$log";; esac',
       'case "$1" in',
-      '  print) grep -qx "$2" "$loaded" && echo "	state = running";;',
+      `  print) for s in ${(options.blind ?? []).join(" ")}; do [ "$2" = "system/$s" ] && exit 64; done`,
+      '    grep -qx "$2" "$loaded" && { echo "	state = running"; exit 0; }',
+      '    echo "Could not find service" >&2; exit 113;;',
       `  bootout) for s in ${(options.stuck ?? []).join(" ")}; do [ "$2" = "system/$s" ] && exit 5; done`,
       '    grep -vx "$2" "$loaded" > "$loaded.tmp"; mv "$loaded.tmp" "$loaded";;',
       '  disable) echo "$2" >> "$disabled";;',
@@ -120,6 +124,15 @@ test("the rollback disables Rig's Caddy for good, confirms it is gone, then brin
     "caddy reload --config /usr/local/etc/caddy-router.caddyfile",
     "curl -sS -o /dev/null --max-time 10 https://pantry.b-relay.com/",
   ]);
+}, 30_000);
+
+test("a rollback that cannot tell whether Rig's Caddy is gone starts nothing: only 'no such service' counts as absent", async () => {
+  const s = await sandbox({ loaded: [RC], blind: [RC] });
+  const { stdout } = await s.run("rollback");
+  expect(stdout).toContain("ROLLBACK INCOMPLETE");
+  expect((await s.log()).some((line) => line.includes("bootstrap"))).toBe(
+    false,
+  );
 }, 30_000);
 
 test("a rollback whose stop fails starts nothing and says it is incomplete", async () => {

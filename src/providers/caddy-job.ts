@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { RigError } from "../domain/errors";
 import { renderLaunchdPlist } from "../domain/launchd-plist";
+import { LAUNCHCTL_NOT_FOUND } from "../domain/system-install";
 import type { ProxyPaths } from "../domain/managed-proxy";
 import {
   processExists,
@@ -51,12 +52,16 @@ export function caddyJobLabel(root: string): string {
 export function caddyCommand(paths: ProxyPaths): string[] {
   const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
   const token = quote(paths.token);
+  // Binary-safe, byte by byte: `tr` deletes every allowed byte, so anything left (a NUL, a newline, a high byte) is a
+  // rejection; `wc -c` counts raw bytes. Then the plugin's lengths: 35 to 50 for a classic token, or a cfut_ / cfat_ prefix
+  // and 32 to 256 more.
   const script = [
     `if [ -e ${token} ]; then`,
-    // BSD grep allows no repetition count above 255, so the longest form's 261 bytes are checked by wc.
-    `  if [ "$(LC_ALL=C /usr/bin/tr -d '\\n\\r' < ${token} | /usr/bin/wc -c)" -ne "$(/usr/bin/wc -c < ${token})" ] ||`,
-    `     [ "$(/usr/bin/wc -c < ${token})" -gt 261 ] ||`,
-    `     ! LC_ALL=C /usr/bin/grep -Eq '^([A-Za-z0-9_-]{35,50}|cf(ut|at)_[A-Za-z0-9_-]{32,})$' ${token}; then`,
+    `  n=$(/usr/bin/wc -c < ${token} | /usr/bin/tr -d ' ')`,
+    `  stray=$(LC_ALL=C /usr/bin/tr -d 'A-Za-z0-9_-' < ${token} | /usr/bin/wc -c | /usr/bin/tr -d ' ')`,
+    `  prefix=$(LC_ALL=C /usr/bin/head -c 5 ${token})`,
+    `  if [ "$stray" -ne 0 ] || ! { { [ "$n" -ge 35 ] && [ "$n" -le 50 ]; } ||`,
+    `     { { [ "$prefix" = cfut_ ] || [ "$prefix" = cfat_ ]; } && [ "$n" -ge 37 ] && [ "$n" -le 261 ]; }; }; then`,
     // Single-quoted like every path here, so nothing in the root is expanded by the shell.
     `    echo 'rig: '${token}' holds no well-formed Cloudflare API token, so Caddy was not started; pipe the token to rig proxy token.' >&2`,
     "    exit 78",
@@ -98,10 +103,10 @@ async function observeLaunchd(
 ): Promise<{ state: CaddyJobState; pid?: number }> {
   const result = await launchctl(["print", target]).catch(() => undefined);
   if (!result) return { state: "unknown" };
+  // Only "no such service" (exit 113) is a confirmed stop; any other failure leaves the state unknown.
   if (result.code !== 0)
-    return /could not find|no such process|not find service/i.test(
-      result.stderr + result.stdout,
-    )
+    return result.code === LAUNCHCTL_NOT_FOUND ||
+      /could not find service/i.test(result.stderr + result.stdout)
       ? { state: "stopped" }
       : { state: "unknown" };
   const pid = /^\s*pid = (\d+)\s*$/m.exec(result.stdout)?.[1];

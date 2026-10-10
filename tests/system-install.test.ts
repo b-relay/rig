@@ -50,7 +50,9 @@ async function sandbox(loaded: readonly string[] = []) {
       `log=${JSON.stringify(log)}; state=${JSON.stringify(state)}`,
       'echo "$@" >> "$log"',
       'case "$1" in',
-      '  print) grep -qx "$2" "$state";;',
+      '  print) grep -qx "$2" "$state" && exit 0',
+      `    [ -e ${JSON.stringify(join(root, "printBroken"))} ] && { echo "Unrecognized target specifier." >&2; exit 64; }`,
+      '    echo "Could not find service \"$2\"" >&2; exit 113;;',
       `  bootout) [ -e ${JSON.stringify(join(root, "bootoutFails"))} ] && exit 5`,
       `    [ -e ${JSON.stringify(join(root, "bootoutSticks"))} ] && exit 0`,
       '    grep -vx "$2" "$state" > "$state.tmp"; mv "$state.tmp" "$state"',
@@ -88,8 +90,10 @@ async function sandbox(loaded: readonly string[] = []) {
         .filter((line) => line && !line.startsWith("print ")),
     loaded: async () =>
       (await readFile(state, "utf8")).split("\n").filter(Boolean),
-    fail: (how: "bootoutFails" | "bootoutSticks" | "bootoutInProgress") =>
-      writeFile(join(root, how), ""),
+    fail: (
+      how:
+        "bootoutFails" | "bootoutSticks" | "bootoutInProgress" | "printBroken",
+    ) => writeFile(join(root, how), ""),
   };
 }
 const label = "com.b-relay.rig-caddy.test";
@@ -150,6 +154,18 @@ test("a loaded system job is stopped before it is installed again, and only a co
     `enable system/${label}`,
     `bootstrap system ${join(s.places.daemons, `${label}.plist`)}`,
   ]);
+
+  // A print that fails for another reason than "no such service" (a refused IPC, a failed sudo) proves nothing: the line
+  // stops before anything is removed, installed or loaded.
+  const blind = await sandbox([]);
+  await blind.fail("printBroken");
+  const { line: unseen, agent: kept } = await installLine(blind);
+  expect((await blind.run(unseen)).code).not.toBe(0);
+  expect(existsSync(join(blind.places.daemons, `${label}.plist`))).toBe(false);
+  expect(existsSync(kept)).toBe(true);
+  expect(
+    (await blind.launchctl()).some((call) => call.startsWith("bootstrap")),
+  ).toBe(false);
 
   // A bootout that reports "operation in progress" while the job does stop is a stop, not a failure.
   const draining = await sandbox([`system/${label}`]);

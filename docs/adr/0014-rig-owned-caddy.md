@@ -87,7 +87,7 @@ Today `rigd install` loads rigd as a LaunchAgent in `gui/<uid>`, which exists on
      && sudo launchctl bootstrap system /Library/LaunchDaemons/<label>.plist
      ```
 
-     `<stopped target>` is `{ ! launchctl print target >/dev/null 2>&1 || { launchctl bootout target; <wait up to 20 s until print fails>; ! launchctl print target >/dev/null 2>&1; }; }`: launchd confirming the job gone decides, not bootout's exit status, which is non-zero while a stop is still in progress.
+     `<stopped target>` is `{ <absent> || { launchctl bootout target; <wait up to 20 s until absent>; <absent>; }; }`, where `<absent>` is `launchctl print target` exiting 113 ("Could not find service", checked on macOS 15). Only launchd confirming the job gone decides: not bootout's exit status, which is non-zero while a stop is still in progress, and not any other `print` failure, such as a failed sudo or a refused IPC, which fails the step closed.
   - **What the chain guarantees.**
     - The user's own shell reads the rendered plist, so root never opens a path the user controls. Root only writes what it is handed into a directory only it can write, privately.
     - The digest is checked on that root-owned copy, before anything reaches `/Library/LaunchDaemons` or launchd. A plist changed after rigd printed the line fails the check, its staged copy is deleted, and nothing after the failure runs.
@@ -406,7 +406,7 @@ This Host's cutover requires boot mode. Do steps 1 to 6 in advance; they do not 
 
 7. **Define the two shell functions** in the terminal you will use, with Rig's Caddy label filled in.
    - Each step runs only if the one before succeeded, and each ends by printing what it did, or exactly which step stopped it.
-   - `gone` succeeds only once launchd confirms a job is not loaded, waiting up to 20 s after a bootout; the bootout's own exit status does not decide.
+   - `gone` succeeds only once launchd confirms a job is not loaded (`print` exits 113, "Could not find service"; any other failure is not proof), waiting up to 20 s after a bootout; the bootout's own exit status does not decide.
    - **`rollback`** returns the Host to b-caddy and the router. It needs neither rigd, Rig's Caddy nor the token:
      - It **disables** Rig's Caddy persistently, so a reboot cannot bring it back to fight b-caddy for ports 80 and 443.
      - It confirms Rig's Caddy is gone before enabling and starting b-caddy, and confirms b-caddy runs.
@@ -414,9 +414,11 @@ This Host's cutover requires boot mode. Do steps 1 to 6 in advance; they do not 
 
    ```sh
    RC=com.b-relay.rig-caddy.d8063e9dcf1ba828; BC=com.b-relay.b-caddy
-   gone() { ! sudo launchctl print "system/$1" >/dev/null 2>&1 && return 0
+   # Absent only when launchd says so: print exits 113, "Could not find service". Any other failure is not proof.
+   absent() { sudo launchctl print "system/$1" >/dev/null 2>&1; [ $? -eq 113 ]; }
+   gone() { absent "$1" && return 0
             sudo launchctl bootout "system/$1"  # its status does not decide: it is non-zero while a stop is in progress
-            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do ! sudo launchctl print "system/$1" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
+            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do absent "$1" && return 0; sleep 1; done; return 1; }
    rollback() {
      sudo launchctl disable "system/$RC" && gone "$RC" \
      && sudo launchctl enable "system/$BC" \
@@ -434,7 +436,7 @@ This Host's cutover requires boot mode. Do steps 1 to 6 in advance; they do not 
    ```sh
    sudo launchctl disable "system/$BC" && gone "$BC" \
    && sudo launchctl enable "system/$RC" \
-   && { sudo launchctl print "system/$RC" >/dev/null 2>&1 || sudo launchctl bootstrap system "/Library/LaunchDaemons/$RC.plist"; } \
+   && { sudo launchctl print "system/$RC" >/dev/null 2>&1 || { absent "$RC" && sudo launchctl bootstrap system "/Library/LaunchDaemons/$RC.plist"; }; } \
    && rig proxy reload && rig proxy verify --wait 60 \
    && echo "CUT OVER: Rig's Caddy serves 80 and 443." \
    || { echo "Cutover failed; rolling back."; rollback; }

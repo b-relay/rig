@@ -104,7 +104,9 @@ test("rigd install sets up Rig's Caddy before rigd starts, is unchanged when not
   expect(await readInstallationRecord(w.root)).toMatchObject({
     proxy: "managed",
   });
-  expect(await readFile(w.paths.entry, "utf8")).toContain("local_certs");
+  expect(await readFile(w.paths.entry, "utf8")).toContain(
+    '"module":"internal"',
+  );
   expect(await readFile(w.paths.custom, "utf8")).toContain(
     "Rig never rewrites this file",
   );

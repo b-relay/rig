@@ -43,9 +43,7 @@ async function start(token: string | null) {
 test("Caddy starts on a well-formed token, or none, and runs the current generation in the job's own process", async () => {
   const ok = await start(TOKEN);
   expect(ok.code).toBe(0);
-  expect(ok.log).toContain(
-    `caddy run --config ${ok.paths.entry} --adapter caddyfile`,
-  );
+  expect(ok.log).toContain(`caddy run --config ${ok.paths.entry}`);
   const none = await start(null);
   expect(none.code).toBe(0);
   expect(none.log).toContain("caddy run");

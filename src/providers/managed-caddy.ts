@@ -91,6 +91,8 @@ export interface ManagedCaddyOptions {
   readonly admin: CaddyAdmin;
   /** A new generation id; ids sort by age. */
   readonly generationId?: () => string;
+  /** How long a Caddy whose job runs may take to answer on its socket before a change fails; 10 s by default. */
+  readonly reachableWaitMs?: number;
   readonly now?: () => Date;
 }
 /** Rig's own Caddy (ADR 0014): routes and custom files are published as immutable generations behind one atomic switch,
@@ -108,6 +110,7 @@ export interface ManagedCaddy {
 export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   const paths = proxyPaths(options.root);
   const now = options.now ?? (() => new Date());
+  const reachableWaitMs = options.reachableWaitMs ?? 10_000;
   const generationId =
     options.generationId ??
     (() =>
@@ -360,7 +363,11 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       );
     };
     // The custom sites, read from Caddy's own parse of the custom file alone, are the one inventory everything uses.
-    const inventory = await adapt(executable, staged.custom, secret);
+    // Read together with the global options, which a custom site may need (an `order`, for one); only its sites count.
+    const inventoryFile = join(building, "inventory.custom.caddy");
+    await writeFile(inventoryFile, `{\n${custom.global}\n}\n${custom.sites}`);
+    const inventory = await adapt(executable, inventoryFile, secret);
+    await rm(inventoryFile, { force: true });
     if (inventory.config === undefined)
       throw await rejectedAs(inventory.reason, inventory.reason ?? "");
     const customSites = adaptedSiteAddresses(inventory.config);
@@ -419,12 +426,12 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await writeFile(files.adapted, JSON.stringify(adapted.config) + "\n");
     await switchTo(directory);
     try {
-      await activate(directory, executable, secret, kind);
+      await activate(directory, executable, secret, kind, "publish");
     } catch (error) {
       await switchTo(previous);
       // Put back what was served, and say whether that worked: the error alone cannot tell.
       const restored = previous
-        ? await activate(previous, executable, secret, kind).then(
+        ? await activate(previous, executable, secret, kind, "reconcile").then(
             () => true,
             () => false,
           )
@@ -446,27 +453,45 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   }
   /** Makes Caddy serve generation `directory` and confirms it from what Caddy reports it runs. A Caddy confirmed stopped
    * reads the current generation when it starts. One that runs but cannot be reached may still serve another generation,
-   * so that is a failure, never a success. Caddy already running it needs nothing; a different CA needs a restart, since a
-   * reload keeps the certificates Caddy has cached; anything else a reload. */
+   * so that is a failure, never a success, after a bounded wait for a Caddy that is still opening its socket. Caddy already
+   * running it needs nothing; a different CA needs a restart, since a reload keeps the certificates Caddy has cached;
+   * anything else a reload of the generation's adapted JSON, which never re-reads a Caddyfile or an import. `restoring`
+   * says what a failure means to the caller: a publication rolls back, reconciling has nothing to roll back to. */
   async function activate(
     directory: string,
     executable: string,
     secret: string | undefined,
     kind: PublicationKind,
+    during: "publish" | "reconcile",
   ): Promise<void> {
+    const outcome =
+      during === "publish"
+        ? "; the previous configuration was restored."
+        : "; Caddy still serves another configuration, so nothing was changed.";
     const expected = await adaptedOf(directory);
-    const loaded = await options.admin.config();
+    let loaded = await options.admin.config();
     if (loaded === undefined) {
-      const state = await options.job.state();
+      let state = await options.job.state();
       if (state === "stopped") return;
-      throw new RigError(
-        "PROXY_UNREACHABLE",
-        state === "running"
-          ? "Rig's Caddy is running but its admin socket does not answer, so it may still serve another configuration."
-          : "Rig's Caddy could not be reached and its job state is unknown, so it may still serve another configuration.",
-        `Nothing was changed. Run rig doctor; if Caddy is stuck, restart its job (rigd install), then retry.`,
-        { socket: paths.socket, state },
-      );
+      // At boot launchd shows the job running before Caddy has opened its socket.
+      for (
+        const deadline = Date.now() + reachableWaitMs;
+        loaded === undefined && state !== "stopped" && Date.now() < deadline;
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        loaded = await options.admin.config();
+        if (loaded === undefined) state = await options.job.state();
+      }
+      if (loaded === undefined && state === "stopped") return;
+      if (loaded === undefined)
+        throw new RigError(
+          "PROXY_UNREACHABLE",
+          state === "running"
+            ? "Rig's Caddy is running but its admin socket does not answer, so it may still serve another configuration."
+            : "Rig's Caddy could not be reached and its job state is unknown, so it may still serve another configuration.",
+          `Nothing was changed. Run rig doctor; if Caddy is stuck, restart its job (rigd install), then retry.`,
+          { socket: paths.socket, state },
+        );
     }
     if (expected !== undefined && Bun.deepEquals(loaded, expected)) return;
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
@@ -478,22 +503,26 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     )
       await options.job.restart();
     else {
+      const files = generationFiles(directory);
       const reload = await caddy(
-        [
-          executable,
-          "reload",
-          "--config",
-          generationFiles(directory).main,
-          "--adapter",
-          "caddyfile",
-        ],
+        expected !== undefined
+          ? [executable, "reload", "--config", files.adapted]
+          : // A generation built before adapted JSON was kept is reloaded from its Caddyfile, once.
+            [
+              executable,
+              "reload",
+              "--config",
+              files.main,
+              "--adapter",
+              "caddyfile",
+            ],
         secret,
       );
       if (reload.exitCode !== 0) {
         const reason = lastOutputLine(reload.stderr);
         throw new RigError(
           kind === "route" ? "ROUTE_RELOAD" : "PROXY_RELOAD",
-          `Caddy could not reload${reason ? ` (${reason})` : ""}; the previous configuration was restored.`,
+          `Caddy could not reload${reason ? ` (${reason})` : ""}${outcome}`,
           "Inspect Caddy's log and retry.",
           { stderr: reload.stderr, evidence: boundedEvidence(reason ?? "") },
         );
@@ -504,7 +533,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (!Bun.deepEquals(serving, expected))
       throw new RigError(
         "PROXY_ACTIVATION",
-        `Caddy answered, but does not serve generation ${basename(directory)}; the previous configuration was restored.`,
+        `Caddy answered, but does not serve generation ${basename(directory)}${outcome}`,
         "Run rig doctor and read Caddy's log before retrying.",
         { generation: basename(directory) },
       );
@@ -517,7 +546,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (!current) return;
     const settings = await options.settings();
     const secret = await token(settings).catch(() => undefined);
-    await activate(current, await binary(), secret, kind);
+    await activate(current, await binary(), secret, kind, "reconcile");
   }
 
   /** Writes the route file whole, through a symlink and keeping its mode, as the external router does: the emergency

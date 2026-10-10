@@ -57,11 +57,12 @@ export function caddyCommand(paths: ProxyPaths): string[] {
     `  if [ "$(LC_ALL=C /usr/bin/tr -d '\\n\\r' < ${token} | /usr/bin/wc -c)" -ne "$(/usr/bin/wc -c < ${token})" ] ||`,
     `     [ "$(/usr/bin/wc -c < ${token})" -gt 261 ] ||`,
     `     ! LC_ALL=C /usr/bin/grep -Eq '^([A-Za-z0-9_-]{35,50}|cf(ut|at)_[A-Za-z0-9_-]{32,})$' ${token}; then`,
-    `    echo "rig: ${paths.token} holds no well-formed Cloudflare API token, so Caddy was not started; pipe the token to rig proxy token." >&2`,
+    // Single-quoted like every path here, so nothing in the root is expanded by the shell.
+    `    echo 'rig: '${token}' holds no well-formed Cloudflare API token, so Caddy was not started; pipe the token to rig proxy token.' >&2`,
     "    exit 78",
     "  fi",
     "fi",
-    `exec ${quote(paths.binary)} run --config ${quote(paths.entry)} --adapter caddyfile`,
+    `exec ${quote(paths.binary)} run --config ${quote(paths.entry)}`,
   ].join("\n");
   return ["/bin/sh", "-c", script];
 }

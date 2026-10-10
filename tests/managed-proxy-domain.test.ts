@@ -252,7 +252,7 @@ test("custom files may import only their own snippets, and read no file through 
           "a.test {",
           "\timport missing",
           '\trespond "{file./etc/passwd}"',
-          "\ttls cert.pem key.pem",
+          "\ttls /etc/cert.pem /etc/key.pem",
           "\ttls {",
           "\t\tca_root /etc/ssl/root.pem",
           "\t}",
@@ -282,6 +282,49 @@ test("custom files may import only their own snippets, and read no file through 
     },
     { file: "global", line: 1, problem: "imports global.caddy" },
   ]);
+});
+
+test("quoting, '..' and the other directives that load certificate files cannot read outside the Rig root", () => {
+  const problems = customFileProblems(
+    {
+      sites: [
+        "`import` `/etc/caddy/more.caddy`",
+        "a.test {",
+        "\ttls /r/../etc/c.pem /r/../etc/k.pem",
+        "\treverse_proxy https://b {",
+        "\t\ttransport http {",
+        "\t\t\ttls_client_auth /etc/c.pem /etc/k.pem",
+        "\t\t\ttls_trusted_ca_certs /etc/ca.pem",
+        "\t\t}",
+        "\t}",
+        "\ttls {",
+        "\t\tclient_auth {",
+        "\t\t\ttrust_pool file /etc/ca.pem",
+        "\t\t}",
+        "\t}",
+        "}",
+      ].join("\n"),
+      global:
+        "pki {\n\tca local {\n\t\troot {\n\t\t\tcert /etc/root.pem\n\t\t\tkey /etc/root.key\n\t\t}\n\t}\n}\n",
+    },
+    "/r",
+  );
+  expect(problems.map((problem) => `${problem.file}:${problem.line}`)).toEqual([
+    "sites:1",
+    "sites:3",
+    "sites:6",
+    "sites:7",
+    "sites:12",
+    "global:4",
+    "global:5",
+  ]);
+  // Relative certificate paths resolve under the Rig root, where Caddy runs, and stay allowed.
+  expect(
+    customFileProblems(
+      { sites: "a.test {\n\ttls certs/a.pem certs/a.key\n}\n", global: "" },
+      "/r",
+    ),
+  ).toEqual([]);
 });
 
 test("Caddy's JSON tells the sites it serves, what Rig protects, and the CAs it issues from", () => {

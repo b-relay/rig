@@ -279,14 +279,7 @@ async function validateWith(
   root: string,
 ): Promise<void> {
   const result = await run({
-    command: [
-      binary,
-      "validate",
-      "--config",
-      paths.entry,
-      "--adapter",
-      "caddyfile",
-    ],
+    command: [binary, "validate", "--config", paths.entry],
   }).catch((error: unknown) => ({
     exitCode: 1,
     stdout: "",

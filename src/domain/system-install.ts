@@ -58,12 +58,14 @@ export function systemInstallLine(
   ].join(" && ");
 }
 /** A step that succeeds only once `target` is confirmed not loaded: a job launchd does not know is fine; a loaded one is
- * booted out and must then be gone within five seconds. A bootout that fails, or leaves the job loaded, fails the step,
- * so nothing after it runs. */
+ * booted out and must then be gone within twenty seconds, long enough for rigd's drain. What decides is launchd saying the
+ * job is gone, not bootout's exit status, which is non-zero while a stop is still in progress; a job still loaded at the
+ * end fails the step, so nothing after it runs. */
 export function stopped(target: string, sudo: boolean): string {
   const launchctl = `${sudo ? "sudo " : ""}launchctl`;
   const absent = `! ${launchctl} print ${target} >/dev/null 2>&1`;
-  return `{ ${absent} || { ${launchctl} bootout ${target} && for wait in 1 2 3 4 5; do ${absent} && break; sleep 1; done && ${absent}; }; }`;
+  const waits = Array.from({ length: 20 }, (_, index) => index + 1).join(" ");
+  return `{ ${absent} || { ${launchctl} bootout ${target}; for wait in ${waits}; do ${absent} && break; sleep 1; done; ${absent}; }; }`;
 }
 /** The line that removes a system job: it stops it (only a confirmed stop lets the line go on), then deletes both its
  * installed and staged plists. */

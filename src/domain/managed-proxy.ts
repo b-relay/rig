@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { RigError } from "./errors";
 import { NAMED_CAS, type ProxySettings } from "../config/proxy-schema";
 
@@ -10,7 +10,8 @@ export interface ProxyPaths {
   readonly generations: string;
   /** Symlink to the current generation; renamed into place, so switching is atomic. */
   readonly current: string;
-  /** The file the Caddy job runs: the current generation's main Caddyfile. */
+  /** The file the Caddy job runs: the current generation's adapted JSON, frozen when it was validated, so a generation never
+   * re-reads a Caddyfile, an import or an environment variable after Rig checked it. */
   readonly entry: string;
   /** Caddy storage: ACME account and certificates. Kept across reinstalls. */
   readonly data: string;
@@ -39,7 +40,7 @@ export function proxyPaths(root: string): ProxyPaths {
     caddy,
     generations: join(caddy, "generations"),
     current: join(caddy, "current"),
-    entry: join(caddy, "current", "Caddyfile"),
+    entry: join(caddy, "current", "adapted.json"),
     data: join(caddy, "data"),
     bin: join(caddy, "bin"),
     binary: join(caddy, "bin", "caddy"),
@@ -268,6 +269,14 @@ const FILE_DIRECTIVES = new Set([
   "trusted_ca_cert_file",
   "trusted_leaf_cert_file",
   "pem_file",
+  "trust_pool",
+  "tls_client_auth",
+  "tls_trusted_ca_certs",
+  "tls_trust_pool",
+  // The root and intermediate of a `pki` CA, and the file form of a trust pool.
+  "cert",
+  "key",
+  "file",
 ]);
 /** One thing in a custom file that would make a generation depend on a file outside it. */
 export interface CustomFileProblem {
@@ -286,8 +295,14 @@ export function customFileProblems(
   const snippets = new Set(
     [...custom.sites.matchAll(/^\s*\(([^()\s]+)\)\s*\{/gm)].map((m) => m[1]!),
   );
+  // A path is resolved as Caddy would, from the Rig root it runs in, so `..` cannot step out of it.
   const outside = (path: string) =>
-    !path.startsWith(`${root}/`) && !/^[a-z_]+$/.test(path);
+    /^[a-z_]+$/.test(path)
+      ? false
+      : path.split("/").includes("..") ||
+        !resolve(root, path).startsWith(`${root}/`);
+  const fileLike = (word: string) =>
+    word.includes("/") || /\.(pem|crt|cer|key|der|p12)$/i.test(word);
   const problems: CustomFileProblem[] = [];
   for (const [file, text] of [
     ["sites", custom.sites],
@@ -299,7 +314,8 @@ export function customFileProblems(
       const words = line
         .split(/\s+/)
         .filter((word) => word !== "{" && word !== "}")
-        .map((word) => word.replace(/^"|"$/g, ""));
+        // Caddyfile tokens may be quoted with double quotes or backticks.
+        .map((word) => word.replace(/^["`]|["`]$/g, ""));
       const report = (problem: string) =>
         problems.push({ file, line: index + 1, problem });
       if (line.includes("{file."))
@@ -317,7 +333,7 @@ export function customFileProblems(
         report("names certificate files outside the Rig root");
       if (
         FILE_DIRECTIVES.has(words[0]!) &&
-        words.slice(1).some((word) => word.includes("/") && outside(word))
+        words.slice(1).some((word) => fileLike(word) && outside(word))
       )
         report(`names files outside the Rig root in ${words[0]}`);
     });

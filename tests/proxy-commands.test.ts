@@ -173,7 +173,7 @@ test("the proxy report names each site's owner, routes and certificate, and a pe
           certificate: "*.example.com",
         },
       ],
-      custom: [{ file: "/r/proxy/custom.caddy", state: "pending" }],
+      custom: [{ file: "/r/proxy/custom.caddy", state: "pending", text: "" }],
     }),
   ).toBe(
     [

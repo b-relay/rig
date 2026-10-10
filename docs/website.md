@@ -98,10 +98,13 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   what `rig run <job> <target>` sends (`action: "run"` with `job`); it is
   offered unless a run of the job is going or the job was removed by a deploy,
   and a refusal such as `JOB_RUNNING` shows beneath it.
-- **Proxy** reads through one module, `web/lib/proxy.ts`, which lists every
-  hostname from status until a Rig-owned Caddy (`feat/rig-owned-caddy`) reports
-  them, with a typed stub for the custom Caddy file; it names that branch in a
-  TODO.
+- **Proxy** reads through one module, `web/lib/proxy.ts`. With Rig's own Caddy
+  (ADR 0014), rigd's `proxy` read lists every hostname served, Rig's and the
+  custom sites', with each path's upstream or `withheld (503)`, and status adds
+  each Service and state; the custom Caddy file is shown read-only with whether
+  it is applied, and is edited on disk and applied with `rig proxy reload`.
+  Without it (`PROXY_UNMANAGED`), every hostname comes from status and the
+  custom file panel says why there is none.
 
 ## Deploy history
 

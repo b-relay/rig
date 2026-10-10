@@ -47,6 +47,8 @@ export interface ProxyReport {
   readonly custom: readonly {
     readonly file: string;
     readonly state: "applied" | "pending";
+    /** The file as it is on disk, for display; pending until rig proxy reload applies it. */
+    readonly text: string;
   }[];
 }
 /** A Target as the report names it. */
@@ -122,6 +124,7 @@ export async function proxyReport(options: {
       {
         file: paths.custom,
         state: diskCustom === custom ? "applied" : "pending",
+        text: diskCustom,
       },
     ],
   };

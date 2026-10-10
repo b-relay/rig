@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { canRunNow, runJobCommand, targetJobs } from "../web/lib/jobs";
 import { commandSchema } from "../src/daemon/protocol";
-import { customCaddyFile, proxyRoutes } from "../web/lib/proxy";
+import {
+  customCaddyFile,
+  managedProxyRoutes,
+  proxyRoutes,
+} from "../web/lib/proxy";
 import type { TargetReport } from "../web/lib/types";
 
 const target = (fields: Partial<TargetReport> & Record<string, unknown> = {}) =>
@@ -149,6 +153,106 @@ test("every hostname and path on the Host leads to its Target's Service, by host
   });
 });
 
-test("the custom Caddy file waits for a Rig-owned Caddy", async () => {
-  expect(await customCaddyFile()).toMatchObject({ supported: false });
+test("with Rig's own Caddy, its proxy read names every hostname served, Rig's and custom, and status adds each Service and state", () => {
+  const fromStatus = proxyRoutes([
+    {
+      project: { name: "shop", repoPath: "/s", targetCount: 1 },
+      status: {
+        ok: true,
+        value: {
+          project: "shop",
+          targets: [
+            target({
+              route: "shop.test",
+              routes: [
+                { prefix: "/", service: "web", port: 1 },
+                { prefix: "/api", service: "api", port: 2 },
+              ],
+            }),
+          ],
+        },
+      },
+    },
+  ]);
+  const report = {
+    caddy: {
+      state: "running" as const,
+      ports: { http: 80, https: 443 },
+      ca: "letsencrypt",
+      generation: "g001",
+    },
+    sites: [
+      {
+        hostname: "shop.test",
+        source: "target" as const,
+        project: "shop",
+        target: "stable",
+        routes: [
+          { prefix: "/api", upstream: null },
+          { prefix: "/", upstream: "127.0.0.1:1" },
+        ],
+      },
+      { hostname: "code.test", source: "custom" as const },
+    ],
+    custom: [
+      {
+        file: "/r/proxy/custom.caddy",
+        state: "pending" as const,
+        text: "code.test {\n\trespond ok\n}\n",
+      },
+    ],
+  };
+  expect(managedProxyRoutes(report, fromStatus)).toEqual([
+    {
+      host: "code.test",
+      url: "https://code.test/",
+      prefix: "/",
+      source: "custom",
+      published: true,
+    },
+    expect.objectContaining({
+      host: "shop.test",
+      prefix: "/api",
+      service: "api",
+      state: "running",
+      withheld: true,
+    }),
+    expect.objectContaining({
+      host: "shop.test",
+      prefix: "/",
+      service: "web",
+      upstream: "127.0.0.1:1",
+    }),
+  ]);
+  // The path Rig withdrew has no upstream, whatever status remembers.
+  expect(managedProxyRoutes(report, fromStatus)[1]).not.toHaveProperty(
+    "upstream",
+  );
+  expect(customCaddyFile({ ok: true, value: report })).toEqual({
+    supported: true,
+    path: "/r/proxy/custom.caddy",
+    state: "pending",
+    text: "code.test {\n\trespond ok\n}\n",
+  });
+});
+
+test("without Rig's own Caddy, the custom file says why it is not there", () => {
+  expect(
+    customCaddyFile({
+      ok: false,
+      failure: { code: "PROXY_UNMANAGED", message: "no" },
+    }),
+  ).toMatchObject({
+    supported: false,
+    reason: expect.stringContaining("proxy section"),
+  });
+  expect(
+    customCaddyFile({
+      ok: false,
+      failure: { code: "DAEMON_MISSING", message: "rigd is not reachable." },
+    }),
+  ).toMatchObject({
+    supported: false,
+    reason: expect.stringContaining("rigd is not reachable."),
+  });
 });

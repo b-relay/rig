@@ -2,10 +2,11 @@ import { attempt } from "@/lib/outcome";
 import type { DeploymentContext } from "@/lib/types";
 import { read } from "@/server/daemon";
 import { project } from "@/server/project";
-import { Failure, Section } from "@/components/bits";
+import { Failure, Panel } from "@/components/bits";
 import { DeployForm } from "@/components/deploy-form";
 
-export default async function DeployPage({
+/** Deploy a Branch or Commit to the stable Target or a Preview. */
+export default async function DeploymentsPage({
   params,
 }: {
   params: Promise<{ name: string }>;
@@ -15,8 +16,8 @@ export default async function DeployPage({
     read({ action: "deployment-context", project: found.name }),
   );
   return (
-    <Section
-      title="Deploy"
+    <Panel
+      title="New deployment"
       description="A deploy reads the committed rig.yaml of the Commit it deploys."
     >
       {context.ok ? (
@@ -27,6 +28,6 @@ export default async function DeployPage({
       ) : (
         <Failure failure={context.failure} />
       )}
-    </Section>
+    </Panel>
   );
 }

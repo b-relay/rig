@@ -143,7 +143,7 @@ Only then does Rig point the `bin/caddy` symlink at the new file, by renaming a 
 Version 2.10 is the floor because, from 2.10 on, a managed wildcard covers its subdomains by default (checked on 2.10.2 and 2.11.7). 2.11 refuses `auto_https prefer_wildcard`, so Rig never writes it.
 
 - **Activation has a deadline.** Rig restarts Caddy (stop, and launchd starts it again) and waits up to 30 s for the admin socket to answer. The answering process started after the switch, so it runs the new copy. If the new binary passed validation but fails to run, Rig points the symlink back at the last copy that served and restarts again. The failure is reported as `PROXY_BINARY_START` with the new binary's last log lines, the token redacted.
-- **Activation is durable.** `bin/state.json` records the last copy that served and the copy switched to but not yet confirmed running, and is written before the switch. An install killed after the switch is picked up by the next one, which starts and confirms the copy, or goes back. A copy that keeps failing is reverted to the last good one, never to another unconfirmed copy.
+- **Activation is durable.** `bin/state.json` records the last copy that served and the copy switched to but not yet confirmed running, and is written before the switch. An install killed after the switch is picked up by the next one, which starts and confirms the copy, or goes back. A copy that keeps failing is reverted to the last good one, never to another unconfirmed copy. A pending record whose copy never reached the link (an install killed before the switch) is abandoned: it is cleared, and only a pending copy that the link names counts as unconfirmed.
 - **Downtime.** A restart costs about one second when Caddy had been running longer than `ThrottleInterval`. Otherwise launchd waits up to the rest of those 10 s before starting it again. A failed upgrade can cost up to about 40 s: the deadline, then a restart of the previous binary.
 - **Already in place.** The Host already has a suitable binary: `/usr/local/bin/caddy` is v2.10.2 with `dns.providers.cloudflare` v0.2.4.
 
@@ -185,7 +185,10 @@ Caddy never reads a file that Rig is in the middle of changing. Each change buil
 <root>/caddy/generations/<id>/Caddyfile            main file; every import names a file of this generation
 <root>/caddy/generations/<id>/routes.caddy         copy of the route file
 <root>/caddy/generations/<id>/custom.caddy         accepted copy of proxy/custom.caddy
-<root>/caddy/generations/<id>/custom-global.caddy  accepted copy of proxy/custom-global.caddy
+<root>/caddy/generations/<id>/base.Caddyfile       the same config without custom sites or site lines, for the allowlist
+<root>/caddy/generations/<id>/base-routes.caddy    Rig's routes without site lines, imported by base.Caddyfile
+<root>/caddy/generations/<id>/empty.caddy          an empty custom file, imported by base.Caddyfile
+<root>/caddy/generations/<id>/adapted.json         what Caddy runs: the main file, adapted and frozen
 <root>/caddy/generations/<id>/generation.json      the CA and binary it was built for, and when
 <root>/caddy/current -> generations/<id>           the one switch, renamed into place atomically
 ```
@@ -199,20 +202,19 @@ The rest of the layout:
 <root>/caddy/caddy.log          Caddy's own log, rolled by Caddy
 <root>/proxy/Caddyfile          Rig's marked route blocks: the source of truth for routes, same path and format
 <root>/proxy/custom.caddy       the owner's sites and snippets; Rig never rewrites it
-<root>/proxy/custom-global.caddy the owner's global options; Rig never rewrites it
 <root>/auth/acme-dns.token      the Cloudflare API token, mode 0600
 ```
 
 Publishing one change goes like this:
 
 1. **Build.** Render a new generation into `generations/<id>.tmp/`.
-   - The custom site inventory comes from `caddy adapt` of the custom file, read with the custom global options (which a site may need, such as an `order`). It is recorded in `generation.json` and is the one inventory that wildcard planning, conflicts, `rig proxy` and `verify` use.
+   - The custom site inventory comes from `caddy adapt` of the custom file. A site counts as plain HTTP when the adapted config says so, as Caddy decides: its server's `automatic_https` skips or disables the name, or the server listens only on the HTTP port (`http_port`, 80 by default). It never assumes a port. It is recorded in `generation.json` and is the one inventory that wildcard planning, conflicts, `rig proxy` and `verify` use.
    - Then rename the directory to `generations/<id>/`.
 2. **Validate.** Run `caddy validate`, then `caddy adapt`, on its main file with Rig's binary.
-   - The adapted JSON is kept as `adapted.json`, and must hold the admin socket, storage and ports Rig set.
+   - The adapted JSON is kept as `adapted.json`. It must hold the admin socket, storage and ports Rig set, and pass the custom-site allowlist (see **Customization**).
    - If either step fails, the generation is set aside as `.rejected`; nothing else has changed.
 3. **Switch.** Rename a new `current` link over the old one.
-4. **Activate.** Reload Caddy with the generation's `adapted.json`, or restart it when the CA changed, then confirm from `GET /config/` that it runs `adapted.json`.
+4. **Activate.** Reload Caddy with the generation's `adapted.json`, or restart it when the issuance policies changed, then confirm from `GET /config/` that it runs `adapted.json`.
    - If that fails, put `current` back and make Caddy serve the previous generation, again confirmed.
    - If Caddy is unreachable, follow the rule under **The Caddy process**.
 
@@ -222,7 +224,10 @@ The route file keeps its role. The Router edits its marked blocks, keeping the `
 
 - **An unfinished `.tmp` generation.** Nothing points at it, and the next publication deletes it.
 - **A route file ahead of `current`.** It is published before any change resolves.
-- **A `current` that Caddy does not run** (a crash between steps 3 and 4). Caddy is reloaded, or restarted for a new CA.
+- **A `current` that Caddy does not run** (a crash between steps 3 and 4). Caddy is reloaded, or restarted when its issuance policies differ.
+
+**Why a policy change restarts.** Caddy 2.10 keeps the ACME issuer it already provisioned for a subject across a reload, so a reload alone could leave a name on the old CA. Rig compares the policies Caddy runs with the generation's, each as its sorted subjects and the issuers that serve them (module and CA), and restarts on any change in which CA issues which names, not only when the set of CAs changes.
+
 - **A missing or dangling `current`.** It is rebuilt from the route file and the accepted custom files.
 - **Serving cannot be confirmed.** Route changes fail, and doctor says why. rigd still starts, and never deletes a working `current`.
 
@@ -247,7 +252,6 @@ The main file of a generation, with the current hostnames:
 			roll_keep 5
 		}
 	}
-	import <root>/caddy/generations/<id>/custom-global.caddy
 }
 import <root>/caddy/generations/<id>/custom.caddy
 
@@ -272,23 +276,24 @@ import <root>/caddy/generations/<id>/routes.caddy
 
 ## Customization
 
-The owner writes sites and snippets in `proxy/custom.caddy`, and global options in `proxy/custom-global.caddy`. Rig creates both files empty, each with a header comment, and never rewrites them. Caddy loads only the copies in the current generation.
+The owner writes sites and snippets in `proxy/custom.caddy`. Rig creates it empty, with a header comment, and never rewrites it. Caddy runs only what the current generation accepted. Rig sets every global option itself; there is no custom global options file.
 
-- **Applied explicitly.** `rig proxy reload` builds a generation with the custom files as they are on disk.
-  - If it validates and reloads, those copies become the accepted ones.
-  - If it does not, nothing switches, Rig's routes keep serving, and the command fails with `PROXY_CUSTOM_INVALID`. The error carries Caddy's message, which names the file and line (checked). A custom site that repeats a Rig hostname fails as `ambiguous site definition`.
-- **Each failure has one cause.** A route change always builds against the accepted custom copies, so its failure is a route problem. A custom apply changes only the custom files, so its failure is a custom problem.
+- **Applied explicitly.** `rig proxy reload` builds a generation with the custom file as it is on disk.
+  - If it validates, passes the allowlist and reloads, that copy becomes the accepted one.
+  - If it does not, nothing switches, Rig's routes keep serving, and the command fails with `PROXY_CUSTOM_INVALID`. The error carries Caddy's message, which names the file and line, or the allowlist's, which names the JSON path (checked). A custom site that repeats a Rig hostname fails as `ambiguous site definition`.
+- **Each failure has one cause.** A route change always builds against the accepted custom copy, so its failure is a route problem. A custom apply changes only the custom file, so its failure is a custom problem.
   - A new Rig route whose hostname an accepted custom site serves is refused as `ROUTE_CONFLICT`, naming `custom.caddy`.
-  - Rig leaves out its own wildcard block for any parent whose wildcard the custom files already serve.
-- **Custom files read no other files.** A generation must be complete in itself, so its meaning never changes behind Rig's back, and Rig checks everything that can move its protected options. Refused with the file and line (`PROXY_CUSTOM_INVALID`, hint: "inline the snippet into custom.caddy"):
-  - an `import` of anything but a snippet `custom.caddy` defines (by name);
-  - a `{file.*}` placeholder;
-  - files outside the Rig root, resolved as Caddy resolves them from the Rig root (so `..` cannot leave it), in anything that loads certificates or keys: `tls <cert> <key>`, `load`, `ca_root`, `trusted_*_file`, `pem_file`, `trust_pool`, `tls_client_auth`, `tls_trusted_ca_certs`, `tls_trust_pool`, and the `cert`, `key` and `file` of a `pki` CA or trust pool. Tokens quoted with double quotes or backticks are read as Caddy reads them.
-  - Because Caddy runs the frozen `adapted.json`, an import that slipped past this check would still be read only once, when Rig validated the generation, and never again behind its back.
-- **Rig's own global options are protected.**
-  - **In the text:** custom global options that set `admin`, `storage`, the ports, the CA, `email`, `auto_https` or `log default` are refused.
-  - **In the adapted config:** as defence in depth, a generation whose adapted `admin`, `storage` or ports differ from what Rig rendered is refused too.
-- **Pending edits are visible.** While a custom file differs from its accepted copy, `rig proxy` and `rig doctor` report it as pending, or as rejected with the last error.
+- **The allowlist is the authority.** Caddyfile text can say the same thing many ways (quotes, backticks, `{$ENV}` placeholders, snippets), so Rig judges what Caddy makes of it. Each generation is adapted twice: the main file, and `base.Caddyfile`, which is the same config with Rig's routes but no `site` lines and an empty custom file. The two adapted JSON documents may differ only by:
+  - **HTTP routes for the custom hostnames.** Each top-level route must match by host, only hostnames the custom file's sites declare. Routes sit in the server that listens on Rig's HTTPS port, or in a new server on exactly that listen address with nothing but routes. A custom site on any other port, or a plain `http://` site, adds a server and is refused.
+  - **Handlers from a short list:** `reverse_proxy` to loopback only (`127.0.0.1`, `localhost` or `[::1]`), `static_response` (`respond`, `abort`), `headers`, `rewrite` (`rewrite`, `uri`), `encode` (gzip and zstd) and `subroute` (`handle`, `route`). Everything else, including `file_server`, is refused. No handler may hold a `{file.*}` or `{env.*}` placeholder.
+  - **TLS automation subjects** that Rig derives for the custom hostnames: the names and their wildcard parents. Custom wildcard sites are refused.
+  - Any other difference, in `admin`, `storage`, `logging`, the TLS issuers, policies, certificates, `load_files`, `tls_connection_policies`, `automatic_https` or any other app or handler, is refused, naming the JSON path and what is wrong.
+  - Every route is held to the handler list, Rig's included, so a snippet in `custom.caddy` that a `proxy.site` line imports cannot slip a handler in through Rig's own blocks. That is why the base leaves out the `site` lines rather than the custom file alone.
+- **Early text checks.** Before Caddy runs, Rig refuses an `import` of anything but a snippet `custom.caddy` defines, and any `{file.*}` placeholder, with the line (hint: "inline the snippet into custom.caddy"). These only give earlier, clearer errors; the allowlist decides.
+- **Frozen.** Caddy runs the frozen `adapted.json`, so nothing the custom file referred to is read again behind Rig's back.
+- **Rig's own options are protected twice.** As defence in depth, a generation whose adapted `admin`, `storage` or ports differ from what Rig rendered is refused even before the allowlist.
+- **The retired global options file.** An earlier build read `proxy/custom-global.caddy`. Nothing depended on it. If it is left with anything but comments, every proxy change is refused until it is deleted; one with only comments is ignored.
+- **Pending edits are visible.** While the custom file differs from its accepted copy, `rig proxy` and `rig doctor` report it as pending, or as rejected with the last error.
 
 ## Token: written by Rig, never echoed
 
@@ -302,12 +307,13 @@ The owner writes sites and snippets in `proxy/custom.caddy`, and global options 
 
 - **Caddy never starts on a malformed token.** A token edited by hand would reach the plugin when Caddy starts, and Caddy's startup error goes straight to the job's log, where Rig cannot redact it. So the job runs Caddy through a short `/bin/sh` guard:
   - **The check.** It compares the token file's exact bytes (a trailing newline counts) with those two forms, and refuses to start when they do not match. It says which file to fix, never what is in it.
+  - **Binary-safe.** It counts bytes with `wc -c` and deletes the allowed characters with `LC_ALL=C tr -d`, so a NUL, CR or high byte counts as a stray character. Line-based tools such as `grep` are not used, because they stop at a NUL or newline, and BSD `grep` allows no repetition count above 255.
   - **The start.** Otherwise it `exec`s Caddy, so launchd's pid and signals are Caddy's.
 
   Tested with synthetic tokens.
 
 - **Rig redacts every Caddy output it keeps or shows.** That covers validate, adapt and reload errors, start failures, diagnostics and Activity: the token's value, and anything Caddy quotes after `token`, become `[redacted]`.
-- **Limits, honestly.** Caddy runs as clay, and clay can edit its config. A custom `respond {file.…}` or `file_server` could serve the token, and any process running as clay can read the file directly. Mode 0600 keeps out other macOS users and nothing more. That is why b-secret is removed rather than kept.
+- **Limits, honestly.** Caddy runs as clay, and clay can edit its config. The allowlist refuses a custom `respond {file.…}` or `file_server` that could serve the token, but clay can still edit Rig's own files, and any process running as clay can read the token directly. Mode 0600 keeps out other macOS users and nothing more. That is why b-secret is removed rather than kept.
 - **What a leak can do.** A leaked token edits the records of one zone, which is enough to take over its traffic and certificates. Nothing else.
 - **The token is required.** Without a readable token Caddy cannot provision, even with stored certificates (checked), so doctor checks it and Rig refuses to render without it.
 - **Possible hardening, not built.** ACME challenges could be delegated by CNAME to a separate zone with `dns_challenge_override_domain` (validated). The token could be IP-filtered to the Mac's egress address.

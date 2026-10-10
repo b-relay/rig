@@ -203,30 +203,36 @@ parent that no site serves has its connection closed.
 
 Every change is published as a new configuration generation under
 `<RIG_ROOT>/caddy/generations`: Caddy validates it, Rig switches one link to
-it, and Caddy reloads, or restarts when `tls.ca` changed, because a reload keeps
-the certificates it already has. A change Caddy rejects switches nothing, and
+it, and Caddy reloads, or restarts when which CA issues which names changed, because a
+reload keeps the issuer it already has. A change Caddy rejects switches nothing, and
 the rejected generation is kept beside the others. If Caddy's admin socket does
 not answer while its job may still be running, the change fails with
 `PROXY_UNREACHABLE` rather than assume an old route stopped serving.
 
 Your own sites and snippets, such as a route to something that is not a Rig
-Project, go in `<RIG_ROOT>/proxy/custom.caddy`, and global options in
-`<RIG_ROOT>/proxy/custom-global.caddy`. Rig creates both and never rewrites
-them. They take effect when applied, and a file Caddy rejects
-(`PROXY_CUSTOM_INVALID`, naming its file and line) changes nothing that is
-served. A Rig route whose hostname a custom site serves is refused as
-`ROUTE_CONFLICT`. `proxy.site` lists directives added to every site block Rig
-writes, and may use snippets `custom.caddy` defines.
+Project, go in `<RIG_ROOT>/proxy/custom.caddy`. Rig creates it and never
+rewrites it. It takes effect when applied, and a file Caddy rejects or Rig
+refuses (`PROXY_CUSTOM_INVALID`, naming the file and line or the JSON path)
+changes nothing that is served. A Rig route whose hostname a custom site serves
+is refused as `ROUTE_CONFLICT`. `proxy.site` lists directives added to every
+site block Rig writes, and may use snippets `custom.caddy` defines.
 
-Custom files must be complete in themselves: they may not read other files.
-Rig refuses an `import` of anything but a snippet `custom.caddy` defines (by
-name), a `{file.*}` placeholder, and certificate or key files outside the Rig
-root. Inline the snippet into `custom.caddy` instead. Global options Rig sets
-itself, such as `admin`, `storage`, the ports and the CA, are refused too.
+`custom.caddy` holds site blocks for its own hostnames, served on Rig's HTTPS
+port. Rig sets every global option itself. It compares what Caddy makes of the
+whole config with the same config without your sites, and refuses anything
+beyond routes for your hostnames: another port or a plain `http://` site, a
+wildcard site, certificates, issuers, logging, storage or any other setting.
+Your sites may use `reverse_proxy` to `127.0.0.1`, `localhost` or `[::1]`,
+`respond`, `abort`, `header`, `rewrite`, `uri`, `encode`, `handle` and
+`route`; anything else, such as `file_server`, is refused, and so is a
+`{file.*}` or `{env.*}` placeholder. The same rules hold for snippets that
+`proxy.site` lines use. An `import` of anything but a snippet `custom.caddy`
+defines is refused early; inline the snippet instead. An earlier build read
+`proxy/custom-global.caddy`; if that file still sets anything, delete it.
 
 `rig doctor` checks whether Caddy runs the current configuration (`proxy-serving`), the token (`proxy-token`), Rig's copy of Caddy
 (`proxy-binary`), whether the job runs and answers (`proxy-process`), and
-whether the custom files are applied (`proxy-custom`). With a `proxy` section
+whether the custom file is applied (`proxy-custom`). With a `proxy` section
 it no longer needs `caddy` on `PATH`.
 
 `rig proxy` shows the job, every hostname it serves with the Project and

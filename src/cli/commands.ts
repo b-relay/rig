@@ -159,7 +159,7 @@ function addProxyCommands(
   proxy
     .command("reload")
     .description(
-      "Apply proxy/custom.caddy, proxy/custom-global.caddy and the proxy section of Host config as they are now. A file Caddy rejects changes nothing that is served.",
+      "Apply proxy/custom.caddy and the proxy section of Host config as they are now. A custom file Caddy rejects, or that adds more than routes for its own hostnames, changes nothing that is served.",
     )
     .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
   proxy

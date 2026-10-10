@@ -173,10 +173,7 @@ test("the proxy report names each site's owner, routes and certificate, and a pe
           certificate: "*.example.com",
         },
       ],
-      custom: [
-        { file: "/r/proxy/custom.caddy", state: "pending" },
-        { file: "/r/proxy/custom-global.caddy", state: "applied" },
-      ],
+      custom: [{ file: "/r/proxy/custom.caddy", state: "pending" }],
     }),
   ).toBe(
     [
@@ -187,7 +184,6 @@ test("the proxy report names each site's owner, routes and certificate, and a pe
       "code.example.com  custom.caddy  [*.example.com]",
       "",
       "/r/proxy/custom.caddy  changed since applied; run rig proxy reload",
-      "/r/proxy/custom-global.caddy  applied",
       "",
     ].join("\n"),
   );

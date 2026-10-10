@@ -148,10 +148,7 @@ async function customChecks(
     target.startsWith("/") ? target : join(dirname(paths.current), target),
   );
   const pending: string[] = [];
-  for (const [disk, served] of [
-    [paths.custom, files.custom],
-    [paths.customGlobal, files.customGlobal],
-  ] as const) {
+  for (const [disk, served] of [[paths.custom, files.custom]] as const) {
     const [onDisk, accepted] = await Promise.all([
       readFile(disk, "utf8").catch(() => ""),
       readFile(served, "utf8").catch(() => ""),
@@ -170,7 +167,7 @@ async function customChecks(
       : {
           name: "proxy-custom",
           ok: true,
-          message: "The custom files are applied.",
+          message: "The custom file is applied.",
         },
   ];
 }

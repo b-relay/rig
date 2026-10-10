@@ -81,7 +81,7 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
   });
   cleanups.push(async () => upstream.stop(true));
   const https = freePort();
-  const settings = parseHostConfig({
+  let settings = parseHostConfig({
     proxy: {
       caddy: source,
       ports: { http: freePort(), https },
@@ -147,6 +147,76 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
     status: 200,
     body: "custom",
   });
+  // What real Caddy makes of these is held to the allowlist, whatever the Caddyfile text looks like.
+  const acceptedCustom = await readFile(paths.custom, "utf8");
+  // A real key pair, so Caddy loads it and only the allowlist stands between it and what is served.
+  process.env.RIG_TEST_CERT = join(root, "c.pem");
+  process.env.RIG_TEST_KEY = join(root, "k.pem");
+  await runCommand({
+    command: [
+      "/usr/bin/openssl",
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-subj",
+      "/CN=certs.example.test",
+      "-keyout",
+      process.env.RIG_TEST_KEY,
+      "-out",
+      process.env.RIG_TEST_CERT,
+    ],
+  });
+  try {
+    for (const [text, refused] of [
+      [
+        "files.example.test {\n\tfile_server\n}\n",
+        "file_server is not allowed",
+      ],
+      [
+        "certs.example.test {\n\ttls {$RIG_TEST_CERT} {$RIG_TEST_KEY}\n\trespond ok\n}\n",
+        "$.apps.tls.certificates",
+      ],
+      [
+        "certs.example.test {\n\t`tls` `{$RIG_TEST_CERT}` `{$RIG_TEST_KEY}`\n\trespond ok\n}\n",
+        "$.apps.tls.certificates",
+      ],
+      [
+        "remote.example.test {\n\treverse_proxy 10.0.0.5:80\n}\n",
+        "is not a loopback upstream",
+      ],
+      [
+        `http://plain.example.test:${freePort()} {\n\trespond ok\n}\n`,
+        "custom sites are served on Rig's HTTPS port only",
+      ],
+    ] as const) {
+      await writeFile(paths.custom, text);
+      await expect(caddy.applyCustom()).rejects.toMatchObject({
+        code: "PROXY_CUSTOM_INVALID",
+        message: expect.stringContaining(refused),
+      });
+    }
+    // A snippet Rig's own site lines import cannot slip a handler past it either.
+    settings = { ...settings, site: ["import sneaky"] };
+    await writeFile(
+      paths.custom,
+      `(sneaky) {\n\tfile_server\n}\n${acceptedCustom}`,
+    );
+    await expect(caddy.applyCustom()).rejects.toMatchObject({
+      code: "PROXY_CUSTOM_INVALID",
+      message: expect.stringContaining("file_server is not allowed"),
+    });
+  } finally {
+    delete process.env.RIG_TEST_CERT;
+    delete process.env.RIG_TEST_KEY;
+    settings = { ...settings, site: [] };
+  }
+  // None of it reached what is served.
+  expect((await get("custom.example.test", https)).body).toBe("custom");
+  await writeFile(paths.custom, acceptedCustom);
   await writeFile(
     paths.custom,
     "broken.example.test {\n\tnot_a_directive\n}\n",

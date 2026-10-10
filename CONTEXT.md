@@ -963,9 +963,10 @@ its own route map, and a Target's sites are published and withdrawn together.
 ### Config generation
 
 One complete, self-contained configuration of Rig's Caddy: its main file, a
-copy of the route file and the accepted custom files. Rig validates a
-generation before switching one link to it, so Caddy never reads a set of files
-from two changes.
+copy of the route file, the accepted custom file, and the adapted JSON Caddy
+runs. Rig validates a generation, and holds the custom sites in it to an
+allowlist on that JSON, before switching one link to it, so Caddy never reads a
+set of files from two changes.
 
 ### Provider contract
 

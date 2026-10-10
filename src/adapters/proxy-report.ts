@@ -67,14 +67,11 @@ export async function proxyReport(options: {
   const generation = await readlink(paths.current).catch(() => undefined);
   const files = generationFiles(paths.current);
   const read = (path: string) => readFile(path, "utf8").catch(() => "");
-  const [routes, custom, customGlobal, diskCustom, diskGlobal] =
-    await Promise.all([
-      read(files.routes),
-      read(files.custom),
-      read(files.customGlobal),
-      read(paths.custom),
-      read(paths.customGlobal),
-    ]);
+  const [routes, custom, diskCustom] = await Promise.all([
+    read(files.routes),
+    read(files.custom),
+    read(paths.custom),
+  ]);
   const [reachable, state] = await Promise.all([
     options.admin.reachable(),
     options.job.state(),
@@ -125,10 +122,6 @@ export async function proxyReport(options: {
       {
         file: paths.custom,
         state: diskCustom === custom ? "applied" : "pending",
-      },
-      {
-        file: paths.customGlobal,
-        state: diskGlobal === customGlobal ? "applied" : "pending",
       },
     ],
   };

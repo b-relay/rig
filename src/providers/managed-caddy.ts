@@ -20,7 +20,7 @@ import {
   customFileProblems,
   generationFiles,
   normalizeToken,
-  protectedGlobalOptions,
+  wildcardParents,
   proxyPaths,
   redactSecrets,
   renderMainCaddyfile,
@@ -33,6 +33,7 @@ import {
   protectedDifferences,
 } from "../domain/caddy-config";
 import type { ProxySettings } from "../config/proxy-schema";
+import { configProblems } from "../domain/config-allowlist";
 import type { CommandRunner } from "./contracts";
 import {
   editRouteFile,
@@ -74,10 +75,9 @@ interface GenerationMetadata {
   customSites: string[];
   createdAt: string;
 }
-/** The custom files of a generation: the owner's sites and snippets, and global options. */
+/** The custom file of a generation: the owner's sites and snippets. */
 export interface CustomFiles {
   readonly sites: string;
-  readonly global: string;
 }
 /** Why a publication was made, which decides the failure codes: a route change, an apply of the custom files, or a republish
  * after a settings change. */
@@ -150,38 +150,35 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       return undefined;
     }
   }
-  /** The custom files on disk, created with their header when missing. */
+  /** The custom file on disk, created with its header when missing. A custom global options file an earlier Rig read is no
+   * longer read: Rig sets every global option itself, so one that still holds anything is refused rather than ignored. */
   async function diskCustom(): Promise<CustomFiles> {
     await mkdir(dirname(paths.custom), { recursive: true });
-    for (const [path, kind] of [
-      [paths.custom, "sites"],
-      [paths.customGlobal, "global"],
-    ] as const)
-      await writeFile(path, customFileHeader(kind), { flag: "wx" }).catch(
-        (error: NodeJS.ErrnoException) => {
-          if (error.code !== "EEXIST") throw error;
-        },
+    await writeFile(paths.custom, customFileHeader(), { flag: "wx" }).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code !== "EEXIST") throw error;
+      },
+    );
+    const retired = (await readText(paths.retiredCustomGlobal)) ?? "";
+    if (retired.split(/\r?\n/).some((line) => /^\s*[^#\s]/.test(line)))
+      throw new RigError(
+        "PROXY_CUSTOM_INVALID",
+        `${paths.retiredCustomGlobal} sets global options, which Rig no longer reads: Rig sets every global option itself.`,
+        `Delete ${paths.retiredCustomGlobal}; put sites in ${paths.custom}. Nothing changed.`,
+        { path: paths.retiredCustomGlobal },
       );
-    return {
-      sites: (await readText(paths.custom)) ?? "",
-      global: (await readText(paths.customGlobal)) ?? "",
-    };
+    return { sites: (await readText(paths.custom)) ?? "" };
   }
-  /** The accepted custom files: the current generation's copies. Before the first generation nothing is accepted yet, so
-   * they are empty; the owner's files, created if missing, take effect through an apply. */
+  /** The accepted custom file: the current generation's copy. Before the first generation nothing is accepted yet, so it is
+   * empty; the owner's file, created if missing, takes effect through an apply. */
   async function acceptedCustom(): Promise<CustomFiles> {
     const current = await currentGeneration();
     if (!current) {
-      await diskCustom();
-      return {
-        sites: customFileHeader("sites"),
-        global: customFileHeader("global"),
-      };
+      await diskCustom().catch(() => {});
+      return { sites: customFileHeader() };
     }
-    const files = generationFiles(current);
     return {
-      sites: (await readText(files.custom)) ?? "",
-      global: (await readText(files.customGlobal)) ?? "",
+      sites: (await readText(generationFiles(current).custom)) ?? "",
     };
   }
   async function token(settings: ProxySettings): Promise<string | undefined> {
@@ -248,27 +245,16 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     };
   }
 
-  /** Refuses custom files that would read other files or set what Rig sets. */
+  /** Early, friendly refusals of the custom file in its own terms; the allowlist on the adapted JSON is the authority. */
   function checkCustom(custom: CustomFiles): void {
-    const taken = protectedGlobalOptions(custom.global);
-    if (taken.length)
+    const problems = customFileProblems(custom.sites);
+    if (problems.length)
       throw new RigError(
         "PROXY_CUSTOM_INVALID",
-        `${paths.customGlobal}:${taken[0]!.line} sets ${taken[0]!.option}, which Rig sets itself.`,
-        `Delete ${taken.map((entry) => `${entry.option} (line ${entry.line})`).join(", ")} from ${paths.customGlobal} and run rig proxy reload again; ports, certificates and the CA are set under proxy in Host config. Nothing changed.`,
-        { options: taken },
-      );
-    const problems = customFileProblems(custom, options.root);
-    if (problems.length) {
-      const where = (problem: (typeof problems)[number]) =>
-        `${problem.file === "sites" ? paths.custom : paths.customGlobal}:${problem.line}`;
-      throw new RigError(
-        "PROXY_CUSTOM_INVALID",
-        `${where(problems[0]!)} ${problems[0]!.problem}; custom files may not read other files.`,
-        `Inline the snippet into custom.caddy (define it there as (name) { ... } and import it by name), and keep certificate files under the Rig root. Then run rig proxy reload again. Nothing changed. Also: ${problems.map((problem) => `${where(problem)} ${problem.problem}`).join("; ")}.`,
+        `${paths.custom}:${problems[0]!.line} ${problems[0]!.problem}; the custom file may not read other files.`,
+        `Inline the snippet into custom.caddy (define it there as (name) { ... } and import it by name), then run rig proxy reload again. Nothing changed. All: ${problems.map((problem) => `line ${problem.line} ${problem.problem}`).join("; ")}.`,
         { problems },
       );
-    }
   }
   /** `caddy adapt` of one file with Rig's binary, as JSON; a failure carries Caddy's last line, redacted. */
   async function adapt(
@@ -336,8 +322,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await mkdir(paths.data, { recursive: true, mode: 0o700 });
     await writeFile(staged.routes, routes);
     await writeFile(staged.custom, custom.sites);
-    await writeFile(staged.customGlobal, custom.global);
-    const rejectedAs = async (reason: string | undefined, stderr: string) => {
+    // The allowlist's base: Rig's routes without their site lines, and no custom sites.
+    await writeFile(staged.baseRoutes, rerenderOwnedBlocks(routes, []));
+    await writeFile(staged.empty, "");
+    const rejectedAs = async (
+      reason: string | undefined,
+      stderr: string,
+      by: "caddy" | "allowlist" = "caddy",
+    ) => {
       const rejected = `${directory}.rejected`;
       await rename(
         (await stat(directory).catch(() => undefined)) ? directory : building,
@@ -349,29 +341,36 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         rejectedPath: rejected,
         evidence: boundedEvidence(reason ?? ""),
       };
+      const verb = by === "caddy" ? "Caddy rejected" : "Rig refused";
       if (kind === "custom")
         return new RigError(
           "PROXY_CUSTOM_INVALID",
-          `Caddy rejected the custom files${reason ? `: ${reason}` : "."}`,
-          `Nothing changed; Rig's routes keep serving. Fix ${paths.custom} or ${paths.customGlobal} and run rig proxy reload again. What Caddy saw is kept in ${rejected}.`,
+          `${verb} the custom file${reason ? `: ${reason}` : "."}`,
+          `Nothing changed; Rig's routes keep serving. Custom sites may only route their own hostnames to loopback services, respond, set headers, rewrite or encode. Fix ${paths.custom} and run rig proxy reload again. What Caddy saw is kept in ${rejected}.`,
           details,
         );
       return new RigError(
         kind === "route" ? "ROUTE_VALIDATE" : "PROXY_CONFIG_INVALID",
-        `Caddy rejected the ${kind === "route" ? "updated routes" : "proxy configuration"}${reason ? `: ${reason}` : "."}`,
-        `Nothing changed. What Caddy saw is kept in ${rejected}; fix the ${kind === "route" ? "route configuration" : "proxy section of Host config"} and retry.`,
+        `${verb} the ${kind === "route" ? "updated routes" : "proxy configuration"}${reason ? `: ${reason}` : "."}`,
+        `Nothing changed. What Caddy saw is kept in ${rejected}; fix the ${kind === "route" ? "route configuration" : "proxy section of Host config (its site lines), or the snippets they import from custom.caddy,"} and retry.`,
         details,
       );
     };
-    // The custom sites, read from Caddy's own parse of the custom file alone, are the one inventory everything uses.
-    // Read together with the global options, which a custom site may need (an `order`, for one); only its sites count.
-    const inventoryFile = join(building, "inventory.custom.caddy");
-    await writeFile(inventoryFile, `{\n${custom.global}\n}\n${custom.sites}`);
-    const inventory = await adapt(executable, inventoryFile, secret);
-    await rm(inventoryFile, { force: true });
+    // The custom sites, from Caddy's own parse of the custom file alone: the one inventory wildcards, conflicts, rig proxy
+    // and verify use.
+    const inventory = await adapt(executable, staged.custom, secret);
     if (inventory.config === undefined)
       throw await rejectedAs(inventory.reason, inventory.reason ?? "");
     const customSites = adaptedSiteAddresses(inventory.config);
+    const wildcard = customSites.find((site) => site.includes("*"));
+    if (wildcard)
+      throw await rejectedAs(
+        `it serves ${wildcard}, a wildcard; custom sites name each hostname`,
+        "",
+        "allowlist",
+      );
+    const rigHosts = routeFileHostnames(routes);
+    const hostnames = [...rigHosts, ...customSites];
     const metadata: GenerationMetadata = {
       id,
       ca: settings.tls.ca,
@@ -385,8 +384,17 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         settings,
         paths,
         generation: directory,
-        hostnames: routeFileHostnames(routes),
-        customSites,
+        hostnames,
+      }),
+    );
+    await writeFile(
+      staged.base,
+      renderMainCaddyfile({
+        settings,
+        paths,
+        generation: directory,
+        hostnames,
+        imports: { routes: files.baseRoutes, custom: files.empty },
       }),
     );
     await writeFile(staged.metadata, JSON.stringify(metadata, null, 2) + "\n");
@@ -408,11 +416,48 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         lastOutputLine(validation.stderr),
         validation.stderr,
       );
-    // What Caddy will run, kept beside the generation: activation is confirmed against it, and the owner's files may not
-    // move what Rig sets.
+    // What Caddy will run, kept beside the generation: activation is confirmed against it. It may add to Rig's own config
+    // only what the allowlist lets custom sites add, checked against Rig's config alone.
     const adapted = await adapt(executable, files.main, secret);
     if (adapted.config === undefined)
       throw await rejectedAs(adapted.reason, adapted.reason ?? "");
+    const base = await adapt(executable, files.base, secret);
+    if (base.config === undefined)
+      throw await rejectedAs(base.reason, base.reason ?? "");
+    const bare = (address: string) =>
+      address
+        .replace(/^https?:\/\//i, "")
+        .replace(/:\d+$/, "")
+        .toLowerCase();
+    const parents =
+      settings.tls.certificates === "wildcard"
+        ? wildcardParents(hostnames)
+        : [];
+    const local = settings.ports.http >= 1024 && settings.ports.https >= 1024;
+    const problems = configProblems({
+      base: base.config,
+      full: adapted.config,
+      hosts: [...hostnames.map(bare), ...parents],
+      subjects: [...customSites.map(bare), ...wildcardParents(customSites)],
+      httpsListen: [
+        local
+          ? `127.0.0.1:${settings.ports.https}`
+          : `:${settings.ports.https}`,
+      ],
+    });
+    if (problems.length)
+      throw await rejectedAs(
+        `${problems[0]!.path} ${problems[0]!.problem}${
+          problems.length > 1
+            ? ` (and ${problems.length - 1} more: ${problems
+                .slice(1, 4)
+                .map((problem) => problem.path)
+                .join(", ")})`
+            : ""
+        }`,
+        "",
+        "allowlist",
+      );
     const moved = protectedDifferences(adapted.config, {
       admin: `unix/${paths.socket}|0600`,
       storage: paths.data,
@@ -423,6 +468,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       throw await rejectedAs(
         `the configuration changes ${moved.join(", ")}, which Rig sets itself`,
         "",
+        "allowlist",
       );
     await writeFile(files.adapted, JSON.stringify(adapted.config) + "\n");
     await switchTo(directory);

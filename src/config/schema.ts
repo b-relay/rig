@@ -10,6 +10,7 @@ import {
   isHealthUrl,
   type HealthcheckSettings,
 } from "./healthcheck";
+import { isTimeZone, parseCron } from "../domain/cron";
 const text = z.string().min(1);
 const name = text
   .regex(
@@ -50,11 +51,11 @@ export function localhostCommand(value: string): boolean {
 const BIND_KEY =
   /^(?:HOST|HOSTNAME|BIND|BIND_ADDR|BIND_ADDRESS|BIND_HOST|LISTEN|LISTEN_ADDR|LISTEN_ADDRESS|LISTEN_HOST|ADDR|ADDRESS)$/;
 const WILDCARD_ADDRESS = /^(?:0\.0\.0\.0|\[::\]|::)(?::\d+)?$/;
-type ReferenceScope = "project" | "service";
+type ReferenceScope = "project" | "service" | "job";
 /** The one owner of the reference list an editor shows on hover; the long form is "References" in docs/rig-guide.md.
- * ${rig.data} is one Service's directory, so only a Service's own fields offer it. */
+ * ${rig.data} is one Service's or job's own directory, so only their own fields offer it. */
 const referencesIn = (scope: ReferenceScope) =>
-  `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : ""}. $\${VAR} writes a literal \${VAR}.`;
+  `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, \${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : scope === "job" ? ", ${rig.data} (this job's own persistent directory)" : ""}. $\${VAR} writes a literal \${VAR}.`;
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -317,6 +318,68 @@ const toolFields = {
   ),
 };
 const tool = z.strictObject(toolFields);
+/** The longest a job may run before Rig stops it: one week. */
+const MAX_JOB_TIMEOUT_SECONDS = 7 * 86400;
+/** The Targets a job runs in when it names none. */
+export const DEFAULT_JOB_TARGETS: readonly (
+  "working" | "stable" | "preview"
+)[] = ["stable"];
+const jobFields = {
+  command: command.describe(
+    `Shell command run with /bin/sh -c in working_dir (default: the workspace root) at each scheduled time, and by rig run. It runs from the same checkout as the Target's Services: the working copy for the working Target, the deployed Commit for the stable Target and Previews; a run a deploy finds going finishes on the checkout it started in, and the next run uses the new one. It has the Target's references, as a Service does: \${services.<service>.port} reaches a Service of the same Target, \${services.<service>.data} shares a Service's persistent directory, and \${rig.data} is the job's own. Its output goes to the Target logs under the job's name (rig logs --service <job>). Explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("job")}`,
+  ),
+  schedule: text
+    .superRefine((value, ctx) => {
+      const parsed = parseCron(value);
+      if ("problem" in parsed)
+        ctx.addIssue({ code: "custom", message: parsed.problem });
+    })
+    .describe(
+      "When the job runs: a standard five-field cron expression, minute hour day-of-month month day-of-week, such as 17 */6 * * * (17 minutes past every sixth hour) or 0 7 * * 3,6 (07:00 on Wednesdays and Saturdays). Fields take *, numbers, ranges such as 1-5, lists such as 1,15, steps such as */6, and month or weekday names such as jan or mon; when both day fields name days, either matching runs it, as in cron. Times are wall-clock times in timezone. A run still going at the next scheduled time makes Rig skip that time and record it as skipped; times missed while the Mac slept or rigd was not running are not caught up.",
+    ),
+  timezone: text
+    .refine(
+      isTimeZone,
+      "must be an IANA time zone name such as America/Chicago, Europe/Berlin or UTC",
+    )
+    .optional()
+    .describe(
+      "IANA time zone the schedule is read in, such as America/Chicago or UTC. Default: the Mac's own time zone (System Settings > General > Date & Time), read when each run is scheduled, so changing the Mac's zone moves the job's next run. Daylight saving time: a time the spring change skips (02:30 when clocks jump from 02:00 to 03:00) runs once at the change, 03:00; a time the autumn change repeats (01:30 when clocks fall back) runs once, the first time. Use UTC for a schedule that never shifts.",
+    ),
+  timeout: text
+    .refine((value) => {
+      const seconds = durationSeconds(value);
+      return seconds >= 1 && seconds <= MAX_JOB_TIMEOUT_SECONDS;
+    }, "must be a duration from 1s to 168h, such as 30m or 2h")
+    .optional()
+    .describe(
+      "How long one run may take, such as 2h (at most 168h). A run still going then is stopped (SIGTERM, then SIGKILL after stop_timeout) and recorded as failed: timed out. Default: no limit.",
+    ),
+  stop_timeout: stopTimeout
+    .optional()
+    .describe(
+      "How long a run may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 1m (default 10s, at most 1h): when its timeout passes, and when rig down, rig restart or a deploy stops the Target while it runs.",
+    ),
+  working_dir: workingDir
+    .optional()
+    .describe(
+      "Directory the job's command runs in, relative to the workspace, such as apps/jobs (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root.",
+    ),
+  environment: env("job").optional(),
+  env_file: envFile("job").optional(),
+  targets: z
+    .array(z.enum(["working", "stable", "preview"]))
+    .min(1)
+    .refine(
+      (roles) => new Set(roles).size === roles.length,
+      "must not name a Target twice",
+    )
+    .optional()
+    .describe(
+      "Which Targets run the job on its schedule, by their fixed names working, stable and preview (preview means every Preview). Default: [stable] only, so a job runs once, against the Production branch, and not again in the working copy and every Preview. A Target runs its jobs only while it is on in rig.yaml, deployed and meant to run (rig down stops its schedule and any run in progress).",
+    ),
+};
+const job = z.strictObject(jobFields);
 /** A proxy upstream: a Service name, `${services.<name>.port}`, or `${services.<name>.ports.<port>}`. */
 const PROXY_UPSTREAM =
   /^(?:([a-z0-9][a-z0-9-]*)|\$\{services\.([a-z0-9][a-z0-9-]*)\.(?:port|ports\.([a-z0-9][a-z0-9-]*))\})$/;
@@ -455,6 +518,16 @@ type GraphSettings = {
   env_file?: string | readonly string[];
   services?: Readonly<Record<string, GraphService>>;
   tools?: Readonly<Record<string, { bin?: string; build?: string }>>;
+  jobs?: Readonly<
+    Record<
+      string,
+      {
+        command?: string;
+        environment?: Readonly<Record<string, string>>;
+        env_file?: string | readonly string[];
+      }
+    >
+  >;
   proxy?: Readonly<Record<string, string>>;
 };
 type GraphConfig = GraphSettings & {
@@ -494,6 +567,12 @@ export const projectConfigSchema = z
       .record(entryName, tool)
       .optional()
       .describe("Installed command-line Tools keyed by name."),
+    jobs: z
+      .record(entryName, job)
+      .optional()
+      .describe(
+        "Scheduled jobs keyed by name: commands rigd runs at cron times, such as a nightly import, with the same command, environment, env_file and working_dir keys and references as a Service. By default a job runs in the stable Target only. A run never overlaps the one before it, appears in rig activity, writes to rig logs under the job's name, and rig status shows its last and next run; rig run <job> runs it now. A job cannot share its name with a Service or Tool.",
+      ),
     proxy: proxy.optional(),
     targets: targets
       .optional()
@@ -504,12 +583,13 @@ export const projectConfigSchema = z
   .superRefine((parsed, ctx) => {
     const config = parsed as GraphConfig;
     const services = Object.keys(config.services ?? {}),
-      tools = Object.keys(config.tools ?? {});
-    if (!services.length && !tools.length)
+      tools = Object.keys(config.tools ?? {}),
+      jobs = Object.keys(config.jobs ?? {});
+    if (!services.length && !tools.length && !jobs.length)
       ctx.addIssue({
         code: "custom",
         path: ["services"],
-        message: "A Project needs at least one Service or Tool.",
+        message: "A Project needs at least one Service, Tool or job.",
       });
     for (const name of services)
       if (tools.includes(name))
@@ -517,6 +597,14 @@ export const projectConfigSchema = z
           code: "custom",
           path: ["tools", name],
           message: "A Tool cannot share its name with a Service.",
+        });
+    // Log lines, status and rig logs --service name a job, a Service and a Tool alike, so the names must differ.
+    for (const name of jobs)
+      if (services.includes(name) || tools.includes(name))
+        ctx.addIssue({
+          code: "custom",
+          path: ["jobs", name],
+          message: `A job cannot share its name with a ${services.includes(name) ? "Service" : "Tool"}.`,
         });
     const reported = new Set<string>();
     const report: Report = (path, message, rule) => {
@@ -805,6 +893,14 @@ function validateReferences(
   for (const [name, tool] of Object.entries(settings.tools ?? {}))
     for (const field of ["bin", "build"] as const)
       fields.push([["tools", name, field], tool[field]]);
+  for (const [name, job] of Object.entries(settings.jobs ?? {})) {
+    const own = ["jobs", name];
+    fields.push([[...own, "command"], job.command]);
+    for (const [key, value] of Object.entries(job.environment ?? {}))
+      fields.push([[...own, "environment", key], value]);
+    for (const value of [job.env_file ?? []].flat())
+      fields.push([[...own, "env_file"], value]);
+  }
   for (const [path, value] of fields) {
     if (value === undefined) continue;
     try {
@@ -934,6 +1030,17 @@ function refuseUnsupportedShapes(value: unknown): void {
         issues.push({ path: [...path, key], message, rule: RENAMED_RULE });
     renames(service, path, SERVICE_RENAMES);
   }
+  // A job takes a Service's Compose names, so a job written with Rig's old ones is told the new ones too. Jobs came after
+  // the rename, so no committed revision can hold such a job: it is an ordinary mistake, not the renamed rule.
+  if (isRecord(value.jobs))
+    for (const [name, job] of Object.entries(value.jobs))
+      if (isRecord(job))
+        for (const [from, to] of Object.entries(SERVICE_RENAMES))
+          if (Object.hasOwn(job, from))
+            issues.push({
+              path: ["jobs", name, from],
+              message: renamedKey(from, to),
+            });
   for (const [role, patch] of Object.entries(
     isRecord(value.targets) ? value.targets : {},
   )) {

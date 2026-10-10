@@ -97,6 +97,29 @@ export interface BuildUnit {
 }
 export type PlanComponent =
   ManagedComponent | InstalledComponent | PersistentComponent;
+/** A scheduled job as a Target's plan records it: one the Target's role runs (its `targets` name the role). Its command runs
+ * at each time `schedule` names, and on `rig run`, from the plan's workspace. */
+export interface PlanJob {
+  name: string;
+  /** /bin/sh command, references resolved. */
+  command: string;
+  /** The directory it runs in, relative to the plan's workspacePath; absent means the workspace root. */
+  workingDir?: string;
+  /** Public values only: the Project's `environment`, then the job's. */
+  env: Record<string, string>;
+  /** Lowest to highest precedence; every file beats `env`. */
+  envFiles?: EnvFileRef[];
+  /** Public environment leaves the command was built from; a file may not change them. */
+  commandInputs?: PublicInput[];
+  /** Five-field cron expression, read in `timeZone`. */
+  schedule: string;
+  /** IANA time zone the schedule is read in; absent means the Host's zone when each run is scheduled. */
+  timeZone?: string;
+  /** Seconds one run may take before it is stopped and recorded as timed out; absent means no limit. */
+  timeout?: number;
+  /** Seconds a run may take to exit after SIGTERM before SIGKILL; absent means the 10 s default. */
+  stopTimeout?: number;
+}
 export type PreparedComponent =
   | { name: string; uses: "sqlite"; path: string }
   | { name: string; uses: "convex"; stateDir: string }
@@ -115,6 +138,8 @@ export interface TargetPlan {
   daemon?: { enabled?: boolean; keepAlive?: boolean };
   env?: Record<string, string>;
   components: PlanComponent[];
+  /** The scheduled jobs this Target runs, by name; absent when it runs none, as in every plan recorded before jobs. */
+  jobs?: PlanJob[];
   /** Build units in run order: shared, Services in dependency order, then Tools by name. Absent on plans recorded before builds were units. */
   builds?: BuildUnit[];
   preparedComponents: PreparedComponent[];

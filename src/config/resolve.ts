@@ -3,6 +3,7 @@ import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
 import {
+  DEFAULT_JOB_TARGETS,
   durationSeconds,
   parseProjectConfig,
   patchedSettings,
@@ -34,6 +35,7 @@ import type {
   PlanRoute,
   ProjectConfig,
   PlanComponent,
+  PlanJob,
   ResolveHost,
   ResolveTargetPlanInput,
   TargetPlan,
@@ -311,6 +313,45 @@ export function resolveTargetPlan(
       }),
   ];
   const ordered = dependencyOrder(components);
+  // A job is planned only for the roles its targets name (the stable Target alone by default), by name.
+  const jobs = Object.entries(settings.jobs ?? {})
+    .filter(([, job]) => (job.targets ?? DEFAULT_JOB_TARGETS).includes(role))
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([name, job]): PlanJob => {
+      const at = `jobs.${name}`;
+      const run = references.shell(job.command, `${at}.command`);
+      if (!localhostCommand(run.value))
+        throw new ConfigError(
+          "Resolved command binds outside localhost.",
+          "invalid_binding",
+          { job: name },
+          `Point jobs.${name}.command at 127.0.0.1 or localhost.`,
+        );
+      const workingDir = planWorkingDir(job.working_dir);
+      const inputs = commandInputs(run.inputs);
+      return {
+        name,
+        command: run.value,
+        ...(workingDir !== undefined ? { workingDir } : {}),
+        env: {
+          ...projectEnv,
+          ...publicEnv(job.environment ?? {}, `${at}.environment`),
+        },
+        envFiles: [
+          ...projectFiles,
+          ...envFiles(job.env_file, `${at}.env_file`, [name]),
+        ],
+        ...(inputs.length ? { commandInputs: inputs } : {}),
+        schedule: job.schedule,
+        ...(job.timezone !== undefined ? { timeZone: job.timezone } : {}),
+        ...(job.timeout !== undefined
+          ? { timeout: durationSeconds(job.timeout) }
+          : {}),
+        ...(job.stop_timeout !== undefined
+          ? { stopTimeout: durationSeconds(job.stop_timeout) }
+          : {}),
+      };
+    });
   const shared =
     settings.build === undefined
       ? undefined
@@ -347,6 +388,7 @@ export function resolveTargetPlan(
     env: projectEnv,
     envFiles: projectFiles,
     components: ordered,
+    ...(jobs.length ? { jobs } : {}),
     ...(units.length ? { builds: units } : {}),
     preparedComponents: [],
     ...(resolvedDomain !== undefined && proxied

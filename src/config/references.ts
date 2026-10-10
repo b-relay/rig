@@ -150,7 +150,8 @@ export function referenceResolver(
       inputs: [],
     });
     if (segments[0] === "rig") {
-      const service = /^services\.([^.]+)\./.exec(at)?.[1];
+      // A Service's or job's own fields give it a directory of its own.
+      const service = /^(?:services|jobs)\.([^.]+)\./.exec(at)?.[1];
       switch (key) {
         case "rig.target":
           return plain(generated.target);
@@ -164,7 +165,7 @@ export function referenceResolver(
           if (service === undefined)
             throw fail(
               "invalid_context",
-              `\${rig.data} in ${at} has no Service: persistent data belongs to one Service.`,
+              `\${rig.data} in ${at} has no Service or job: persistent data belongs to one Service or job. Write \${services.<service>.data} for a Service's directory.`,
               key,
               at,
             );
@@ -179,6 +180,28 @@ export function referenceResolver(
     }
     const port = shortPort(segments, at);
     if (port !== undefined) return plain(port);
+    // `${services.<name>.data}` is that Service's persistent directory, so a job or another Service can share it.
+    if (
+      segments.length === 3 &&
+      segments[0] === "services" &&
+      segments[2] === "data"
+    ) {
+      if (declared(segments[1]!) === undefined)
+        throw fail(
+          "unknown_reference",
+          `Unknown reference '\${${key}}' in ${at}: '${segments[1]}' is not a declared Service.`,
+          key,
+          at,
+        );
+      if (PROJECT_BUILD.test(consumer))
+        throw fail(
+          "invalid_context",
+          `${consumer} reaches '\${${key}}'${at === consumer ? "" : ` through ${at}`}: a Project or Tool build runs with Project inputs and cannot use a Service's data.`,
+          key,
+          at,
+        );
+      return plain(generated.data(segments[1]!));
+    }
     if (segments[0] === "targets")
       throw fail(
         "reference_into_targets",

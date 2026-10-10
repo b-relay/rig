@@ -39,6 +39,17 @@ import { createProcessTiming } from "../providers/process-timing";
 import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
 import { createCaddyRouter } from "../providers/caddy-router";
+import { createCaddyAdmin } from "../providers/caddy-admin";
+import {
+  createLaunchAgentCaddyJob,
+  createProcessCaddyJob,
+} from "../providers/caddy-job";
+import {
+  createManagedCaddy,
+  type ManagedCaddy,
+} from "../providers/managed-caddy";
+import { proxyPaths } from "../domain/managed-proxy";
+import { RigError } from "../domain/errors";
 import { runCommand } from "../providers/command-runner";
 import { createListenerInspection } from "../providers/listener-inspection";
 import { probeLocalPort } from "../providers/port-probe";
@@ -109,6 +120,9 @@ export async function composeDaemon(
     ["child", child],
   ]);
   const environment = inheritedEnvironment(process.env);
+  // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
+  const managed =
+    host.proxyMode === "managed" ? composeManagedCaddy(root, mode) : undefined;
   const effects = createTargetEffects({
     recordingTime: () => new Date().toISOString(),
     logRetention,
@@ -121,28 +135,30 @@ export async function composeDaemon(
       run: runCommand,
       bunExecutable: toolBun,
     }),
-    router: createCaddyRouter({
-      caddyfile:
-        host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
-      run: runCommand,
-      reload: host.providers.caddy.reload.mode === "command",
-      extraConfig: host.providers.caddy.extra_config,
-      hostCaddyfile: async () => {
-        const publication = await inspectHostProxy(root, host, environment);
-        return publication.state === "imported"
-          ? publication.hostCaddyfile
-          : undefined;
-      },
-      ...(host.providers.caddy.reload.command
-        ? {
-            reloadCommand: [
-              "/bin/sh",
-              "-c",
-              host.providers.caddy.reload.command,
-            ],
-          }
-        : {}),
-    }),
+    router:
+      managed?.router ??
+      createCaddyRouter({
+        caddyfile:
+          host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
+        run: runCommand,
+        reload: host.providers.caddy.reload.mode === "command",
+        extraConfig: host.providers.caddy.extra_config,
+        hostCaddyfile: async () => {
+          const publication = await inspectHostProxy(root, host, environment);
+          return publication.state === "imported"
+            ? publication.hostCaddyfile
+            : undefined;
+        },
+        ...(host.providers.caddy.reload.command
+          ? {
+              reloadCommand: [
+                "/bin/sh",
+                "-c",
+                host.providers.caddy.reload.command,
+              ],
+            }
+          : {}),
+      }),
     environment: executionBaseline(process.env),
   });
   const store = new FileStateStore(root);
@@ -229,6 +245,19 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     async start() {
+      // Queued ahead of anything the first pass publishes: Host config's site lines and settings may have changed, and a
+      // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
+      void managed?.republish().catch((error: unknown) =>
+        diagnostic.record({
+          event: "proxy.republish",
+          level: "error",
+          ...(error instanceof RigError ? { code: error.code } : {}),
+          ...(error instanceof RigError &&
+          typeof error.details?.evidence === "string"
+            ? { evidence: error.details.evidence }
+            : {}),
+        }),
+      );
       await runtime.reconcile();
       if (stopped) return;
       // Restart policy is applied here, never by a supervisor: every pass records exits and makes the attempts that are due.
@@ -260,4 +289,40 @@ export async function composeDaemon(
       await child.detach();
     },
   };
+}
+/** Rig's own Caddy as rigd drives it: publication through generations, and the job only observed and restarted, never
+ * installed; `rigd install` installs it. The proxy settings are read at every publication, so `rig proxy reload` applies an
+ * edit to them. */
+function composeManagedCaddy(
+  root: string,
+  mode: "process" | "launchd",
+): ManagedCaddy {
+  const paths = proxyPaths(root);
+  const admin = createCaddyAdmin(paths.socket);
+  const job =
+    mode === "process"
+      ? createProcessCaddyJob({ root, paths, userHome: homedir(), admin })
+      : createLaunchAgentCaddyJob({
+          root,
+          paths,
+          userHome: homedir(),
+          uid: process.getuid?.() ?? 501,
+          admin,
+        });
+  return createManagedCaddy({
+    root,
+    settings: async () => {
+      const host = await readHostConfig(root);
+      if (!host.proxy)
+        throw new RigError(
+          "PROXY_CONFIG",
+          "Host config no longer has a proxy section, but this rigd publishes through Rig's Caddy.",
+          "Run rigd install to switch how routes are published.",
+        );
+      return host.proxy;
+    },
+    run: runCommand,
+    job,
+    admin,
+  });
 }

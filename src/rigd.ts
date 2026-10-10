@@ -16,6 +16,8 @@ import { readInstallationRecord } from "./daemon/installation";
 import { runDaemonHost } from "./daemon/host";
 import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
+import { runCommand } from "./providers/command-runner";
+import { createProxyInstallation } from "./daemon/proxy-installation";
 export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
@@ -53,6 +55,7 @@ export async function main(args: readonly string[]): Promise<number> {
     await runDaemonHost({ root, port: 0, ...runtime });
     return 0;
   }
+  const mode = process.env.RIG_ROOT ? "process" : "launchd";
   return await runRigdCli(args, {
     admin: new DaemonAdmin({
       root,
@@ -62,8 +65,15 @@ export async function main(args: readonly string[]): Promise<number> {
         entrypoint: process.argv[1],
         PATH: process.env.PATH,
       }),
-      mode: process.env.RIG_ROOT ? "process" : "launchd",
+      mode,
       userHome: homedir(),
+      proxy: createProxyInstallation({
+        root,
+        userHome: homedir(),
+        uid: process.getuid?.() ?? 501,
+        mode,
+        run: runCommand,
+      }),
     }),
     output: userOutput(),
     newOperationId: randomUUID,

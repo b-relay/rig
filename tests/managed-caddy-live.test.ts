@@ -111,6 +111,13 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
   await caddy.router.apply(route(`127.0.0.1:${upstream.port}`));
   expect(await job.state()).toBe("stopped");
   await job.install();
+  // Caddy issues certificates after it starts answering, so the first handshake may have to wait for one.
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("app.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
   expect(await get("app.example.test", https, "/x")).toEqual({
     status: 200,
     body: "app /x",

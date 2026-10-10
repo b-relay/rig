@@ -8,8 +8,15 @@ export interface UserOutput {
   write(text: string): void;
   error(text: string): void;
 }
+/** Commands `rig` carries out itself, without rigd, because what they handle must not cross the control plane. */
+export interface LocalCommands {
+  /** Stores the DNS provider token read from standard input; resolves to the path it was written to. */
+  proxyToken(): Promise<string>;
+}
 export interface CliDependencies {
   root: string;
+  /** Absent in tests that exercise only rigd-backed commands; such a command then fails as unavailable. */
+  local?: LocalCommands;
   cwd: string;
   client: ProjectStatusReader & {
     /** The signal, when given, abandons the request; rigd keeps running whatever it was asked. */

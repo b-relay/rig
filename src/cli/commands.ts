@@ -9,7 +9,7 @@ import { RigError } from "../domain/errors";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
-import type { UserOutput } from "./types";
+import type { LocalCommands, UserOutput } from "./types";
 import { addLogsCommand } from "./logs-command";
 
 export type ExecuteCommand = (
@@ -31,6 +31,7 @@ export function createRigCommand(
   execute: ExecuteCommand,
   /** The clock relative `rig logs` times count back from. */
   now: () => Date = () => new Date(),
+  local?: LocalCommands,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -91,6 +92,7 @@ export function createRigCommand(
     nonEmpty,
     positiveInteger,
   });
+  addProxyCommands(command, output, local);
   addHelpCommand(command, "rig");
   command
     .command("rename")
@@ -128,6 +130,31 @@ export function createRigCommand(
       execute({ action: "forget", repoPath: cwd, project }),
     );
   return command;
+}
+/** `rig proxy`: Rig's own Caddy (ADR 0014). */
+function addProxyCommands(
+  command: Command,
+  output: UserOutput,
+  local: LocalCommands | undefined,
+): void {
+  const proxy = command
+    .command("proxy")
+    .description("Manage the Caddy Rig runs for this Host.");
+  proxy
+    .command("token")
+    .description(
+      "Store the DNS provider API token Caddy uses for certificates, read from standard input (for example: pbpaste | rig proxy token).",
+    )
+    .action(async () => {
+      if (!local)
+        throw new RigError(
+          "COMMAND_UNAVAILABLE",
+          "rig proxy token is unavailable here.",
+          "Run it from a terminal on the Host.",
+        );
+      const path = await local.proxyToken();
+      output.write(`Stored the DNS API token in ${path} (mode 600).\n`);
+    });
 }
 /** `help [command...]` shows one command's usage or names the command that does not exist;
  * commander's implicit help command would report an unknown name silently. */

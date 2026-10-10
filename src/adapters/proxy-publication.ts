@@ -1,7 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { HostConfig } from "../config/types";
-import { inspectProxyPublication } from "../domain/proxy-publication";
+import {
+  countOwnedRoutes,
+  inspectProxyPublication,
+} from "../domain/proxy-publication";
+import { proxyPaths } from "../domain/managed-proxy";
 import type { ProxyPublication } from "../domain/proxy-publication";
 export {
   inspectProxyPublication,
@@ -17,9 +21,19 @@ export const wellKnownHostCaddyfiles = [
 /** Reads the proxy file and host Caddyfiles from disk; missing files count as absent rather than failing. */
 export function inspectHostProxy(
   root: string,
-  host: Pick<HostConfig, "providers">,
+  host: Pick<HostConfig, "providers" | "proxyMode">,
   environment: Readonly<Record<string, string | undefined>>,
 ): Promise<ProxyPublication> {
+  if (host.proxyMode === "managed") {
+    const proxyFile = proxyPaths(root).routes;
+    return readFile(proxyFile, "utf8")
+      .catch(() => "")
+      .then((text) => ({
+        proxyFile,
+        routes: countOwnedRoutes(text),
+        state: "managed" as const,
+      }));
+  }
   const caddy = host.providers.caddy;
   return inspectProxyPublication({
     proxyFile: caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),

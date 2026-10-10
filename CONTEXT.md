@@ -904,6 +904,25 @@ adapters. Providers receive resolved context and capabilities rather than
 discovering Host config, Project config, paths, ports, or policy through global
 helpers.
 
+### Rig's Caddy
+
+The one Caddy Rig runs for a Host when Host config has a `proxy` section
+([ADR 0014](docs/adr/0014-rig-owned-caddy.md)). It terminates TLS with ACME
+DNS-01 certificates and routes every Rig hostname, plus the owner's own sites
+from `proxy/custom.caddy`. It runs as its own job beside `rigd`, never as a
+child of it, so a `rigd` restart never stops serving.
+_Avoid_: router Caddy, front Caddy (the two-Caddy setup it replaces)
+
+_Relationship_: A Target may serve more than one hostname; each is a site with
+its own route map, and a Target's sites are published and withdrawn together.
+
+### Config generation
+
+One complete, self-contained configuration of Rig's Caddy: its main file, a
+copy of the route file and the accepted custom files. Rig validates a
+generation before switching one link to it, so Caddy never reads a set of files
+from two changes.
+
 ### Provider contract
 
 The small interface for a provider family: process supervision, proxy routing,
@@ -919,7 +938,7 @@ _Relationship_: Project config and Host config never own the same
 field. Project config owns Project intent that should travel with the repo:
 commands, ports, healthchecks, builds, environment, routes, Production
 branch, and which Targets are on. Host config owns machine capability: the default
-Production branch, the Preview limit, the Caddy provider settings, and
+Production branch, the Preview limit, the proxy (Rig's Caddy) settings, and
 diagnostics. `rigd` combines both into the runtime plan before calling
 providers.
 

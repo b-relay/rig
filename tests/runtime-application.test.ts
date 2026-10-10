@@ -2995,6 +2995,24 @@ async function destroyFixture() {
   };
 }
 
+test("destroy settles a Preview's recovery first, then passes the real ownership preflight", async () => {
+  const f = await destroyFixture();
+  try {
+    f.target.recovery = {
+      plan: structuredClone(f.target.plan),
+      desired: "running",
+      stage: "blocked",
+    };
+    await f.destroy();
+    expect(f.state.targets.map((t) => t.name)).toEqual(["other"]);
+    expect(
+      await readFile(join(f.other.plan.dataRoot, "precious"), "utf8"),
+    ).toBe("other");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("destroy preserves other Targets, external shared storage, and symlink destinations", async () => {
   const f = await destroyFixture();
   const { symlink } = await import("node:fs/promises");

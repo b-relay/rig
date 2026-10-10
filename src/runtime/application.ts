@@ -1044,13 +1044,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         attempted = true;
         admission.phase("stopping", target);
         if (target.recovery) {
-          // Before a recovery stop changes the Target, the Preview's storage must be Rig's to delete and its job runs
-          // confirmed stopped: a failure of either leaves the Preview, its recovery and its Services as they were.
-          await deps.files.inspectPreviewDeletion({
-            root: deps.root,
-            target,
-            state: await deps.store.read(),
-          });
+          // Job runs are confirmed stopped before a recovery stop changes the Target, so one that cannot be leaves the
+          // recovery and the Services as they were. The ownership preflight comes after, in destroyPreview: it refuses
+          // a Target with a recovery to settle.
           await stopJobRuns(target, deps);
           target = await stopForRecovery(target, deps);
         }

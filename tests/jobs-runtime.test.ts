@@ -613,30 +613,18 @@ test("a Preview with a recovery to settle keeps its recovery and Services when a
   );
 });
 
-test.each([false, true])(
-  "a Preview whose storage is not Rig's to delete keeps its job run going (recovery to settle: %p)",
-  async (withRecovery) => {
-    const f = await fixture();
-    expect(await f.scheduled("run-a")).toBe("started");
-    f.ownership.refuse = true;
-    if (withRecovery)
-      await f.world.store.update((state) => {
-        const recorded = state.targets[0]!;
-        recorded.recovery = {
-          plan: recorded.plan,
-          desired: "running",
-          stage: "blocked",
-        };
-      });
-    const target = (await f.world.store.read()).targets[0]!;
-    await expect(destroyPreviewOf(f.world, target)).rejects.toMatchObject({
-      code: "DESTROY_OWNERSHIP",
-    });
-    expect(f.signalled).toEqual([]);
-    expect((await f.record())?.running).toMatchObject({ id: "run-a" });
-    expect((await f.world.store.read()).targets[0]!.desired).toBe("running");
-  },
-);
+test("a Preview whose storage is not Rig's to delete keeps its job run going", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  f.ownership.refuse = true;
+  const target = (await f.world.store.read()).targets[0]!;
+  await expect(destroyPreviewOf(f.world, target)).rejects.toMatchObject({
+    code: "DESTROY_OWNERSHIP",
+  });
+  expect(f.signalled).toEqual([]);
+  expect((await f.record())?.running).toMatchObject({ id: "run-a" });
+  expect((await f.world.store.read()).targets[0]!.desired).toBe("running");
+});
 
 test("a removed Target's kept checkouts are forgotten only once given back", async () => {
   const f = await fixture();

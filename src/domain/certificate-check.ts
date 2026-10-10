@@ -20,7 +20,7 @@ export const MINIMUM_DAYS_LEFT = 7;
 export function isStagingIssuer(issuer: ServedCertificate["issuer"]): boolean {
   return /staging|fake/i.test(`${issuer.O ?? ""} ${issuer.CN ?? ""}`);
 }
-/** Judges a certificate the system already trusted in the handshake: it must have at least seven days left and, unless
+/** Judges a certificate the handshake trusted (or an accepted staging one): it must have at least seven days left and, unless
  * staging is allowed, come from a CA other than a staging one. Pure. */
 export function judgeCertificate(
   hostname: string,

@@ -1,3 +1,4 @@
+import { RigError } from "./errors";
 /** A launchd job Rig defines: a LaunchAgent in the user's login, or a system job that runs as the user (ADR 0014). */
 export interface LaunchdJob {
   readonly label: string;
@@ -23,8 +24,14 @@ const entry = (key: string, value: string) =>
 const string = (value: string) => `<string>${xml(value)}</string>`;
 /** The plist text for `job`. Pure: the same job renders the same text, so an installed plist can be compared byte for byte. */
 export function renderLaunchdPlist(job: LaunchdJob): string {
-  if (job.userName === "root")
-    throw new Error("Rig never defines a launchd job that runs as root.");
+  // An empty name would drop the key and so run a system job as root.
+  if (job.userName !== undefined && ["", "root"].includes(job.userName.trim()))
+    throw new RigError(
+      "LAUNCHD_ROOT",
+      "Rig never defines a launchd job that runs as root.",
+      "Run rigd install as the user the jobs should run as, without sudo.",
+      { userName: job.userName },
+    );
   return (
     '<?xml version="1.0" encoding="UTF-8"?>\n' +
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +

@@ -82,7 +82,12 @@ async function postEditor(
   const payload = (await response.json().catch(() => undefined)) as
     | {
         result?: unknown;
-        error?: { code?: string; message?: string; hint?: string };
+        error?: {
+          code?: string;
+          message?: string;
+          hint?: string;
+          issues?: unknown;
+        };
       }
     | undefined;
   if (!payload || typeof payload !== "object") throw protocolFailure();
@@ -94,6 +99,8 @@ async function postEditor(
       error.code,
       error.message,
       error.hint ?? "Run 'rigd status'.",
+      // A config validation failure names each field's problem; the page shows each beside its field.
+      Array.isArray(error.issues) ? { issues: error.issues } : {},
     );
   }
   if (!Object.hasOwn(payload, "result")) throw protocolFailure();

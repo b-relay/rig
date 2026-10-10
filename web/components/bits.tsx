@@ -179,17 +179,41 @@ export function Field({
   htmlFor,
   children,
   className,
+  issues,
 }: {
   label: ReactNode;
   help?: ReactNode;
   htmlFor?: string;
   children: ReactNode;
   className?: string;
+  /** What validation found wrong with this field, shown in red beneath it. */
+  issues?: readonly string[];
 }) {
   return (
-    <div className={cn("grid gap-1.5", className)}>
-      <Label htmlFor={htmlFor}>{label}</Label>
-      {children}
+    <div
+      className={cn("grid gap-1.5", className)}
+      data-invalid={issues?.length ? true : undefined}
+    >
+      <Label
+        htmlFor={htmlFor}
+        className={issues?.length ? "text-bad" : undefined}
+      >
+        {label}
+      </Label>
+      <div
+        className={
+          issues?.length
+            ? "rounded-md [&_input]:border-bad [&_button[role=combobox]]:border-bad [&_textarea]:border-bad"
+            : undefined
+        }
+      >
+        {children}
+      </div>
+      {issues?.map((issue) => (
+        <p key={issue} role="alert" className="text-xs text-bad">
+          {issue}
+        </p>
+      ))}
       {help ? <p className="text-xs text-muted-foreground">{help}</p> : null}
     </div>
   );

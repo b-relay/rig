@@ -18,7 +18,11 @@ import type {
   ConfigRead,
   ConfigReport,
 } from "@/lib/types";
-import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
+import type {
+  ConfigIssue,
+  Failure as FailureShape,
+  Outcome,
+} from "@/lib/outcome";
 import { transportFailure } from "@/lib/reconcile";
 import { runConfigEdit } from "@/server/actions";
 import {
@@ -88,6 +92,8 @@ import { Textarea } from "@/components/ui/textarea";
 interface Draft {
   tree: Tree;
   fields: readonly ConfigField[];
+  /** What rigd's last review found wrong, by dotted field path. */
+  issues: readonly ConfigIssue[];
   set(path: string[], value: unknown): void;
   remove(path: string[]): void;
   /** Replaces the draft with what `change` makes of it. */
@@ -158,15 +164,57 @@ export function ConfigEditor({
     () => (isTree(original) ? configPatch(original, tree) : []),
     [original, tree],
   );
+  // rigd checks the draft against the schema a moment after typing stops, so a field's problem shows
+  // beneath it before anything is reviewed; a review's own answer takes over once there is one.
+  const [checked, setChecked] = useState<{
+    patch: string;
+    issues: readonly ConfigIssue[];
+  }>({ patch: "[]", issues: [] });
+  const patchText = JSON.stringify(patch);
+  // A review's problems describe the draft it saw; once the draft changes, the next check speaks.
+  useEffect(() => {
+    setChange((now) => (now.failure?.issues ? { busy: now.busy } : now));
+  }, [patchText]);
+  useEffect(() => {
+    if (patch.length === 0) return;
+    let current = true;
+    const timer = setTimeout(() => {
+      void runConfigEdit({
+        action: "preview",
+        project,
+        expectedRevision: revision,
+        patch: JSON.parse(patchText) as ConfigPatch[],
+      })
+        .then((outcome) => {
+          if (current)
+            setChecked({
+              patch: patchText,
+              issues: outcome.ok ? [] : (outcome.failure.issues ?? []),
+            });
+        })
+        .catch(() => {});
+    }, 700);
+    return () => {
+      current = false;
+      clearTimeout(timer);
+    };
+  }, [patchText, patch.length, project, revision]);
+  const issues = useMemo(
+    () =>
+      change.failure?.issues ??
+      (patch.length && checked.patch === patchText ? checked.issues : []),
+    [change.failure, checked, patch.length, patchText],
+  );
   const draft = useMemo<Draft>(
     () => ({
       tree,
       fields: source.fields,
+      issues,
       set: (path, value) => setTree((current) => setAt(current, path, value)),
       remove: (path) => setTree((current) => removeAt(current, path)),
       update: (change) => setTree(change),
     }),
-    [tree, source.fields],
+    [tree, source.fields, issues],
   );
   const send = async (action: "preview" | "apply") => {
     setChange({ busy: true });
@@ -249,7 +297,15 @@ export function ConfigEditor({
             your edits re-applied on top; review them before applying.
           </Notice>
         ) : null}
-        {reviewing ? null : <Failure failure={change.failure} />}
+        {reviewing ? null : issues.length ? (
+          <IssueList
+            issues={issues}
+            hint={change.failure?.hint}
+            onShow={(section) => setSection(section)}
+          />
+        ) : (
+          <Failure failure={change.failure} />
+        )}
         <Tabs
           value={section}
           onValueChange={(next) => setSection(next as Section)}
@@ -259,7 +315,11 @@ export function ConfigEditor({
               {SECTIONS.map(([value, label]) => (
                 <TabsTrigger key={value} value={value}>
                   {label}
-                  {changedIn(patch, value) ? (
+                  {issuesIn(issues, value) ? (
+                    <span className="size-1.5 rounded-full bg-bad">
+                      <span className="sr-only">has problems</span>
+                    </span>
+                  ) : changedIn(patch, value) ? (
                     <span className="size-1.5 rounded-full bg-warn">
                       <span className="sr-only">changed</span>
                     </span>
@@ -388,6 +448,52 @@ const SECTION_ROOTS: Record<Section, readonly string[]> = {
 };
 const changedIn = (patch: { path: string[] }[], section: Section) =>
   patch.some((edit) => SECTION_ROOTS[section].includes(edit.path[0] ?? ""));
+/** The section a dotted field path belongs to; the Project section holds whatever no other claims. */
+const sectionOf = (path: string): Section =>
+  SECTIONS.map(([value]) => value).find((section) =>
+    SECTION_ROOTS[section].includes(path.split(".")[0] ?? ""),
+  ) ?? "project";
+const issuesIn = (issues: readonly ConfigIssue[], section: Section) =>
+  issues.some((issue) => sectionOf(issue.path) === section);
+/** What rigd's review found wrong, each problem with a link to the section its field is in; each
+ * field shows its own problem beneath it too. */
+function IssueList({
+  issues,
+  hint,
+  onShow,
+}: {
+  issues: readonly ConfigIssue[];
+  hint: string | undefined;
+  onShow(section: Section): void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="flex flex-col gap-2 rounded-lg border border-bad/40 bg-bad-fill px-4 py-3 text-sm"
+    >
+      <p className="font-medium text-bad">
+        rig.yaml would not be valid with these changes:
+      </p>
+      <ul className="flex flex-col gap-1">
+        {issues.map((issue) => (
+          <li key={`${issue.path}:${issue.message}`} className="flex gap-2">
+            <button
+              type="button"
+              className="font-mono text-xs text-link hover:underline"
+              onClick={() => onShow(sectionOf(issue.path))}
+            >
+              {issue.path || "rig.yaml"}
+            </button>
+            <span>{issue.message}</span>
+          </li>
+        ))}
+      </ul>
+      {hint && issues.length > 3 ? (
+        <p className="text-muted-foreground">{hint}</p>
+      ) : null}
+    </div>
+  );
+}
 function Source({ text }: { text: string }) {
   return (
     <pre className="overflow-x-auto rounded-md bg-pane p-3 font-mono text-xs leading-5 whitespace-pre text-on-pane">
@@ -401,6 +507,14 @@ function Source({ text }: { text: string }) {
 function useHelp(path: string[]): string | undefined {
   const { fields } = useDraft();
   return fieldFor(fields, path)?.description;
+}
+/** The problems rigd's last review found with this exact field. */
+function useIssues(path: readonly string[]): string[] {
+  const { issues } = useDraft();
+  const dotted = path.join(".");
+  return issues
+    .filter((issue) => issue.path === dotted)
+    .map((issue) => issue.message);
 }
 function Text({
   path,
@@ -424,7 +538,12 @@ function Text({
   const id = path.join(".");
   const schemaHelp = useHelp(path);
   return (
-    <Field label={label} htmlFor={id} help={help ?? schemaHelp}>
+    <Field
+      label={label}
+      htmlFor={id}
+      help={help ?? schemaHelp}
+      issues={useIssues(path)}
+    >
       <Input
         id={id}
         value={typeof value === "string" ? value : ""}
@@ -464,7 +583,12 @@ function Choice({
       ? `${option} (default)`
       : option;
   return (
-    <Field label={label} htmlFor={id} help={useHelp(path)}>
+    <Field
+      label={label}
+      htmlFor={id}
+      help={useHelp(path)}
+      issues={useIssues(path)}
+    >
       <div className="flex gap-2">
         <Select
           // Radix reports no change when the shown value is picked again, so an absent setting
@@ -522,7 +646,12 @@ function ListText({ path, label }: { path: string[]; label: string }) {
   );
   const id = path.join(".");
   return (
-    <Field label={label} htmlFor={id} help={useHelp(path)}>
+    <Field
+      label={label}
+      htmlFor={id}
+      help={useHelp(path)}
+      issues={useIssues(path)}
+    >
       <Input
         id={id}
         value={field.text}
@@ -548,6 +677,7 @@ function Lines({ path, label }: { path: string[]; label: string }) {
     <Field
       label={label}
       htmlFor={id}
+      issues={useIssues(path)}
       help={
         <>One file per line, relative to the workspace. {schemaHelp ?? ""}</>
       }
@@ -597,6 +727,11 @@ function Records({
   const entryHelp = useHelp([...path, "*"]);
   const recordHelp = useHelp(path);
   const help = entryHelp ?? recordHelp;
+  const recordIssues = useIssues(path);
+  const entryIssues = (key: string) =>
+    draft.issues
+      .filter((issue) => issue.path === [...path, key].join("."))
+      .map((issue) => issue.message);
   const valid = keyAllowed(
     keyPattern,
     newKey,
@@ -614,6 +749,11 @@ function Records({
     <div className="flex flex-col gap-2">
       <div className="text-sm font-medium">{label}</div>
       {help ? <p className="text-xs text-muted-foreground">{help}</p> : null}
+      {recordIssues.map((issue) => (
+        <p key={issue} role="alert" className="text-xs text-bad">
+          {issue}
+        </p>
+      ))}
       {entries.length === 0 ? <Empty>None.</Empty> : null}
       {entries.map(([key, value]) => (
         <div
@@ -634,6 +774,7 @@ function Records({
           </Button>
           <Input
             aria-label={`${label} ${key}`}
+            aria-invalid={entryIssues(key).length ? true : undefined}
             value={String(value)}
             placeholder={valuePlaceholder}
             className="col-span-2 font-mono text-xs sm:col-span-1"
@@ -647,6 +788,15 @@ function Records({
               )
             }
           />
+          {entryIssues(key).map((issue) => (
+            <p
+              key={issue}
+              role="alert"
+              className="col-span-2 text-xs text-bad sm:col-span-3"
+            >
+              {issue}
+            </p>
+          ))}
         </div>
       ))}
       <form
@@ -822,6 +972,7 @@ function HealthcheckFields({ path }: { path: string[] }) {
           label="Retries"
           htmlFor={[...path, "retries"].join(".")}
           help={useHelp([...path, "retries"])}
+          issues={useIssues([...path, "retries"])}
         >
           <Input
             id={[...path, "retries"].join(".")}

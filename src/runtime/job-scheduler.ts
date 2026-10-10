@@ -213,7 +213,6 @@ export function createJobScheduler(
       const state = await deps.store.read();
       if (stopped) return;
       const now = deps.clock.now();
-      const seen = new Set<string>();
       const planned = new Set<string>();
       /** Settles a run whose process is gone, or stops one past its timeout and records it timed out, and gives back a
        * checkout a deploy kept only for it. */
@@ -225,32 +224,32 @@ export function createJobScheduler(
             : Date.parse(run.startedAt) + run.timeout * 1000;
         const late = deadline !== undefined && now >= deadline;
         dispatch(key, late ? "job-timeout" : "job", target, async () => {
-          if (late)
-            await deps.lifecycle.stopJob(target, {
-              name: job,
-              ...(run.stopTimeout !== undefined
-                ? { stopTimeout: run.stopTimeout }
-                : {}),
-            });
+          // Timed out only when this stop ended it: a run that exited on its own before the check keeps its own exit.
+          const timedOut =
+            late &&
+            (
+              await deps.lifecycle.stopJob(target, {
+                name: job,
+                ...(run.stopTimeout !== undefined
+                  ? { stopTimeout: run.stopTimeout }
+                  : {}),
+              })
+            ).outcome === "stopped";
           const settled = await settleJobRun(
             target,
             job,
             run,
             runDeps,
-            late ? "timed-out" : undefined,
+            timedOut ? "timed-out" : undefined,
           );
-          if (
-            settled.state === "settled" &&
-            settled.ended.workspace !== undefined &&
-            settled.ended.workspace !== target.plan.workspacePath
-          )
+          // The runtime checks again, under the Target's lease, that nothing uses the checkout any more.
+          if (settled.state === "settled" && settled.ended.workspace)
             await deps.releaseRevision(target.id, settled.ended.workspace);
         });
       };
       for (const target of state.targets)
         for (const job of target.plan.jobs ?? []) {
           const key = `${target.id}:${job.name}`;
-          seen.add(key);
           planned.add(key);
           if (inFlight.has(key)) continue;
           const record = findJobRecord(state, target.id, job.name);
@@ -314,7 +313,7 @@ export function createJobScheduler(
         if (!state.jobs?.some((r) => r.running && r.target === targetId))
           offChecks.delete(targetId);
       for (const key of watermarks.keys())
-        if (!seen.has(key)) watermarks.delete(key);
+        if (!planned.has(key)) watermarks.delete(key);
       if (
         state.jobs?.some(
           (record) =>

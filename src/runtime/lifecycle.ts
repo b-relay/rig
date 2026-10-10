@@ -614,7 +614,7 @@ export function createTargetLifecycle(
     async startJob(target, job, incarnation) {
       // Read before anything is spawned, so an unreadable env file leaves nothing running.
       const env = await effects.environment(target, job);
-      await effects.supervisor(target).ensureRunning({
+      const result = await effects.supervisor(target).ensureRunning({
         key: jobProcessKey(target, job.name),
         componentName: job.name,
         command: ["/bin/sh", "-c", job.command],
@@ -627,6 +627,14 @@ export function createTargetLifecycle(
         incarnation,
         stopGraceMs: serviceGraceMs(job.stopTimeout),
       });
+      // A process already running under the job's key is another run's, which this run must never be recorded as.
+      if (result.outcome !== "started")
+        throw new RigError(
+          "JOB_RUNNING",
+          `A process of ${job.name} is already running on ${target.name}, so no new run was started.`,
+          `Wait for it to end, or stop it with rig down ${targetSelector(target)}.`,
+          { job: job.name },
+        );
     },
     observeJob: (target, job, signal) =>
       effects.supervisor(target).observe(jobProcessKey(target, job), signal),

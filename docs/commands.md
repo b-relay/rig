@@ -106,7 +106,8 @@ status` takes no Target.
   `stable`, where jobs run by default. It is refused with `JOB_RUNNING` while a
   run of the job is going (runs never overlap), with `JOB_UNKNOWN` for a job the
   Target's plan does not run (the hint names the jobs it runs, or the `targets`
-  line to add), and with `TARGET_OFF` for an off Target. `status` lists each
+  line to add), with `JOB_UNAVAILABLE` for a stopped Target, and with
+  `TARGET_OFF` for an off Target. `status` lists each
   Target's jobs with their last and next run, `activity` has one `job` entry
   per ended run, and `logs --service <job>` reads a job's output.
 - `status` runs no health check for a Service with a `healthcheck`: it shows

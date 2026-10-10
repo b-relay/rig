@@ -344,7 +344,7 @@ const jobFields = {
     )
     .optional()
     .describe(
-      "IANA time zone the schedule is read in, such as America/Chicago or UTC. Default: the Mac's own time zone (System Settings > General > Date & Time), read when each run is scheduled, so changing the Mac's zone moves the job's next run. Daylight saving time: a time the spring change skips (02:30 when clocks jump from 02:00 to 03:00) runs once at the change, 03:00; a time the autumn change repeats (01:30 when clocks fall back) runs once, the first time. Use UTC for a schedule that never shifts.",
+      "IANA time zone the schedule is read in, such as America/Chicago or UTC. Default: the Mac's own time zone (System Settings > General > Date & Time) as rigd reads it; after changing the Mac's zone, check the next run in rig status, and restart rigd (rigd install) if it still shows the old zone. Daylight saving time: a time the spring change skips (02:30 when clocks jump from 02:00 to 03:00) runs once at the change, 03:00; a time the autumn change repeats (01:30 when clocks fall back) runs once, the first time. Use UTC for a schedule that never shifts.",
     ),
   timeout: text
     .refine((value) => {
@@ -353,12 +353,12 @@ const jobFields = {
     }, "must be a duration from 1s to 168h, such as 30m or 2h")
     .optional()
     .describe(
-      "How long one run may take, such as 2h (at most 168h). A run still going then is stopped (SIGTERM, then SIGKILL after stop_timeout) and recorded as failed: timed out. Default: no limit.",
+      "How long one run may take, such as 2h (at most 168h). A run still going then is stopped (SIGTERM, then SIGKILL after stop_timeout) and recorded as timed out. Default: no limit.",
     ),
   stop_timeout: stopTimeout
     .optional()
     .describe(
-      "How long a run may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 1m (default 10s, at most 1h): when its timeout passes, and when rig down, rig restart or a deploy stops the Target while it runs.",
+      "How long a run may take to exit after its stop signal (SIGTERM) before Rig ends it with SIGKILL, such as 1m (default 10s, at most 1h): when its timeout passes, and when rig down, a Preview destroy, or turning the Target off stops it. A deploy or rig restart lets a run finish.",
     ),
   working_dir: workingDir
     .optional()

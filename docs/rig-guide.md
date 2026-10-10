@@ -1680,8 +1680,9 @@ jobs:
   day that exists (`0 0 30 2 *`).
 - **`timezone`** is an IANA name such as `America/Chicago`, `Europe/Berlin`
   or `UTC`, checked when rig.yaml is read. Without it the schedule is read in
-  the Mac's own time zone (System Settings > General > Date & Time) as each
-  run is scheduled, so changing the Mac's zone moves the next run.
+  the Mac's own time zone (System Settings > General > Date & Time) as rigd
+  reads it. After changing the Mac's zone, check the next run in `rig status`;
+  if it still shows the old zone, restart rigd with `rigd install`.
   Daylight saving time follows one rule: a time the spring change skips
   (02:30 on the night clocks jump from 02:00 to 03:00) runs once, at the
   change (03:00); a time the autumn change repeats (01:30 on the night clocks
@@ -1737,8 +1738,10 @@ Target, or in the Target you name (`rig run <job> working`,
 `rig run <job> preview <branch>`). It answers as soon as the run started,
 `melody stable link-resolver started`, and is refused with `JOB_RUNNING` while
 a run of the job is going, `JOB_UNKNOWN` (naming the jobs the Target runs, or
-the `targets` line to add) for a job the Target's plan does not have, and
-`TARGET_OFF` for an off Target. The working Target picks up a new or changed
+the `targets` line to add) for a job the Target's plan does not have,
+`JOB_UNAVAILABLE` for a Target stopped with `rig down` (or whose last deploy
+did not complete), and `TARGET_OFF` for an off Target. While a run is in
+progress, the Project cannot be renamed, repointed or forgotten. The working Target picks up a new or changed
 job at `rig restart working`; a deployed Target at its next deploy.
 
 **Seeing runs.** `rig status` lists each Target's jobs under its Services:

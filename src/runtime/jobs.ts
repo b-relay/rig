@@ -13,13 +13,16 @@ import type {
 import type { ProcessObservation } from "../providers/contracts";
 import type { TargetLifecycle } from "./lifecycle";
 
-/** Where a job's stops are noted as they begin, so the run they end is recorded as stopped by Rig (rig down, a restart, a
- * deploy) rather than as an end nothing explains: stopping a process removes the exit record it would otherwise leave. */
+/** Where a job's stops are noted as they begin, so the run they end is recorded as stopped by Rig (rig down, a Preview
+ * destroy, the Target turned off) rather than as an end nothing explains: stopping a process removes the exit record it
+ * would otherwise leave. */
 export interface JobStopMarks {
   /** A stop of `job` of the Target `targetId` begins at `at` (Unix milliseconds). */
   mark(targetId: string, job: string, at: number): void;
-  /** Whether a stop of the job began at or after `since` (Unix milliseconds), the run's start; forgets the mark. */
-  take(targetId: string, job: string, since: number): boolean;
+  /** Whether a stop of the job began at or after `since` (Unix milliseconds), the run's start. */
+  stoppedSince(targetId: string, job: string, since: number): boolean;
+  /** Forgets the job's mark once a run's end was recorded. */
+  clear(targetId: string, job: string): void;
 }
 export function createJobStopMarks(): JobStopMarks {
   const marks = new Map<string, number>();
@@ -27,11 +30,12 @@ export function createJobStopMarks(): JobStopMarks {
     mark(targetId, job, at) {
       marks.set(`${targetId}:${job}`, at);
     },
-    take(targetId, job, since) {
-      const key = `${targetId}:${job}`,
-        at = marks.get(key);
-      marks.delete(key);
+    stoppedSince(targetId, job, since) {
+      const at = marks.get(`${targetId}:${job}`);
       return at !== undefined && at >= since;
+    },
+    clear(targetId, job) {
+      marks.delete(`${targetId}:${job}`);
     },
   };
 }
@@ -135,7 +139,7 @@ export async function settleJobRun(
 ): Promise<JobSettlement> {
   const observed = await deps.lifecycle.observeJob(target, job);
   if (observed.state !== "stopped") return { state: observed.state };
-  const stoppedByRig = deps.jobStops?.take(
+  const stoppedByRig = deps.jobStops?.stoppedSince(
     target.id,
     job,
     Date.parse(run.startedAt),
@@ -146,7 +150,9 @@ export async function settleJobRun(
     deps.now(),
     cause ?? (stoppedByRig ? "stopped" : undefined),
   );
-  await recordJobEnd(target, job, ended, deps);
+  // The mark stays until an end is recorded, so a second settle of the same run, racing this one, reads it too.
+  if (await recordJobEnd(target, job, ended, deps))
+    deps.jobStops?.clear(target.id, job);
   return { state: "settled", ended };
 }
 /** Stops every run of `target`'s jobs in progress, each within the stop_timeout it started with, and records each as
@@ -361,7 +367,7 @@ export function describeRun(run: JobRun): string {
     case "timed-out":
       return `timed out${took} and was stopped${trigger}${skipped}`;
     case "stopped":
-      return `stopped by Rig${took} (rig down, a restart or a deploy)${trigger}${skipped}`;
+      return `stopped by Rig${took} (rig down, a Preview destroy, or the Target turned off)${trigger}${skipped}`;
     case "start-failed":
       return `could not start: ${run.errorCode ?? "unknown error"}${trigger}`;
     case "unknown":

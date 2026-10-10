@@ -1081,11 +1081,20 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         target.updatedAt = deps.now();
         await persistTarget(target, deps.store);
         admission.phase("stopping", target);
-        // Its job runs first, with the stop budget each started with: a run may use the Services that stop after it.
-        const stoppedJobs = await stopJobRuns(target, deps);
+        // Its job runs first, with the stop budget each started with: a run may use the Services that stop after it. A job
+        // that cannot be stopped never keeps the Services running; its failure is the Operation's once they stopped.
+        let jobFailure: unknown;
+        let stoppedJobs: Awaited<ReturnType<typeof stopJobRuns>> = [];
+        try {
+          stoppedJobs = await stopJobRuns(target, deps);
+        } catch (error) {
+          if (isStopDetached(error)) throw error;
+          jobFailure = error;
+        }
         outcome = (await stopKeepingKills(target)).outcome;
         if (stoppedJobs.length) outcome = "stopped";
         await releaseJobRevisions(target, stoppedJobs, deps);
+        if (jobFailure !== undefined) throw jobFailure;
         recordStopKills(target, operations.get(operationId)!.view);
       } else {
         if (command.action === "restart") {
@@ -1547,7 +1556,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   const onTarget = async (
     targetId: string,
     action: string,
-    work: (target: TargetRecord) => Promise<void>,
+    work: (target: TargetRecord, lifecycle: TargetLifecycle) => Promise<void>,
   ): Promise<void> => {
     if (draining) return;
     const recorded = (await deps.store.read()).targets.find(
@@ -1576,7 +1585,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const target = (await deps.store.read()).targets.find(
           (t) => t.id === targetId,
         );
-        if (target) await work(target);
+        // Its stops are detached on shutdown and shown as stopping, as a command's are.
+        if (target) await work(target, lifecycleOf(entry));
       } catch (error) {
         await deps
           .diagnostic({
@@ -1617,11 +1627,15 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         targetOn(configured.document.config, target.kind)
       )
         return;
-      await onTarget(targetId, "job-off", async (held) => {
+      await onTarget(targetId, "job-off", async (held, lifecycle) => {
         const again = await checkoutConfig(undefined, project, deps);
         if (!again.document || targetOn(again.document.config, held.kind))
           return;
-        await releaseJobRevisions(held, await stopJobRuns(held, deps), deps);
+        await releaseJobRevisions(
+          held,
+          await stopJobRuns(held, { ...deps, lifecycle }),
+          deps,
+        );
       });
     },
     targetBusy: (target) =>
@@ -1975,11 +1989,18 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       if (action === "reconcile") {
         entry.view.phase = "stopping";
-        await releaseJobRevisions(
-          target,
-          await stopJobRuns(target, { ...deps, lifecycle }),
-          deps,
-        );
+        // A job that cannot be stopped is a failure of this pass, after the Services stopped.
+        let jobFailure: unknown;
+        try {
+          await releaseJobRevisions(
+            target,
+            await stopJobRuns(target, { ...deps, lifecycle }),
+            deps,
+          );
+        } catch (error) {
+          if (isStopDetached(error)) throw error;
+          jobFailure = error;
+        }
         // A stop that fails part-way still records the SIGKILL of a Service it stopped before.
         try {
           await lifecycle.down(target);
@@ -1990,6 +2011,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         }
         if (recordStopKills(target, entry.view))
           await persistTarget(target, deps.store);
+        if (jobFailure !== undefined) throw jobFailure;
       }
       return undefined;
     } catch (error) {
@@ -2061,6 +2083,13 @@ function runnableJob(
       "DEPLOY_RECOVERY",
       "This Target has an unresolved deployment transition.",
       `Run rig down ${targetSelector(target)} to stop both recorded plans first.`,
+    );
+  // A stopped Target runs no job: rigd's next start would stop the run again as one of a Target meant to be stopped.
+  if (target.desired !== "running")
+    throw new RigError(
+      "JOB_UNAVAILABLE",
+      `${target.name} is stopped, so it runs no jobs.`,
+      `Run rig up ${targetSelector(target)} first.`,
     );
   if (target.deploymentIncomplete)
     throw new RigError(

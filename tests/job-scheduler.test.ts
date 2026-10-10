@@ -126,6 +126,9 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       return processes.get(name) ?? { state: "stopped" as const };
     },
     async stopJob(target: TargetRecord, planned: Pick<PlanJob, "name">) {
+      // As the supervisor does, a job with nothing running is left alone, unannounced.
+      if (processes.get(planned.name)?.state !== "running")
+        return { outcome: "unchanged" as const };
       stops.push(planned.name);
       marks.mark(target.id, planned.name, clock.ms);
       processes.set(planned.name, { state: "stopped" });
@@ -389,6 +392,25 @@ test("a run past its timeout is stopped and recorded as timed out; none is settl
   expect(w.store.state.activity.at(-1)).toMatchObject({
     outcome: "failed",
     message: "mb-mirror: timed out in 1h00m and was stopped",
+  });
+});
+
+test("a run that ended on its own before its timeout was noticed keeps its own exit", async () => {
+  const w = world(
+    stableTarget([job("palettes", "43 4 * * *", { timeout: 1800 })]),
+  );
+  await w.pass("2026-10-10T09:42:00Z");
+  await w.pass("2026-10-10T09:43:00Z");
+  // It exits at 29 minutes while a deploy holds the Target, which is free again past its deadline.
+  w.setBusy(true);
+  w.end("palettes", 0);
+  await w.pass("2026-10-10T10:12:00Z");
+  w.setBusy(false);
+  await w.pass("2026-10-10T10:20:00Z");
+  expect(w.stops).toEqual([]);
+  expect(w.record("palettes")!.last).toMatchObject({
+    outcome: "succeeded",
+    exitCode: 0,
   });
 });
 

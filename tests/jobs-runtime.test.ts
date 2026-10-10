@@ -178,6 +178,27 @@ test("turning the Target off stops its run in progress, and rig down does too, e
   ).toContain("link-resolver: stopped by Rig");
 });
 
+test("rig run refuses a stopped Target, whose next rigd would stop the run again", async () => {
+  const f = await fixture();
+  await f.runtime.command({
+    action: "down",
+    repoPath: f.world.repo,
+    target: "working",
+  });
+  await expect(
+    f.runtime.command({
+      action: "run",
+      repoPath: f.world.repo,
+      target: "working",
+      job: "link-resolver",
+    }),
+  ).rejects.toMatchObject({
+    code: "JOB_UNAVAILABLE",
+    hint: "Run rig up working first.",
+  });
+  expect(f.processes.get(f.key)).toBeUndefined();
+});
+
 test("rig run refuses a job the Target does not run and names what it does run", async () => {
   const f = await fixture();
   await expect(

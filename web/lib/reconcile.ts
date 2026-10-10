@@ -2,8 +2,8 @@ import type { Failure, Outcome } from "./outcome";
 import type { OperationResult, Settlement } from "./types";
 
 /** Pure: how a lost reply resolves once rigd has been asked where the Operation stands. `undefined`
- * means keep asking. A finished Operation answers as its command would have; one rigd never saw is
- * a failure that names the transport error. */
+ * means keep asking. A finished Operation answers as its command would have (a failure only when it failed); one
+ * rigd never saw is a failure that names the transport error. */
 export function resolveSettlement(
   settlement: Settlement,
   operation: {
@@ -16,8 +16,9 @@ export function resolveSettlement(
 ): Outcome<OperationResult> | undefined {
   if (settlement.state === "running" || settlement.state === "waiting")
     return undefined;
+  // Only a failed Operation failed: started, deployed, stopped and the rest are each a command's success.
   if (settlement.state === "finished")
-    return settlement.outcome === "succeeded"
+    return settlement.outcome !== "failed"
       ? { ok: true, value: { ...operation, outcome: settlement.outcome } }
       : {
           ok: false,

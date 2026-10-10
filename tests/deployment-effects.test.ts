@@ -124,7 +124,7 @@ async function fixture() {
   candidate.plan.workspacePath = join(root, "new");
   candidate.plan.domain = "new.test";
   const state: RuntimeState = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [previous],
     activity: [],

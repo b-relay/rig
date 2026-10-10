@@ -16,6 +16,7 @@ import type {
   BuildUnit,
   InstalledComponent,
   ManagedComponent,
+  PlanJob,
   PlanComponent,
 } from "../config/types";
 import { WORKING_TOOL_SUFFIX, isHealthUrl } from "../config/schema";
@@ -132,7 +133,7 @@ export function createTargetEffects(
    * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment. */
   const environment = async (
     target: TargetRecord,
-    component?: ManagedComponent | InstalledComponent,
+    component?: ManagedComponent | InstalledComponent | PlanJob,
     /** Inputs of a Project-scope command, which no Component carries. */
     projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
   ): Promise<Record<string, string>> => {

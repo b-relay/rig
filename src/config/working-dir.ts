@@ -1,5 +1,5 @@
 import { join, normalize } from "node:path";
-import type { PlanComponent, TargetPlan } from "./types";
+import type { PlanComponent, PlanJob, TargetPlan } from "./types";
 
 /** Pure: a validated working_dir as a plan records it: normalized and relative to the workspace, or undefined for the
  * workspace root itself, so a plan whose Service runs at the root is the plan recorded before working_dir existed. */
@@ -17,5 +17,16 @@ export function componentDirectory(
 ): string {
   return component?.kind === "managed" && component.workingDir !== undefined
     ? join(plan.workspacePath, component.workingDir)
+    : plan.workspacePath;
+}
+
+/** Pure: the absolute directory a job's command runs in: its working_dir inside the plan's workspace, or the workspace
+ * root. */
+export function jobDirectory(
+  plan: Pick<TargetPlan, "workspacePath">,
+  job: Pick<PlanJob, "workingDir">,
+): string {
+  return job.workingDir !== undefined
+    ? join(plan.workspacePath, job.workingDir)
     : plan.workspacePath;
 }

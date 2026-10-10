@@ -10,6 +10,14 @@ async function assertTargetsStopped(
   deps: RuntimeDependencies,
 ): Promise<void> {
   assertRecordedStopped(targets);
+  // A job run may outlive its Target's Services, as after a deploy; the Project is active until it ends.
+  if (
+    (await deps.store.read()).jobs?.some(
+      (record) =>
+        record.running && targets.some((target) => target.id === record.target),
+    )
+  )
+    throw projectActive();
   const reports = await observeTargets(
     targets,
     deps.observations,

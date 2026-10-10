@@ -165,14 +165,75 @@ export interface DeploymentRecord {
   /** The failure's error code; never a value from the environment. */
   message?: string;
 }
+/** How a job run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a restart or a
+ * deploy), gone with nothing recording how (the Mac restarted, or its exit record was lost), or never started. */
+export type JobOutcome =
+  "succeeded" | "failed" | "timed-out" | "stopped" | "unknown" | "start-failed";
+/** One run of a scheduled job. */
+export interface JobRun {
+  /** The run's identity: the incarnation its process carries, and the id of its Activity entries. */
+  id: string;
+  trigger: "schedule" | "manual";
+  /** The scheduled time a scheduled run is for (ISO 8601). */
+  scheduledFor?: string;
+  startedAt: string;
+  /** The checkout the run started in (its plan's workspacePath). A deploy keeps it until the run ends. */
+  workspace?: string;
+  /** Seconds the run may take before it is stopped as timed out, as its plan said when it started; absent: no limit. */
+  timeout?: number;
+  /** Seconds the run may take to exit after SIGTERM, as its plan said when it started; absent means the 10 s default. */
+  stopTimeout?: number;
+  finishedAt?: string;
+  outcome?: JobOutcome;
+  exitCode?: number;
+  signal?: string;
+  /** Why the start failed, as the error code Rig reported. */
+  errorCode?: string;
+  /** Scheduled times skipped because this run was still going. */
+  skipped?: number;
+  /** Rig decided to stop the run, and why: written before the stop signal, so a rigd that restarts before the end is
+   * recorded still records it as stopped by Rig or timed out. */
+  stopping?: { cause: "stopped" | "timed-out"; at: string };
+}
+/** What rigd knows about one job of one Target. Kept apart from the Target record, so an Operation that saves its Target
+ * never replaces what the job runner recorded meanwhile. */
+export interface JobRecord {
+  /** The Target's id. */
+  target: string;
+  /** The job's name. */
+  job: string;
+  /** The run in progress, recorded before its process is started. */
+  running?: JobRun;
+  /** The latest run that ended. */
+  last?: JobRun;
+  /** The latest scheduled time rigd acted on, by running, skipping or passing over it (ISO 8601). */
+  lastScheduled?: string;
+  /** When rigd first saw the job in this Target's plan (ISO 8601), so a time due after it that a rigd restart missed still
+   * runs within the late limit, before any time was acted on. */
+  watchedFrom?: string;
+}
+/** A checkout a job run kept after a deploy, to give back once nothing uses it. Recorded with the run's end, in the same
+ * write, so a rigd that stops before giving it back finds it again. */
+export interface JobCheckout {
+  /** The Target's id. */
+  target: string;
+  /** The Project's id, for a Target removed meanwhile. */
+  project: string;
+  /** The checkout's absolute path. */
+  workspace: string;
+}
 
 export interface RuntimeState {
-  version: 5;
+  version: 6;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
   /** Deploys, oldest first, bounded; absent until a rigd that records them has deployed. */
   deployments?: DeploymentRecord[];
+  /** Job runs per Target and job; absent until a job first ran or was scheduled. */
+  jobs?: JobRecord[];
+  /** Checkouts job runs kept after a deploy, waiting to be given back. */
+  jobCheckouts?: JobCheckout[];
   /** The last value handed out to order starts and Host restarts: each journalled start takes the next one as its run's
    * `startSeq`, and a recorded Host restart notes the value it found as its `seq`. It only grows. */
   startSeq?: number;

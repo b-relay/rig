@@ -92,11 +92,15 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   Service's names with the file that wins and the files it overrides.
 - **Config**: the structured editor (below). `rigd` checks the draft a moment
   after typing stops and each problem shows beneath its field.
-- **Jobs** and **Proxy** read through one module each, for work landing on
-  other branches: `web/lib/jobs.ts` reads `targets[].jobs` in the shape branch
-  `feat/scheduled-jobs` adds to status, and `web/lib/proxy.ts` lists every
+- **Jobs**: each Target's scheduled jobs from status (`targets[].jobs`,
+  [ADR 0013](adr/0013-scheduled-jobs.md)) with their schedule and zone, last
+  run, outcome and next run, and why one is not scheduled. **Run now** sends
+  what `rig run <job> <target>` sends (`action: "run"` with `job`); it is
+  offered unless a run of the job is going or the job was removed by a deploy,
+  and a refusal such as `JOB_RUNNING` shows beneath it.
+- **Proxy** reads through one module, `web/lib/proxy.ts`, which lists every
   hostname from status until a Rig-owned Caddy (`feat/rig-owned-caddy`) reports
-  them, with a typed stub for the custom Caddy file. Each names its branch in a
+  them, with a typed stub for the custom Caddy file; it names that branch in a
   TODO.
 
 ## Deploy history

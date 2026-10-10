@@ -15,6 +15,8 @@ export const OPERATION_OUTCOMES = [
   "installed",
   "uninstalled",
   "updated",
+  "succeeded",
+  "skipped",
 ] as const;
 export type OperationOutcome = (typeof OPERATION_OUTCOMES)[number];
 

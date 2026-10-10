@@ -10,8 +10,9 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import {
-  MIGRATED_STATE_VERSION,
+  MIGRATED_STATE_VERSIONS,
   STATE_VERSION,
+  UNFIXED_NAMES_STATE_VERSION,
   runtimeStateSchema as schema,
 } from "./state-schema";
 import { WORKING_TOOL_SUFFIX } from "../config/schema";
@@ -50,6 +51,7 @@ export class FileStateStore implements StateStore {
       parsed = JSON.parse(raw);
       this.assertSupportedVersion(parsed);
       readFixedTargetNames(parsed);
+      readBeforeJobs(parsed);
       schema.parse(parsed);
     } catch (error) {
       if (error instanceof RigError) throw error;
@@ -91,7 +93,7 @@ export class FileStateStore implements StateStore {
     if (
       typeof version !== "number" ||
       version === STATE_VERSION ||
-      version === MIGRATED_STATE_VERSION
+      MIGRATED_STATE_VERSIONS.includes(version)
     )
       return;
     const newer = version > STATE_VERSION;
@@ -156,7 +158,7 @@ const RESERVED_NAMES: readonly string[] = [
  *   leaving it behind.
  * Activity keeps the old names as the text it recorded. */
 export function readFixedTargetNames(parsed: unknown): void {
-  if (!loose(parsed) || parsed.version !== MIGRATED_STATE_VERSION) return;
+  if (!loose(parsed) || parsed.version !== UNFIXED_NAMES_STATE_VERSION) return;
   parsed.version = STATE_VERSION;
   const targets = (Array.isArray(parsed.targets) ? parsed.targets : []).filter(
     loose,
@@ -181,6 +183,11 @@ export function readFixedTargetNames(parsed: unknown): void {
       renameTarget(target, "preview", name);
     }
   }
+}
+/** State version 5 is version 6 before scheduled jobs: no plan has `jobs` and there are no job runs, so it is read as it
+ * is. The next write saves version 6, which an older rigd refuses rather than keep jobs it would never run. */
+function readBeforeJobs(parsed: unknown): void {
+  if (loose(parsed) && parsed.version === 5) parsed.version = STATE_VERSION;
 }
 /** One record of state version 4 under its new kind and name: its plans' names follow, and a Tool it published under its old
  * name keeps that file name as `publishedAs`. */

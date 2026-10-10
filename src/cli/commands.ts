@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError, Option } from "commander";
 import { resolve } from "node:path";
 import {
+  logComponentName,
   previewName,
   projectName,
   type RuntimeCommand,
@@ -82,6 +83,7 @@ export function createRigCommand(
   }
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
+  addRunCommand(command, cwd, execute);
   addInitCommand(command, cwd, execute);
   addLogsCommand(command, {
     execute,
@@ -319,6 +321,50 @@ function addDeployCommands(
     },
   );
 }
+function addRunCommand(
+  command: Command,
+  cwd: string,
+  execute: ExecuteCommand,
+): void {
+  command
+    .command("run")
+    .description(
+      "Run a scheduled job now, in the stable Target unless you name working or a preview. Refused while a run of it is still going.",
+    )
+    .argument("<job>", "Job name under jobs in rig.yaml", nonEmpty)
+    .argument(
+      "[target]",
+      "stable (the default), working, or preview with a Branch",
+    )
+    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .option("--project <name>", "Registered Project identity")
+    .option("--deployment <name>", "Explicit Preview name")
+    .option("--json", "Render the final domain result as JSON")
+    .action(
+      async (
+        job: string,
+        target: string | undefined,
+        branch: string | undefined,
+        options: ScopeOptions,
+      ) => {
+        if (!logComponentName.safeParse(job).success)
+          throw new RigError(
+            "USAGE",
+            `'${terminalText(job)}' is not a job name.`,
+            "Pass a name from jobs in rig.yaml, such as rig run nightly-import.",
+          );
+        // A job is scheduled in the stable Target by default, so that is the Target rig run means unless another is named.
+        const request = targetRequest(
+          "run",
+          target ?? (options.deployment ? undefined : "stable"),
+          branch,
+          cwd,
+          options,
+        );
+        await execute({ ...request, job }, { json: options.json });
+      },
+    );
+}
 interface InitOptions extends ScopeOptions {
   path?: string;
   productionBranch?: string;
@@ -446,7 +492,7 @@ function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
   };
 }
 function targetRequest(
-  action: "up" | "down" | "restart" | "logs",
+  action: "up" | "down" | "restart" | "logs" | "run",
   target: string | undefined,
   branch: string | undefined,
   cwd: string,

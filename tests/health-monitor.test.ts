@@ -74,7 +74,7 @@ function fixture(
     ),
   } as unknown as TargetRecord;
   const state = {
-    version: 5,
+    version: 6,
     projects: [
       {
         id: "p1",

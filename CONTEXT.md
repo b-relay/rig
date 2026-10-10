@@ -323,6 +323,31 @@ and `${ports.<name>}` a named one; elsewhere `${services.<name>.port}` and
 from Rig values to the application's own inputs
 ([ADR 0005](docs/adr/0005-services-use-platform-independent-inputs.md)).
 
+### Job
+
+A named command in `rig.yaml`'s `jobs` that `rigd` runs on a five-field cron
+`schedule`, read in the job's `timezone` (an IANA name) or the Mac's own zone
+([ADR 0013](docs/adr/0013-scheduled-jobs.md)).
+_Avoid_: cron job, task, Service
+
+_Relationship_: A job runs from its Target's checkout with the Target's
+references (`${services.<name>.port}`, `${services.<name>.data}`, and
+`${rig.data}` as its own directory). Its `targets` decide where the schedule
+runs it (the stable Target unless they name others); `rig run` runs it in any
+Target that is on and deployed. A Target runs its jobs on schedule while it is
+deployed, meant to run and on in `rig.yaml`.
+
+_Relationship_: A **run** never overlaps the one before it: a time due while
+it goes is skipped. A time missed by more than 5 minutes (the Mac slept, rigd
+was down) is not caught up and not recorded. Daylight saving time: a skipped
+wall time runs once at the change, a repeated one once, the first time.
+
+_Relationship_: A deploy never stops a run; it finishes on the checkout it
+started in, which Rig keeps until then. `rig down`, a Preview destroy,
+turning the Target's role off, and the job's `timeout` stop it. `rig run <job>`
+starts a run now. Each ended run is one Activity entry; status shows the last
+and next run, and `rig logs --service <job>` its output.
+
 ### Tool
 
 A named executable a Project makes available for invocation, rather than a
@@ -776,6 +801,9 @@ stopped Previews, when logs exist.
 _Relationship_: `rig logs` prints recent logs and exits by default. Streaming
 logs requires an explicit `--follow` flag.
 
+_Relationship_: A job's output is recorded in its Target's logs under the
+job's name, so `rig logs --service <job>` reads it.
+
 _Relationship_: `rig logs` presents all streams together, merged
 chronologically across components. There is no stream filter.
 
@@ -877,12 +905,13 @@ replacing, or destroying Previews mutates runtime state.
 
 The machine-owned record `rigd` keeps at `<RIG_ROOT>/runtime/state.json`:
 registered Projects, Targets with their Deployment records and port
-selections, and the Activity log. Only `rigd` writes it, one durable replace
-at a time with the previous generation kept beside it. A file written by a
-newer state version, or by a version older than 4, is refused unread. Version
-4, written before Target names were fixed, is read and migrated to version 5:
-the working and stable Targets take their role's name, a Preview holding a
-reserved name is renamed, and the next write saves version 5. CLI and future UI views are derived
+selections, job runs, and the Activity log. Only `rigd` writes it, one durable
+replace at a time with the previous generation kept beside it. A file written
+by a newer state version, or by a version older than 4, is refused unread.
+Version 4, written before Target names were fixed, is read with the working
+and stable Targets taking their role's name and a Preview holding a reserved
+name renamed; version 5, written before scheduled jobs, is read as it is. The
+next write saves version 6. CLI and future UI views are derived
 from it through `rigd`, so they agree. Daemon administration activity is
 journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 
@@ -910,7 +939,7 @@ component carries its command, working directory when it is not the workspace
 root, ports, health check (`health`), start budget (`readyTimeout`, the
 healthcheck's `start_period`), ongoing checks (`healthcheck`, absent in plans
 recorded before ADR 0012, which therefore only gate start), restart policy, and
-dependencies. The
+dependencies. The plan also lists the jobs the Target runs (`jobs`, absent when it runs none). The
 process supervisor is always `rigd`. A plan's field names are Rig's own, not
 `rig.yaml` keys: a Service's `environment` is the plan's `env`.
 

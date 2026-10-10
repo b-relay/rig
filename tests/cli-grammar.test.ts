@@ -240,3 +240,45 @@ test("rig logs --help documents every filter and the time forms", async () => {
     expect(h.requests).toEqual([]);
   }
 });
+
+test("rig run sends the job for the stable Target unless another is named, and answers --help and -h", async () => {
+  const cases: [string[], Partial<RuntimeCommand>][] = [
+    [["run", "link-resolver"], { target: "stable" }],
+    [["run", "link-resolver", "working"], { target: "working" }],
+    [
+      ["run", "link-resolver", "preview", "feature/a"],
+      { target: "preview", branch: "feature/a" },
+    ],
+    [
+      ["run", "link-resolver", "preview", "--deployment", "feat-1a2b3c4d"],
+      { target: "preview", deployment: "feat-1a2b3c4d" },
+    ],
+  ];
+  for (const [args, expected] of cases) {
+    const h = harness(() => ({
+      outcome: "started",
+      project: "melody",
+      target: expected.target,
+      job: "link-resolver",
+    }));
+    expect(await runRigCli(args, h.deps)).toBe(0);
+    expect(h.requests).toEqual([
+      expect.objectContaining({
+        action: "run",
+        job: "link-resolver",
+        repoPath: "/workspace",
+        ...expected,
+      }),
+    ]);
+    expect(h.out()).toContain("link-resolver started");
+  }
+  const bad = harness();
+  expect(await runRigCli(["run", "Bad Name"], bad.deps)).toBe(1);
+  expect(bad.requests).toEqual([]);
+  expect(bad.err()).toContain("is not a job name");
+  for (const flag of ["--help", "-h"]) {
+    const h = harness();
+    expect(await runRigCli(["run", flag], h.deps)).toBe(0);
+    expect(h.out()).toContain("Run a scheduled job now");
+  }
+});

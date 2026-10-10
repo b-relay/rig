@@ -58,7 +58,7 @@ async function fixture() {
   const repo = join(root, "repo");
   await mkdir(repo);
   const state: RuntimeState = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [],
     activity: [],

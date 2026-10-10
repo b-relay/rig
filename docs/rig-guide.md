@@ -1647,6 +1647,136 @@ until `rig restart working`, and a deployed Target until it is deployed again.
 A Target that keeps running is unaffected: its recorded plan still only gates
 start, and status checks it as before.
 
+### Scheduled jobs
+
+A job is a command rigd runs at cron times, such as a nightly import or a
+backfill ([ADR 0013](adr/0013-scheduled-jobs.md)). Jobs sit under `jobs:`
+beside `services:` and take a Service's Compose names:
+
+```yaml
+jobs:
+  link-resolver:
+    command: pnpm --filter jobs run link-resolver
+    schedule: "17 */6 * * *" # 17 minutes past every sixth hour
+    timezone: America/Chicago # optional; default: the Mac's own zone
+    timeout: 2h # optional; a run still going then is stopped
+    environment:
+      DATABASE_URL: postgres://127.0.0.1:${services.postgres.port}/melody
+      COVER_CACHE: ${services.api.data}/covers
+    env_file: .env.jobs
+    working_dir: apps/jobs
+  mb-mirror:
+    command: ./mirror --work ${rig.data}
+    schedule: "0 7 * * 3,6" # 07:00 on Wednesdays and Saturdays
+    stop_timeout: 1m
+```
+
+- **`schedule`** is a standard five-field cron expression: minute, hour,
+  day of the month, month, day of the week. Fields take `*`, numbers, ranges
+  (`1-5`), lists (`1,15`), steps (`*/6`, `5/20`) and English names (`jan`,
+  `mon`); `7` is Sunday too. When both day fields name days, a day matching
+  either runs it, as in cron. `@daily` and the other shortcuts are refused
+  with the five fields to write instead, and so is a schedule that names no
+  day that exists (`0 0 30 2 *`).
+- **`timezone`** is an IANA name such as `America/Chicago`, `Europe/Berlin`
+  or `UTC`, checked when rig.yaml is read. Without it the schedule is read in
+  the Mac's own time zone (System Settings > General > Date & Time) as rigd
+  reads it. After changing the Mac's zone, check the next run in `rig status`;
+  if it still shows the old zone, restart rigd with `rigd install`.
+  Daylight saving time follows one rule: a time the spring change skips
+  (02:30 on the night clocks jump from 02:00 to 03:00) runs once, at the
+  change (03:00); a time the autumn change repeats (01:30 on the night clocks
+  fall back) runs once, the first time. So a daily job runs exactly once on
+  both nights. A schedule in `UTC` never shifts.
+- **`timeout`** (such as `2h`, at most `168h`) stops a run that is still going
+  then, with SIGTERM and SIGKILL after its `stop_timeout` (default `10s`), and
+  records it as timed out. Without it a run may take as long as it takes.
+- **`targets`** lists the Targets whose schedule runs the job: `working`,
+  `stable`, `preview` (every Preview). The default is `[stable]`, so the
+  schedule runs it once, against the Production branch, not again in the
+  working copy and every Preview. It decides scheduling only: `rig run`
+  runs the job in any Target that is on and deployed, such as `working` to
+  try it.
+- **References** are the Target's, as in a Service: `${services.<name>.port}`
+  and `${services.<name>.ports.<port>}` reach the Target's Services,
+  `${services.<name>.data}` is a Service's persistent directory (to share a
+  cache with it), `${rig.data}` is the job's own (`<data root>/<job>`), and
+  `${environment.NAME}`, `${rig.target}`, `${rig.workspace}` and the other
+  `rig.*` values mean what they do elsewhere. `${port}` is refused: a job has
+  no port. Environment files work as for a Service, including the operator
+  files `<RIG_ROOT>/env/<project>/<job>/{all,<role>}.env`.
+- A job cannot share its name with a Service or Tool, and a Target patch
+  cannot change a job.
+
+**When a job runs.** A Target runs its jobs on schedule while it is deployed
+(no unfinished deploy or transition), meant to run (not stopped with
+`rig down`), and on in rig.yaml. The job runs from the Target's checkout: the
+working copy for the working Target, the deployed Commit for the stable
+Target and Previews, through the same capture wrapper as a Service. rigd checks
+for due times every second.
+
+- **No overlap.** If a run is still going at the next scheduled time, that
+  time is skipped. Activity records the first skip of a run, and status counts
+  the rest on the run.
+- **No catch-up.** A scheduled time may start up to 5 minutes late (rigd
+  restarting, or the Target busy with a deploy). A time found later than that,
+  because the Mac slept or rigd was not running, is dropped and not recorded;
+  after a long sleep at most the latest time within those 5 minutes runs.
+  `rig status` shows the last and next run.
+- **Deploys do not cut a run off.** A deploy stops the previous plan's
+  Services, not its job runs: a run finishes on the checkout it started in,
+  which Rig keeps until the run ends and then removes, and the next run uses
+  the new deployment. `rig restart` leaves a run alone too.
+- **What stops a run:** `rig down` of its Target (with its `stop_timeout`,
+  shown as stopping like a Service; `--kill` cuts it short), destroying a
+  Preview, turning the Target's role off in rig.yaml (noticed within about 10
+  seconds), and its `timeout`. Each is recorded as stopped by Rig or timed out.
+  A stop Rig cannot confirm fails with `JOB_STOP_UNVERIFIED`: `rig down` still
+  stops the Services and then reports it, and a Preview is not destroyed until
+  the run is confirmed stopped.
+- **rigd restarting** leaves a run going; the next rigd adopts it, never runs
+  it twice, and records its exit. A stop Rig had decided on is recorded with
+  its cause even across a restart. A Mac restart ends a run, and it is
+  recorded as ended with no recorded exit. A time due just after rigd first
+  saw a job still runs when rigd restarts within the 5 minutes.
+- **A deploy that drops a job** lets its run finish; until then status lists
+  it as removed and `rig logs --service <job>` still reads it. The checkout
+  it ran in is removed once it ends, retried until that works.
+
+**Running a job now.** `rig run <job>` starts a run at once in the stable
+Target, or in the Target you name (`rig run <job> working`,
+`rig run <job> preview <branch>`), whether or not the job's `targets`
+schedule it there. It answers as soon as the run started,
+`melody stable link-resolver started`, and is refused with `JOB_RUNNING` while
+a run of the job is going, `JOB_UNKNOWN` (naming the jobs the Target has, or
+the command that plans it again when rig.yaml gained the job since) for a job
+the Target's plan does not have,
+`JOB_UNAVAILABLE` for a Target stopped with `rig down` (or whose last deploy
+did not complete), and `TARGET_OFF` for an off Target. While a run is in
+progress, the Project cannot be renamed, repointed or forgotten. The working Target picks up a new or changed
+job at `rig restart working`; a deployed Target at its next deploy.
+
+**Seeing runs.** `rig status` lists each Target's jobs under its Services:
+
+```
+stable  running  main@b8986d0
+  api  running  :4000
+  Jobs
+    link-resolver  17 */6 * * * America/Chicago · last succeeded in 3m12s, 2h ago · next Sat, 18:17 CDT (in 4h)
+    mb-mirror  0 7 * * 3,6 America/Chicago · running since Sat, 07:00 CDT (1h)
+```
+
+A last run that failed, timed out or could not start is listed under
+Failures. `rig status --json` (and the dashboard's protocol) has each job's
+`schedule`, `timeZone`, `state`, `scheduled` (and a `reason` when not),
+`nextRunAt`, the `running` run and the `last` run with its `outcome`
+(`succeeded`, `failed`, `timed-out`, `stopped`, `unknown`, `start-failed`),
+exit code or signal, duration and skipped count. Every ended run is one
+`job` entry in `rig activity`, such as
+`link-resolver: succeeded in 3m12s` or `mb-mirror: failed in 41m02s: exit 1`.
+A job's output is in the Target logs under its name:
+`rig logs stable --service link-resolver`.
+
 ### Databases and other local dependencies
 
 A database is an ordinary Service: a `command`, a port, and its data under
@@ -1831,8 +1961,9 @@ included, is a command and follows the command rule.
 
 ### References
 
-`command`, a healthcheck's `test` (each argument of a list form), `build`,
-`bin`, `environment` values, and `env_file` paths may use `${...}`
+`command` (a Service's or a job's), a healthcheck's `test` (each argument of a
+list form), `build`, `bin`, `environment` values, and `env_file` paths may use
+`${...}`
 references. A reference is the exact path of one value
 in the selected Target's own settings (the base config with that role's patch
 applied), a port, or one of the `rig.*` values Rig generates:
@@ -1852,6 +1983,9 @@ applied), a port, or one of the `rig.*` values Rig generates:
   same rule as `${port}`.
 - `${services.<service>.ports.<port>}`: anywhere, the concrete number of a
   declared port in this Target.
+- `${services.<service>.data}`: anywhere but a shared or Tool `build`, that
+  Service's persistent directory in this Target, so a job or another Service
+  can share it.
 
   `${port}` and `${ports.<port>}` belong to the Service whose setting holds
   them; a value read through a reference keeps its own Service, so
@@ -1866,8 +2000,9 @@ applied), a port, or one of the `rig.*` values Rig generates:
   name. It is the only reference a `domain` may contain.
 - `${rig.workspace}`: the Target's checkout, which is the repository for the
   working Target.
-- `${rig.data}`: this Service's persistent directory in this Target. It is
-  only available inside a Service.
+- `${rig.data}`: this Service's or job's persistent directory in this
+  Target (`<data root>/<name>`). It is only available inside a Service or a
+  job.
 - `${rig.host}`: the Target's hostname when it has a route (a hostname with a
   `proxy`, or with the default route to its one Service with one port),
   otherwise empty.
@@ -1889,9 +2024,10 @@ names the field that holds the reference, such as `services.web.command`:
   now; the message names the new path.
 - `no_port` and `ambiguous_port`: `${port}` or `${services.<service>.port}`
   for a Service that declares no port, or several.
-- `invalid_context`: `${rig.data}`, `${port}` or `${ports.<port>}` outside a
-  Service, or a shared or Tool `build` that reaches a Service's `environment`
-  or data, directly or through another value. Those builds run with Project inputs only. A reference inside a
+- `invalid_context`: `${rig.data}` outside a Service or job, `${port}` or
+  `${ports.<port>}` outside a Service, or a shared or Tool `build` that reaches
+  a Service's `environment` or data (`${services.<service>.data}`), directly
+  or through another value. Those builds run with Project inputs only. A reference inside a
   backquoted command is refused the same way; write `$(...)` instead.
 
 Because the base config is checked by itself, a value that only a role patch

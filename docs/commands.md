@@ -43,6 +43,9 @@ rig
 │    --kill                         down and restart: skip stop_timeout (SIGTERM, SIGKILL after 1.5 s),
 │                                   and cut short a stop already running on the Target
 │
+├─ run <job> [target] [branch]      start a scheduled job now; target: "stable" (default), "working" or "preview"
+│    --project <name>   --deployment <name>   --json
+│
 ├─ logs [target] [branch]
 │    --project <name>   --deployment <name>
 │    --follow                       stream until interrupted, after the matching history
@@ -96,7 +99,20 @@ status` takes no Target.
   Production branch; `preview` refuses it.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
-- `--json` exists on `status`, `deploy`, `up`, `down`, and `restart` only.
+- `--json` exists on `status`, `deploy`, `up`, `down`, `restart`, and `run`
+  only.
+- `run` starts one run of a job from `jobs` in `rig.yaml` and answers once it
+  started; it never waits for the run to end. Without a Target it means
+  `stable`, where jobs are scheduled by default; it runs the job in any Target
+  that is on and deployed, whatever the job's `targets` schedule. It is refused with `JOB_RUNNING` while a
+  run of the job is going (runs never overlap), with `JOB_UNKNOWN` for a job the
+  Target's plan does not have (the hint names the jobs it has, or the command
+  that plans it again), with `JOB_UNAVAILABLE` for a stopped Target, and with
+  `TARGET_OFF` for an off Target. `down` and `down --destroy` fail with
+  `JOB_STOP_UNVERIFIED` when a job run cannot be confirmed stopped; `down`
+  still stops the Services first, and `--destroy` changes nothing. `status` lists each
+  Target's jobs with their last and next run, `activity` has one `job` entry
+  per ended run, and `logs --service <job>` reads a job's output.
 - `status` runs no health check for a Service with a `healthcheck`: it shows
   the result `rigd`'s ongoing checks cached, such as
   `web  healthy · checked 12s ago` or
@@ -104,7 +120,7 @@ status` takes no Target.
   unhealthy Service from the same result. Becoming unhealthy, becoming
   healthy again, and each health restart are in `rig activity`.
 - `--destroy` is its own confirmation; there is no prompt and no `--yes`.
-- `logs --service` takes a Service or Tool name from `rig.yaml`, or `setup`
+- `logs --service` takes a Service, Tool or job name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the
   Target's names. `--since` and `--until` are inclusive, and leave out lines
   with no recorded time (the files launchd wrote for a job under an older

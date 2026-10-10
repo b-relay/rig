@@ -25,6 +25,12 @@ export const HEALTH_MONITOR: NoticeChannel = {
     "Ongoing health checks (healthcheck) are not run, so no Service is found unhealthy or restarted for it, until a pass succeeds; rigd tries again every second.",
   hint: "Inspect the runtime state file under the Rig root, and rig activity.",
 };
+export const JOB_SCHEDULER: NoticeChannel = {
+  name: "jobs",
+  consequence:
+    "Scheduled jobs are not started, and ended runs are not recorded, until a pass succeeds; rigd tries again every second.",
+  hint: "Inspect the runtime state file under the Rig root, and rig activity.",
+};
 /** Bounded in-memory evidence: one entry per channel, a count, and the latest message. Never writes anywhere, so a failing sink cannot recurse. */
 export interface NoticeBoard {
   note(channel: NoticeChannel, message: string): void;

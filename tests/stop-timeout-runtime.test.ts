@@ -49,7 +49,7 @@ function world(
 ) {
   let clock = Date.parse("2026-09-27T04:00:00.000Z");
   const state: RuntimeState = {
-    version: 5,
+    version: 6,
     projects: [],
     targets: [],
     activity: [],

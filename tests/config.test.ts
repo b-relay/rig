@@ -630,7 +630,7 @@ test("a Project needs a Service or a Tool; a Tool-only Project needs no Service,
     expect(failureOf(empty)).toMatchObject({
       code: "invalid_config",
       hint: expect.stringContaining(
-        "services: A Project needs at least one Service or Tool.",
+        "services: A Project needs at least one Service, Tool or job.",
       ),
     });
   const config = parseProjectConfig({
@@ -2325,7 +2325,7 @@ test("a reference is an exact path to one public value: shell expansion, collect
   );
   // rig.data belongs to one Service, so a Tool or Project-level value cannot name it.
   expect(refusal({ environment: { DATA: "${rig.data}" } })).toBe(
-    "Fix environment.DATA: ${rig.data} in environment.DATA has no Service: persistent data belongs to one Service.",
+    "Fix environment.DATA: ${rig.data} in environment.DATA has no Service or job: persistent data belongs to one Service or job. Write ${services.<service>.data} for a Service's directory.",
   );
   expect(
     hintOf({
@@ -2333,7 +2333,7 @@ test("a reference is an exact path to one public value: shell expansion, collect
       tools: { ctl: { bin: "bin/ctl", build: "make DATA=${rig.data}" } },
     }),
   ).toBe(
-    "Fix tools.ctl.build: ${rig.data} in tools.ctl.build has no Service: persistent data belongs to one Service.",
+    "Fix tools.ctl.build: ${rig.data} in tools.ctl.build has no Service or job: persistent data belongs to one Service or job. Write ${services.<service>.data} for a Service's directory.",
   );
   // A patch is checked as the graph it produces.
   expect(

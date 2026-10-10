@@ -218,6 +218,23 @@
       "additionalProperties": false,
       "description": "Rig runs its own Caddy, which terminates TLS with ACME DNS-01 certificates and routes every hostname. Without this section Rig runs no Caddy and only writes its route file."
     },
+    "daemon": {
+      "description": "How rigd is installed on this Host.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "start": {
+          "default": "login",
+          "description": "When rigd and Rig's Caddy start. login: as LaunchAgents while you are logged in. boot: as system jobs that run as you from boot, before anyone logs in; rigd install prints one sudo line per job, once. Ignored when RIG_ROOT is set.",
+          "type": "string",
+          "enum": [
+            "login",
+            "boot"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "diagnostics": {
       "description": "Rig Diagnostic log policy.",
       "default": {},

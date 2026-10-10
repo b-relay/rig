@@ -21,6 +21,17 @@ export class RigError extends Error {
  * Operation id and diagnostic path are part of the report. */
 const userCorrectableCodes: ReadonlySet<string> = new Set([
   "USAGE",
+  // Rig's own Caddy (ADR 0014): each names what to fix, or the sudo line to paste.
+  "DAEMON_SYSTEM_INSTALL",
+  "DAEMON_SYSTEM_UNINSTALL",
+  "PROXY_TOKEN",
+  "PROXY_BINARY",
+  "PROXY_CONFIG",
+  "PROXY_CUSTOM_INVALID",
+  "PROXY_PATH",
+  "PROXY_PORT_BUSY",
+  "PROXY_UNMANAGED",
+  "PROXY_NOT_READY",
   // rigd is still starting: transient, and the hint says to retry.
   "HOST_STATE_PENDING",
   "CANCELLED",

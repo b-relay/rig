@@ -62,7 +62,7 @@ Today `rigd install` loads rigd as a LaunchAgent in `gui/<uid>`, which exists on
   - `UserName` is the installing user, and `GroupName` is `staff`.
   - `ProgramArguments` points at a stable path under the root.
   - `WorkingDirectory` is the root.
-  - `EnvironmentVariables` sets `HOME`, `USER`, `LOGNAME`, a fixed `PATH` and `RIG_ROOT`.
+  - `EnvironmentVariables` sets `HOME`, `USER`, `LOGNAME`, `LANG`, `RIG_ROOT` and a fixed `PATH` (`<root>/bin`, `~/.bun/bin`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin` and the system directories). Unlike the LaunchAgent, it does not copy the installing shell's environment, whose `PATH` changes from one shell to the next: a root-owned plist that differed on every install would ask for sudo every time.
   - `RunAtLoad` is set, `KeepAlive` is `true`, `ThrottleInterval` is 10 and `Umask` is 63.
   - Logs go to `daemon/startup.log` for rigd and `caddy/launchd.log` for Caddy.
 

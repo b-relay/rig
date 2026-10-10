@@ -1,15 +1,13 @@
 import { readFile, readlink, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { generationFiles, proxyPaths } from "../domain/managed-proxy";
 import { createCaddyAdmin } from "../providers/caddy-admin";
 import { installedBinary } from "../providers/caddy-binary";
-import {
-  createLaunchAgentCaddyJob,
-  createProcessCaddyJob,
-} from "../providers/caddy-job";
+import { createCaddyJob } from "../providers/caddy-job";
+import type { DaemonMode } from "../daemon/installation";
 import { inspectProxyToken } from "./proxy-token";
 
 /** Doctor's view of Rig's own Caddy (ADR 0014): the token, the binary, the job and the custom files. It reads files and asks
@@ -17,7 +15,7 @@ import { inspectProxyToken } from "./proxy-token";
 export async function inspectManagedProxy(
   root: string,
   settings: ProxySettings,
-  mode: "process" | "launchd",
+  mode: DaemonMode,
 ): Promise<DoctorCheck[]> {
   const paths = proxyPaths(root);
   const checks: DoctorCheck[] = [];
@@ -62,16 +60,15 @@ export async function inspectManagedProxy(
         },
   );
   const admin = createCaddyAdmin(paths.socket);
-  const job =
-    mode === "process"
-      ? createProcessCaddyJob({ root, paths, userHome: homedir(), admin })
-      : createLaunchAgentCaddyJob({
-          root,
-          paths,
-          userHome: homedir(),
-          uid: process.getuid?.() ?? 501,
-          admin,
-        });
+  const job = createCaddyJob({
+    root,
+    paths,
+    mode,
+    userHome: homedir(),
+    uid: process.getuid?.() ?? 501,
+    userName: userInfo().username,
+    admin,
+  });
   const [state, reachable] = await Promise.all([
     job.state(),
     admin.reachable(),

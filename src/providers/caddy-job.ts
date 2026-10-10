@@ -79,6 +79,116 @@ function startFailure(paths: ProxyPaths, deadlineMs: number): RigError {
   );
 }
 
+/** How launchd reports one job: running with a pid, stopped (not loaded, or loaded with no process), or unknown. */
+async function observeLaunchd(
+  launchctl: LaunchctlCommand,
+  target: string,
+): Promise<{ state: CaddyJobState; pid?: number }> {
+  const result = await launchctl(["print", target]).catch(() => undefined);
+  if (!result) return { state: "unknown" };
+  if (result.code !== 0)
+    return /could not find|no such process|not find service/i.test(
+      result.stderr + result.stdout,
+    )
+      ? { state: "stopped" }
+      : { state: "unknown" };
+  const pid = /^\s*pid = (\d+)\s*$/m.exec(result.stdout)?.[1];
+  if (pid) return { state: "running", pid: Number(pid) };
+  return /^\s*state = running\s*$/m.test(result.stdout)
+    ? { state: "unknown" }
+    : { state: "stopped" };
+}
+/** The plist of Rig's Caddy as a system job that runs as `userName` from boot (`daemon.start: boot`). */
+export function caddySystemPlist(options: {
+  readonly root: string;
+  readonly paths: ProxyPaths;
+  readonly userHome: string;
+  readonly userName: string;
+}): { label: string; plist: string } {
+  const label = caddyJobLabel(options.root);
+  return {
+    label,
+    plist: renderLaunchdPlist({
+      label,
+      programArguments: caddyCommand(options.paths),
+      environment: caddyEnvironment(options.userHome),
+      workingDirectory: options.root,
+      log: options.paths.jobLog,
+      keepAlive: "always",
+      userName: options.userName,
+      groupName: "staff",
+    }),
+  };
+}
+/** Rig's Caddy as a system job (`daemon.start: boot`). Defining or removing it needs the owner's sudo, which `rigd install`
+ * prints; this job only verifies that, observes it and restarts it. A restart needs no root: Caddy is asked to exit and the
+ * job's KeepAlive starts it again. */
+export function createSystemCaddyJob(options: {
+  readonly root: string;
+  readonly paths: ProxyPaths;
+  readonly userHome: string;
+  readonly userName: string;
+  readonly admin: CaddyAdminClient;
+  /** Where system plists live; tests pass a temporary directory. */
+  readonly daemons?: string;
+  readonly launchctl?: LaunchctlCommand;
+  readonly deadlineMs?: number;
+}): InstallableCaddyJob {
+  const launchctl = options.launchctl ?? runLaunchctlCommand;
+  const { label, plist } = caddySystemPlist(options);
+  const plistPath = join(
+    options.daemons ?? "/Library/LaunchDaemons",
+    `${label}.plist`,
+  );
+  const deadlineMs = options.deadlineMs ?? 30_000;
+  const observe = () => observeLaunchd(launchctl, `system/${label}`);
+  const matches = async () =>
+    (await readFile(plistPath, "utf8").catch(() => undefined)) === plist;
+  const needsSudo = (message: string) =>
+    new RigError(
+      "DAEMON_SYSTEM_INSTALL",
+      message,
+      "Run rigd install, which prints the sudo line for it.",
+      { label },
+    );
+  return {
+    description: plistPath,
+    matches,
+    state: async () => (await observe()).state,
+    async restart() {
+      const before = await observe();
+      await options.admin.stop();
+      const restarted = await until(async () => {
+        const now = await observe();
+        return (
+          now.state === "running" &&
+          now.pid !== before.pid &&
+          (await options.admin.reachable())
+        );
+      }, deadlineMs);
+      if (!restarted) throw startFailure(options.paths, deadlineMs);
+    },
+    async install() {
+      if (!(await matches()) || (await observe()).state !== "running")
+        throw needsSudo(
+          `Rig's Caddy is not installed as the system job ${label} this Rig defines.`,
+        );
+      if (!(await until(() => options.admin.reachable(), deadlineMs)))
+        throw startFailure(options.paths, deadlineMs);
+      return { changed: false };
+    },
+    async remove() {
+      if (
+        (await readFile(plistPath, "utf8").catch(() => undefined)) !==
+          undefined ||
+        (await observe()).state !== "stopped"
+      )
+        throw needsSudo(
+          `Rig's Caddy is still installed as the system job ${label}.`,
+        );
+    },
+  };
+}
 /** Rig's Caddy as a LaunchAgent in the user's login (`login` mode). launchd keeps it running: `KeepAlive` starts it again
  * whenever it exits, which is also how a restart takes effect. */
 export function createLaunchAgentCaddyJob(options: {
@@ -109,23 +219,7 @@ export function createLaunchAgentCaddyJob(options: {
     log: options.paths.jobLog,
     keepAlive: "always",
   });
-  async function observe(): Promise<{ state: CaddyJobState; pid?: number }> {
-    const result = await launchctl(["print", `${domain}/${label}`]).catch(
-      () => undefined,
-    );
-    if (!result) return { state: "unknown" };
-    if (result.code !== 0)
-      return /could not find|no such process|not find service/i.test(
-        result.stderr + result.stdout,
-      )
-        ? { state: "stopped" }
-        : { state: "unknown" };
-    const pid = /^\s*pid = (\d+)\s*$/m.exec(result.stdout)?.[1];
-    if (pid) return { state: "running", pid: Number(pid) };
-    return /^\s*state = running\s*$/m.test(result.stdout)
-      ? { state: "unknown" }
-      : { state: "stopped" };
-  }
+  const observe = () => observeLaunchd(launchctl, `${domain}/${label}`);
   return {
     description: plistPath,
     matches: async () =>
@@ -257,4 +351,36 @@ export function createProcessCaddyJob(options: {
     },
     remove: stop,
   };
+}
+/** The Caddy job that sits beside rigd: a detached process, a LaunchAgent, or a system job, as rigd itself runs. */
+export function createCaddyJob(options: {
+  readonly root: string;
+  readonly paths: ProxyPaths;
+  readonly mode: "process" | "launchd" | "system";
+  readonly userHome: string;
+  readonly uid: number;
+  readonly userName: string;
+  readonly admin: CaddyAdminClient;
+  readonly launchctl?: LaunchctlCommand;
+  readonly deadlineMs?: number;
+  /** Where system plists live; tests pass a temporary directory. */
+  readonly daemons?: string;
+}): InstallableCaddyJob {
+  const common = {
+    root: options.root,
+    paths: options.paths,
+    userHome: options.userHome,
+    admin: options.admin,
+    ...(options.deadlineMs ? { deadlineMs: options.deadlineMs } : {}),
+  };
+  if (options.mode === "process") return createProcessCaddyJob(common);
+  const launchctl = options.launchctl ? { launchctl: options.launchctl } : {};
+  return options.mode === "system"
+    ? createSystemCaddyJob({
+        ...common,
+        ...launchctl,
+        userName: options.userName,
+        ...(options.daemons ? { daemons: options.daemons } : {}),
+      })
+    : createLaunchAgentCaddyJob({ ...common, ...launchctl, uid: options.uid });
 }

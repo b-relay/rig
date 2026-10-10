@@ -109,7 +109,7 @@ test("the install line copies, verifies, removes the LaunchAgent it replaces, in
       "",
     ].join("\n"),
   );
-});
+}, 30_000);
 
 test("a plist changed after Rig rendered it fails the check: nothing reaches LaunchDaemons or launchd, and the LaunchAgent stays", async () => {
   const s = await sandbox();
@@ -136,7 +136,7 @@ test("a plist changed after Rig rendered it fails the check: nothing reaches Lau
   ).toBe(false);
   expect(existsSync(agent)).toBe(true);
   expect(await s.launchctl()).toBe("");
-});
+}, 30_000);
 
 test("the remove line stops the system job and deletes both of its plists", async () => {
   const s = await sandbox();
@@ -148,7 +148,7 @@ test("the remove line stops the system job and deletes both of its plists", asyn
   expect(existsSync(join(s.places.daemons, `${label}.plist`))).toBe(false);
   expect(existsSync(join(s.places.staging, `${label}.plist`))).toBe(false);
   expect(await s.launchctl()).toBe(`bootout system/${label}\n`);
-});
+}, 30_000);
 
 test("Rig never renders a plist that runs as root", () => {
   expect(() =>

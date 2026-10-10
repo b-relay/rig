@@ -51,6 +51,7 @@ async function world() {
     root,
     userHome: home,
     uid: process.getuid!(),
+    userName: "test",
     mode: "process",
     run: runCommand,
   });

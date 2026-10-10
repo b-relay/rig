@@ -397,8 +397,9 @@ const operation = z.object({
   project: text.optional(),
   target: text.optional(),
   action: text,
-  // `forgotten` joined this list without a STATE_VERSION bump (see there). A rigd from before it refuses the state as
-  // STATE_CORRUPT once a `rig forget` is recorded, until rigd is upgraded again or the entry is deleted by hand.
+  // `forgotten`, and `updated` (an operator env file changed from the dashboard), joined this list without a STATE_VERSION
+  // bump (see there). A rigd from before either refuses the state as
+  // STATE_CORRUPT once such an entry is recorded, until rigd is upgraded again or the entry is deleted by hand.
   outcome: z
     .enum(OPERATION_OUTCOMES)
     .describe("How the Operation ended, as rig activity shows it."),

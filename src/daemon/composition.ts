@@ -24,6 +24,8 @@ import {
   editProjectConfig,
 } from "../config";
 import { createConfigEditor } from "./config-editor";
+import { createEnvEditor } from "./env-editor";
+import { recordActivity } from "../domain/activity";
 import { FileStateStore } from "../runtime/state-store";
 import { createRuntime } from "../runtime/application";
 import { createTargetLifecycle } from "../runtime/lifecycle";
@@ -222,12 +224,31 @@ export async function composeDaemon(
     },
     exclusive: runtime.exclusive,
   });
+  const env = createEnvEditor({
+    envRoot: join(root, "env"),
+    async resolveProject(name) {
+      return (await store.read()).projects.find(
+        (project) => project.name === name,
+      );
+    },
+    async services(repoPath) {
+      const source = await readProjectConfigSource(repoPath);
+      return Object.keys(source.config.services ?? {}).sort();
+    },
+    exclusive: runtime.exclusive,
+    async record(operation) {
+      await store.update((state) => recordActivity(state, operation));
+    },
+    now: () => new Date().toISOString(),
+    id: randomUUID,
+  });
   let stopped = false;
   let stopMonitor: (() => Promise<void>) | undefined;
   let stopHealth: (() => Promise<void>) | undefined;
   return {
     handle: runtime.command,
     editor,
+    env,
     async start() {
       await runtime.reconcile();
       if (stopped) return;

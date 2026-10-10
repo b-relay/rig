@@ -9,6 +9,45 @@ export interface ControlPlaneOptions {
   instanceId: string;
   handle(command: RuntimeCommand): Promise<unknown>;
   editor?(input: unknown): Promise<unknown>;
+  /** Operator env files (secrets): read names, reveal one value, or write. Its body is never logged. */
+  env?(input: unknown): Promise<unknown>;
+}
+/** One JSON request to an editor route: its result, or its refusal with the code, message and hint the
+ * editor gave. A body that is not JSON is refused without echoing it. */
+async function edit(
+  request: Request,
+  editor: (input: unknown) => Promise<unknown>,
+  what: string,
+): Promise<Response> {
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return Response.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: `Invalid ${what} request.`,
+        },
+      },
+      { status: 400 },
+    );
+  }
+  try {
+    return Response.json({ result: await editor(input) });
+  } catch (error) {
+    const failure = asRigError(error);
+    return Response.json(
+      {
+        error: {
+          code: failure.code,
+          message: failure.message,
+          hint: failure.hint,
+        },
+      },
+      { status: 422 },
+    );
+  }
 }
 
 function authenticated(request: Request, token: string): boolean {
@@ -88,37 +127,10 @@ export function startControlPlane(options: ControlPlaneOptions) {
       url.pathname === "/v1/config" &&
       request.method === "POST" &&
       options.editor
-    ) {
-      let input: unknown;
-      try {
-        input = await request.json();
-      } catch {
-        return Response.json(
-          {
-            error: {
-              code: "INVALID_REQUEST",
-              message: "Invalid config editor request.",
-            },
-          },
-          { status: 400 },
-        );
-      }
-      try {
-        return Response.json({ result: await options.editor(input) });
-      } catch (error) {
-        const failure = asRigError(error);
-        return Response.json(
-          {
-            error: {
-              code: failure.code,
-              message: failure.message,
-              hint: failure.hint,
-            },
-          },
-          { status: 422 },
-        );
-      }
-    }
+    )
+      return await edit(request, options.editor, "config editor");
+    if (url.pathname === "/v1/env" && request.method === "POST" && options.env)
+      return await edit(request, options.env, "env editor");
     if (url.pathname !== "/v1/command" || request.method !== "POST")
       return new Response("Not found", { status: 404 });
     let command: RuntimeCommand;

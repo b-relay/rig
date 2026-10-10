@@ -10,6 +10,7 @@ import {
   rm,
   stat,
   symlink,
+  writeFile,
 } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { RigError } from "../domain/errors";
@@ -85,11 +86,71 @@ export async function installCaddyBinary(options: {
   }
   const version = await checkCaddyBinary({ ...options, file });
   const previous = await installedBinary(paths);
-  if (previous === file) return { changed: false, file, version };
+  const state = await readBinaryState(paths);
+  const lastGood = state.lastGood ? join(paths.bin, state.lastGood) : undefined;
+  if (previous === file) {
+    // Switched to by an install that never confirmed it: it still has to be started and confirmed, or reverted.
+    if (state.pending === basename(file))
+      return {
+        changed: true,
+        file,
+        ...(lastGood ? { previous: lastGood } : {}),
+        version,
+      };
+    return { changed: false, file, version };
+  }
   await options.validate?.(file);
+  // Recorded before the switch, so an install killed after it still knows what to confirm and what to go back to: the
+  // last copy that served, which an unconfirmed previous switch is not.
+  const good =
+    previous && state.pending !== basename(previous) ? previous : lastGood;
+  await writeBinaryState(paths, {
+    ...(good ? { lastGood: basename(good) } : {}),
+    pending: basename(file),
+  });
   await switchBinary(paths, file);
-  await pruneBinaries(paths, [file, previous]);
-  return { changed: true, file, ...(previous ? { previous } : {}), version };
+  await pruneBinaries(paths, [file, good]);
+  return { changed: true, file, ...(good ? { previous: good } : {}), version };
+}
+/** `bin/state.json`: the copy known to have served, and one switched to but not yet confirmed running. */
+interface BinaryState {
+  readonly lastGood?: string;
+  readonly pending?: string;
+}
+async function readBinaryState(paths: ProxyPaths): Promise<BinaryState> {
+  try {
+    return JSON.parse(
+      await readFile(join(paths.bin, "state.json"), "utf8"),
+    ) as BinaryState;
+  } catch {
+    return {};
+  }
+}
+async function writeBinaryState(
+  paths: ProxyPaths,
+  state: BinaryState,
+): Promise<void> {
+  const target = join(paths.bin, "state.json");
+  const temporary = `${target}.${randomUUID()}.tmp`;
+  await writeFile(temporary, JSON.stringify(state) + "\n", { mode: 0o600 });
+  await rename(temporary, target);
+}
+/** Whether a switched-to copy still waits to be confirmed running. */
+export async function binaryPending(paths: ProxyPaths): Promise<boolean> {
+  return (await readBinaryState(paths)).pending !== undefined;
+}
+/** Records that the switched-to copy started and serves: it becomes the one to go back to. */
+export async function confirmBinary(paths: ProxyPaths): Promise<void> {
+  const state = await readBinaryState(paths);
+  if (state.pending) await writeBinaryState(paths, { lastGood: state.pending });
+}
+/** Points the job back at the last copy that served and forgets the unconfirmed one; false when there is none to go back to. */
+export async function revertBinary(paths: ProxyPaths): Promise<boolean> {
+  const state = await readBinaryState(paths);
+  if (!state.lastGood) return false;
+  await switchBinary(paths, join(paths.bin, state.lastGood));
+  await writeBinaryState(paths, { lastGood: state.lastGood });
+  return true;
 }
 /** Checks that `file` runs as Caddy 2.10 or later with the DNS provider module, and resolves to its version. `source` names
  * it in a refusal (PROXY_BINARY). `rigd install` runs this on proxy.caddy itself before it stops rigd, so a binary it would

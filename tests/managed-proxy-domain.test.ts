@@ -11,6 +11,7 @@ import {
 import { parseHostConfig } from "../src/config";
 import {
   adaptedSiteAddresses,
+  issuancePolicies,
   issuerCas,
   protectedDifferences,
 } from "../src/domain/caddy-config";
@@ -400,4 +401,72 @@ test("Caddy's JSON tells the sites it serves, what Rig protects, and the CAs it 
     "https://acme-v02.api.letsencrypt.org/directory",
   ]);
   expect(issuerCas({})).toEqual([]);
+});
+
+test("swapping which CA issues which subjects is a change, even though the set of CAs is the same", () => {
+  const staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+  const production = "https://acme-v02.api.letsencrypt.org/directory";
+  const policies = (a: string, b: string) => ({
+    apps: {
+      tls: {
+        automation: {
+          policies: [
+            {
+              subjects: ["a.example.test"],
+              issuers: [{ module: "acme", ca: a }],
+            },
+            {
+              subjects: ["b.example.test"],
+              issuers: [{ module: "acme", ca: b }],
+            },
+          ],
+        },
+      },
+    },
+  });
+  expect(issuerCas(policies(staging, production))).toEqual(
+    issuerCas(policies(production, staging)),
+  );
+  expect(issuancePolicies(policies(staging, production))).not.toBe(
+    issuancePolicies(policies(production, staging)),
+  );
+  expect(issuancePolicies(policies(staging, production))).toBe(
+    issuancePolicies(policies(staging, production)),
+  );
+});
+
+test("a host is plain HTTP by what Caddy decides: automatic HTTPS skipped or disabled, or only the config's HTTP port", () => {
+  const config = (servers: Record<string, unknown>, httpPort?: number) => ({
+    apps: { http: { ...(httpPort ? { http_port: httpPort } : {}), servers } },
+  });
+  const route = (host: string) => ({ match: [{ host: [host] }] });
+  // A site on another port, which Caddy serves without TLS because it skips it.
+  expect(
+    adaptedSiteAddresses(
+      config({
+        srv0: {
+          listen: [":28080"],
+          routes: [route("plain.example.test")],
+          automatic_https: { skip: ["plain.example.test"] },
+        },
+      }),
+    ),
+  ).toEqual(["http://plain.example.test"]);
+  // The config's own HTTP port, not 80, decides an HTTP-only server.
+  expect(
+    adaptedSiteAddresses(
+      config(
+        { srv0: { listen: [":28080"], routes: [route("a.test")] } },
+        28080,
+      ),
+    ),
+  ).toEqual(["http://a.test"]);
+  expect(
+    adaptedSiteAddresses(
+      config(
+        { srv0: { listen: [":28443"], routes: [route("b.test")] } },
+        28080,
+      ),
+    ),
+  ).toEqual(["b.test"]);
 });

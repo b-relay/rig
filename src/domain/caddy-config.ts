@@ -7,20 +7,29 @@ const record = (value: unknown): Json =>
     : {};
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-/** Every site address the config's HTTP servers match on, from the host matchers of their top-level routes. A server that
- * listens only on the plain HTTP port serves its hosts without TLS, so they are given as `http://<host>`. */
-export function adaptedSiteAddresses(config: unknown, httpPort = 80): string[] {
-  const servers = record(record(record(config).apps).http).servers;
+/** Every site address the config's HTTP servers match on, from the host matchers of their top-level routes. A host is served
+ * without TLS, and given as `http://<host>`, when its server's automatic HTTPS skips it or is disabled, or when the server
+ * listens only on the config's own HTTP port: what Caddy itself decides from, not an assumed port 80. */
+export function adaptedSiteAddresses(config: unknown): string[] {
+  const http = record(record(record(config).apps).http);
+  const httpPort = Number(http.http_port ?? 80);
   const addresses: string[] = [];
-  for (const server of Object.values(record(servers))) {
+  for (const server of Object.values(record(http.servers))) {
+    const automatic = record(record(server).automatic_https);
+    const skipped = new Set(list(automatic.skip).map(String));
     const listen = list(record(server).listen).map(String);
-    const plain =
-      listen.length > 0 &&
-      listen.every((address) => address.endsWith(`:${httpPort}`));
+    const plainServer =
+      automatic.disable === true ||
+      (listen.length > 0 &&
+        listen.every((address) => address.endsWith(`:${httpPort}`)));
     for (const route of list(record(server).routes))
       for (const match of list(record(route).match))
         for (const host of list(record(match).host))
-          addresses.push(plain ? `http://${String(host)}` : String(host));
+          addresses.push(
+            plainServer || skipped.has(String(host))
+              ? `http://${String(host)}`
+              : String(host),
+          );
   }
   return [...new Set(addresses)];
 }
@@ -52,6 +61,23 @@ export function protectedDifferences(
       differences.push("https_port");
   }
   return differences;
+}
+/** The config's certificate assignments, canonical: each automation policy's subjects (sorted) with its issuers in order
+ * (module and CA). Two configs that issue any subject from a different CA differ here, even when the set of CAs is the same,
+ * so Rig restarts Caddy, whose cache would otherwise keep the certificates the old assignment issued. */
+export function issuancePolicies(config: unknown): string {
+  const policies = list(
+    record(record(record(record(config).apps).tls).automation).policies,
+  ).map((policy) => ({
+    subjects: list(record(policy).subjects).map(String).sort(),
+    issuers: list(record(policy).issuers).map((issuer) => {
+      const entry = record(issuer);
+      return [String(entry.module ?? ""), String(entry.ca ?? "")];
+    }),
+  }));
+  return JSON.stringify(
+    policies.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+  );
 }
 /** The CAs the config's certificate automation uses, sorted: each ACME issuer's directory, and `internal` for Caddy's own CA.
  * A change of CA needs a restart, because a reload keeps the certificates Caddy has cached. */

@@ -28,6 +28,7 @@ import {
 } from "../domain/managed-proxy";
 import {
   adaptedSiteAddresses,
+  issuancePolicies,
   issuerCas,
   protectedDifferences,
 } from "../domain/caddy-config";
@@ -495,11 +496,11 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     }
     if (expected !== undefined && Bun.deepEquals(loaded, expected)) return;
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
-    const loadedCas = issuerCas(loaded);
+    // Any change in which CA issues which subjects restarts, conservatively: a Caddy with no issuer yet holds no certificates.
     if (
       expected !== undefined &&
-      loadedCas.length > 0 &&
-      loadedCas.join(" ") !== issuerCas(expected).join(" ")
+      issuerCas(loaded).length > 0 &&
+      issuancePolicies(loaded) !== issuancePolicies(expected)
     )
       await options.job.restart();
     else {

@@ -68,6 +68,13 @@ export interface PlanRoute {
   service: string;
   port: number;
 }
+/** A hostname of the Target beyond `domain`: a Service's own `domain`, which routes every path of it to one port of that
+ * Service. */
+export interface PlanServiceDomain {
+  hostname: string;
+  service: string;
+  port: number;
+}
 export type RestartPolicy = "always" | "on-failure" | "no";
 export interface InstalledComponent extends ComponentContext {
   kind: "installed";
@@ -148,6 +155,9 @@ export interface TargetPlan {
   domain?: string;
   /** `upstream` is the Service behind '/'. `routes` is the whole map, longest prefix first; a plan recorded before route maps has only `upstream`. */
   proxy?: { upstream: string; routes?: PlanRoute[] };
+  /** Service domains, in Service order; absent when the Target serves none, as on every plan recorded before them. They are
+   * published with `domain` as one route, and withdrawn with it. */
+  serviceDomains?: PlanServiceDomain[];
   /** Seconds for dependency installation; absent means 600. */
   installTimeout?: number;
   /** The Project-scope files a Project or Tool invocation loads, lowest to highest precedence. */

@@ -148,6 +148,26 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     routerFailure,
     target,
     up: () => runtime.command({ action: "up", project: "demo" }),
+    command: runtime.command.bind(runtime),
+    /** Every hostname the Target's route publishes, in order. */
+    async hostnames() {
+      return (published.get((await target()).id)?.sites ?? []).map(
+        (site) => site.hostname,
+      );
+    },
+    /** The upstream a request for `path` on `hostname` reaches, as `reach` does for the first site. */
+    async reachAt(
+      hostname: string,
+      path: string,
+    ): Promise<string | null | undefined> {
+      const route = published.get((await target()).id);
+      return route?.sites
+        .find((site) => site.hostname === hostname)
+        ?.routes.find(
+          ({ prefix }) =>
+            prefix === "/" || path === prefix || path.startsWith(`${prefix}/`),
+        )?.upstream;
+    },
     supervise: () => runtime.supervise(),
     /** A held readiness connection answers. */
     release(port: number) {
@@ -184,8 +204,11 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
   };
 }
 /** The working Target is the one these tests start, so rig.yaml turns it on; it is routed only when its role patch names
- * a hostname, here the Project's domain. */
-function withWorkingDomain<T extends { domain?: string }>(config: T): T {
+ * a hostname, here the Project's domain. A Project that writes its own targets keeps them. */
+function withWorkingDomain<T extends { domain?: string; targets?: unknown }>(
+  config: T,
+): T {
+  if (config.targets) return config;
   return {
     ...config,
     targets: { working: config.domain ? { domain: config.domain } : true },
@@ -397,4 +420,72 @@ test("a sibling's recovery does not reopen the path of a Service whose unsafe re
   await f.exit("api", 3);
   await f.up();
   expect(await f.reach("/api")).toBe(`127.0.0.1:${API}`);
+});
+
+/** web serves the Project domain; api serves a hostname of its own, on the one of its two ports the domain names. */
+const OWN_DOMAIN = {
+  name: "demo",
+  proxy: { "/": "web" },
+  services: {
+    web: { command: "web", ports: { http: WEB } },
+    api: { command: "api", ports: { http: API, admin: ADMIN } },
+  },
+  targets: {
+    working: {
+      domain: "app.test",
+      services: { api: { domain: { host: "api.app.test", port: "http" } } },
+    },
+  },
+};
+
+test("a Service domain is published with the Target's domain as one route, and withheld alone while its Service is unverified", async () => {
+  const f = await fixture(OWN_DOMAIN);
+  await f.up();
+  expect(await f.hostnames()).toEqual(["app.test", "api.app.test"]);
+  expect(await f.reachAt("app.test", "/")).toBe(`127.0.0.1:${WEB}`);
+  expect(await f.reachAt("api.app.test", "/users")).toBe(`127.0.0.1:${API}`);
+
+  await f.exit("api", 3);
+  f.hold.add(ADMIN);
+  const recovering = retry(f);
+  expect(await f.held(ADMIN)).toBe(true);
+  // The replacement is not verified: every path of its hostname answers 503, and the other hostname keeps its upstream.
+  expect(await f.reachAt("api.app.test", "/users")).toBeNull();
+  expect(await f.reachAt("app.test", "/")).toBe(`127.0.0.1:${WEB}`);
+  f.release(ADMIN);
+  await recovering;
+  expect(await f.reachAt("api.app.test", "/users")).toBe(`127.0.0.1:${API}`);
+});
+
+test("status and doctor list every hostname a Target serves", async () => {
+  const f = await fixture(OWN_DOMAIN);
+  await f.up();
+  const status = (await f.command({ action: "status", project: "demo" })) as {
+    targets: {
+      route?: string;
+      hostnames?: string[];
+      components: { name: string; route?: string; hostnames?: string[] }[];
+    }[];
+  };
+  const [working] = status.targets;
+  expect(working!.route).toBe("app.test");
+  expect(working!.hostnames).toEqual(["app.test", "api.app.test"]);
+  expect(
+    working!.components.map(({ name, route, hostnames }) => ({
+      name,
+      route,
+      hostnames,
+    })),
+  ).toEqual([
+    { name: "web", route: "app.test", hostnames: ["app.test"] },
+    { name: "api", route: "api.app.test", hostnames: ["api.app.test"] },
+  ]);
+  const doctor = (await f.command({ action: "doctor", project: "demo" })) as {
+    checks: { name: string; ok: boolean; message: string }[];
+  };
+  expect(doctor.checks).toContainEqual({
+    name: "working/hostnames",
+    ok: true,
+    message: "Serves app.test (web), api.app.test (api).",
+  });
 });

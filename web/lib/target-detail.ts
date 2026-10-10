@@ -39,30 +39,49 @@ export interface RouteLine {
   service: string;
   port?: number;
 }
-/** Pure: the paths a Target's hostname serves. A plan with a route map lists it, longest prefix
- * first as recorded; an older plan names only the Service behind `/`, which status marks with the
- * route. Empty without a hostname. */
+/** The URL a browser opens for one path of a hostname. */
+function routeUrl(hostname: string, prefix: string): string {
+  const host = hostname.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return `https://${host}${prefix === "/" ? "/" : prefix}`;
+}
+/** Pure: the paths every hostname of a Target serves: its domain's first, then each Service domain's
+ * one path. A plan with a route map lists it, longest prefix first as recorded; an older plan names
+ * only the Service behind `/`, which status marks with the route. Empty without a hostname. */
 export function routeLines(
+  target: Pick<
+    TargetReport,
+    "route" | "routes" | "serviceDomains" | "components"
+  >,
+): RouteLine[] {
+  return [
+    ...domainLines(target),
+    ...(target.serviceDomains ?? []).map(({ hostname, service, port }) => ({
+      url: routeUrl(hostname, "/"),
+      prefix: "/",
+      service,
+      port,
+    })),
+  ];
+}
+function domainLines(
   target: Pick<TargetReport, "route" | "routes" | "components">,
 ): RouteLine[] {
-  if (!target.route) return [];
-  const host = target.route.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  const url = (prefix: string) =>
-    `https://${host}${prefix === "/" ? "/" : prefix}`;
+  const domain = target.route;
+  if (!domain) return [];
   if (target.routes?.length)
     return target.routes.map(({ prefix, service, port }) => ({
-      url: url(prefix),
+      url: routeUrl(domain, prefix),
       prefix,
       service,
       port,
     }));
   const upstream = target.components.find(
-    (component) => component.route !== undefined,
+    (component) => component.route === domain,
   );
   return upstream
     ? [
         {
-          url: url("/"),
+          url: routeUrl(domain, "/"),
           prefix: "/",
           service: upstream.name,
           ...(upstream.port !== undefined ? { port: upstream.port } : {}),

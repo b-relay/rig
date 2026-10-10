@@ -3,6 +3,12 @@ import { ConfigError } from "./errors";
 import { validHostname } from "./hostname";
 import { proxyModeOf, proxySettingsSchema } from "./proxy-schema";
 import { referenceResolver } from "./references";
+import {
+  roleHostname,
+  roleServiceDomains,
+  serviceDomainPort,
+  type ServiceDomainSetting,
+} from "./hostnames";
 import { MAX_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import {
   HEALTHCHECK_DEFAULTS,
@@ -184,6 +190,24 @@ const ports = z
   .describe(
     "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
   );
+/** A Service's own hostname: a hostname, or a hostname with the port it reaches. */
+const serviceDomain = z
+  .union([
+    domain,
+    z.strictObject({
+      host: domain.describe(
+        `The hostname, written as in domain. ${DOMAIN_REFERENCE}`,
+      ),
+      port: portName
+        .optional()
+        .describe(
+          "The name of the port under ports this hostname reaches, such as http. Needed only when the Service declares several ports.",
+        ),
+    }),
+  ])
+  .describe(
+    `A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${DOMAIN_REFERENCE}`,
+  );
 const restart = z
   .enum(["always", "on-failure", "no"])
   .describe(
@@ -292,6 +316,7 @@ const serviceFields = {
   build_timeout: buildTimeout.optional(),
   working_dir: workingDir.optional(),
   ports: ports.optional(),
+  domain: serviceDomain.optional(),
   healthcheck: healthcheck.optional(),
   stop_timeout: stopTimeout.optional(),
   depends_on: z
@@ -501,6 +526,7 @@ type GraphService = Fields & {
   healthcheck?: HealthcheckSettings;
   depends_on?: readonly string[];
   ports?: Readonly<Record<string, number | "auto">>;
+  domain?: ServiceDomainSetting;
   environment?: Readonly<Record<string, string>>;
   env_file?: string | readonly string[];
 };
@@ -653,7 +679,50 @@ export const projectConfigSchema = z
       if (problem)
         report(patched ? ["targets", role, "domain"] : ["domain"], problem);
     }
+    // Every hostname of one Target is its own site, so no two settings may give a Target the same one. A setting two roles
+    // repeat is reported once, for the first of them.
+    const repeated = new Set<string>();
+    for (const role of TARGET_ROLES)
+      if (targetOn(config, role))
+        uniqueHostnames(config, role, (path, message) => {
+          if (repeated.has(path.join("."))) return;
+          repeated.add(path.join("."));
+          report(path, message);
+        });
   });
+/** Reports a hostname that two settings give one Target of `role`: the Project domain and a Service domain, or two Service
+ * domains. Patterns are compared as written, `${rig.target}` included, so the check holds for every Target of the role;
+ * planning compares the resolved hostnames again. */
+function uniqueHostnames(
+  config: GraphConfig,
+  role: TargetRole,
+  report: Report,
+): void {
+  const patch = config.targets?.[role];
+  const own = isRecord(patch) ? patch : {};
+  const domain = roleHostname(config.domain, own.domain, role);
+  const seen = new Map<string, string>();
+  if (domain)
+    seen.set(
+      domain.pattern.toLowerCase(),
+      domain.patched ? `targets.${role}.domain` : "domain",
+    );
+  for (const entry of roleServiceDomains(
+    config.services,
+    own.services,
+    (patchSettings(config, role) as GraphSettings).services,
+    role,
+  )) {
+    const key = entry.pattern.toLowerCase();
+    const first = seen.get(key);
+    if (first === undefined) seen.set(key, entry.path);
+    else
+      report(
+        entry.path.split("."),
+        `${role === "preview" ? "Every Preview" : `The ${role} Target`} already serves ${entry.pattern} from ${first}; each hostname of a Target must differ.`,
+      );
+  }
+}
 type ParsedProject = z.infer<typeof projectConfigSchema>;
 /** Project settings with one role's patch applied; the Target switches never merge into them. */
 export type ProjectSettings = Omit<ParsedProject, "targets">;
@@ -819,6 +888,13 @@ function validateGraph(
         [...at, "services", key, "healthcheck"],
         `Service '${key}' declares no port, so its healthcheck needs a test, such as test: test -f /tmp/${key}.alive.`,
       );
+  // A Service's own hostname routes '/' to one of its ports, so it must be clear which.
+  for (const [key, entry] of Object.entries(services)) {
+    if (entry.domain === undefined) continue;
+    const reached = serviceDomainPort(key, entry.domain, entry.ports);
+    if ("problem" in reached)
+      report([...at, "services", key, "domain"], reached.problem);
+  }
   validateReferences(settings, at, report);
   if (!settings.proxy) return;
   if (!Object.hasOwn(settings.proxy, "/"))

@@ -21,6 +21,16 @@ import type { ServiceHealth } from "../domain/project-status";
 import { healthStartPending, type HealthResults } from "./health-monitor";
 import { healthRestartDueAt } from "../domain/health-policy";
 import { targetSelector } from "../domain/target-selector";
+import { plannedSites, serviceHostnames } from "./ports";
+/** A Service's hostnames for a report: `route` is the first, the one shown where only one fits, and `hostnames` all of
+ * them. Nothing when no hostname's '/' reaches it. */
+export function hostnameFields(
+  hostnames: readonly string[],
+): Pick<ComponentReport, "route" | "hostnames"> {
+  return hostnames.length
+    ? { route: hostnames[0]!, hostnames: [...hostnames] }
+    : {};
+}
 export interface ObservationEffects {
   process(
     target: TargetRecord,
@@ -73,9 +83,7 @@ export async function observeTargets(
           ? { ports: component.ports }
           : {}),
         ...automaticRestarts(target, component.name),
-        ...(target.plan.proxy?.upstream === component.name && target.plan.domain
-          ? { route: target.plan.domain }
-          : {}),
+        ...hostnameFields(serviceHostnames(target.plan, component.name)),
       },
     })),
   );
@@ -184,6 +192,7 @@ export async function observeTargets(
       commit: target.commit,
       ...deploymentFlags(target),
       route: target.plan.domain,
+      ...targetHostnames(target),
       ...(target.plan.domain && target.plan.proxy?.routes?.length
         ? {
             routes: target.plan.proxy.routes.map(
@@ -191,10 +200,24 @@ export async function observeTargets(
             ),
           }
         : {}),
+      ...(target.plan.serviceDomains?.length
+        ? {
+            serviceDomains: target.plan.serviceDomains.map(
+              ({ hostname, service, port }) => ({ hostname, service, port }),
+            ),
+          }
+        : {}),
       components,
       state: aggregate(components),
     };
   });
+}
+/** Every hostname a recorded Target serves, its domain first; nothing when it serves none. */
+function targetHostnames(
+  target: Pick<TargetRecord, "plan">,
+): Pick<TargetReport, "hostnames"> {
+  const hostnames = plannedSites(target.plan).map((site) => site.hostname);
+  return hostnames.length ? { hostnames } : {};
 }
 /** Pure: the automatic restart attempts still inside the Service's restart budget windows, after a known and after an
  * unknown exit together; nothing when there are none or rigd never ran the Service. Attempts age out of the windows, so the

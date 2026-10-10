@@ -97,7 +97,15 @@ const componentReportSchema = z
     route: z
       .string()
       .optional()
-      .describe("Configured or recorded route, even while stopped."),
+      .describe(
+        "Configured or recorded route, even while stopped: the first of hostnames.",
+      ),
+    hostnames: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Every hostname whose '/' reaches this Service: the Target's domain when the Service serves its '/', then the Service's own domain. Absent when none does.",
+      ),
     exitCode: z
       .number()
       .int()
@@ -270,7 +278,16 @@ const targetReportSchema = z
       .describe(
         "True when a Preview's destroy did not finish and its stopped inventory is retained until down --destroy is retried; absent otherwise.",
       ),
-    route: z.string().optional().describe("Recorded Target route."),
+    route: z
+      .string()
+      .optional()
+      .describe("Recorded Target route: the hostname domain gives it."),
+    hostnames: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Every hostname the Target serves, published and withdrawn together: its domain first, then each Service domain. Absent when it serves none.",
+      ),
     routes: z
       .array(
         z
@@ -284,6 +301,20 @@ const targetReportSchema = z
       .optional()
       .describe(
         "The recorded path routes under the Target's hostname, longest prefix first; absent without a hostname or for a plan recorded before route maps.",
+      ),
+    serviceDomains: z
+      .array(
+        z
+          .object({
+            hostname: z.string().describe("The Service domain's hostname."),
+            service: z.string().describe("The Service every path reaches."),
+            port: z.number().int().describe("The Service port it reaches."),
+          })
+          .passthrough(),
+      )
+      .optional()
+      .describe(
+        "The recorded hostnames of the Target's Service domains, each routing every path to one Service port; absent when it has none.",
       ),
     routePublished: z
       .boolean()

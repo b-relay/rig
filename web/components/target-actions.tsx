@@ -14,7 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { servesHost } from "@/lib/present";
-import { targetHref, targetSelector } from "@/lib/target";
+import { targetHostnames, targetHref, targetSelector } from "@/lib/target";
 import { targetVerbs, type TargetVerb } from "@/lib/target-verbs";
 import type { OperationResult, TargetReport } from "@/lib/types";
 import { Failure, OperationNotice } from "./bits";
@@ -55,7 +55,10 @@ const ICON = {
   deploy: Rocket,
   destroy: Trash2,
 };
-type Shown = Pick<TargetReport, "name" | "kind" | "route" | "branch" | "state">;
+type Shown = Pick<
+  TargetReport,
+  "name" | "kind" | "route" | "hostnames" | "branch" | "state"
+>;
 /** Start, Restart, Stop, Deploy latest and, for a Preview, Destroy. `menu` puts them all behind one
  * button; `card` adds a Start button beside it while the Target is not running, for the matrix's
  * Target cards; `buttons` shows the ones the Target's state calls for as buttons with the rest in a
@@ -80,7 +83,10 @@ export function TargetActions({
   // The host is only known in the browser; until hydration nothing serves this page.
   const [host, setHost] = useState("");
   useEffect(() => setHost(window.location.host), []);
-  const servesThisPage = servesHost(target.route, host);
+  const hostnames = targetHostnames(target);
+  const servesThisPage = hostnames.some((hostname) =>
+    servesHost(hostname, host),
+  );
   const [confirming, setConfirming] = useState<TargetVerb>();
   // The verb the dialog was opened for; it outlives the close animation so the text never changes mid-fade.
   const [asked, setAsked] = useState<TargetVerb>("down");
@@ -256,7 +262,7 @@ export function TargetActions({
                   : asked === "deploy"
                     ? `rigd deploys the head Commit of ${target.kind === "preview" ? (target.branch ?? "its Branch") : "the Production Branch"} and starts it; a Commit already deployed is left as it is.`
                     : target.kind === "stable"
-                      ? `This is the stable Target${target.route ? `, serving ${target.route}` : ""}; it ${asked === "down" ? "stays down until it is started again" : "is unavailable while it restarts"}.`
+                      ? `This is the stable Target${hostnames.length ? `, serving ${hostnames.join(", ")}` : ""}; it ${asked === "down" ? "stays down until it is started again" : "is unavailable while it restarts"}.`
                       : undefined,
                 servesThisPage ? SERVES_NOTE : undefined,
               ]

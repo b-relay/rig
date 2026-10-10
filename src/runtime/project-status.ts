@@ -11,10 +11,12 @@ import { asRigError } from "../domain/errors";
 import { targetSelector } from "../domain/target-selector";
 import type { RuntimeDependencies } from "./contracts";
 import {
+  hostnameFields,
   observeTargets,
   type ComponentReport,
   type TargetReport,
 } from "./status";
+import { roleHostname, roleServiceDomains } from "../config/hostnames";
 import { previewName, selectTarget } from "./targets";
 import {
   PREVIEW_SELECTOR,
@@ -96,7 +98,8 @@ export async function projectStatus(
   if (configWarning) warnings.push(configWarning);
   if (document) {
     for (const role of ["working", "stable"] as const) {
-      const definitions = configuredComponents(document.config, role);
+      const configured = configuredTarget(document.config, role);
+      const definitions = configured.components;
       const report = reports.find((t) => t.kind === role);
       if (report) {
         // An off Target shows what it recorded, not what the config would add to it.
@@ -117,6 +120,9 @@ export async function projectStatus(
           name: role,
           kind: role,
           state: "configured",
+          ...(configured.hostnames.length
+            ? { hostnames: configured.hostnames }
+            : {}),
           components: definitions,
         });
     }
@@ -210,43 +216,65 @@ async function markUnpublishedRoutes(
     ];
   }
 }
-function configuredComponents(
+/** What rig.yaml gives a working or stable Target nothing has recorded: its Services and Tools, and every hostname it
+ * would serve, by the same per-role rule planning uses. */
+function configuredTarget(
   config: ProjectConfig,
   role: "working" | "stable",
-): ComponentReport[] {
+): { components: ComponentReport[]; hostnames: string[] } {
   const settings = patchedSettings(config, role);
-  const routed =
-    role === "stable" || rolePatch(config, role).domain !== undefined
-      ? settings.domain?.replaceAll("${rig.target}", role)
-      : undefined;
+  const named = (pattern: string) => pattern.replaceAll("${rig.target}", role);
+  const routed = roleHostname(
+    config.domain,
+    rolePatch(config, role).domain,
+    role,
+  );
+  const domain = routed && named(routed.pattern);
   const proxy =
     settings.proxy ??
-    (routed !== undefined ? defaultProxy(settings.services) : undefined);
+    (domain !== undefined ? defaultProxy(settings.services) : undefined);
   const root = proxy?.["/"]
     ? proxyUpstream(proxy["/"], settings.services ?? {})
     : undefined;
   const upstream = root && "service" in root ? root.service : undefined;
-  return [
-    ...Object.entries(settings.services ?? {}).map(
-      ([name, service]): ComponentReport => {
-        const port = Object.values(service.ports ?? {})[0];
-        return {
-          name,
-          kind: "managed",
-          state: "configured",
-          ...(typeof port === "number" ? { port } : {}),
-          ...(upstream === name && routed && !routed.includes("${")
-            ? { route: routed }
-            : {}),
-        };
-      },
-    ),
-    ...Object.keys(settings.tools ?? {}).map((name): ComponentReport => ({
-      name,
-      kind: "installed",
-      state: "configured",
-    })),
+  const own = roleServiceDomains(
+    config.services,
+    rolePatch(config, role).services,
+    settings.services,
+    role,
+  ).map((entry) => ({
+    service: entry.service,
+    hostname: named(entry.pattern),
+  }));
+  const reaching = (name: string) => [
+    ...(upstream === name && domain ? [domain] : []),
+    ...own.filter((entry) => entry.service === name).map((e) => e.hostname),
   ];
+  return {
+    components: [
+      ...Object.entries(settings.services ?? {}).map(
+        ([name, service]): ComponentReport => {
+          const port = Object.values(service.ports ?? {})[0];
+          return {
+            name,
+            kind: "managed",
+            state: "configured",
+            ...(typeof port === "number" ? { port } : {}),
+            ...hostnameFields(reaching(name)),
+          };
+        },
+      ),
+      ...Object.keys(settings.tools ?? {}).map((name): ComponentReport => ({
+        name,
+        kind: "installed",
+        state: "configured",
+      })),
+    ],
+    hostnames: [
+      ...(domain && upstream ? [domain] : []),
+      ...own.map((entry) => entry.hostname),
+    ],
+  };
 }
 
 /** A recovery record whose operation this daemon is still running is a live deploy, not an abandoned one. */

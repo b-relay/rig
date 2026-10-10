@@ -120,6 +120,36 @@
             },
             "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
           },
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "description": "Single hostname. ${rig.target} is the only reference a hostname may contain."
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "The hostname, written as in domain. ${rig.target} is the only reference a hostname may contain."
+                  },
+                  "port": {
+                    "description": "The name of the port under ports this hostname reaches, such as http. Needed only when the Service declares several ports.",
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[a-z0-9][a-z0-9-]*$"
+                  }
+                },
+                "required": [
+                  "host"
+                ],
+                "additionalProperties": false
+              }
+            ],
+            "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+          },
           "healthcheck": {
             "type": "object",
             "properties": {
@@ -527,6 +557,36 @@
                         },
                         "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                       },
+                      "domain": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Single hostname. ${rig.target} is the only reference a hostname may contain."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "host": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The hostname, written as in domain. ${rig.target} is the only reference a hostname may contain."
+                              },
+                              "port": {
+                                "description": "The name of the port under ports this hostname reaches, such as http. Needed only when the Service declares several ports.",
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9][a-z0-9-]*$"
+                              }
+                            },
+                            "required": [
+                              "host"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ],
+                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+                      },
                       "healthcheck": {
                         "type": "object",
                         "properties": {
@@ -817,6 +877,36 @@
                         },
                         "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
                       },
+                      "domain": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Single hostname. ${rig.target} is the only reference a hostname may contain."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "host": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The hostname, written as in domain. ${rig.target} is the only reference a hostname may contain."
+                              },
+                              "port": {
+                                "description": "The name of the port under ports this hostname reaches, such as http. Needed only when the Service declares several ports.",
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9][a-z0-9-]*$"
+                              }
+                            },
+                            "required": [
+                              "host"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ],
+                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
+                      },
                       "healthcheck": {
                         "type": "object",
                         "properties": {
@@ -1106,6 +1196,36 @@
                           ]
                         },
                         "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                      },
+                      "domain": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Single hostname. ${rig.target} is the only reference a hostname may contain."
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "host": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "The hostname, written as in domain. ${rig.target} is the only reference a hostname may contain."
+                              },
+                              "port": {
+                                "description": "The name of the port under ports this hostname reaches, such as http. Needed only when the Service declares several ports.",
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[a-z0-9][a-z0-9-]*$"
+                              }
+                            },
+                            "required": [
+                              "host"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ],
+                        "description": "A hostname of its own for this Service, such as api.app.example.com, beside the Project domain: every request to it, at any path, reaches this Service's only port. A Service with several ports names one: domain: { host: api.app.example.com, port: http }. It follows the domain rule per Target: the stable Target serves it as written, a Preview with a dash and its name after the first label (api-<preview-name>.app.example.com), and the working Target only when targets.working sets it. Every hostname of one Target must differ. ${rig.target} is the only reference a hostname may contain."
                       },
                       "healthcheck": {
                         "type": "object",

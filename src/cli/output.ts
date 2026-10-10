@@ -100,14 +100,23 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
         .join("  "),
     );
     const unpublished = target.routePublished === false ? "unpublished" : "";
-    if (target.route && !target.components.some((component) => component.route))
-      lines.push(
-        `  Route  ${[word(target.route), unpublished].filter(Boolean).join("  ")}`,
-      );
+    // A hostname is shown beside the Service its '/' reaches; one no Service line shows gets a Route line of its own.
+    const reached = (component: (typeof target.components)[number]) =>
+      component.hostnames ?? (component.route ? [component.route] : []);
+    const shown = new Set(target.components.flatMap(reached));
+    for (const hostname of target.hostnames ??
+      (target.route ? [target.route] : []))
+      if (!shown.has(hostname))
+        lines.push(
+          `  Route  ${[word(hostname), unpublished].filter(Boolean).join("  ")}`,
+        );
     for (const component of target.components) {
       const port = component.port !== undefined ? `:${component.port}` : "";
-      const route = component.route
-        ? [word(component.route), unpublished].filter(Boolean).join("  ")
+      const hostnames = reached(component);
+      const route = hostnames.length
+        ? [hostnames.map(word).join(", "), unpublished]
+            .filter(Boolean)
+            .join("  ")
         : "";
       const state =
         component.state === "stopping" && typeof component.killAt === "string"

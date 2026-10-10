@@ -20,11 +20,22 @@ export interface PlanSite {
   hostname: string;
   routes: PlanRoute[];
 }
-/** Every hostname the Target serves, each with its route map; empty without a hostname or a proxy. A Target has one site
- * today, its `domain`; callers treat the list as open so a Target can serve more than one hostname. A site whose map is empty
+/** Every hostname the Target serves, each with its route map: its `domain` with the proxy's map first, when it has both,
+ * then each Service domain, which routes '/' to its Service's port. Empty when it serves none. A site whose map is empty
  * names no managed upstream, which publishing refuses. A plan recorded before route maps routes '/' to its upstream's one
  * port. */
 export function plannedSites(
+  plan: Pick<TargetPlan, "domain" | "proxy" | "components" | "serviceDomains">,
+): PlanSite[] {
+  return [
+    ...domainSite(plan),
+    ...(plan.serviceDomains ?? []).map(({ hostname, service, port }) => ({
+      hostname,
+      routes: [{ prefix: "/", service, port }],
+    })),
+  ];
+}
+function domainSite(
   plan: Pick<TargetPlan, "domain" | "proxy" | "components">,
 ): PlanSite[] {
   if (!plan.domain || !plan.proxy) return [];
@@ -45,9 +56,22 @@ export function plannedSites(
 }
 /** Every route of every site the Target serves; a Service routed under several hostnames appears once per route. */
 export function plannedRoutes(
-  plan: Pick<TargetPlan, "domain" | "proxy" | "components">,
+  plan: Pick<TargetPlan, "domain" | "proxy" | "components" | "serviceDomains">,
 ): PlanRoute[] {
   return plannedSites(plan).flatMap((site) => site.routes);
+}
+/** The hostnames whose '/' reaches `service`, in site order: the Target's domain when the Service is its '/' upstream, then
+ * the Service's own domains. */
+export function serviceHostnames(
+  plan: Pick<TargetPlan, "domain" | "proxy" | "serviceDomains">,
+  service: string,
+): string[] {
+  return [
+    ...(plan.domain && plan.proxy?.upstream === service ? [plan.domain] : []),
+    ...(plan.serviceDomains ?? [])
+      .filter((entry) => entry.service === service)
+      .map((entry) => entry.hostname),
+  ];
 }
 /** Recorded assignments keyed `<service>.<port>`, as `resolveTargetPlan` takes them back; a plan recorded before named
  * ports yields its Service name alone. Includes the separate Convex site port. */

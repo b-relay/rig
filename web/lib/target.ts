@@ -14,6 +14,11 @@ export const targetKey = (target: Pick<TargetReport, "kind" | "name">) =>
 /** A route as rigd records it is a bare host name; a link needs the scheme Caddy serves it on. */
 export const routeUrl = (route: string): string =>
   /^https?:\/\//.test(route) ? route : `https://${route}`;
+/** Every hostname a Target serves, its domain first, then each Service domain. A reply without
+ * `hostnames` (a Target that serves only its domain, or none) has at most `route`. */
+export const targetHostnames = (
+  target: Pick<TargetReport, "route" | "hostnames">,
+): string[] => target.hostnames ?? (target.route ? [target.route] : []);
 /** A Project's page. */
 export const projectHref = (project: string) =>
   `/projects/${encodeURIComponent(project)}`;

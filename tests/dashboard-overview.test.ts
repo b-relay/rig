@@ -7,7 +7,7 @@ import {
 import { targetVerbs } from "../web/lib/target-verbs";
 import { componentPorts, exitText, routeLines } from "../web/lib/target-detail";
 import { nextTheme, parseTheme, themeCookie } from "../web/lib/theme";
-import { projectHref, targetHref } from "../web/lib/target";
+import { projectHref, targetHostnames, targetHref } from "../web/lib/target";
 import type { TargetReport } from "../web/lib/types";
 
 const target = (fields: Partial<TargetReport>): TargetReport => ({
@@ -154,6 +154,39 @@ describe("target detail", () => {
       { url: "https://app.test/", prefix: "/", service: "web", port: 1 },
     ]);
     expect(routeLines({ components: [] })).toEqual([]);
+  });
+  test("every hostname of a Target is listed: its domain's paths, then each Service domain's one path", () => {
+    const target = {
+      route: "melody.test",
+      hostnames: ["melody.test", "api.melody.test"],
+      serviceDomains: [
+        { hostname: "api.melody.test", service: "api", port: 2 },
+      ],
+      components: [
+        {
+          name: "web",
+          kind: "managed" as const,
+          state: "running" as const,
+          port: 1,
+          route: "melody.test",
+        },
+        {
+          name: "api",
+          kind: "managed" as const,
+          state: "running" as const,
+          port: 2,
+          route: "api.melody.test",
+        },
+      ],
+    };
+    expect(routeLines(target)).toEqual([
+      { url: "https://melody.test/", prefix: "/", service: "web", port: 1 },
+      { url: "https://api.melody.test/", prefix: "/", service: "api", port: 2 },
+    ]);
+    expect(targetHostnames(target)).toEqual(["melody.test", "api.melody.test"]);
+    // A reply from before Service domains has only route.
+    expect(targetHostnames({ route: "app.test" })).toEqual(["app.test"]);
+    expect(targetHostnames({})).toEqual([]);
   });
   test("a Target's page sits under its Project's, with its name escaped", () => {
     expect(projectHref("pantry")).toBe("/projects/pantry");

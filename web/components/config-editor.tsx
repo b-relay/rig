@@ -937,10 +937,35 @@ function ServiceFields({
         valuePlaceholder="auto"
         initial="auto"
       />
+      <ServiceDomainField path={[...path, "domain"]} />
       <HealthcheckFields path={[...path, "healthcheck"]} />
       <EnvironmentSection path={path} />
     </div>
   );
+}
+/** A Service's own hostname. The map form, which names a port, is shown, not edited, so the form never
+ * rewrites it as a plain hostname and drops the port. */
+function ServiceDomainField({ path }: { path: string[] }) {
+  const draft = useDraft();
+  const domain = getAt(draft.tree, path);
+  const issues = useIssues(path);
+  if (typeof domain === "object" && domain !== null)
+    return (
+      <Field
+        label="Domain"
+        htmlFor={path.join(".")}
+        help="A hostname with its port; edit it in rig.yaml."
+        issues={issues}
+      >
+        <Input
+          id={path.join(".")}
+          value={JSON.stringify(domain)}
+          disabled
+          className="font-mono text-xs"
+        />
+      </Field>
+    );
+  return <Text path={path} label="Domain" placeholder="api.app.example.com" />;
 }
 /** A Service's healthcheck, in Docker Compose's shape. A list-form test (CMD, CMD-SHELL, NONE) is shown, not edited, so
  * the form never rewrites it as a string. */

@@ -135,7 +135,9 @@ async function world(
     const failure = failures[verb as "validate" | "reload"];
     if (failure) return { exitCode: 1, stdout: "", stderr: failure };
     if (verb === "reload" && !control.ignoreReload)
-      control.loaded = await fakeAdapt(command[3]!);
+      control.loaded = command[3]!.endsWith(".json")
+        ? JSON.parse(await readFile(command[3]!, "utf8"))
+        : await fakeAdapt(command[3]!);
     return { exitCode: 0, stdout: "", stderr: "" };
   };
   let id = 0;
@@ -147,8 +149,11 @@ async function world(
       state: async () => control.state,
       restart: async () => {
         control.restarts++;
-        control.loaded = await fakeAdapt(
-          join(root, "caddy", "current", "Caddyfile"),
+        control.loaded = JSON.parse(
+          await readFile(
+            join(root, "caddy", "current", "adapted.json"),
+            "utf8",
+          ),
         );
       },
     },
@@ -157,6 +162,7 @@ async function world(
       config: async () => (control.reachable ? control.loaded : undefined),
     },
     generationId: () => `g${String(++id).padStart(3, "0")}`,
+    reachableWaitMs: 300,
     now: () => new Date("2026-10-10T00:00:00.000Z"),
   });
   return {
@@ -210,7 +216,7 @@ test("a route change is published as a generation: validated, adapted, switched 
       binary,
       "adapt",
       "--config",
-      join(generation + ".tmp", "custom.caddy"),
+      join(generation + ".tmp", "inventory.custom.caddy"),
       "--adapter",
       "caddyfile",
     ],
@@ -230,14 +236,7 @@ test("a route change is published as a generation: validated, adapted, switched 
       "--adapter",
       "caddyfile",
     ],
-    [
-      binary,
-      "reload",
-      "--config",
-      join(generation, "Caddyfile"),
-      "--adapter",
-      "caddyfile",
-    ],
+    [binary, "reload", "--config", join(generation, "adapted.json")],
   ]);
   const routes = await w.routes();
   expect(routes).toContain(
@@ -595,4 +594,29 @@ test("old generations are pruned to the current one and four before it", async (
     "g009",
   ]);
   expect(await w.current()).toBe("g009");
+});
+
+test("a Caddy whose job runs but whose socket opens a moment later is waited for, not failed", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // At boot launchd shows the job running before Caddy listens on its socket.
+  w.control.reachable = false;
+  w.control.state = "running";
+  setTimeout(() => (w.control.reachable = true), 100);
+  await w.caddy.router.apply(app("127.0.0.1:3002"));
+  expect(w.servedRoutes()).toContain("127.0.0.1:3002");
+});
+
+test("when reconciling fails, the error says nothing was changed rather than claiming a rollback", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // Caddy runs something other than the current generation, and refuses to reload.
+  w.control.loaded = {};
+  w.failures.reload = "Error: boom";
+  const error = await w.caddy.router
+    .apply(app("127.0.0.1:3002"))
+    .catch((caught) => caught);
+  expect(error).toMatchObject({ code: "ROUTE_RELOAD" });
+  expect(error.message).toContain("nothing was changed");
+  expect(error.message).not.toContain("restored");
 });

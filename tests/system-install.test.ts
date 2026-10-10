@@ -53,7 +53,8 @@ async function sandbox(loaded: readonly string[] = []) {
       '  print) grep -qx "$2" "$state";;',
       `  bootout) [ -e ${JSON.stringify(join(root, "bootoutFails"))} ] && exit 5`,
       `    [ -e ${JSON.stringify(join(root, "bootoutSticks"))} ] && exit 0`,
-      '    grep -vx "$2" "$state" > "$state.tmp"; mv "$state.tmp" "$state";;',
+      '    grep -vx "$2" "$state" > "$state.tmp"; mv "$state.tmp" "$state"',
+      `    [ -e ${JSON.stringify(join(root, "bootoutInProgress"))} ] && exit 36; exit 0;;`,
       '  bootstrap) echo "system/$(basename "$3" .plist)" >> "$state";;',
       "esac",
       "",
@@ -87,7 +88,7 @@ async function sandbox(loaded: readonly string[] = []) {
         .filter((line) => line && !line.startsWith("print ")),
     loaded: async () =>
       (await readFile(state, "utf8")).split("\n").filter(Boolean),
-    fail: (how: "bootoutFails" | "bootoutSticks") =>
+    fail: (how: "bootoutFails" | "bootoutSticks" | "bootoutInProgress") =>
       writeFile(join(root, how), ""),
   };
 }
@@ -149,6 +150,13 @@ test("a loaded system job is stopped before it is installed again, and only a co
     `enable system/${label}`,
     `bootstrap system ${join(s.places.daemons, `${label}.plist`)}`,
   ]);
+
+  // A bootout that reports "operation in progress" while the job does stop is a stop, not a failure.
+  const draining = await sandbox([`system/${label}`]);
+  await draining.fail("bootoutInProgress");
+  const { line: drained } = await installLine(draining);
+  expect((await draining.run(drained)).code).toBe(0);
+  expect(await draining.loaded()).toEqual([`system/${label}`]);
 
   for (const how of ["bootoutFails", "bootoutSticks"] as const) {
     const stuck = await sandbox([`gui/502/${label}`]);

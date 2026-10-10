@@ -147,7 +147,12 @@ export async function confirmBinary(paths: ProxyPaths): Promise<void> {
 /** Points the job back at the last copy that served and forgets the unconfirmed one; false when there is none to go back to. */
 export async function revertBinary(paths: ProxyPaths): Promise<boolean> {
   const state = await readBinaryState(paths);
-  if (!state.lastGood) return false;
+  // A copy deleted since would leave the job's link dangling: then there is nothing to go back to.
+  if (
+    !state.lastGood ||
+    !(await stat(join(paths.bin, state.lastGood)).catch(() => undefined))
+  )
+    return false;
   await switchBinary(paths, join(paths.bin, state.lastGood));
   await writeBinaryState(paths, { lastGood: state.lastGood });
   return true;

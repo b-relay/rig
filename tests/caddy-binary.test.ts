@@ -65,8 +65,14 @@ test("a new copy stays pending until confirmed; an install killed before confirm
   expect(await binaryPending(w.paths)).toBe(false);
 });
 
-test("with nothing that ever served there is nothing to go back to", async () => {
+test("with nothing that ever served, or only a copy since deleted, there is nothing to go back to", async () => {
   const w = await world();
-  await w.install(await w.source("a"));
+  const a = await w.install(await w.source("a"));
   expect(await revertBinary(w.paths)).toBe(false);
+  await confirmBinary(w.paths);
+  await w.install(await w.source("b"));
+  await rm(a.file);
+  expect(await revertBinary(w.paths)).toBe(false);
+  // The job's link was left on the copy that exists.
+  expect(await w.linked()).not.toBe(a.file.split("/").at(-1));
 });

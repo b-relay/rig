@@ -1,9 +1,8 @@
-import type { z } from "zod";
-import type { hostConfigSchema, ProjectConfig, TargetRole } from "./schema";
+import type { parseHostConfig, ProjectConfig, TargetRole } from "./schema";
 import type { PublicInput } from "./references";
 
 export type { ProjectConfig } from "./schema";
-export type HostConfig = z.infer<typeof hostConfigSchema>;
+export type HostConfig = ReturnType<typeof parseHostConfig>;
 export interface ConfigDocument<T> {
   path: string;
   revision: string;

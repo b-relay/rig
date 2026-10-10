@@ -135,6 +135,10 @@ test("a plist changed after Rig rendered it fails the check: nothing reaches Lau
     existsSync(join(s.places.daemons, "com.b-relay.rig-caddy.test.plist")),
   ).toBe(false);
   expect(existsSync(agent)).toBe(true);
+  // The staged copy that failed its check is deleted, not left behind.
+  expect(
+    existsSync(join(s.places.staging, "com.b-relay.rig-caddy.test.plist")),
+  ).toBe(false);
   expect(await s.launchctl()).toBe("");
 }, 30_000);
 
@@ -161,5 +165,17 @@ test("Rig never renders a plist that runs as root", () => {
       keepAlive: "always",
       userName: "root",
     }),
-  ).toThrow();
+  ).toThrow(expect.objectContaining({ code: "LAUNCHD_ROOT" }));
+  // An empty name would drop UserName, which runs the job as root too.
+  expect(() =>
+    renderLaunchdPlist({
+      label: "x",
+      programArguments: ["/bin/true"],
+      environment: {},
+      workingDirectory: "/",
+      log: "/tmp/x.log",
+      keepAlive: "always",
+      userName: "",
+    }),
+  ).toThrow(expect.objectContaining({ code: "LAUNCHD_ROOT" }));
 });

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DaemonAdmin } from "../src/daemon/admin";
 import { readInstallationRecord } from "../src/daemon/installation";
 import { processExists } from "../src/daemon/host";
+import { writeStartupFailure } from "../src/daemon/startup-failure";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -49,9 +50,14 @@ async function world() {
     },
   });
   let daemon: ReturnType<typeof Bun.spawn> | undefined;
-  cleanups.push(async () => {
+  let keepAlive = false;
+  const stopDaemon = async () => {
+    keepAlive = false;
     daemon?.kill();
     await daemon?.exited;
+  };
+  cleanups.push(async () => {
+    await stopDaemon();
     await rm(root, { recursive: true, force: true });
   });
   return {
@@ -60,23 +66,49 @@ async function world() {
     admin,
     calls,
     launchd,
-    /** What launchd would do once the owner's line ran: start the program in the plist. */
+    /** What launchd does once the owner's line ran: start the program in the plist, and start it again whenever it exits
+     * (KeepAlive). */
     async startAsLaunchd() {
-      daemon = Bun.spawn([process.execPath, script], {
-        env: { ...process.env, RIG_ROOT: root, RIG_DAEMON_CHILD: "1" },
-        stdout: "ignore",
-        stderr: "ignore",
-      });
+      keepAlive = true;
+      void (async () => {
+        while (keepAlive) {
+          daemon = Bun.spawn([process.execPath, script], {
+            env: {
+              ...process.env,
+              RIG_ROOT: root,
+              RIG_DAEMON_CHILD: "1",
+              RIG_DAEMON_MODE: "system",
+            },
+            stdout: "ignore",
+            stderr: "ignore",
+          });
+          await daemon.exited;
+          await Bun.sleep(100);
+        }
+      })();
       for (let i = 0; i < 100 && !(await admin.status()).reachable; i++)
         await Bun.sleep(50);
-      return daemon.pid;
+      return daemon!.pid;
     },
-    stopDaemon: async () => {
-      daemon?.kill();
-      await daemon?.exited;
+    stopDaemon,
+    /** The owner's pasted lines, as far as this root can tell: the rendered plists installed and loaded. */
+    async paste(labels: readonly string[]) {
+      for (const label of labels)
+        await writeFile(
+          join(places.daemons, `${label}.plist`),
+          await readFile(
+            join(root, "daemon", "launchd", `${label}.plist`),
+            "utf8",
+          ),
+        );
+      launchd.loaded = true;
     },
   };
 }
+const labelOf = (line: string) =>
+  line.match(
+    /bootstrap system '.*\/(com\.b-relay\.[a-z-]+\.[0-9a-f]+)\.plist'/,
+  )![1]!;
 
 test("a first boot install prepares everything that needs no root and prints one gated sudo line, loading nothing itself", async () => {
   const w = await world();
@@ -87,9 +119,10 @@ test("a first boot install prepares everything that needs no root and prints one
     /bootstrap system '.*\/(com\.b-relay\.rigd\.[0-9a-f]+)\.plist'/,
   )![1]!;
   expect(error.hint).toContain(line);
-  // The line copies, checks the digest, removes the LaunchAgent, installs and bootstraps, in that order.
+  // The line stages a copy root writes from what the user's shell reads, checks its digest (deleting it on a mismatch), then
+  // removes the LaunchAgent, installs and bootstraps, in that order.
   expect(line).toMatch(
-    /install -m 644 -o root -g wheel .* && echo '[0-9a-f]{64} {2}.*' \| sudo shasum -a 256 -c - && \{ launchctl bootout gui\/502\/.* && sudo install .* && .* && sudo launchctl bootstrap system /,
+    /sudo sh -c '.*' < '.*' && \{ echo '[0-9a-f]{64} {2}.*' \| sudo shasum -a 256 -c - \|\| \{ sudo rm -f .*; false; \}; \} && \{ launchctl bootout gui\/502\/.* && sudo install .* && .* && sudo launchctl bootstrap system /,
   );
   const plist = await readFile(
     join(w.root, "daemon", "launchd", `${label}.plist`),
@@ -99,9 +132,11 @@ test("a first boot install prepares everything that needs no root and prints one
   expect(plist).toContain("<key>KeepAlive</key>\n  <true/>");
   // The environment is fixed, not the installing shell's.
   expect(plist).not.toContain(process.env.PATH ?? "unset");
+  // Until the job is installed, the record does not claim it: a line never pasted leaves nothing recorded wrongly.
   expect(await readInstallationRecord(w.root)).toMatchObject({
-    mode: "system",
+    mode: "launchd",
   });
+  expect(plist).toContain("<key>RIG_DAEMON_MODE</key><string>system</string>");
   // Only launchd's state was read: nothing was booted out or bootstrapped.
   expect(w.calls.every((call) => call.startsWith("print "))).toBe(true);
   // Rendering again gives the same plist, so a repeated install asks for nothing new.
@@ -111,23 +146,41 @@ test("a first boot install prepares everything that needs no root and prints one
   ).toBe(plist);
 });
 
-test("once the owner's line installed the job, an install with the same build changes nothing and needs no sudo", async () => {
+test("once the owner's line installed the job, the next install restarts rigd through launchd and records it; then nothing changes", async () => {
   const w = await world();
   const error = await w.admin.install().catch((caught) => caught);
-  const label = (error.details.commands[0] as string).match(
-    /(com\.b-relay\.rigd\.[0-9a-f]+)\.plist'$/,
-  )![1]!;
-  // What the owner's line leaves behind: the rendered plist in LaunchDaemons, loaded, and launchd running rigd.
-  await writeFile(
-    join(w.places.daemons, `${label}.plist`),
-    await readFile(join(w.root, "daemon", "launchd", `${label}.plist`), "utf8"),
-  );
-  w.launchd.loaded = true;
-  await w.startAsLaunchd();
+  await w.paste((error.details.commands as string[]).map(labelOf));
+  const first = await w.startAsLaunchd();
+  // A failure an earlier start recorded is not this one's.
+  await writeStartupFailure(w.root, new Error("an old start failed"));
+  expect(await w.admin.install()).toMatchObject({
+    outcome: "installed",
+    replaced: { pid: first },
+    reachable: true,
+  });
+  expect(await readInstallationRecord(w.root)).toMatchObject({
+    mode: "system",
+  });
   expect(await w.admin.install()).toMatchObject({
     outcome: "unchanged",
     reachable: true,
   });
+}, 60_000);
+
+test("a system Caddy left from a removed proxy section is named with its removal line, even when rigd's job is installed", async () => {
+  const w = await world();
+  const error = await w.admin.install().catch((caught) => caught);
+  await w.paste((error.details.commands as string[]).map(labelOf));
+  const caddyLabel = labelOf(error.details.commands[0]).replace(
+    "rigd",
+    "rig-caddy",
+  );
+  await writeFile(join(w.places.daemons, `${caddyLabel}.plist`), "left");
+  const stale = await w.admin.install().catch((caught) => caught);
+  expect(stale).toMatchObject({ code: "DAEMON_SYSTEM_INSTALL" });
+  expect(stale.details.commands).toEqual([
+    expect.stringContaining(`bootout system/${caddyLabel}`),
+  ]);
 });
 
 test("going back to login with the system job still installed prints the removal instead of starting a second rigd", async () => {

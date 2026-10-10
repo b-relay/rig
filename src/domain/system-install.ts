@@ -40,8 +40,10 @@ export function systemInstallLine(
   const installed = `${places.daemons}/${job.label}.plist`;
   return [
     `sudo install -d -m 755 -o root -g wheel ${shellQuote(places.staging)}`,
-    `sudo install -m 644 -o root -g wheel ${shellQuote(job.source)} ${shellQuote(staged)}`,
-    `echo ${shellQuote(`${plistDigest(job.plist)}  ${staged}`)} | sudo shasum -a 256 -c -`,
+    // The user's own shell opens the source and root only writes what it is handed, so a source swapped for a link to a
+    // root-only file reads nothing root can; the staged copy is root's and private until its digest is checked.
+    `sudo sh -c ${shellQuote(`umask 077; cat > ${shellQuote(staged)}`)} < ${shellQuote(job.source)}`,
+    `{ echo ${shellQuote(`${plistDigest(job.plist)}  ${staged}`)} | sudo shasum -a 256 -c - || { sudo rm -f ${shellQuote(staged)}; false; }; }`,
     ...(job.replaces
       ? [
           `{ launchctl bootout ${job.replaces.domain}/${job.label} 2>/dev/null; rm -f ${shellQuote(job.replaces.plist)}; true; }`,

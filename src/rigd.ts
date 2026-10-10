@@ -46,7 +46,10 @@ export async function main(args: readonly string[]): Promise<number> {
         root,
         [...command, "capture"],
         installation?.bun,
-        installation?.mode,
+        // launchd's system job says so itself: its record may still name the LaunchAgent it replaces.
+        process.env.RIG_DAEMON_MODE === "system"
+          ? "system"
+          : installation?.mode,
       );
     } catch (error) {
       // runDaemonHost records its own failures; composition failures need the same record.

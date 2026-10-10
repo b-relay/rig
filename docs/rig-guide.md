@@ -228,7 +228,7 @@ Target (or `custom.caddy`) behind it, its routes and the certificate that covers
 it, and whether each custom file is applied. `rig proxy reload` applies the
 custom files and the `proxy` section of Host config. `rig proxy verify` makes a
 real TLS handshake with every served hostname on this Host's HTTPS port. A
-hostname passes only with a certificate the system trusts, from a production
+hostname passes only with a certificate trusted by Mozilla's root store, from a production
 CA, valid for more than seven days. A new certificate can take minutes while
 DNS propagates, so `--wait 600` keeps checking until then. A reload that
 succeeded does not mean the certificates are ready; `verify` is what says so.

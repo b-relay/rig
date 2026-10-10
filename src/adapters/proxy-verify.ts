@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { connect } from "node:tls";
+import { checkServerIdentity, connect } from "node:tls";
 import {
+  isStagingIssuer,
   judgeCertificate,
   type CertificateVerdict,
 } from "../domain/certificate-check";
@@ -25,7 +26,7 @@ export async function servedHostnames(root: string): Promise<string[]> {
     .filter((name): name is string => name !== undefined);
   return [...new Set(names)].sort();
 }
-/** One handshake with `hostname` on the local HTTPS port, trusting only what the system trusts (plus `trust`, for tests). */
+/** One handshake with `hostname` on the local HTTPS port, trusting the runtime's root store (Mozilla's) plus `trust`, for tests. */
 function handshake(
   hostname: string,
   port: number,
@@ -34,11 +35,14 @@ function handshake(
   trust: readonly string[] | undefined,
 ): Promise<CertificateVerdict> {
   return new Promise((resolve) => {
+    // Trust is judged here rather than by the handshake, so a staging certificate, which chains to no trusted root, can still
+    // be told apart from one that is simply untrusted.
     const socket = connect({
       host: "127.0.0.1",
       port,
       servername: hostname,
       ...(trust ? { ca: [...trust] } : {}),
+      rejectUnauthorized: false,
       timeout: 5000,
     });
     const fail = (problem: string) => {
@@ -47,12 +51,24 @@ function handshake(
     };
     socket.once("secureConnect", () => {
       const certificate = socket.getPeerCertificate();
+      const issuer = { O: certificate.issuer?.O, CN: certificate.issuer?.CN };
+      if (!socket.authorized) {
+        // Only an explicitly accepted staging certificate for this very name passes without a trusted chain.
+        const staging =
+          stagingOk &&
+          isStagingIssuer(issuer) &&
+          checkServerIdentity(hostname, certificate) === undefined;
+        if (!staging)
+          return fail(
+            `its certificate is not trusted (${String(socket.authorizationError ?? "unverified")})`,
+          );
+      }
       socket.end();
       resolve(
         judgeCertificate(
           hostname,
           {
-            issuer: { O: certificate.issuer?.O, CN: certificate.issuer?.CN },
+            issuer,
             validTo: new Date(certificate.valid_to),
           },
           now,

@@ -11,7 +11,7 @@ import {
   open,
   chmod,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { DaemonClient } from "./client";
 import {
   daemonTokenPath,
@@ -397,6 +397,7 @@ export class DaemonAdmin {
         (recorded.command ?? []).join("\0") ===
           this.options.command.join("\0") &&
         recorded.bun === this.options.bun &&
+        recorded.mode === this.options.mode &&
         (recorded.proxy ?? "external") === (proxyMode ?? "external") &&
         (proxyMode !== "managed" || (await this.options.proxy!.inSync()));
       if (current) return { ...prior, outcome: "unchanged" };
@@ -532,6 +533,8 @@ export class DaemonAdmin {
       ].join(":"),
       RIG_ROOT: this.options.root,
       RIG_DAEMON_CHILD: "1",
+      // The record names the mode only once both jobs are installed; launchd's rigd knows its own from here.
+      RIG_DAEMON_MODE: "system",
     };
   }
   /** The system jobs Host config asks for, Caddy first: each replaces the LaunchAgent of the same label, removed only once its
@@ -589,7 +592,7 @@ export class DaemonAdmin {
     return new RigError(
       "DAEMON_SYSTEM_UNINSTALL",
       `${labels.join(" and ")} ${labels.length === 1 ? "is a system job" : "are system jobs"}, which only root can remove.`,
-      `Paste ${lines.length === 1 ? "this line" : "each of these lines"} in a terminal, then run the same rigd command again:\n${lines.join("\n")}`,
+      `Removing rigd's job stops rigd, so stop every Target first (rig down). Then paste ${lines.length === 1 ? "this line" : "each of these lines"} in a terminal, and run the same rigd command again:\n${lines.join("\n")}`,
       { commands: lines },
     );
   }
@@ -616,6 +619,13 @@ export class DaemonAdmin {
     proxyMode: ProxyMode | undefined,
   ): Promise<DaemonStatus> {
     const { root } = this.options;
+    // Run with sudo, the jobs would be defined for root.
+    if (process.getuid?.() === 0)
+      throw new RigError(
+        "DAEMON_SYSTEM_INSTALL",
+        "rigd install must not run as root.",
+        "Run rigd install as the user the jobs should run as; it prints the sudo lines it needs.",
+      );
     await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
     await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
     const recorded = prior.installed
@@ -625,7 +635,12 @@ export class DaemonAdmin {
     const pending: SystemJob[] = [];
     for (const job of jobs)
       if (!(await this.systemJobInstalled(job))) pending.push(job);
-    if (pending.length) {
+    // A system Caddy left from a proxy section since removed would keep the ports; only root can remove it.
+    const caddyLabel = caddyJobLabel(root);
+    const staleCaddy =
+      proxyMode !== "managed" &&
+      (await this.systemLeftovers()).includes(caddyLabel);
+    if (pending.length || staleCaddy) {
       // A daemon that runs keeps its credential; with none running, a fresh one is ready for the system rigd.
       if (!prior.running) await this.issueToken();
       // Caddy needs a generation before launchd first starts it; a rigd already publishing through it has one.
@@ -634,12 +649,31 @@ export class DaemonAdmin {
         !(prior.reachable && recorded?.proxy === "managed")
       )
         await this.options.proxy!.install({ defineJob: false });
-      await this.writeInstallation(this.options.bun, proxyMode, "system");
-      const lines = pending.map((job) => systemInstallLine(job, this.places()));
+      // The record keeps naming the rigd that runs now until both jobs are installed: a line never pasted must not leave a
+      // LaunchAgent rigd recorded as a system job. The system rigd learns its mode from its plist (RIG_DAEMON_MODE).
+      await this.writeInstallation(
+        this.options.bun,
+        proxyMode,
+        recorded?.mode === "system" ? "system" : this.options.mode,
+      );
+      // Created by the user, so launchd appends to files the user owns.
+      for (const log of [
+        join(root, "daemon", "startup.log"),
+        join(root, "caddy", "launchd.log"),
+      ]) {
+        await mkdir(dirname(log), { recursive: true });
+        await writeFile(log, "", { flag: "a", mode: 0o600 });
+      }
+      const lines = [
+        ...(staleCaddy ? [systemRemoveLine(caddyLabel, this.places())] : []),
+        ...pending.map((job) => systemInstallLine(job, this.places())),
+      ];
       throw new RigError(
         "DAEMON_SYSTEM_INSTALL",
-        `${pending.map((job) => job.label).join(" and ")} must be installed as system ${pending.length === 1 ? "job" : "jobs"} that run as ${this.userName()} from boot, which needs sudo once.`,
-        `Paste ${lines.length === 1 ? "this line" : "each of these lines"} in a terminal, then run rigd install again. Each line stops at the first failure, and checks the plist's digest before anything is installed:\n${lines.join("\n")}`,
+        pending.length
+          ? `${pending.map((job) => job.label).join(" and ")} must be installed as system ${pending.length === 1 ? "job" : "jobs"} that run as ${this.userName()} from boot, which needs sudo once.`
+          : `Rig's Caddy is still installed as the system job ${caddyLabel}, but Host config has no proxy section.`,
+        `Paste ${lines.length === 1 ? "this line" : "each of these lines"} in a terminal, then run rigd install again. Each line stops at the first failure, and checks a plist's digest before anything is installed:\n${lines.join("\n")}`,
         { commands: lines },
       );
     }
@@ -655,6 +689,8 @@ export class DaemonAdmin {
     await this.writeInstallation(this.options.bun, proxyMode, "system");
     let replaced: DaemonStatus["replaced"];
     if (!current) {
+      // A failure recorded by an earlier start is not this one's.
+      await clearStartupFailure(root);
       // launchd starts rigd again from the same path, which is now this build; Services keep running and it adopts them.
       if (prior.reachable && serving) {
         process.kill(serving.pid, "SIGTERM");
@@ -677,7 +713,17 @@ export class DaemonAdmin {
       });
     }
     const status = await this.status();
-    const allWarnings = [...(status.warnings ?? []), ...warnings];
+    // An upgrade needs no sudo only while the job's program stays at one path.
+    const stable = join(root, "bin", "rigd");
+    const allWarnings = [
+      ...(status.warnings ?? []),
+      ...warnings,
+      ...(this.options.command[0] !== stable
+        ? [
+            `The rigd system job runs ${this.options.command[0]}, not ${stable}; installing a rigd from another path asks for sudo again.`,
+          ]
+        : []),
+    ];
     return {
       ...status,
       outcome: current ? "unchanged" : "installed",
@@ -749,7 +795,8 @@ export class DaemonAdmin {
         "Stop all Targets and retry.",
       );
     // A system job is removed by the owner's sudo; rigd keeps serving until then, and the next uninstall finishes.
-    if (installation.data.mode === "system") {
+    // Whatever the record says: a line pasted without a later rigd install leaves a system job the record does not name.
+    if (installation.data.mode !== "process") {
       const leftovers = await this.systemLeftovers();
       if (leftovers.length) {
         await client.command({ action: "cancel-uninstall" }).catch(() => {});
@@ -791,7 +838,7 @@ export class DaemonAdmin {
     mode: DaemonMode,
     records: ProcessRecord[],
   ): Promise<DaemonStatus> {
-    if (mode === "system") {
+    if (mode !== "process") {
       const leftovers = await this.systemLeftovers();
       if (leftovers.length) throw this.systemRemovalRequired(leftovers);
     }

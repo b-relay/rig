@@ -163,7 +163,7 @@ function addProxyCommands(
   proxy
     .command("verify")
     .description(
-      "Check every served hostname with a real TLS handshake on this Host: a certificate the system trusts, from a production CA, valid for more than 7 days. Exits 1 when any hostname fails.",
+      "Check every served hostname with a real TLS handshake on this Host: a trusted certificate (Mozilla's root store), from a production CA, valid for more than 7 days. Exits 1 when any hostname fails.",
     )
     .option(
       "--port <port>",
@@ -175,7 +175,10 @@ function addProxyCommands(
       "Keep checking the failing hostnames for up to this long",
       positiveInteger,
     )
-    .option("--staging-ok", "Accept certificates from a staging CA")
+    .option(
+      "--staging-ok",
+      "Accept a certificate from a staging CA, for the very name it was issued to",
+    )
     .action(
       async (options: {
         port?: number;

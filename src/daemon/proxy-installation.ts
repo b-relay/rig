@@ -48,7 +48,8 @@ export interface ProxyInstallation {
   /** Refuses, before anything stops, what install would refuse from Host config alone: a missing proxy section, both
    * sections written, the token, and a proxy.caddy that is not Caddy 2.10 or later with the DNS module. */
   preflight(): Promise<void>;
-  /** Removes Rig's Caddy job, if one is defined. Certificates, generations, custom files and the token stay. */
+  /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined. Certificates,
+   * generations, custom files and the token stay. */
   remove(): Promise<void>;
 }
 export interface ProxyInstallationOptions {
@@ -222,7 +223,19 @@ export function createProxyInstallation(
         run: options.run,
       });
     },
-    remove: async () => (await currentJob()).remove(),
+    // The job rigd install can remove itself: the process, or the LaunchAgent, which stays behind when a switch to boot was
+    // never completed. A system job needs root; rigd install and uninstall print its line.
+    remove: () =>
+      createCaddyJob({
+        root: options.root,
+        paths,
+        mode: options.mode === "process" ? "process" : "launchd",
+        userHome: options.userHome,
+        uid: options.uid,
+        userName: options.userName,
+        admin,
+        ...(options.launchctl ? { launchctl: options.launchctl } : {}),
+      }).remove(),
     systemJob: () =>
       caddySystemPlist({
         root: options.root,

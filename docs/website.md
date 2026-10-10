@@ -78,7 +78,7 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   its hostname serves with the Service and port each reaches; the deployment it
   runs), Deployments, Logs, Environment and Jobs, each for that Target alone.
 - **Logs** (`web/components/log-viewer.tsx`): a Target's lines followed a second
-  at a time through `rigd`'s cursor. Component chips and the stream picker
+  at a time through `rigd`'s cursor, read with a plain GET (`/log-lines`) because Next runs Server Actions one at a time and a deploy started from the page would hold the follow. Component chips and the stream picker
   narrow `rigd`'s own read (`logFilter`); the search box narrows and marks what
   is shown. Scrolling up holds the view until Latest; lines can wrap, be
   cleared, or be downloaded as `rig logs` prints them.

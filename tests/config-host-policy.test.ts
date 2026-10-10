@@ -14,6 +14,67 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     providers: { caddy: { extra_config: [], reload: { mode: "manual" } } },
     diagnostics: { retention_days: 14, level: "info" },
     logs: { max_bytes: 64 * 1024 * 1024, generations: 1 },
+    proxyMode: "external",
+    externalIgnored: false,
+  });
+});
+
+test("a written proxy section makes Rig run its own Caddy, with every default resolved", () => {
+  const host = parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } });
+  expect(host.proxyMode).toBe("managed");
+  expect(host.externalIgnored).toBe(false);
+  expect(host.proxy).toEqual({
+    caddy: "/usr/local/bin/caddy",
+    ports: { http: 80, https: 443 },
+    tls: {
+      ca: "letsencrypt",
+      dns: "cloudflare",
+      certificates: "wildcard",
+      resolvers: ["1.1.1.1", "1.0.0.1"],
+    },
+    site: [],
+  });
+  // providers.caddy written beside it is ignored, and said to be.
+  expect(
+    parseHostConfig({
+      proxy: { caddy: "/usr/local/bin/caddy" },
+      providers: { caddy: { extra_config: ["import cloudflare"] } },
+    }),
+  ).toMatchObject({ proxyMode: "managed", externalIgnored: true });
+  expect(parseHostConfig({ providers: { caddy: {} } }).proxyMode).toBe(
+    "external",
+  );
+});
+
+test("proxy refuses a relative Caddy, ports that cannot be served together, a multi-line site directive, and an unknown CA", () => {
+  for (const proxy of [
+    { caddy: "caddy" },
+    { caddy: "/c", ports: { http: 80, https: 80 } },
+    { caddy: "/c", ports: { http: 80, https: 8443 } },
+    { caddy: "/c", site: ["import a\nimport b"] },
+    { caddy: "/c", tls: { ca: "zerossl" } },
+    { caddy: "/c", tls: { ca: "http://acme.test/directory" } },
+    { caddy: "/c", tls: { resolvers: ["one.one.one.one"] } },
+    { caddy: "/c", tls: { dns: "route53" } },
+    { caddy: "/c", unknown: true },
+  ])
+    expect(() => parseHostConfig({ proxy })).toThrow();
+  expect(
+    parseHostConfig({
+      proxy: {
+        caddy: "/c",
+        ports: { http: 28080, https: 28443 },
+        tls: {
+          ca: "https://acme.test/directory",
+          email: "ops@example.com",
+          certificates: "hostname",
+        },
+        site: ["import backend_errors"],
+      },
+    }).proxy,
+  ).toMatchObject({
+    ports: { http: 28080, https: 28443 },
+    tls: { ca: "https://acme.test/directory", certificates: "hostname" },
   });
 });
 

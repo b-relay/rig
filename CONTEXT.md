@@ -497,8 +497,16 @@ merge keys, and multiple documents so configuration remains deterministic.
 _Relationship_: The `rigd` control plane has a structured config editor at
 `/v1/config` with read, preview, and apply. It checks the document revision,
 keeps a `rig.yaml.bak` backup, preserves YAML comments and ordering, and
-refuses an edit that would lose comments or that changes `name`. The CLI does
-not expose it.
+refuses an edit that would lose comments or that changes `name`. A refused
+preview names each field's problem by path, so the dashboard shows it beside
+the field. The CLI does not expose it.
+
+_Relationship_: The control plane also has an env editor at `/v1/env` for the
+operator env files (`<RIG_ROOT>/env/<project>[/<service>]/{all,<role>}.env`):
+`read` names each file's keys without values, `reveal` answers one value, and
+`write` changes names atomically against the revision read, keeping the file 0600. It takes a Project and a scope, never a path. Each write is an Activity
+entry (`env`, `updated`) naming who asked and which names changed, never a
+value. The CLI does not expose it; the dashboard's Environment tab uses it.
 
 _Relationship_: Not every Project config change needs a dedicated CLI command.
 Project policy is edited directly in Project config; Rig validates the result
@@ -717,6 +725,13 @@ as running or stopped. A Target is listed so only while its Target switch is on.
 _Relationship_: `rig doctor` diagnoses drift: it compares the working Target with
 the current `rig.yaml`, and each deployed Target with the config committed in
 its checkout.
+
+_Relationship_: `rigd` also keeps a bounded deploy history beside the records
+(the newest 500 deploys in `state.json`): each deploy's Target, Branch, Commit,
+the Commit it replaced, outcome, start and end, under its Operation id. The
+`deployments` read answers it; the dashboard's rollback deploys an earlier
+entry's Commit of its Branch again, which is an ordinary deploy that names a
+Commit.
 
 ### Restart
 

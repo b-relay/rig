@@ -35,6 +35,7 @@ export const commandSchema = z
       "prepare-uninstall",
       "cancel-uninstall",
       "queue",
+      "deployments",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
@@ -100,6 +101,7 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "logs",
   "activity",
   "queue",
+  "deployments",
 ] as const);
 /** Replies to the reads whose collections rig renders. A missing or malformed
  * collection is a protocol failure, never an empty page; unknown top-level keys

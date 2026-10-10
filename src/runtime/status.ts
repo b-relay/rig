@@ -69,6 +69,10 @@ export async function observeTargets(
         name: component.name,
         kind: component.kind,
         ...(component.kind === "managed" ? { port: component.port } : {}),
+        ...(component.kind === "managed" && component.ports
+          ? { ports: component.ports }
+          : {}),
+        ...automaticRestarts(target, component.name),
         ...(target.plan.proxy?.upstream === component.name && target.plan.domain
           ? { route: target.plan.domain }
           : {}),
@@ -180,10 +184,29 @@ export async function observeTargets(
       commit: target.commit,
       ...deploymentFlags(target),
       route: target.plan.domain,
+      ...(target.plan.domain && target.plan.proxy?.routes?.length
+        ? {
+            routes: target.plan.proxy.routes.map(
+              ({ prefix, service, port }) => ({ prefix, service, port }),
+            ),
+          }
+        : {}),
       components,
       state: aggregate(components),
     };
   });
+}
+/** Pure: the automatic restart attempts still inside the Service's restart budget windows, after a known and after an
+ * unknown exit together; nothing when there are none or rigd never ran the Service. Attempts age out of the windows, so the
+ * count can fall, and an attempt the budget refused before spawning counts too: it is recent activity, not a lifetime total. */
+export function automaticRestarts(
+  target: Pick<TargetRecord, "services">,
+  service: string,
+): Pick<ComponentReport, "restarts"> {
+  const run = target.services?.[service];
+  const restarts =
+    (run?.attempts.length ?? 0) + (run?.unknownAttempts?.length ?? 0);
+  return restarts ? { restarts } : {};
 }
 /** A Service its health restart stopped and could not start again: unhealthy, and waiting for the next health restart on
  * the back-off. Undefined for any other stopped Service. */

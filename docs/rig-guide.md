@@ -875,9 +875,10 @@ dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
 newer version's fields survive a temporary downgrade. A new value in a known
 field does not: a `rigd` from before `rig forget` was recorded in Activity
-refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it. Upgrade
-`rigd` again, or delete the entries whose `outcome` is `forgotten` from
-`activity` in the state file. Restoring `state.json.bak`, as the error
+refuses the state as `STATE_CORRUPT` once a `forgotten` entry is in it, and one
+from before the dashboard's Environment tab does the same once an `updated`
+entry (a secret edit) is. Upgrade `rigd` again, or delete the entries whose
+`outcome` is `forgotten` or `updated` from `activity` in the state file. Restoring `state.json.bak`, as the error
 suggests, helps only when recording the forget was the last write: that copy
 has the Project already removed, just without the `forgotten` entry. After any
 later write it holds the entry too. Services that take longer than about 4 s to stop
@@ -1697,7 +1698,9 @@ A listed `env_file` is required: when it is missing the command fails as
 `ENV_FILE_MISSING` naming the path before any build or process runs. The
 operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
 secrets, since they sit outside every checkout and so work for the Stable
-Target and Previews too. A listed path may be absolute, start with `~/` (the
+Target and Previews too. The dashboard's Environment tab edits them, with
+values masked until revealed, and keeps them mode 600; Activity records which
+names changed, never a value. A listed path may be absolute, start with `~/` (the
 operator's home; `~user` is rejected as `invalid_path`), or be relative to the
 Target workspace (never to a Service's `working_dir`). On the stable Target and Previews a relative path must stay
 inside that workspace (`path_outside_target` otherwise) and is read from the

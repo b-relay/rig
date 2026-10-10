@@ -2,7 +2,7 @@
 
 `web/` is the site published at `rig.b-relay.com`: a dashboard, rendered on the
 server, that shows every Project on this Host and drives every `rigd`
-control-plane action. There is no landing page; the board is the root.
+control-plane action. There is no landing page; the overview is the root.
 
 ## Stack
 
@@ -50,6 +50,92 @@ else changes; the page is left as it was and the next tick tries again. A
 navigation attempted while the network is down waits for it to return
 (`experimental.useOffline`) instead of falling through to the browser's error
 screen.
+
+## Pages
+
+A sidebar (`web/components/shell/sidebar.tsx`) lists the Host-wide sections
+(Overview, Activity, Proxy, Doctor, rigd) and every Project with its Targets,
+each with a state dot, streamed in as `rigd` answers. Below the width where it
+stays open it is a drawer the top bar opens, and a phone keeps the sections as
+tabs along the bottom. Status reads are shared per request
+(`web/server/status.ts`), so the sidebar and the page pay for one observation.
+The theme switch cycles system, light and dark and keeps the choice in a
+`rig_theme` cookie, so the server renders the right scheme on the first paint
+with no inline script; `dark:` utilities follow the same rule as the palette.
+
+- **Overview** (`/`): counts across the Host, then one card per Project. Each
+  Target shows its role, state, hostname, Branch and Commit and Services, and
+  the actions its state calls for (`web/lib/target-verbs.ts`): Start, or
+  Restart and Stop, and Deploy latest for the stable Target and Previews, which
+  deploys the head of the Production Branch or of the Preview's own Branch
+  after a confirmation. `?view=table` shows the board below instead.
+- **A Project** (`/projects/<name>`): Overview (a card per Target), Deployments,
+  Logs, Environment, Jobs, Config, Activity, Doctor and Settings. The old
+  `/deploy` address redirects to Deployments.
+- **A Target** (`/projects/<name>/targets/<target>`): its state, hostname,
+  revision and actions, then Overview (each Service's state, cached health,
+  named ports, pid, automatic restarts and how a stopped one ended; the paths
+  its hostname serves with the Service and port each reaches; the deployment it
+  runs), Deployments, Logs, Environment and Jobs, each for that Target alone.
+- **Logs** (`web/components/log-viewer.tsx`): a Target's lines followed a second
+  at a time through `rigd`'s cursor, read with a plain GET (`/log-lines`) because Next runs Server Actions one at a time and a deploy started from the page would hold the follow. Component chips and the stream picker
+  narrow `rigd`'s own read (`logFilter`); the search box narrows and marks what
+  is shown. Scrolling up holds the view until Latest; lines can wrap, be
+  cleared, or be downloaded as `rig logs` prints them.
+- **Deployments**: every deploy newest first, with its outcome, Target, Branch
+  and Commit (and the one it replaced), when it started and how long it took,
+  beside the form that deploys a Branch or a Commit. The deploy that put the
+  running Commit in place is marked current; Roll back to this deploys an
+  earlier deploy's exact Commit of its Branch again. `rigd` records the history
+  (below); rolling back is an ordinary deploy that names a Commit.
+- **Environment**: the Project's secrets (below), and on a Target, each
+  Service's names with the file that wins and the files it overrides.
+- **Config**: the structured editor (below). `rigd` checks the draft a moment
+  after typing stops and each problem shows beneath its field.
+- **Jobs** and **Proxy** read through one module each, for work landing on
+  other branches: `web/lib/jobs.ts` reads `targets[].jobs` in the shape branch
+  `feat/scheduled-jobs` adds to status, and `web/lib/proxy.ts` lists every
+  hostname from status until a Rig-owned Caddy (`feat/rig-owned-caddy`) reports
+  them, with a typed stub for the custom Caddy file. Each names its branch in a
+  TODO.
+
+## Deploy history
+
+`rigd` keeps the newest 500 deploys in `state.json` (an optional `deployments`
+list, written in the same update as the deploy's Activity record and under the
+same Operation id): the Target and its role, the Branch and Commit deployed (or
+set out to deploy, for a failure), the Commit it replaced, the outcome
+(`deployed`, `unchanged` or `failed`), when the deploy began its work and when
+it ended, and a failure's error code. The `deployments` read answers a
+Project's history with each deploy's duration.
+
+## Secrets
+
+The Environment tab edits the operator env files `rigd` layers into each
+process ([ADR 0003](adr/0003-exclude-env-file-secrets-from-interpolation.md),
+the guide's Environment section): `<RIG_ROOT>/env/<project>/all.env` and
+`<role>.env`, and the same per Service under `<project>/<service>/`. `rig.yaml`'s
+own `env_file` entries are not edited here.
+
+`rigd`'s env editor (`/v1/env`, `src/daemon/env-editor.ts`) takes a registered
+Project and a scope (a Service `rig.yaml` declares, and a role or all), never a
+path. Its `read` names each file's keys, revision and mode, never a value; a
+value leaves `rigd` only through `reveal`, one at a time, when an operator asks.
+So no value is part of a rendered page, the client cache or a URL; a revealed
+value lives in the page's memory until it is hidden or the page is left.
+
+A `write` applies set and remove changes line by line, keeping comments and
+order, only if the file still has the revision the page read (checked again
+just before the rename). The new content goes to a private temporary file
+renamed over the old, so a reader never sees half of either; the file is 0600
+and every directory from `<RIG_ROOT>/env` down to it 0700. A symlinked file
+stays a symlink. Each value is quoted so the env-file reader reads it back
+exactly, and refused by name when it cannot be. Each write records an Activity
+entry (`env`, `updated`) naming who asked and which names changed in which
+file, never a value; the server names who from the request's own admission
+(signed in, this Mac, or the trusted address), never the browser. Refusals
+never repeat the request. After a save, the running Targets that read the file
+are offered a restart, since processes read env files when they start.
 
 ## The board
 
@@ -165,16 +251,16 @@ runs its commands as you.
 
 ## Layout
 
-| Path                  | Responsibility                                                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `web/app`             | Routes. `/` is the board; `/projects/[name]/*` the Project sections; `/activity`, `/doctor`, `/rigd`, `/projects/new`, `/sign-in`; `/healthz` for readiness.        |
-| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                         |
-| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads and config edits against rigd), `actions.ts` (Server Actions), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`. |
-| `web/components`      | Server and client components; `board.tsx` and `targets-table.tsx` are the one table the root page is; `operations.tsx` owns in-flight actions and reconciliation.   |
-| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                  |
-| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `target.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`.                       |
-| `web/app/globals.css` | Tailwind entry: the Rig palette, fonts, and the shadcn tokens mapped onto them.                                                                                     |
-| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                 |
+| Path                  | Responsibility                                                                                                                                                                                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/activity`, `/proxy`, `/doctor`, `/rigd`, `/projects/new`, `/sign-in`; `/healthz` for readiness.                                     |
+| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                   |
+| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts` and `env.ts` (per-request reads), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`.                                      |
+| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-card.tsx` the overview's cards; `board.tsx` and `targets-table.tsx` the table view; `operations.tsx` owns in-flight actions and reconciliation.                                                         |
+| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                            |
+| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-detail.ts`, `logs.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
+| `web/app/globals.css` | Tailwind entry: the Rig palette, fonts, and the shadcn tokens mapped onto them.                                                                                                                                                                                               |
+| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                           |
 
 Radix primitives set inline styles, so the Content-Security-Policy allows
 `style-src 'unsafe-inline'`; scripts need the per-request nonce.

@@ -9,6 +9,70 @@ export interface ControlPlaneOptions {
   instanceId: string;
   handle(command: RuntimeCommand): Promise<unknown>;
   editor?(input: unknown): Promise<unknown>;
+  /** Operator env files (secrets): read names, reveal one value, or write. Its body is never logged. */
+  env?(input: unknown): Promise<unknown>;
+}
+/** One JSON request to an editor route: its result, or its refusal with the code, message and hint the
+ * editor gave. A body that is not JSON is refused without echoing it. */
+async function edit(
+  request: Request,
+  editor: (input: unknown) => Promise<unknown>,
+  what: string,
+  /** Pass a config validation failure's field problems on; only the config editor's are config. */
+  withIssues = false,
+): Promise<Response> {
+  let input: unknown;
+  try {
+    input = await request.json();
+  } catch {
+    return Response.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: `Invalid ${what} request.`,
+        },
+      },
+      { status: 400 },
+    );
+  }
+  try {
+    return Response.json({ result: await editor(input) });
+  } catch (error) {
+    const failure = asRigError(error);
+    const issues = withIssues ? configIssues(failure.details) : undefined;
+    return Response.json(
+      {
+        error: {
+          code: failure.code,
+          message: failure.message,
+          hint: failure.hint,
+          ...(issues ? { issues } : {}),
+        },
+      },
+      { status: 422 },
+    );
+  }
+}
+/** Pure: the field problems a config validation failure names, each as a path and a message, so the
+ * dashboard can show each beside its field. At most 50; anything not of that shape is left out. */
+export function configIssues(
+  details: Readonly<Record<string, unknown>>,
+): { path: string[]; message: string }[] | undefined {
+  if (!Array.isArray(details.issues)) return undefined;
+  const issues = details.issues
+    .filter(
+      (issue): issue is { path: unknown[]; message: string } =>
+        typeof issue === "object" &&
+        issue !== null &&
+        Array.isArray((issue as { path?: unknown }).path) &&
+        typeof (issue as { message?: unknown }).message === "string",
+    )
+    .slice(0, 50)
+    .map((issue) => ({
+      path: issue.path.map(String),
+      message: issue.message.slice(0, 500),
+    }));
+  return issues.length ? issues : undefined;
 }
 
 function authenticated(request: Request, token: string): boolean {
@@ -88,37 +152,10 @@ export function startControlPlane(options: ControlPlaneOptions) {
       url.pathname === "/v1/config" &&
       request.method === "POST" &&
       options.editor
-    ) {
-      let input: unknown;
-      try {
-        input = await request.json();
-      } catch {
-        return Response.json(
-          {
-            error: {
-              code: "INVALID_REQUEST",
-              message: "Invalid config editor request.",
-            },
-          },
-          { status: 400 },
-        );
-      }
-      try {
-        return Response.json({ result: await options.editor(input) });
-      } catch (error) {
-        const failure = asRigError(error);
-        return Response.json(
-          {
-            error: {
-              code: failure.code,
-              message: failure.message,
-              hint: failure.hint,
-            },
-          },
-          { status: 422 },
-        );
-      }
-    }
+    )
+      return await edit(request, options.editor, "config editor", true);
+    if (url.pathname === "/v1/env" && request.method === "POST" && options.env)
+      return await edit(request, options.env, "env editor");
     if (url.pathname !== "/v1/command" || request.method !== "POST")
       return new Response("Not found", { status: 404 });
     let command: RuntimeCommand;

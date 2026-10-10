@@ -29,6 +29,7 @@ export interface DaemonHostOptions {
   shutdown(): Promise<void>;
   start?(): Promise<void>;
   editor?(input: unknown): Promise<unknown>;
+  env?(input: unknown): Promise<unknown>;
 }
 /** A lock directory without a holder record is stale once older than this. */
 const GUARD_STALE_MS = 60_000;
@@ -198,6 +199,7 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       instanceId: owner.instanceId,
       handle: options.handle,
       ...(options.editor ? { editor: options.editor } : {}),
+      ...(options.env ? { env: options.env } : {}),
     });
     await writeAtomically(
       join(directory, "address.json"),

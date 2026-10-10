@@ -590,3 +590,64 @@ test("the Target aggregate counts every Component: missing storage beside a heal
   expect((await observe(false, "installed"))[0]?.state).toBe("unhealthy");
   expect((await observe(false, "missing"))[0]?.state).toBe("degraded");
 });
+test("status reports each Service's named ports, its automatic restarts and the Target's path routes", async () => {
+  const routed = {
+    ...target,
+    plan: {
+      domain: "demo.localhost",
+      proxy: {
+        upstream: "web",
+        routes: [
+          { prefix: "/api", service: "api", port: 4444 },
+          { prefix: "/", service: "web", port: 4445 },
+        ],
+      },
+      components: [
+        { name: "api", kind: "managed", port: 4444, ports: { http: 4444 } },
+        { name: "web", kind: "managed", port: 4445 },
+      ],
+    },
+    services: {
+      api: {
+        deployment: "/w",
+        intent: "running",
+        attempts: [1, 2],
+        unknownAttempts: [3],
+      },
+      web: { deployment: "/w", intent: "running", attempts: [] },
+    },
+  } as unknown as TargetRecord;
+  const [report] = await observeTargets(
+    [routed],
+    {
+      async process() {
+        return { state: "running", pid: 22 };
+      },
+      async health() {
+        return { ready: true };
+      },
+      async artifact() {
+        return "installed";
+      },
+      async listening() {
+        return [];
+      },
+      async persistent() {
+        return true;
+      },
+    },
+    1000,
+    timerObservationDeadline,
+  );
+  expect(report!.routes).toEqual([
+    { prefix: "/api", service: "api", port: 4444 },
+    { prefix: "/", service: "web", port: 4445 },
+  ]);
+  expect(report!.components[0]).toMatchObject({
+    name: "api",
+    ports: { http: 4444 },
+    restarts: 3,
+  });
+  expect(report!.components[1]).not.toHaveProperty("restarts");
+  expect(report!.components[1]).not.toHaveProperty("ports");
+});

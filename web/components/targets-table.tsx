@@ -424,6 +424,8 @@ function Components({
           <span
             key={component.name}
             className="inline-flex items-center gap-1.5"
+            // Health ages ("checked 4s ago") move between the server's render and the browser's.
+            suppressHydrationWarning
             title={[
               health ?? component.state,
               component.pid ? `pid ${component.pid}` : undefined,
@@ -447,7 +449,10 @@ function Components({
               </Mono>
             ) : null}
             {health ? (
-              <span className="max-w-xs truncate text-xs text-muted-foreground">
+              <span
+                className="max-w-xs truncate text-xs text-muted-foreground"
+                suppressHydrationWarning
+              >
                 {health}
               </span>
             ) : null}

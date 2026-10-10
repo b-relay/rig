@@ -145,11 +145,34 @@ export interface OperationRecord {
   message?: string;
 }
 
+/** One deploy rigd attempted, with the source it deployed and how it ended; the dashboard's deploy history and rollback read it. */
+export interface DeploymentRecord {
+  /** The deploy's Operation id, as in Activity. */
+  id: string;
+  projectId: string;
+  project: string;
+  /** The Target's name: `stable` or the Preview's name. */
+  target: string;
+  kind: "stable" | "preview";
+  branch?: string;
+  /** The Commit deployed, or the one asked for when the deploy failed after resolving it. */
+  commit?: string;
+  /** The Commit the Target ran before, when it had one. */
+  previousCommit?: string;
+  outcome: "deployed" | "unchanged" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  /** The failure's error code; never a value from the environment. */
+  message?: string;
+}
+
 export interface RuntimeState {
   version: 5;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
+  /** Deploys, oldest first, bounded; absent until a rigd that records them has deployed. */
+  deployments?: DeploymentRecord[];
   /** The last value handed out to order starts and Host restarts: each journalled start takes the next one as its run's
    * `startSeq`, and a recorded Host restart notes the value it found as its `seq`. It only grows. */
   startSeq?: number;

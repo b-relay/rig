@@ -2,9 +2,8 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { TriangleAlert } from "lucide-react";
 import { boardRows, type ProjectNotice } from "@/lib/board-rows";
-import { attempt } from "@/lib/outcome";
 import type { ListResult } from "@/lib/types";
-import { read } from "@/server/daemon";
+import { projectStatus } from "@/server/status";
 import { TargetsTable } from "./targets-table";
 import { cn } from "@/lib/utils";
 
@@ -40,9 +39,7 @@ async function BoardRows({
       ...(project.missing
         ? {}
         : {
-            status: await attempt(
-              read({ action: "status", project: project.name }),
-            ),
+            status: await projectStatus(project.name),
           }),
     })),
   );

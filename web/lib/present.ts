@@ -10,6 +10,7 @@ const TONES: Record<string, Tone> = {
   ready: "good",
   installed: "good",
   succeeded: "good",
+  updated: "good",
   starting: "busy",
   stopping: "busy",
   configured: "idle",

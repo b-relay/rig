@@ -5,6 +5,7 @@ import { RigError } from "../../src/domain/errors";
 import type {
   Action,
   ConfigEditorRequest,
+  EnvEditorRequest,
   Reply,
   RuntimeCommand,
 } from "../lib/types";
@@ -41,13 +42,22 @@ const protocolFailure = () =>
     "Check that rig and rigd use the same version.",
   );
 /** The config editor route, which rig itself does not call: a read, a preview, or an apply. */
-export async function editConfig(
-  request: ConfigEditorRequest,
+export function editConfig(request: ConfigEditorRequest): Promise<unknown> {
+  return postEditor("/v1/config", request);
+}
+/** The env editor route for operator env files: names, one revealed value, or a write. The request
+ * may hold a value, so it is never logged; rigd's refusals never echo it either. */
+export function editEnv(request: EnvEditorRequest): Promise<unknown> {
+  return postEditor("/v1/env", request);
+}
+async function postEditor(
+  path: "/v1/config" | "/v1/env",
+  request: unknown,
 ): Promise<unknown> {
   const address = await daemonAddress(site().root);
   let response: Response;
   try {
-    response = await fetch(`http://127.0.0.1:${address.port}/v1/config`, {
+    response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${address.token}`,
@@ -63,10 +73,21 @@ export async function editConfig(
       "Run 'rigd status' to inspect the daemon.",
     );
   }
+  if (response.status === 404)
+    throw new RigError(
+      "DAEMON_OUTDATED",
+      "This rigd does not offer that editor yet.",
+      "Run rigd install from this version of Rig to upgrade the daemon.",
+    );
   const payload = (await response.json().catch(() => undefined)) as
     | {
         result?: unknown;
-        error?: { code?: string; message?: string; hint?: string };
+        error?: {
+          code?: string;
+          message?: string;
+          hint?: string;
+          issues?: unknown;
+        };
       }
     | undefined;
   if (!payload || typeof payload !== "object") throw protocolFailure();
@@ -78,6 +99,8 @@ export async function editConfig(
       error.code,
       error.message,
       error.hint ?? "Run 'rigd status'.",
+      // A config validation failure names each field's problem; the page shows each beside its field.
+      Array.isArray(error.issues) ? { issues: error.issues } : {},
     );
   }
   if (!Object.hasOwn(payload, "result")) throw protocolFailure();

@@ -3,6 +3,7 @@
 import { cookies, headers } from "next/headers";
 import { commandSchema } from "../../src/daemon/protocol";
 import { configEditorRequestSchema } from "../../src/daemon/config-editor";
+import { envEditorRequestSchema } from "../../src/daemon/env-editor";
 import type { ActivityResult, QueueResult, Settlement } from "../lib/types";
 import {
   attempt,
@@ -11,8 +12,8 @@ import {
   type Failure,
   type Outcome,
 } from "../lib/outcome";
-import { admit, keyMatches, sessionCookie } from "./guard";
-import { editConfig, read } from "./daemon";
+import { admit, clientName, keyMatches, sessionCookie } from "./guard";
+import { editConfig, editEnv, read } from "./daemon";
 import { sitePolicy } from "./site";
 
 /** Server Actions: the only way the browser changes anything. Each one decides the request
@@ -48,6 +49,31 @@ export async function runConfigEdit(input: unknown): Promise<Outcome<unknown>> {
   const request = configEditorRequestSchema.safeParse(input);
   if (!request.success) return refused(invalid("a config edit"));
   return attempt(editConfig(request.data));
+}
+/** Reads, reveals, or writes an operator env file (a secret). Who asked is named here, from the
+ * request's own admission, never by the browser; rigd records it in Activity with the names changed.
+ * The input may hold a value: it is never logged, and a refusal never repeats it. */
+export async function runEnvEdit(input: unknown): Promise<Outcome<unknown>> {
+  const requestHeaders = await headers();
+  const decision = admit(
+    { method: "POST", headers: requestHeaders },
+    await sitePolicy(),
+    { now: Date.now() },
+  );
+  if (!decision.admitted)
+    return refused({ code: decision.code, message: decision.message });
+  const request = envEditorRequestSchema.safeParse(
+    typeof input === "object" &&
+      input !== null &&
+      (input as { action?: unknown }).action === "write"
+      ? {
+          ...input,
+          actor: clientName(decision, requestHeaders.get("x-forwarded-for")),
+        }
+      : input,
+  );
+  if (!request.success) return refused(invalid("an env file change"));
+  return attempt(editEnv(request.data));
 }
 /** Where an Operation stands whose reply never reached the browser: still queued or running,
  * finished with a recorded outcome, or unknown to rigd. */

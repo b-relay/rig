@@ -4,7 +4,7 @@ import { when } from "@/lib/present";
 import type { DaemonHealth, QueueResult } from "@/lib/types";
 import { daemon, read } from "@/server/daemon";
 import { site } from "@/server/site";
-import { Empty, Facts, Failure, Section } from "@/components/bits";
+import { Empty, Facts, Failure, PageHeader, Section } from "@/components/bits";
 import { RigdControls } from "@/components/rigd-controls";
 
 export const metadata: Metadata = { title: "rigd" };
@@ -24,14 +24,14 @@ export default async function RigdPage() {
   );
   return (
     <>
-      <div>
-        <h1 className="title text-2xl">rigd</h1>
-        <p className="text-sm text-muted-foreground">
-          {settings.sandboxRoot
+      <PageHeader
+        title="rigd"
+        description={
+          settings.sandboxRoot
             ? "This copy of the site is a Preview: it drives a throwaway rigd of its own, seeded with demo Projects."
-            : "The daemon that owns every process, route and record on this Mac."}
-        </p>
-      </div>
+            : "The daemon that owns every process, route and record on this Mac."
+        }
+      />
       <Section title="Daemon">
         {health.ok ? (
           <Facts

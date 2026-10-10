@@ -167,7 +167,8 @@ Unknown keys and unsupported YAML features fail closed. `rig config` reads the
 validated document and its source path. There is no `rig config set`: config
 is edited by hand, checked by `doctor`, and validated again whenever a Target
 is planned. The rigd control plane has a structured, comment-preserving config
-edit endpoint (`/v1/config`); the CLI does not expose it.
+edit endpoint (`/v1/config`), and an env editor for the operator env files under
+`<RIG_ROOT>/env` (`/v1/env`); the CLI exposes neither. The dashboard uses both.
 
 ## Provider Contract
 

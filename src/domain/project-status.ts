@@ -92,7 +92,7 @@ const componentReportSchema = z
       .int()
       .optional()
       .describe(
-        "Automatic restarts rigd made since the Service's last explicit start (after a crash or an unknown exit); absent when none.",
+        "Recent automatic restart attempts after a crash or an unknown exit, those still inside the restart budget windows, including attempts the budget refused; older ones age out, so the count can fall. Absent when none.",
       ),
     route: z
       .string()

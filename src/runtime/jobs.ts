@@ -1,6 +1,7 @@
 import type { PlanJob } from "../config/types";
 import { recordActivity } from "../domain/activity";
 import { RigError, diagnosticErrorCode } from "../domain/errors";
+import { targetSelector } from "../domain/target-selector";
 import type {
   JobOutcome,
   JobRecord,
@@ -153,8 +154,9 @@ export async function stopJobRun(
   const observed = await deps.lifecycle.observeJob(target, job);
   if (observed.state === "unknown") return "unknown";
   if (observed.state === "running") {
-    if (observed.incarnation !== undefined && observed.incarnation !== run.id)
-      return "running";
+    // Only a process that names this run is signalled. One with another incarnation, or none (a lease that did not record
+    // it), cannot be shown to be this run's, so it stays uncertain rather than be stopped in its place.
+    if (observed.incarnation !== run.id) return "unknown";
     let decided = false;
     await deps.store.update((state) => {
       const record = findJobRecord(state, target.id, job);
@@ -178,7 +180,8 @@ export async function stopJobRun(
 }
 
 /** Stops every run of `target`'s jobs in progress, each within the stop_timeout it started with, and records each as
- * stopped by Rig; resolves how many ended. rig down, a Preview destroy, a Target turned off and rigd's first pass for a Target meant to be stopped
+ * stopped by Rig; resolves how many ended. A run whose stop cannot be confirmed (its process still runs, or cannot be
+ * shown to be this run's) fails JOB_STOP_UNVERIFIED. rig down, a Preview destroy, a Target turned off and rigd's first pass for a Target meant to be stopped
  * use it; a deploy does not, so a run finishes on the checkout it started from. The caller holds the Target. Every run is
  * attempted; the first failure is thrown once all were. */
 export async function stopJobRuns(
@@ -204,6 +207,16 @@ export async function stopJobRuns(
         stops,
       );
       if (settled === "settled") ended++;
+      // A stop that cannot be confirmed is a failure: nothing may treat the job as stopped (and, say, delete its checkout).
+      else if (settled !== "gone")
+        failures.push(
+          new RigError(
+            "JOB_STOP_UNVERIFIED",
+            `${record.job} on ${target.name} could not be confirmed stopped: its process ${settled === "running" ? "is still running" : "could not be inspected or does not name its run"}.`,
+            `Run rig doctor, inspect the process, then retry rig down ${targetSelector(target)}.`,
+            { job: record.job, run: record.running!.id, state: settled },
+          ),
+        );
     } catch (error) {
       failures.push(error);
     }

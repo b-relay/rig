@@ -108,7 +108,9 @@ status` takes no Target.
   run of the job is going (runs never overlap), with `JOB_UNKNOWN` for a job the
   Target's plan does not have (the hint names the jobs it has, or the command
   that plans it again), with `JOB_UNAVAILABLE` for a stopped Target, and with
-  `TARGET_OFF` for an off Target. `status` lists each
+  `TARGET_OFF` for an off Target. `down` and `down --destroy` fail with
+  `JOB_STOP_UNVERIFIED` when a job run cannot be confirmed stopped; `down`
+  still stops the Services first, and `--destroy` changes nothing. `status` lists each
   Target's jobs with their last and next run, `activity` has one `job` entry
   per ended run, and `logs --service <job>` reads a job's output.
 - `status` runs no health check for a Service with a `healthcheck`: it shows

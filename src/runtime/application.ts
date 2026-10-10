@@ -23,6 +23,7 @@ import {
   type RuntimeCommand,
 } from "../daemon/protocol";
 import type {
+  JobCheckout,
   OperationRecord,
   ProjectRecord,
   RuntimeState,
@@ -119,6 +120,7 @@ import {
 } from "./operation-locks";
 import { createHostReservations } from "./host-reservations";
 import {
+  recordScheduling,
   recordSkippedRun,
   settleJobRun,
   startJobRun,
@@ -1493,16 +1495,27 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const target = state.targets.find((t) => t.id === request.targetId);
         const job = target?.plan.jobs?.find((j) => j.name === request.job);
         const project = state.projects.find((p) => p.id === target?.projectId);
+        if (!target || !job || job.scheduled === false || !project)
+          return "passed";
+        /** The time is passed over: recorded under this lease, so a later rigd never runs it. */
+        const passOver = async (): Promise<ScheduledRunResult> => {
+          await deps.store.update((state) =>
+            recordScheduling(state, [
+              {
+                target: target.id,
+                job: job.name,
+                passedOver: new Date(request.scheduledFor).toISOString(),
+              },
+            ]),
+          );
+          return "passed";
+        };
         // The Target changed while this waited: it is no longer meant to run the job, or the time is too late to start.
         if (
-          !target ||
-          !job ||
-          job.scheduled === false ||
-          !project ||
           !schedulesJobs(target) ||
           Date.parse(deps.now()) - request.scheduledFor > JOB_LATE_LIMIT_MS
         )
-          return "passed";
+          return await passOver();
         if (unrecorded.has(target.id)) {
           await recordUnrecorded(target);
           return "deferred";
@@ -1515,7 +1528,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           configured.document &&
           !targetOn(configured.document.config, target.kind)
         )
-          return "passed";
+          return await passOver();
         try {
           await startJobRun(
             target,
@@ -1628,21 +1641,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         return await onTarget(targetId, "job-checkout", (target) =>
           releaseJobCheckouts(target, deps),
         );
-      // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop.
-      try {
-        for (const kept of state.jobCheckouts ?? [])
-          if (kept.target === targetId)
-            await deps.sources
-              .release({ project: kept.project, workspacePath: kept.workspace })
-              .catch(() => {});
-        await deps.store.update((current) => {
-          current.jobCheckouts = current.jobCheckouts?.filter(
-            (kept) => kept.target !== targetId,
-          );
-        });
-      } catch {
-        /* Retried by the scheduler's next offer. */
-      }
+      // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop. Only
+      // what was given back is forgotten; a failure stays for the scheduler's next offer.
+      await forgetReleasedCheckouts(
+        (state.jobCheckouts ?? []).filter((kept) => kept.target === targetId),
+        deps,
+      ).catch(() => {});
     },
     settleJob: (request) =>
       onTarget(request.targetId, "job", async (target, lifecycle) => {
@@ -2300,13 +2304,14 @@ async function destroyPreview(
     target,
     state: await deps.store.read(),
   });
+  // A job run, possibly on a checkout an earlier deploy kept for it, must be confirmed stopped before anything of the
+  // Preview changes: one that cannot be fails the destroy, and the Preview's storage stays.
+  await stopJobRuns(target, deps);
   target.desired = "stopped";
   intendStopped(target);
   target.destructionPending = true;
   target.updatedAt = deps.now();
   await persistTarget(target, deps.store);
-  // A job run, possibly on a checkout an earlier deploy kept for it, ends before the Preview's storage goes.
-  await stopJobRuns(target, deps);
   await retireForDestruction(target, deps);
   progress("destroying");
   await deps.files.destroyPreview({
@@ -2318,16 +2323,43 @@ async function destroyPreview(
   const workspacePath = ownedRevision(target);
   if (workspacePath)
     await deps.sources.release({ project: target.projectId, workspacePath });
-  // Checkouts job runs kept went with the Preview root too; their registrations are dropped, and so are their records.
-  for (const kept of (await deps.store.read()).jobCheckouts ?? [])
-    if (kept.target === target.id)
-      await deps.sources
-        .release({ project: target.projectId, workspacePath: kept.workspace })
-        .catch(() => {});
   await deps.store.update((s) => {
     s.targets = s.targets.filter((t) => t.id !== target.id);
-    s.jobCheckouts = s.jobCheckouts?.filter(
-      (kept) => kept.target !== target.id,
+  });
+  // Checkouts job runs kept went with the Preview root too; their registrations are dropped, and a record is forgotten only
+  // once that worked, so a failure is offered again by the scheduler.
+  await forgetReleasedCheckouts(
+    ((await deps.store.read()).jobCheckouts ?? []).filter(
+      (kept) => kept.target === target.id,
+    ),
+    deps,
+  ).catch(() => {});
+}
+/** Drops the mirror registration of each checkout in `kept`, whose Target is gone, and forgets the records of those it
+ * dropped; one that fails stays recorded. */
+async function forgetReleasedCheckouts(
+  kept: readonly JobCheckout[],
+  deps: Pick<RuntimeDependencies, "sources" | "store">,
+): Promise<void> {
+  const released: JobCheckout[] = [];
+  for (const checkout of kept)
+    try {
+      await deps.sources.release({
+        project: checkout.project,
+        workspacePath: checkout.workspace,
+      });
+      released.push(checkout);
+    } catch {
+      /* Kept for the next offer. */
+    }
+  if (!released.length) return;
+  await deps.store.update((state) => {
+    state.jobCheckouts = state.jobCheckouts?.filter(
+      (other) =>
+        !released.some(
+          (done) =>
+            done.target === other.target && done.workspace === other.workspace,
+        ),
     );
   });
 }

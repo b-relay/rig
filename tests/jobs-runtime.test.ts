@@ -47,6 +47,8 @@ async function fixture() {
   };
   let starts = 0;
   let failStarts = false;
+  /** Set by `holdNextStart`: the next spawn says it was reached, then waits for the test to let it finish. */
+  let hold: { reached(): void; released: Promise<void> } | undefined;
   const supervisor: Supervisor = {
     async observe(key) {
       return processes.get(key) ?? { state: "stopped" };
@@ -56,6 +58,12 @@ async function fixture() {
         return { outcome: "unchanged" };
       starts++;
       if (failStarts) throw new Error("spawn failed");
+      const held = hold;
+      hold = undefined;
+      if (held) {
+        held.reached();
+        await held.released;
+      }
       processes.set(request.key, {
         state: "running",
         pid: 4000 + processes.size,
@@ -88,6 +96,18 @@ async function fixture() {
           released.push(workspacePath);
         },
       } as unknown as RuntimeDependencies["sources"],
+      // Ports as declared, and a Preview deletion that changes nothing on disk.
+      files: {
+        async selectPorts(input: {
+          requests: { name: string; preferred?: number }[];
+        }) {
+          return Object.fromEntries(
+            input.requests.map((request) => [request.name, request.preferred!]),
+          );
+        },
+        async inspectPreviewDeletion() {},
+        async destroyPreview() {},
+      } as unknown as RuntimeDependencies["files"],
     }),
   });
   readState = () => world.store.read();
@@ -126,6 +146,16 @@ async function fixture() {
     failStarts(value: boolean) {
       failStarts = value;
     },
+    /** Holds the next spawn open: `reached` resolves once it began, and it finishes when `release` is called. */
+    holdNextStart() {
+      let reached!: () => void, release!: () => void;
+      const reachedPromise = new Promise<void>(
+        (resolve) => (reached = resolve),
+      );
+      const released = new Promise<void>((resolve) => (release = resolve));
+      hold = { reached, released };
+      return { reached: reachedPromise, release };
+    },
     /** Records the working Target as a deployed one whose plan moved on from `old`, the checkout its runs started in. */
     async deployedFrom(old: string) {
       await updateState(world, (state) => {
@@ -136,6 +166,25 @@ async function fixture() {
       });
     },
   };
+}
+/** Records the fixture's working Target as the Preview feat-1a2b3c4d and destroys it through rig down --destroy. */
+async function destroyPreviewOf(
+  world: Awaited<ReturnType<typeof fixture>>["world"],
+  target: { id: string },
+) {
+  await world.store.update((state) => {
+    const recorded = state.targets.find((t) => t.id === target.id)!;
+    recorded.kind = "preview";
+    recorded.name = "feat-1a2b3c4d";
+    recorded.plan.target = "preview";
+    recorded.plan.deploymentName = "feat-1a2b3c4d";
+  });
+  return await world.open().command({
+    action: "destroy",
+    repoPath: world.repo,
+    target: "preview",
+    deployment: "feat-1a2b3c4d",
+  });
 }
 async function updateState(
   world: {
@@ -179,21 +228,28 @@ test("a scheduled time starts a run, a time while it goes is skipped, and the ne
   ]);
 });
 
-test("a time is passed over when the Target is stopped, turned off in rig.yaml, or reached past the late limit", async () => {
+test("a time is passed over, and recorded so under the lease, when the Target is stopped, turned off in rig.yaml, or reached past the late limit", async () => {
   const f = await fixture();
-  expect(
-    await f.scheduled("late", f.world.clock.ms - JOB_LATE_LIMIT_MS - 1000),
-  ).toBe("passed");
+  const lastScheduled = async () => (await f.record())?.lastScheduled;
+  const late = f.world.clock.ms - JOB_LATE_LIMIT_MS - 1000;
+  expect(await f.scheduled("late", late)).toBe("passed");
+  expect(await lastScheduled()).toBe(new Date(late).toISOString());
+  // Turned off in rig.yaml while the time waited: 12:01 is passed over, and a rigd started at 12:01:10 counts from it.
   f.config.targets = { working: false };
+  f.world.clock.ms += 60_000;
   expect(await f.scheduled("off")).toBe("passed");
+  expect(await lastScheduled()).toBe(new Date(f.world.clock.ms).toISOString());
   f.config.targets = { working: true };
   await f.runtime.command({
     action: "down",
     repoPath: f.world.repo,
     target: "working",
   });
+  f.world.clock.ms += 60_000;
   expect(await f.scheduled("stopped")).toBe("passed");
-  expect(await f.record()).toBeUndefined();
+  expect(await lastScheduled()).toBe(new Date(f.world.clock.ms).toISOString());
+  expect((await f.record())?.running).toBeUndefined();
+  expect(f.processes.get(f.key)).toBeUndefined();
 });
 
 test("turning the Target off stops its run in progress, and rig down does too, each recorded as stopped by Rig", async () => {
@@ -444,4 +500,103 @@ test("rig run runs a job in any Target that is on and deployed, whatever its tar
       id: "scheduled",
     }),
   ).toBe("passed");
+});
+
+test("a timeout request queued behind the Target's lease while run A exits and run B starts never touches B", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  f.world.clock.ms += 3600_000 + 1000;
+  // rig run of B holds the Target: A has exited, and B's spawn is held open until the test lets it finish.
+  f.processes.set(f.key, {
+    state: "stopped",
+    incarnation: "run-a",
+    exitCode: 0,
+  });
+  const spawn = f.holdNextStart();
+  const runB = f.runtime.command({
+    action: "run",
+    repoPath: f.world.repo,
+    target: "working",
+    job: "link-resolver",
+    operationId: "run-b",
+  });
+  await spawn.reached;
+  // The scheduler judged A past its timeout before it exited; its request now waits for the Target.
+  let settled = false;
+  const timeout = f.runtime
+    .settleJob({ targetId: f.target.id, job: "link-resolver", runId: "run-a" })
+    .then(() => {
+      settled = true;
+    });
+  await Bun.sleep(20);
+  expect(settled).toBe(false);
+  spawn.release();
+  await runB;
+  await timeout;
+  expect(f.signalled).toEqual([]);
+  expect(f.processes.get(f.key)).toMatchObject({
+    state: "running",
+    incarnation: "run-b",
+  });
+  expect(await f.record()).toMatchObject({
+    running: { id: "run-b" },
+    last: { id: "run-a", outcome: "succeeded" },
+  });
+});
+
+test("a run whose process names no run is never signalled, and rig down reports it while still stopping the Services", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  // Adopted from a lease that recorded no incarnation: it cannot be shown to be run A.
+  f.processes.set(f.key, { state: "running", pid: 4321 });
+  f.world.clock.ms += 3600_000 + 1000;
+  await f.runtime.settleJob({
+    targetId: f.target.id,
+    job: "link-resolver",
+    runId: "run-a",
+  });
+  expect(f.signalled).toEqual([]);
+  await expect(
+    f.runtime.command({
+      action: "down",
+      repoPath: f.world.repo,
+      target: "working",
+    }),
+  ).rejects.toMatchObject({ code: "JOB_STOP_UNVERIFIED" });
+  expect(f.signalled.map((stop) => stop.key)).toEqual([`${f.target.id}:api`]);
+  expect(f.processes.get(`${f.target.id}:api`)?.state).toBe("stopped");
+  expect((await f.record())?.running).toMatchObject({ id: "run-a" });
+});
+
+test("a run that cannot be confirmed stopped keeps a Preview from being destroyed", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  f.processes.set(f.key, { state: "unknown" });
+  // The working Target stands in for a Preview: destroy's first step is the job stop.
+  const target = (await f.world.store.read()).targets[0]!;
+  await expect(destroyPreviewOf(f.world, target)).rejects.toMatchObject({
+    code: "JOB_STOP_UNVERIFIED",
+  });
+  const after = (await f.world.store.read()).targets[0]!;
+  expect(after.destructionPending).toBeUndefined();
+  expect(after.desired).toBe("running");
+});
+
+test("a removed Target's kept checkouts are forgotten only once given back", async () => {
+  const f = await fixture();
+  await f.world.store.update((state) => {
+    state.jobCheckouts = [
+      { target: "gone", project: "p", workspace: "/rig/revisions/r1" },
+      { target: "gone", project: "p", workspace: "/rig/revisions/r2" },
+    ];
+  });
+  f.failReleases.count = 1;
+  await f.runtime.releaseJobCheckouts("gone");
+  expect(f.released).toEqual(["/rig/revisions/r2"]);
+  expect((await f.world.store.read()).jobCheckouts).toEqual([
+    { target: "gone", project: "p", workspace: "/rig/revisions/r1" },
+  ]);
+  await f.runtime.releaseJobCheckouts("gone");
+  expect(f.released).toEqual(["/rig/revisions/r2", "/rig/revisions/r1"]);
+  expect((await f.world.store.read()).jobCheckouts).toEqual([]);
 });

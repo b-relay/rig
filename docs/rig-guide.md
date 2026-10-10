@@ -1731,6 +1731,9 @@ for due times every second.
   shown as stopping like a Service; `--kill` cuts it short), destroying a
   Preview, turning the Target's role off in rig.yaml (noticed within about 10
   seconds), and its `timeout`. Each is recorded as stopped by Rig or timed out.
+  A stop Rig cannot confirm fails with `JOB_STOP_UNVERIFIED`: `rig down` still
+  stops the Services and then reports it, and a Preview is not destroyed until
+  the run is confirmed stopped.
 - **rigd restarting** leaves a run going; the next rigd adopts it, never runs
   it twice, and records its exit. A stop Rig had decided on is recorded with
   its cause even across a restart. A Mac restart ends a run, and it is

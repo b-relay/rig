@@ -31,7 +31,7 @@ test("registration survives reopening and serialized concurrent updates preserve
     expect(
       JSON.parse(await readFile(join(root, "runtime", "state.json"), "utf8"))
         .version,
-    ).toBe(5);
+    ).toBe(6);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -260,7 +260,7 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
     });
     const written = JSON.parse(await readFile(path, "utf8"));
     expect(written).toMatchObject({
-      version: 5,
+      version: 6,
       futureTopLevel: [1],
       projects: [{ futureProjectField: "kept" }],
       targets: [{ desired: "running", futureTargetField: { nested: true } }],
@@ -276,20 +276,20 @@ test("a state file written by a newer or an older rigd is refused unread with bo
     await mkdir(join(root, "runtime"));
     const path = join(root, "runtime", "state.json");
     const store = new FileStateStore(root);
-    await writeFile(path, JSON.stringify({ version: 6, ...inventory }));
+    await writeFile(path, JSON.stringify({ version: 7, ...inventory }));
     await expect(store.read()).rejects.toMatchObject({
       code: "STATE_VERSION",
-      hint: expect.stringMatching(/version 6.*version 5/s),
-      details: { path, version: 6, supported: 5 },
+      hint: expect.stringMatching(/version 7.*version 6/s),
+      details: { path, version: 7, supported: 6 },
     });
-    expect(await readFile(path, "utf8")).toContain('"version":6');
+    expect(await readFile(path, "utf8")).toContain('"version":7');
     for (const version of [1, 2, 3]) {
       const old = JSON.stringify({ version, ...inventory });
       await writeFile(path, old);
       await expect(store.read()).rejects.toMatchObject({
         code: "STATE_VERSION",
         message: expect.stringContaining("an older rigd"),
-        details: { path, version, supported: 5 },
+        details: { path, version, supported: 6 },
       });
       await expect(store.update(() => {})).rejects.toMatchObject({
         code: "STATE_VERSION",
@@ -502,7 +502,7 @@ test("state an older Rig wrote with operator alert records loads without them an
     const store = new FileStateStore(root);
     const read = await store.read();
     // Everything else is read as written.
-    expect(read as unknown).toEqual({ version: 5, ...recorded });
+    expect(read as unknown).toEqual({ version: 6, ...recorded });
     await store.update(() => {});
     expect(JSON.parse(await readFile(path, "utf8"))).not.toHaveProperty(
       "alerts",
@@ -560,7 +560,7 @@ const version4Project = {
   createdAt: "now",
 };
 
-test("state version 4 is read with the working and stable Targets named by their role, and the next write saves version 5", async () => {
+test("state version 4 is read with the working and stable Targets named by their role, and the next write saves version 6", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-fixed-names-"));
   try {
     await mkdir(join(root, "runtime"));
@@ -607,7 +607,7 @@ test("state version 4 is read with the working and stable Targets named by their
     );
     const store = new FileStateStore(root);
     const state = await store.read();
-    expect(state.version).toBe(5);
+    expect(state.version).toBe(6);
     const [w, s, v] = state.targets;
     for (const [target, role] of [
       [w!, "working"],
@@ -636,7 +636,7 @@ test("state version 4 is read with the working and stable Targets named by their
     expect(state.activity as unknown).toEqual(activity);
     await store.update(() => {});
     const saved = JSON.parse(await readFile(path, "utf8"));
-    expect(saved.version).toBe(5);
+    expect(saved.version).toBe(6);
     expect(
       saved.targets.map((t: { kind: string; name: string }) => [
         t.kind,
@@ -647,7 +647,7 @@ test("state version 4 is read with the working and stable Targets named by their
       ["stable", "stable"],
       ["preview", "feat-x-1a2b3c4d"],
     ]);
-    // Read again as version 5, nothing changes further.
+    // Read again as version 6, nothing changes further.
     expect(await new FileStateStore(root).read()).toEqual(state);
   } finally {
     await rm(root, { recursive: true, force: true });

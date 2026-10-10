@@ -97,6 +97,41 @@ const component = z.discriminatedUnion("kind", [
     path: text,
   }),
 ]);
+const planJob = z.object({
+  name: text,
+  command: text.describe("/bin/sh command the job runs, references resolved."),
+  workingDir: text
+    .optional()
+    .describe(
+      "Directory the job runs in, relative to the plan's workspace; absent means the workspace root.",
+    ),
+  env: z.record(z.string(), z.string()),
+  envFiles,
+  commandInputs,
+  schedule: text.describe("Five-field cron expression, read in timeZone."),
+  timeZone: text
+    .optional()
+    .describe(
+      "IANA time zone of the schedule; absent means the Host's zone when each run is scheduled.",
+    ),
+  timeout: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Seconds one run may take before it is stopped as timed out; absent means no limit.",
+    ),
+  stopTimeout: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_STOP_TIMEOUT_SECONDS)
+    .optional()
+    .describe(
+      "Seconds a run may take to exit after SIGTERM before SIGKILL; absent means 10.",
+    ),
+});
 export const targetPlanSchema = z.object({
   project: text,
   target: z.enum(["working", "stable", "preview"]),
@@ -116,6 +151,12 @@ export const targetPlanSchema = z.object({
     })
     .optional(),
   components: z.array(component),
+  jobs: z
+    .array(planJob)
+    .optional()
+    .describe(
+      "The scheduled jobs this Target runs; absent when it runs none, as in every plan recorded before jobs.",
+    ),
   builds: z
     .array(
       z.object({
@@ -391,6 +432,80 @@ const target = z.object({
     })
     .optional(),
 });
+const jobRun = z.object({
+  id: text.describe(
+    "The run's identity: its process's incarnation, and the id of its Activity entries.",
+  ),
+  trigger: z
+    .enum(["schedule", "manual"])
+    .describe("Whether the schedule or rig run started it."),
+  scheduledFor: text
+    .optional()
+    .describe("The scheduled time a scheduled run is for (ISO 8601)."),
+  startedAt: text,
+  workspace: absolutePath
+    .optional()
+    .describe(
+      "The checkout the run started in; a deploy keeps it on disk until the run ends.",
+    ),
+  timeout: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Seconds the run may take before it is stopped as timed out, as its plan said when it started; absent means no limit.",
+    ),
+  stopTimeout: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_STOP_TIMEOUT_SECONDS)
+    .optional()
+    .describe(
+      "Seconds the run may take to exit after SIGTERM, as its plan said when it started.",
+    ),
+  finishedAt: text.optional(),
+  outcome: z
+    .enum([
+      "succeeded",
+      "failed",
+      "timed-out",
+      "stopped",
+      "unknown",
+      "start-failed",
+    ])
+    .optional()
+    .describe(
+      "How the run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a restart or a deploy), gone with nothing recording how, or never started.",
+    ),
+  exitCode: z.number().int().optional(),
+  signal: text.optional(),
+  errorCode: text
+    .optional()
+    .describe("Why a start failed, as the error code Rig reported."),
+  skipped: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe("Scheduled times skipped because this run was still going."),
+});
+const jobRecord = z.object({
+  target: text.describe("The Target's id."),
+  job: text.describe("The job's name in that Target's plan."),
+  running: jobRun
+    .optional()
+    .describe(
+      "The run in progress, recorded before its process is started; rigd settles it once the process is gone.",
+    ),
+  last: jobRun.optional().describe("The latest run that ended."),
+  lastScheduled: text
+    .optional()
+    .describe(
+      "The latest scheduled time rigd acted on, run or skipped (ISO 8601); a new rigd never acts on it or an earlier one again.",
+    ),
+});
 const operation = z.object({
   id: text,
   projectId: text.optional(),
@@ -410,11 +525,15 @@ const operation = z.object({
  * refuses the file instead of silently dropping what it does not know. Two kinds of change are not bumped.
  * A new optional top-level key needs no bump: an older rigd validates without it and writes it back unchanged.
  * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
- * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it. */
-export const STATE_VERSION = 5;
-/** The older state version this rigd still reads: version 4 named the working and stable Targets local and live, or what
- * rig.yaml renamed them to, and is normalized as it is read (see state-store). The next write saves version 5. */
-export const MIGRATED_STATE_VERSION = 4;
+ * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it.
+ * Version 6 added scheduled jobs to plans (`plan.jobs`): an older rigd would keep them but never run them. */
+export const STATE_VERSION = 6;
+/** The older state versions this rigd still reads. Version 4 named the working and stable Targets local and live, or what
+ * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs and is
+ * read unchanged. The next write saves version 6. */
+export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5];
+/** The version whose Target names are normalized as they are read. */
+export const UNFIXED_NAMES_STATE_VERSION = 4;
 const deployment = z.object({
   id: text.describe("The deploy's Operation id, as Activity records it."),
   projectId: text.describe("The Project's identity."),
@@ -452,6 +571,12 @@ export const runtimeStateSchema = z
       .optional()
       .describe(
         "Deploys rigd attempted, oldest first and bounded, with the Branch and Commit each deployed and how it ended; the dashboard's history and rollback read them.",
+      ),
+    jobs: z
+      .array(jobRecord)
+      .optional()
+      .describe(
+        "Scheduled job runs per Target and job: the run in progress and the latest one that ended. Only rigd's job runner writes them, so no Target write replaces them.",
       ),
     startSeq: z
       .number()

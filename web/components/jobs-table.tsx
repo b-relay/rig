@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { CalendarClock, Play } from "lucide-react";
+import { CalendarClock } from "lucide-react";
 import { formatDuration } from "@/lib/deployments";
-import { RUN_JOB_SUPPORTED, type JobView } from "@/lib/jobs";
+import type { JobView } from "@/lib/jobs";
 import { ago, when } from "@/lib/present";
 import { targetHref } from "@/lib/target";
+import type { TargetReport } from "@/lib/types";
 import { Mono, StatePill } from "./bits";
-import { Button } from "@/components/ui/button";
+import { RunJobButton } from "./run-job-button";
 import {
   Table,
   TableBody,
@@ -17,7 +18,7 @@ import {
 
 const HEAD =
   "h-8 px-4 text-[11px] font-medium tracking-wide text-muted-foreground uppercase";
-/** One Target's scheduled jobs and backups: schedule, state, last run and next run. */
+/** One Target's scheduled jobs and backups: schedule, state, last run and next run, and Run now. */
 export function JobsTable({
   project,
   target,
@@ -26,7 +27,7 @@ export function JobsTable({
   showTarget = false,
 }: {
   project: string;
-  target: string;
+  target: Pick<TargetReport, "kind" | "name">;
   jobs: readonly JobView[];
   now: number;
   showTarget?: boolean;
@@ -59,14 +60,24 @@ export function JobsTable({
               </TableCell>
               {showTarget ? (
                 <TableCell className="px-4 py-2">
-                  <Link href={targetHref(project, target)}>{target}</Link>
+                  <Link href={targetHref(project, target.name)}>
+                    {target.name}
+                  </Link>
                 </TableCell>
               ) : null}
               <TableCell className="px-4 py-2">
-                <Mono className="break-normal">{job.schedule}</Mono>
-                <span className="block text-xs text-muted-foreground">
-                  {job.timeZone}
-                </span>
+                {job.removed ? (
+                  <span className="text-xs text-muted-foreground">
+                    removed from rig.yaml
+                  </span>
+                ) : (
+                  <>
+                    <Mono className="break-normal">{job.schedule}</Mono>
+                    <span className="block text-xs text-muted-foreground">
+                      {job.timeZone}
+                    </span>
+                  </>
+                )}
               </TableCell>
               <TableCell className="max-w-80 px-4 py-2 whitespace-normal">
                 {job.last ? (
@@ -100,19 +111,7 @@ export function JobsTable({
                 )}
               </TableCell>
               <TableCell className="px-4 py-2 text-right">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7 px-2 text-xs"
-                  disabled={!RUN_JOB_SUPPORTED || job.state === "running"}
-                  title={
-                    RUN_JOB_SUPPORTED
-                      ? `Run ${job.name} now`
-                      : "rigd cannot start a job from here yet"
-                  }
-                >
-                  <Play className="size-3.5" /> Run now
-                </Button>
+                <RunJobButton project={project} target={target} job={job} />
               </TableCell>
             </TableRow>
           ))}
@@ -121,18 +120,19 @@ export function JobsTable({
     </div>
   );
 }
-/** What the Jobs tab says while rigd reports no scheduled jobs. */
+/** What the Jobs tab says when no Target has a job. */
 export function JobsUnavailable() {
   return (
     <div className="flex flex-col items-start gap-3 px-6 py-10">
       <CalendarClock className="size-8 text-muted-foreground" aria-hidden />
       <div className="flex flex-col gap-1">
-        <h2 className="text-base font-semibold">No scheduled jobs yet</h2>
+        <h2 className="text-base font-semibold">No scheduled jobs</h2>
         <p className="max-w-xl text-sm text-muted-foreground">
           Jobs and backups are declared under <code>jobs:</code> in rig.yaml,
-          each with a cron schedule, and run with <code>rig run</code>. This
-          rigd does not report any yet; once it does, each job shows here with
-          its schedule, last run, outcome and next run.
+          each with a cron schedule, and run with <code>rig run</code> or Run
+          now here. A Target shows its jobs once its plan has them: after{" "}
+          <code>rig restart working</code> for the working Target, or the next
+          deploy for the stable Target and Previews.
         </p>
       </div>
     </div>

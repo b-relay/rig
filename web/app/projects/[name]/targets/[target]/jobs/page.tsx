@@ -14,18 +14,19 @@ export default async function TargetJobsPage({
   return (
     <Panel
       flush
-      {...(jobs.supported
+      {...(jobs.length
         ? {
             title: "Jobs",
-            description: "Scheduled jobs and backups this Target runs.",
+            description:
+              "Scheduled jobs and backups of this Target. Run now runs one here whatever its schedule.",
           }
         : {})}
     >
-      {jobs.supported && jobs.jobs.length ? (
+      {jobs.length ? (
         <JobsTable
           project={project.name}
-          target={report.name}
-          jobs={jobs.jobs}
+          target={report}
+          jobs={jobs}
           now={Date.now()}
         />
       ) : (

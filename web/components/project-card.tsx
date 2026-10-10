@@ -159,7 +159,7 @@ function TargetLine({
           ) : (
             <span>no hostname</span>
           )}
-          <Revision target={target} className="md:hidden" />
+          <Revision target={target} className="md:hidden" commitOnly />
         </div>
       </div>
       <div className="hidden min-w-0 flex-col gap-1 md:flex">
@@ -174,9 +174,12 @@ function TargetLine({
 export function Revision({
   target,
   className,
+  commitOnly = false,
 }: {
   target: Pick<TargetReport, "kind" | "branch" | "commit">;
   className?: string;
+  /** The Commit alone, where there is no room for the Branch; it stays in the tooltip. */
+  commitOnly?: boolean;
 }) {
   if (target.kind === "working")
     return (
@@ -199,7 +202,9 @@ export function Revision({
       title={[target.branch, target.commit].filter(Boolean).join(" @ ")}
     >
       <GitBranch className="size-3.5 shrink-0" aria-hidden />
-      <span className="truncate">{target.branch}</span>
+      {commitOnly && target.commit ? null : (
+        <span className="truncate">{target.branch}</span>
+      )}
       {target.commit ? (
         <Mono className="break-normal text-foreground">
           {shortCommit(target.commit)?.slice(0, 7)}

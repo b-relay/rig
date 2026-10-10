@@ -7,8 +7,9 @@ export interface ProxyPublication {
   readonly routes: number;
   /** Host Caddyfile that loads the proxy file, or the first host Caddyfile found when none does. */
   readonly hostCaddyfile?: string;
-  /** direct: the proxy file is a host Caddyfile; imported: a host Caddyfile imports it; unpublished: nothing loads it. */
-  readonly state: "direct" | "imported" | "unpublished";
+  /** direct: the proxy file is a host Caddyfile; imported: a host Caddyfile imports it; unpublished: nothing loads it;
+   * managed: Rig's own Caddy serves it (ADR 0014). */
+  readonly state: "direct" | "imported" | "unpublished" | "managed";
 }
 export interface ProxyPublicationInput {
   readonly proxyFile: string;
@@ -62,6 +63,12 @@ export async function inspectProxyPublication(
 /** Only published or route-free proxy files pass; inert routes are a Host problem with a one-time fix. */
 export function proxyCheck(publication: ProxyPublication): ProxyCheck {
   const { proxyFile, hostCaddyfile, routes } = publication;
+  if (publication.state === "managed")
+    return {
+      name: "caddy-proxy",
+      ok: true,
+      message: `Rig's own Caddy serves the routes in ${proxyFile}.`,
+    };
   if (publication.state === "direct")
     return {
       name: "caddy-proxy",

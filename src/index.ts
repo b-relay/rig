@@ -19,6 +19,8 @@ import { createProjectDocuments } from "./adapters/project-documents";
 import { runCommand } from "./providers/command-runner";
 import { inheritedEnvironment } from "./daemon/environment";
 import { homedir } from "node:os";
+import { writeProxyToken } from "./adapters/proxy-token";
+import { RigError } from "./domain/errors";
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
@@ -62,6 +64,18 @@ export async function main(args: readonly string[]): Promise<number> {
           }
         : {}),
       client: createCliClient(root, cwd),
+      local: {
+        async proxyToken() {
+          // Typed at a terminal the token would echo; a pipe keeps it off the screen and out of shell history.
+          if (process.stdin.isTTY)
+            throw new RigError(
+              "PROXY_TOKEN",
+              "rig proxy token reads the token from a pipe, not the keyboard.",
+              "Copy the token, then run: pbpaste | rig proxy token",
+            );
+          return writeProxyToken(root, await Bun.stdin.text());
+        },
+      },
     });
   } finally {
     process.removeListener("SIGINT", interrupts.interrupt);

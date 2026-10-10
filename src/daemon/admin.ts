@@ -29,6 +29,8 @@ import {
   readInstallationRecord,
   type InstallationRecord,
 } from "./installation";
+import type { ProxyMode } from "../config/proxy-schema";
+import type { ProxyInstallation } from "./proxy-installation";
 import { z } from "zod";
 import {
   createAdminActivityJournal,
@@ -47,6 +49,8 @@ export interface DaemonAdminOptions {
   activity?: AdminActivityJournal;
   /** Runs launchctl with the given arguments; defaults to /bin/launchctl. */
   launchctl?: LaunchctlRunner;
+  /** Sets up and takes down Rig's Caddy (ADR 0014); absent where no Caddy is ever managed, such as tests of the daemon alone. */
+  proxy?: ProxyInstallation;
 }
 export type LaunchctlRunner = (
   args: readonly string[],
@@ -257,7 +261,10 @@ export class DaemonAdmin {
   }
   /** `bun` is what the daemon about to start will read; a daemon already running read its own at startup. The record is
    * written whole, through a sibling temp file and rename, because a starting daemon reads it. */
-  private async writeInstallation(bun: string | undefined): Promise<void> {
+  private async writeInstallation(
+    bun: string | undefined,
+    proxy?: ProxyMode,
+  ): Promise<void> {
     await mkdir(join(this.options.root, "daemon"), {
       recursive: true,
       mode: 0o700,
@@ -267,6 +274,7 @@ export class DaemonAdmin {
       command: [...this.options.command],
       version: RIG_BUILD,
       ...(bun ? { bun } : {}),
+      ...(proxy ? { proxy } : {}),
     };
     const temporary = `${this.marker}.${randomUUID()}.tmp`;
     try {
@@ -338,6 +346,9 @@ export class DaemonAdmin {
       credential,
     } = await this.inspect();
     let replaced: DaemonStatus["replaced"];
+    // rigd chooses its router as it starts, so a different proxy mode needs a restart, as does a managed Caddy that is not
+    // installed the way Host config asks: it is installed only while no rigd publishes.
+    const proxyMode = await this.options.proxy?.mode();
     if (prior.reachable && serving) {
       const recorded = prior.installed
         ? await this.readInstallation()
@@ -349,7 +360,9 @@ export class DaemonAdmin {
         serving.version === RIG_BUILD &&
         (recorded.command ?? []).join("\0") ===
           this.options.command.join("\0") &&
-        recorded.bun === this.options.bun;
+        recorded.bun === this.options.bun &&
+        (recorded.proxy ?? "external") === (proxyMode ?? "external") &&
+        (proxyMode !== "managed" || (await this.options.proxy!.inSync()));
       if (current) return { ...prior, outcome: "unchanged" };
       if (recorded === undefined) {
         // A daemon serving without its record (deleted by hand, or started manually)
@@ -395,7 +408,12 @@ export class DaemonAdmin {
     // No daemon is running here, so a fresh token strands nothing and retires
     // any credential a dead daemon's stale port may have exposed.
     await this.issueToken();
-    await this.writeInstallation(this.options.bun);
+    // No rigd runs now, so Rig's Caddy is set up (or taken down) with nothing else publishing, before rigd starts.
+    const proxyWarnings =
+      proxyMode === "managed"
+        ? await this.options.proxy!.install()
+        : (await this.options.proxy?.remove(), []);
+    await this.writeInstallation(this.options.bun, proxyMode);
     await clearStartupFailure(root);
     try {
       if (this.options.mode === "process") await this.spawnDetached();
@@ -409,12 +427,15 @@ export class DaemonAdmin {
     }
     for (let attempt = 0; attempt < 100; attempt++) {
       const status = await this.status();
-      if (status.reachable)
+      if (status.reachable) {
+        const warnings = [...(status.warnings ?? []), ...proxyWarnings];
         return {
           ...status,
           outcome: "installed",
           ...(replaced ? { replaced } : {}),
+          ...(warnings.length ? { warnings } : {}),
         };
+      }
       // The daemon reports its own failed start; waiting longer would not change it.
       const startup = await readStartupFailure(root);
       if (startup) {
@@ -500,6 +521,8 @@ export class DaemonAdmin {
       throw error;
     }
     await this.removeInstallation(installation.data.mode);
+    // Uninstall leaves no Rig process behind; Caddy's certificates, generations and custom files stay for the next install.
+    await this.options.proxy?.remove();
     return {
       installed: false,
       running: false,
@@ -541,6 +564,7 @@ export class DaemonAdmin {
         "Inspect daemon state before retrying.",
       );
     await this.removeInstallation(mode);
+    await this.options.proxy?.remove();
     return {
       installed: false,
       running: false,

@@ -24,6 +24,12 @@ export const installationSchema = z.object({
     .describe(
       "The bun that Tools whose bin is a source file run with; absent when rigd install found none.",
     ),
+  proxy: z
+    .enum(["managed", "external"])
+    .optional()
+    .describe(
+      "How the installed rigd publishes routes: through Rig's own Caddy (managed) or a route file another Caddy imports (external, also when absent).",
+    ),
 });
 export type InstallationRecord = z.infer<typeof installationSchema>;
 

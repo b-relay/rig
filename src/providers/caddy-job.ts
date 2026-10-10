@@ -36,6 +36,8 @@ export interface InstallableCaddyJob extends CaddyJob {
   remove(): Promise<void>;
   /** Where the job is defined, for messages. */
   readonly description: string;
+  /** Whether the job is defined exactly as this Rig would define it, so an install that changes nothing can say so. */
+  matches(): Promise<boolean>;
 }
 /** The label of Rig's Caddy job for one Rig root: the same hash rigd's own label carries. */
 export function caddyJobLabel(root: string): string {
@@ -126,6 +128,8 @@ export function createLaunchAgentCaddyJob(options: {
   }
   return {
     description: plistPath,
+    matches: async () =>
+      (await readFile(plistPath, "utf8").catch(() => undefined)) === plist,
     state: async () => (await observe()).state,
     async restart() {
       const before = await observe();
@@ -240,6 +244,7 @@ export function createProcessCaddyJob(options: {
   }
   return {
     description: paths.processRecord,
+    matches: async () => true,
     state,
     async restart() {
       await stop();

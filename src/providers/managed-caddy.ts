@@ -149,10 +149,17 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       global: (await readText(paths.customGlobal)) ?? "",
     };
   }
-  /** The accepted custom files: the current generation's copies, or the files on disk before the first generation. */
+  /** The accepted custom files: the current generation's copies. Before the first generation nothing is accepted yet, so
+   * they are empty; the owner's files, created if missing, take effect through an apply. */
   async function acceptedCustom(): Promise<CustomFiles> {
     const current = await currentGeneration();
-    if (!current) return diskCustom();
+    if (!current) {
+      await diskCustom();
+      return {
+        sites: customFileHeader("sites"),
+        global: customFileHeader("global"),
+      };
+    }
     const files = generationFiles(current);
     return {
       sites: (await readText(files.custom)) ?? "",

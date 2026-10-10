@@ -81,6 +81,19 @@ const componentReportSchema = z
       .int()
       .optional()
       .describe("Configured or recorded component port."),
+    ports: z
+      .record(z.string(), z.number().int())
+      .optional()
+      .describe(
+        "Every declared port by name, as recorded in the plan; absent for a Service without ports or a plan recorded before named ports.",
+      ),
+    restarts: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        "Automatic restarts rigd made since the Service's last explicit start (after a crash or an unknown exit); absent when none.",
+      ),
     route: z
       .string()
       .optional()
@@ -158,6 +171,20 @@ const targetReportSchema = z
         "True when a Preview's destroy did not finish and its stopped inventory is retained until down --destroy is retried; absent otherwise.",
       ),
     route: z.string().optional().describe("Recorded Target route."),
+    routes: z
+      .array(
+        z
+          .object({
+            prefix: z.string().describe("Path prefix such as / or /api."),
+            service: z.string().describe("The Service that serves it."),
+            port: z.number().int().describe("The Service port it reaches."),
+          })
+          .passthrough(),
+      )
+      .optional()
+      .describe(
+        "The recorded path routes under the Target's hostname, longest prefix first; absent without a hostname or for a plan recorded before route maps.",
+      ),
     routePublished: z
       .boolean()
       .optional()

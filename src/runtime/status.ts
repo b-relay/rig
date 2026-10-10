@@ -69,6 +69,10 @@ export async function observeTargets(
         name: component.name,
         kind: component.kind,
         ...(component.kind === "managed" ? { port: component.port } : {}),
+        ...(component.kind === "managed" && component.ports
+          ? { ports: component.ports }
+          : {}),
+        ...automaticRestarts(target, component.name),
         ...(target.plan.proxy?.upstream === component.name && target.plan.domain
           ? { route: target.plan.domain }
           : {}),
@@ -180,10 +184,28 @@ export async function observeTargets(
       commit: target.commit,
       ...deploymentFlags(target),
       route: target.plan.domain,
+      ...(target.plan.domain && target.plan.proxy?.routes?.length
+        ? {
+            routes: target.plan.proxy.routes.map(
+              ({ prefix, service, port }) => ({ prefix, service, port }),
+            ),
+          }
+        : {}),
       components,
       state: aggregate(components),
     };
   });
+}
+/** Pure: how many times rigd started a Service again on its own since its last explicit start, crash restarts after a
+ * known and after an unknown exit together; nothing when it made none or never ran the Service. */
+export function automaticRestarts(
+  target: Pick<TargetRecord, "services">,
+  service: string,
+): Pick<ComponentReport, "restarts"> {
+  const run = target.services?.[service];
+  const restarts =
+    (run?.attempts.length ?? 0) + (run?.unknownAttempts?.length ?? 0);
+  return restarts ? { restarts } : {};
 }
 /** A Service its health restart stopped and could not start again: unhealthy, and waiting for the next health restart on
  * the back-off. Undefined for any other stopped Service. */

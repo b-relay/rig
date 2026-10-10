@@ -15,19 +15,39 @@ export function declaredPorts(
     (component.port === undefined ? {} : { port: component.port })
   );
 }
-/** The Target's route map, longest prefix first; empty without a hostname or a proxy. A plan recorded before route maps
- * routes '/' to its upstream's one port. */
-export function plannedRoutes(
+/** One hostname a Target serves and its route map, longest prefix first. */
+export interface PlanSite {
+  hostname: string;
+  routes: PlanRoute[];
+}
+/** Every hostname the Target serves, each with its route map; empty without a hostname or a proxy. A Target has one site
+ * today, its `domain`; callers treat the list as open so a Target can serve more than one hostname. A site whose map is empty
+ * names no managed upstream, which publishing refuses. A plan recorded before route maps routes '/' to its upstream's one
+ * port. */
+export function plannedSites(
   plan: Pick<TargetPlan, "domain" | "proxy" | "components">,
-): PlanRoute[] {
+): PlanSite[] {
   if (!plan.domain || !plan.proxy) return [];
-  if (plan.proxy.routes) return plan.proxy.routes;
+  if (plan.proxy.routes)
+    return [{ hostname: plan.domain, routes: plan.proxy.routes }];
   const upstream = plan.components.find(
     (component) => component.name === plan.proxy!.upstream,
   );
-  return upstream?.kind === "managed" && upstream.port !== undefined
-    ? [{ prefix: "/", service: upstream.name, port: upstream.port }]
-    : [];
+  return [
+    {
+      hostname: plan.domain,
+      routes:
+        upstream?.kind === "managed" && upstream.port !== undefined
+          ? [{ prefix: "/", service: upstream.name, port: upstream.port }]
+          : [],
+    },
+  ];
+}
+/** Every route of every site the Target serves; a Service routed under several hostnames appears once per route. */
+export function plannedRoutes(
+  plan: Pick<TargetPlan, "domain" | "proxy" | "components">,
+): PlanRoute[] {
+  return plannedSites(plan).flatMap((site) => site.routes);
 }
 /** Recorded assignments keyed `<service>.<port>`, as `resolveTargetPlan` takes them back; a plan recorded before named
  * ports yields its Service name alone. Includes the separate Convex site port. */

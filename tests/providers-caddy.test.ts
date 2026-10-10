@@ -76,8 +76,12 @@ test("route changes preserve unrelated text and rollback the file if reload fail
   });
   await router.apply({
     key: "target/web",
-    hostname: "app.example.test",
-    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+    sites: [
+      {
+        hostname: "app.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+      },
+    ],
   });
   const deployed = await readFile(file, "utf8");
   expect(deployed.startsWith(unrelated)).toBe(true);
@@ -86,8 +90,12 @@ test("route changes preserve unrelated text and rollback the file if reload fail
   await expect(
     router.apply({
       key: "target/web",
-      hostname: "app.example.test",
-      routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+      sites: [
+        {
+          hostname: "app.example.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+        },
+      ],
     }),
   ).rejects.toThrow();
   expect(await readFile(file, "utf8")).toBe(deployed);
@@ -97,8 +105,12 @@ test("route changes preserve unrelated text and rollback the file if reload fail
   await expect(
     router.apply({
       key: "other",
-      hostname: "other.example.test",
-      routes: [{ prefix: "/", upstream: "127.0.0.1:3002" }],
+      sites: [
+        {
+          hostname: "other.example.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:3002" }],
+        },
+      ],
     }),
   ).rejects.toThrow("owned");
 });
@@ -179,8 +191,12 @@ test("real Caddy applies and removes an isolated route without affecting another
     });
     await router.apply({
       key: "real-route",
-      hostname: `http://127.0.0.1:${site}`,
-      routes: [{ prefix: "/", upstream: `127.0.0.1:${upstream.port}` }],
+      sites: [
+        {
+          hostname: `http://127.0.0.1:${site}`,
+          routes: [{ prefix: "/", upstream: `127.0.0.1:${upstream.port}` }],
+        },
+      ],
     });
     expect(await (await fetch(`http://127.0.0.1:${site}`)).text()).toBe(
       "managed app",
@@ -199,8 +215,12 @@ test("real Caddy applies and removes an isolated route without affecting another
     };
     await router.apply({
       key: "real-route",
-      hostname: `http://127.0.0.1:${site}`,
-      routes: routes(`127.0.0.1:${api.port}`),
+      sites: [
+        {
+          hostname: `http://127.0.0.1:${site}`,
+          routes: routes(`127.0.0.1:${api.port}`),
+        },
+      ],
     });
     expect(await get("/api/users")).toBe("200 api /api/users");
     expect(await get("/api")).toBe("200 api /api");
@@ -208,8 +228,7 @@ test("real Caddy applies and removes an isolated route without affecting another
     // A withheld path reaches no process; its sibling and the other site are untouched.
     await router.apply({
       key: "real-route",
-      hostname: `http://127.0.0.1:${site}`,
-      routes: routes(null),
+      sites: [{ hostname: `http://127.0.0.1:${site}`, routes: routes(null) }],
     });
     expect(await get("/api/users")).toBe("503 ");
     expect(await get("/")).toBe("200 managed app");
@@ -241,8 +260,12 @@ test("host route directives and the configured reload command are preserved", as
   });
   await router.apply({
     key: "host",
-    hostname: "app.example.test",
-    routes: [{ prefix: "/", upstream: "localhost:3000" }],
+    sites: [
+      {
+        hostname: "app.example.test",
+        routes: [{ prefix: "/", upstream: "localhost:3000" }],
+      },
+    ],
   });
   expect(await readFile(caddyfile, "utf8")).toContain(
     "  encode gzip\n  header X-Rig managed\n",
@@ -260,20 +283,32 @@ test("a route checkpoint restores its exact owned block and refuses to overwrite
   const absent = await router.checkpoint("target");
   await router.apply({
     key: "target",
-    hostname: "old.test",
-    routes: [{ prefix: "/", upstream: "localhost:3000" }],
+    sites: [
+      {
+        hostname: "old.test",
+        routes: [{ prefix: "/", upstream: "localhost:3000" }],
+      },
+    ],
   });
   const previous = await router.checkpoint("target");
   await router.apply({
     key: "target",
-    hostname: "new.test",
-    routes: [{ prefix: "/", upstream: "localhost:4000" }],
+    sites: [
+      {
+        hostname: "new.test",
+        routes: [{ prefix: "/", upstream: "localhost:4000" }],
+      },
+    ],
   });
   const candidate = await router.checkpoint("target");
   await router.apply({
     key: "other",
-    hostname: "unrelated.test",
-    routes: [{ prefix: "/", upstream: "localhost:5000" }],
+    sites: [
+      {
+        hostname: "unrelated.test",
+        routes: [{ prefix: "/", upstream: "localhost:5000" }],
+      },
+    ],
   });
   await router.restore(previous, candidate);
   expect(await router.checkpoint("target")).toEqual(previous);
@@ -301,8 +336,12 @@ test("a symlinked Caddyfile is updated through the link, so the file Caddy reads
   });
   await router.apply({
     key: "t1",
-    hostname: "demo.localhost",
-    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+    sites: [
+      {
+        hostname: "demo.localhost",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+      },
+    ],
   });
   expect((await lstat(link)).isSymbolicLink()).toBe(true);
   expect(await readFile(real, "utf8")).toContain("demo.localhost");
@@ -349,8 +388,12 @@ test("validation and reload failures carry Caddy's last stderr line, the rejecte
   });
   const route = {
     key: "target/web",
-    hostname: "app.example.test:99999",
-    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+    sites: [
+      {
+        hostname: "app.example.test:99999",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+      },
+    ],
   };
   await expect(router.apply(route)).rejects.toMatchObject({
     code: "ROUTE_VALIDATE",
@@ -404,14 +447,19 @@ test("the conflict check compares site addresses the way Caddy does: an explicit
     await expect(
       router.apply({
         key: `t/${hostname}`,
-        hostname,
-        routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+        sites: [
+          { hostname, routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }] },
+        ],
       }),
     ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
   await router.apply({
     key: "t/third",
-    hostname: "third.example.test",
-    routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+    sites: [
+      {
+        hostname: "third.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+      },
+    ],
   });
   expect(await readFile(file, "utf8")).toContain(
     "third.example.test {\n  reverse_proxy 127.0.0.1:3000",
@@ -451,11 +499,15 @@ test("a route map renders in the order given with a withheld path answering 503,
   });
   await router.apply({
     key: "map",
-    hostname: "app.test",
-    routes: [
-      { prefix: "/api/admin", upstream: "127.0.0.1:3003" },
-      { prefix: "/api", upstream: null },
-      { prefix: "/", upstream: "127.0.0.1:3001" },
+    sites: [
+      {
+        hostname: "app.test",
+        routes: [
+          { prefix: "/api/admin", upstream: "127.0.0.1:3003" },
+          { prefix: "/api", upstream: null },
+          { prefix: "/", upstream: "127.0.0.1:3001" },
+        ],
+      },
     ],
   });
   const text = await readFile(file, "utf8");
@@ -483,7 +535,7 @@ test("a route map renders in the order given with a withheld path answering 503,
     [{ prefix: "/", upstream: "10.0.0.5:3001" }],
   ])
     await expect(
-      router.apply({ key: "map", hostname: "app.test", routes }),
+      router.apply({ key: "map", sites: [{ hostname: "app.test", routes }] }),
     ).rejects.toMatchObject({ code: "ROUTE_INVALID" });
   expect(await readFile(file, "utf8")).toBe(text);
 });
@@ -503,15 +555,22 @@ test("the router reports which published paths are withheld, and reloads a withd
   expect(await router.withheld("map")).toEqual([]);
   const withdrawal = {
     key: "map",
-    hostname: "app.test",
-    routes: [
-      { prefix: "/api/admin", upstream: null },
-      { prefix: "/api", upstream: "127.0.0.1:3002" },
-      { prefix: "/", upstream: null },
+    sites: [
+      {
+        hostname: "app.test",
+        routes: [
+          { prefix: "/api/admin", upstream: null },
+          { prefix: "/api", upstream: "127.0.0.1:3002" },
+          { prefix: "/", upstream: null },
+        ],
+      },
     ],
   };
   await router.apply(withdrawal);
-  expect(await router.withheld("map")).toEqual(["/api/admin", "/"]);
+  expect(await router.withheld("map")).toEqual([
+    { hostname: "app.test", prefix: "/api/admin" },
+    { hostname: "app.test", prefix: "/" },
+  ]);
   expect(await router.withheld("other")).toEqual([]);
   // Caddy may be serving something older than the file: a withdrawal is never assumed to be live.
   const text = await readFile(file, "utf8");
@@ -521,14 +580,22 @@ test("the router reports which published paths are withheld, and reloads a withd
 
   const lone = {
     key: "map",
-    hostname: "app.test",
-    routes: [{ prefix: "/", upstream: null }],
+    sites: [
+      { hostname: "app.test", routes: [{ prefix: "/", upstream: null }] },
+    ],
   };
   await router.apply(lone);
-  expect(await router.withheld("map")).toEqual(["/"]);
+  expect(await router.withheld("map")).toEqual([
+    { hostname: "app.test", prefix: "/" },
+  ]);
   const published = {
     ...lone,
-    routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+    sites: [
+      {
+        hostname: "app.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+      },
+    ],
   };
   await router.apply(published);
   await router.apply(published);
@@ -565,8 +632,12 @@ test("routes that use Host snippets are checked through the Host Caddyfile that 
   });
   const route = {
     key: "app",
-    hostname: "app.example.test",
-    routes: [{ prefix: "/", upstream: "127.0.0.1:4100" }],
+    sites: [
+      {
+        hostname: "app.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:4100" }],
+      },
+    ],
   };
   await router.apply(route);
   expect(checked).toHaveLength(1);
@@ -585,7 +656,10 @@ test("routes that use Host snippets are checked through the Host Caddyfile that 
 
   reject = true;
   await expect(
-    router.apply({ ...route, hostname: "other.example.test" }),
+    router.apply({
+      ...route,
+      sites: [{ ...route.sites[0]!, hostname: "other.example.test" }],
+    }),
   ).rejects.toMatchObject({
     code: "ROUTE_VALIDATE",
     details: { rejectedPath: `${caddyfile}.rejected` },
@@ -594,4 +668,88 @@ test("routes that use Host snippets are checked through the Host Caddyfile that 
   expect(await readFile(`${caddyfile}.rejected`, "utf8")).toContain(
     "other.example.test",
   );
+});
+test("one Target publishes several hostnames in one block: they are withheld, checkpointed and withdrawn together, and none may repeat or clash", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-sites-"));
+  roots.push(root);
+  const file = join(root, "Caddyfile");
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    extraConfig: ["import backend_errors"],
+  });
+  await router.apply({
+    key: "other",
+    sites: [
+      {
+        hostname: "other.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3009" }],
+      },
+    ],
+  });
+  const melody = {
+    key: "melody",
+    sites: [
+      {
+        hostname: "melody.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }],
+      },
+      {
+        hostname: "api.melody.test",
+        routes: [
+          { prefix: "/v1", upstream: null },
+          { prefix: "/", upstream: "127.0.0.1:3002" },
+        ],
+      },
+    ],
+  };
+  await router.apply(melody);
+  const block = (await router.checkpoint("melody")).value!;
+  expect(block).toContain(
+    "melody.test {\n  reverse_proxy 127.0.0.1:3001\n  import backend_errors\n}\napi.melody.test {\n",
+  );
+  expect(await router.withheld("melody")).toEqual([
+    { hostname: "api.melody.test", prefix: "/v1" },
+  ]);
+
+  const text = await readFile(file, "utf8");
+  // A hostname another Target serves is refused, even beside free ones, and nothing is written.
+  await expect(
+    router.apply({
+      ...melody,
+      sites: [
+        ...melody.sites,
+        {
+          hostname: "other.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:3003" }],
+        },
+      ],
+    }),
+  ).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    details: { hostname: "other.test" },
+  });
+  // One Target may not list a hostname twice, spelled with or without its default port, nor publish no hostname at all.
+  for (const twice of ["melody.test", "melody.test:443"])
+    await expect(
+      router.apply({
+        ...melody,
+        sites: [
+          ...melody.sites,
+          {
+            hostname: twice,
+            routes: [{ prefix: "/", upstream: "127.0.0.1:3003" }],
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ code: "ROUTE_INVALID" });
+  await expect(
+    router.apply({ key: "melody", sites: [] }),
+  ).rejects.toMatchObject({ code: "ROUTE_INVALID" });
+  expect(await readFile(file, "utf8")).toBe(text);
+
+  await router.remove("melody");
+  const left = await readFile(file, "utf8");
+  expect(left).not.toContain("melody.test");
+  expect(left).toContain("other.test");
 });

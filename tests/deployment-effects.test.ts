@@ -209,8 +209,12 @@ test("successful route-free deployment removes only its previous owned route", a
   await f.lifecycle.up(f.previous);
   await f.router.apply({
     key: "other",
-    hostname: "untouched.test",
-    routes: [{ prefix: "/", upstream: "localhost:9876" }],
+    sites: [
+      {
+        hostname: "untouched.test",
+        routes: [{ prefix: "/", upstream: "localhost:9876" }],
+      },
+    ],
   });
   delete f.candidate.plan.domain;
   delete f.candidate.plan.proxy;

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   caddyfileSites,
+  customFileProblems,
   normalizeToken,
   proxyPaths,
   redactSecrets,
@@ -8,6 +9,11 @@ import {
   wildcardParents,
 } from "../src/domain/managed-proxy";
 import { parseHostConfig } from "../src/config";
+import {
+  adaptedSiteAddresses,
+  issuerCas,
+  protectedDifferences,
+} from "../src/domain/caddy-config";
 
 const settings = (proxy: Record<string, unknown> = {}) =>
   parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy", ...proxy } })
@@ -202,4 +208,153 @@ test("redaction removes the token's value and anything Caddy quotes after 'token
   expect(redactSecrets("Valid configuration", [token])).toBe(
     "Valid configuration",
   );
+});
+
+test("Rig accepts exactly the token forms caddy-dns/cloudflare v0.2.4 accepts, so the plugin never quotes a token it rejects", () => {
+  const classic = "A".repeat(35);
+  expect(normalizeToken(classic)).toBe(classic);
+  expect(normalizeToken("b".repeat(50))).toBe("b".repeat(50));
+  expect(normalizeToken(`cfut_${"x".repeat(32)}`)).toBe(
+    `cfut_${"x".repeat(32)}`,
+  );
+  expect(normalizeToken(`cfat_${"y_-".repeat(20)}`)).toBe(
+    `cfat_${"y_-".repeat(20)}`,
+  );
+  for (const rejected of [
+    "A".repeat(34),
+    "A".repeat(51),
+    `cfxx_${"x".repeat(60)}`,
+    `cfut_${"x".repeat(40)}.`,
+    `${"A".repeat(40)}=`,
+  ])
+    expect(() => normalizeToken(rejected)).toThrow(
+      expect.objectContaining({ code: "PROXY_TOKEN" }),
+    );
+});
+
+test("custom files may import only their own snippets, and read no file through placeholders or certificate paths", () => {
+  const root = "/r";
+  expect(
+    customFileProblems(
+      {
+        sites:
+          "(errors) {\n\trespond 502\n}\na.test {\n\timport errors\n\ttls internal {\n\t\ton_demand\n\t}\n\ttls /r/certs/a.pem /r/certs/a.key\n}\n",
+        global: "servers {\n\ttimeouts {\n\t\tidle 2m\n\t}\n}\n",
+      },
+      root,
+    ),
+  ).toEqual([]);
+  expect(
+    customFileProblems(
+      {
+        sites: [
+          "import /etc/caddy/more.caddy",
+          "a.test {",
+          "\timport missing",
+          '\trespond "{file./etc/passwd}"',
+          "\ttls cert.pem key.pem",
+          "\ttls {",
+          "\t\tca_root /etc/ssl/root.pem",
+          "\t}",
+          "}",
+        ].join("\n"),
+        global: "import global.caddy\n",
+      },
+      root,
+    ),
+  ).toEqual([
+    { file: "sites", line: 1, problem: "imports /etc/caddy/more.caddy" },
+    { file: "sites", line: 3, problem: "imports missing" },
+    {
+      file: "sites",
+      line: 4,
+      problem: "reads a file through a {file.*} placeholder",
+    },
+    {
+      file: "sites",
+      line: 5,
+      problem: "names certificate files outside the Rig root",
+    },
+    {
+      file: "sites",
+      line: 7,
+      problem: "names files outside the Rig root in ca_root",
+    },
+    { file: "global", line: 1, problem: "imports global.caddy" },
+  ]);
+});
+
+test("Caddy's JSON tells the sites it serves, what Rig protects, and the CAs it issues from", () => {
+  const config = {
+    admin: { listen: "unix//r/caddy/admin.sock|0600" },
+    storage: { module: "file_system", root: "/r/caddy/data" },
+    apps: {
+      http: {
+        http_port: 80,
+        https_port: 443,
+        servers: {
+          srv0: {
+            listen: [":443"],
+            routes: [
+              { match: [{ host: ["a.example.test", "*.example.test"] }] },
+            ],
+          },
+          srv1: {
+            listen: [":80"],
+            routes: [{ match: [{ host: ["plain.example.test"] }] }],
+          },
+        },
+      },
+      tls: {
+        automation: {
+          policies: [
+            {
+              issuers: [
+                {
+                  module: "acme",
+                  ca: "https://acme-v02.api.letsencrypt.org/directory",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  };
+  expect(adaptedSiteAddresses(config)).toEqual([
+    "a.example.test",
+    "*.example.test",
+    "http://plain.example.test",
+  ]);
+  const expected = {
+    admin: "unix//r/caddy/admin.sock|0600",
+    storage: "/r/caddy/data",
+    httpPort: 80,
+    httpsPort: 443,
+  };
+  expect(protectedDifferences(config, expected)).toEqual([]);
+  expect(
+    protectedDifferences(
+      {
+        ...config,
+        admin: { listen: "localhost:2999" },
+        apps: {
+          ...config.apps,
+          http: { ...config.apps.http, https_port: 8443 },
+        },
+      },
+      expected,
+    ),
+  ).toEqual(["admin", "https_port"]);
+  // No site, no HTTP app: nothing listens, so the ports cannot differ.
+  expect(
+    protectedDifferences(
+      { admin: config.admin, storage: config.storage },
+      expected,
+    ),
+  ).toEqual([]);
+  expect(issuerCas(config)).toEqual([
+    "https://acme-v02.api.letsencrypt.org/directory",
+  ]);
+  expect(issuerCas({})).toEqual([]);
 });

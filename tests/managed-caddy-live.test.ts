@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { verifyProxyCertificates } from "../src/adapters/proxy-verify";
 import { proxyReport } from "../src/adapters/proxy-report";
 import { join } from "node:path";
@@ -210,6 +217,29 @@ test("real Caddy runs Rig's generations: routes, a withdrawal, a custom site, a 
   ]);
   // The broken edit is still on disk, unapplied.
   expect(report.custom[0]).toMatchObject({ state: "pending" });
+
+  // A crash between switching generations and reloading: real Caddy still runs an older generation. Startup's republish sees
+  // that from what Caddy reports, not from the files, and makes it serve the current one.
+  const generations = (await readdir(paths.generations))
+    .filter((name) => !/\.(tmp|rejected)$/.test(name))
+    .sort();
+  const older = join(paths.generations, generations.at(-2)!);
+  await runCommand({
+    command: [
+      paths.binary,
+      "reload",
+      "--config",
+      join(older, "Caddyfile"),
+      "--adapter",
+      "caddyfile",
+    ],
+  });
+  const current = JSON.parse(
+    await readFile(join(paths.current, "adapted.json"), "utf8"),
+  );
+  expect(Bun.deepEquals(await admin.config(), current)).toBe(false);
+  expect(await caddy.republish()).toEqual({ published: false });
+  expect(Bun.deepEquals(await admin.config(), current)).toBe(true);
 
   await job.restart();
   expect((await get("app.example.test", https)).status).toBe(200);

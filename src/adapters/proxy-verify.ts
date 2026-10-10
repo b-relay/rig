@@ -13,15 +13,28 @@ import {
 } from "../domain/managed-proxy";
 import { routeFileHostnames } from "../providers/route-file";
 
+/** The custom site addresses of the current generation: the inventory Caddy's own parse gave when it was published, kept in
+ * its metadata. A generation from before that falls back to reading the file's text. */
+export async function currentCustomSites(root: string): Promise<string[]> {
+  const files = generationFiles(proxyPaths(root).current);
+  try {
+    const metadata = JSON.parse(await readFile(files.metadata, "utf8")) as {
+      customSites?: unknown;
+    };
+    if (Array.isArray(metadata.customSites))
+      return metadata.customSites.map(String);
+  } catch {}
+  return caddyfileSites(await readFile(files.custom, "utf8").catch(() => ""));
+}
 /** Every hostname with a certificate that the current generation serves: Rig's sites and the owner's custom ones. Read from
  * the generation itself, so it needs no rigd and names exactly what Caddy was given. */
 export async function servedHostnames(root: string): Promise<string[]> {
   const files = generationFiles(proxyPaths(root).current);
-  const [routes, custom] = await Promise.all([
-    readFile(files.routes, "utf8").catch(() => ""),
-    readFile(files.custom, "utf8").catch(() => ""),
-  ]);
-  const names = [...routeFileHostnames(routes), ...caddyfileSites(custom)]
+  const routes = await readFile(files.routes, "utf8").catch(() => "");
+  const names = [
+    ...routeFileHostnames(routes),
+    ...(await currentCustomSites(root)),
+  ]
     .map(certificateName)
     .filter((name): name is string => name !== undefined);
   return [...new Set(names)].sort();

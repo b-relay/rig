@@ -1,7 +1,7 @@
 import { readFile, readlink } from "node:fs/promises";
+import { currentCustomSites } from "./proxy-verify";
 import type { ProxySettings } from "../config/proxy-schema";
 import {
-  caddyfileSites,
   certificateName,
   generationFiles,
   proxyPaths,
@@ -79,7 +79,7 @@ export async function proxyReport(options: {
     options.admin.reachable(),
     options.job.state(),
   ]);
-  const customSites = caddyfileSites(custom);
+  const customSites = await currentCustomSites(options.root);
   const parents =
     options.settings.tls.certificates === "wildcard"
       ? new Set(wildcardParents(routeFileHostnames(routes)))

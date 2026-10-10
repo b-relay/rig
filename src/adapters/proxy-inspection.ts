@@ -100,6 +100,33 @@ export async function inspectManagedProxy(
           },
   );
   checks.push(...(await customChecks(paths)));
+  // What Caddy runs, not what the files say: after a crash between switching and activating they differ.
+  if (reachable) {
+    const [loaded, expected] = await Promise.all([
+      admin.config(),
+      readFile(generationFiles(paths.current).adapted, "utf8")
+        .then((text) => JSON.parse(text) as unknown)
+        .catch(() => undefined),
+    ]);
+    if (expected !== undefined)
+      checks.push(
+        Bun.deepEquals(loaded, expected)
+          ? {
+              name: "proxy-serving",
+              ok: true,
+              message:
+                "Rig's Caddy serves the current configuration generation.",
+            }
+          : {
+              name: "proxy-serving",
+              ok: false,
+              message:
+                "Rig's Caddy serves a configuration other than the current generation, so route changes wait until it does.",
+              reason: "proxy-stale",
+              hint: "Run rig proxy reload, which makes Caddy serve the current generation.",
+            },
+      );
+  }
   return checks;
 }
 /** Whether the current generation exists and serves the custom files as they are on disk. */

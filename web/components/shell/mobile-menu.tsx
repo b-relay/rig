@@ -20,7 +20,7 @@ export function MobileMenu({ children }: { children: ReactNode }) {
       <SheetTrigger asChild>
         <button
           type="button"
-          className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
+          className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground lg:hidden"
           aria-label="Open the menu"
         >
           <Menu className="size-5" aria-hidden />
@@ -28,7 +28,7 @@ export function MobileMenu({ children }: { children: ReactNode }) {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="w-72 bg-sheet p-0"
+        className="w-72 border-sidebar-border bg-sidebar p-0"
         // A link to the page already shown changes no pathname, so any followed link closes the drawer.
         onClick={(event) => {
           if ((event.target as HTMLElement).closest("a")) setOpen(false);

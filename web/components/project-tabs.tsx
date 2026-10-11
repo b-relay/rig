@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { projectHref, targetHref } from "@/lib/target";
@@ -23,7 +24,7 @@ const TARGET_TABS = [
   ["environment", "Environment"],
   ["jobs", "Jobs"],
 ] as const;
-/** The sections of one Project, as a ruled row of links. */
+/** The sections of one Project, as a segmented row of links. */
 export function ProjectTabs({ project }: { project: string }) {
   return (
     <SectionTabs
@@ -59,12 +60,22 @@ function SectionTabs({
   label: string;
 }) {
   const pathname = decodeURIComponent(usePathname());
+  const list = useRef<HTMLUListElement>(null);
+  // On a phone the row scrolls; the current tab is brought into view whenever it changes.
+  useEffect(() => {
+    list.current
+      ?.querySelector<HTMLElement>("[aria-current=page]")
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [pathname]);
   return (
     <nav
       aria-label={label}
-      className="-mx-4 overflow-x-auto border-b border-rule px-4 sm:mx-0 sm:px-0"
+      className="no-scrollbar -mx-4 overflow-x-auto px-4 [mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] sm:mx-0 sm:px-0 sm:[mask-image:none]"
     >
-      <ul className="flex w-max gap-1">
+      <ul
+        ref={list}
+        className="flex w-max gap-0.5 rounded-xl border bg-muted/60 p-1"
+      >
         {tabs.map(([segment, text]) => {
           const href = segment ? `${base}/${segment}` : base;
           const current =
@@ -77,8 +88,8 @@ function SectionTabs({
                 href={href}
                 aria-current={current ? "page" : undefined}
                 className={cn(
-                  "-mb-px block border-b-2 border-transparent px-3 py-2 text-sm text-muted-foreground no-underline hover:text-ink",
-                  current && "border-ink font-medium text-ink",
+                  "flex h-8 items-center rounded-lg px-3 text-sm font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground",
+                  current && "bg-card text-foreground shadow-xs",
                 )}
               >
                 {text}

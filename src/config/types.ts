@@ -50,6 +50,9 @@ export interface ManagedComponent extends ComponentContext {
   stopTimeout?: number;
   /** When Rig starts the Service again after a known exit; a plan recorded without it means always. */
   restart?: RestartPolicy;
+  /** Git pathspecs, relative to the workspace root, of the checkout files whose change makes a deploy restart the Service
+   * (ADR 0016); `[]` means none. Absent means the whole checkout, as in every plan recorded before watch. */
+  watch?: string[];
 }
 /** A Service's ongoing checks as its plan records them, in seconds. */
 export interface HealthcheckPlan {

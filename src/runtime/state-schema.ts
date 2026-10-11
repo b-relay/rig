@@ -78,6 +78,12 @@ const component = z.discriminatedUnion("kind", [
       .max(MAX_STOP_TIMEOUT_SECONDS)
       .optional(),
     restart: z.enum(["always", "on-failure", "no"]).optional(),
+    watch: z
+      .array(text)
+      .optional()
+      .describe(
+        "Pathspecs, relative to the workspace root, of the checkout files whose change makes a deploy restart the Service; an empty list means none. Absent means the whole checkout.",
+      ),
   }),
   z.object({
     ...common,
@@ -259,8 +265,31 @@ const services = z
     text,
     z.object({
       deployment: text.describe(
-        "The workspace the Service was started from; a record of another Deployment describes nothing.",
+        "The Deployment (its workspace) the run belongs to: the one that started the process, or the one that adopted it when a deploy kept it running. A record of another Deployment describes nothing.",
       ),
+      source: z
+        .object({
+          checkout: absolutePath.describe(
+            "The checkout the process runs in: its plan's workspace when it was started. While the process runs, Rig keeps this checkout on disk.",
+          ),
+          commit: text
+            .optional()
+            .describe(
+              "The Commit that checkout was materialized from; absent for the working Target.",
+            ),
+          definition: text.describe(
+            "Digest of the Service's definition when it was started, the checkout path replaced by a placeholder.",
+          ),
+          environment: text
+            .optional()
+            .describe(
+              "Keyed digest (HMAC-SHA256, key under <RIG_ROOT>/auth) of the environment the process was started with, env files included, the checkout path normalized; never a value. Absent when it could not be computed, and the run is then never kept.",
+            ),
+        })
+        .optional()
+        .describe(
+          "Where and from what the process was started, which a deploy compares to keep an unchanged Service running; absent on a run started before Rig recorded it, which a deploy never keeps.",
+        ),
       intent: z
         .enum(["running", "stopped"])
         .describe(
@@ -608,12 +637,15 @@ const operation = z.object({
  * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
  * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it.
  * Version 6 added scheduled jobs to plans (`plan.jobs`): an older rigd would keep them but never run them. Version 7 added
- * backups (`backup` on a plan's job and on a run, ADR 0017): an older rigd would run a backup job without its directory. */
-export const STATE_VERSION = 7;
+ * backups (`backup` on a plan's job and on a run, ADR 0017): an older rigd would run a backup job without its directory.
+ * Version 8 (ADR 0016) added where each Service's process runs (`source`), the Services a deploy kept, `watch`, and held
+ * checkouts: an older rigd would drop them and release a checkout a kept process still runs in. */
+export const STATE_VERSION = 8;
 /** The older state versions this rigd still reads. Version 4 named the working and stable Targets local and live, or what
- * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs, and
- * version 6 is version 7 without backups; both are read unchanged. The next write saves version 7. */
-export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6];
+ * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs,
+ * version 6 is version 7 without backups, and version 7 is version 8 before ADR 0016; they are read so. The next write
+ * saves STATE_VERSION. */
+export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7];
 /** The version whose Target names are normalized as they are read. */
 export const UNFIXED_NAMES_STATE_VERSION = 4;
 const deployment = z.object({

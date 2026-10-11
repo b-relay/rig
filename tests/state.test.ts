@@ -693,7 +693,7 @@ test("state version 4 is read with the working and stable Targets named by their
       ["stable", "stable"],
       ["preview", "feat-x-1a2b3c4d"],
     ]);
-    // Read again as version 6, nothing changes further.
+    // Read again as version 7, nothing changes further.
     expect(await new FileStateStore(root).read()).toEqual(state);
   } finally {
     await rm(root, { recursive: true, force: true });

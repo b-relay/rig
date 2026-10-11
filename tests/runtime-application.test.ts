@@ -156,6 +156,9 @@ function fixture() {
         plans.push(target);
         return { outcome: "started" };
       },
+      async environmentDigest() {
+        return "environment";
+      },
       async stop() {
         return { outcome: "stopped" as const };
       },

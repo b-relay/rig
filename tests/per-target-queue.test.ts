@@ -232,6 +232,9 @@ async function fixture(host: Record<string, unknown> = {}) {
         processes.set(key(target, service), { state: "running", incarnation });
         return { outcome: "started" };
       },
+      async environmentDigest() {
+        return "environment";
+      },
       async stop() {
         return { outcome: "stopped" as const };
       },

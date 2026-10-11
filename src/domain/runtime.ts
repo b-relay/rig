@@ -51,10 +51,27 @@ export type ServiceOutcome =
   /** `hostRestart` says the process is gone because the Host restarted or the user logged out, as rigd detected at its
    * next start; nothing starts such a Service of the Working copy or a Preview again before an explicit start. */
   | { kind: "unknown"; hostRestart?: HostRestart; at: string };
+/** Where the process a run names was started, and from what (ADR 0016): what a deploy compares to decide whether it may
+ * keep the process running. Never holds an environment value. */
+export interface ServiceSource {
+  /** The checkout the process runs in: its plan's workspacePath when it was started. */
+  checkout: string;
+  /** The Commit that checkout was materialized from; absent for the working Target. */
+  commit?: string;
+  /** Digest of the Service's definition, the checkout path replaced by a placeholder (`serviceDefinition`). */
+  definition: string;
+  /** Keyed digest (HMAC-SHA256) of the environment the process was started with, the checkout path normalized; absent
+   * when it could not be computed, and such a run is never kept. */
+  environment?: string;
+}
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
 export interface ServiceRun {
-  /** The workspace the Service was started from; a record of another Deployment describes nothing. */
+  /** The Deployment (its workspace) the run belongs to: the one that started the process, or the one that adopted it when a
+   * deploy kept it running (`source` then says where it runs). A record of another Deployment describes nothing. */
   deployment: string;
+  /** Where and from what the process was started; absent on a run started before Rig recorded it, which a deploy never
+   * keeps. */
+  source?: ServiceSource;
   /** `stopped` once an operator stopped the Target; no exit is retried under it. */
   intent: "running" | "stopped";
   /** The latest process Rig started; exit evidence that names another one is not evidence about this Service. */

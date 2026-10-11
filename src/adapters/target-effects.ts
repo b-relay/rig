@@ -59,6 +59,7 @@ import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
+import { createEnvironmentDigest } from "./environment-digest";
 import { appendTargetLog } from "../providers/target-log";
 import type { LogRetention } from "../domain/log-retention";
 export interface TargetAdapterOptions {
@@ -416,9 +417,11 @@ export function createTargetEffects(
       );
     }
   };
+  const digest = createEnvironmentDigest(options.root);
   return {
     supervisor,
     environment,
+    digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
     checkpoint: (target, previous) =>

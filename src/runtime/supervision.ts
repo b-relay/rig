@@ -12,6 +12,7 @@ import type {
   RuntimeState,
   ServiceOutcome,
   ServiceRun,
+  ServiceSource,
   TargetRecord,
 } from "../domain/runtime";
 import type { ComponentReport } from "../domain/project-status";
@@ -19,7 +20,8 @@ import { targetSelector } from "../domain/target-selector";
 import type { ProcessObservation } from "../providers/contracts";
 import { boundedObservations } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
-import type { ActivationJournal } from "./lifecycle";
+import type { ActivationJournal, StartEvidence } from "./lifecycle";
+import { serviceDefinition } from "../domain/service-definition";
 
 /** Automatic attempts after a known exit allowed within RESTART_WINDOW_MS of each other. */
 export const RESTART_LIMIT = 5;
@@ -274,11 +276,13 @@ export function activationJournal(
 ): ActivationJournal & { failed(error: unknown): Promise<void> } {
   const begun: string[] = [];
   return {
-    async starting(service) {
+    async starting(service, evidence) {
       const incarnation = deps.id();
       const current = currentRun(target, service);
+      const source = startSource(target, service, evidence);
       const fresh: ServiceRun = {
         deployment: target.plan.workspacePath,
+        ...(source ? { source } : {}),
         intent: "running",
         incarnation,
         attempts: [],
@@ -328,6 +332,28 @@ export function activationJournal(
           );
       }
     },
+  };
+}
+/** Pure: where a start of `service` from `target`'s plan runs and what from (ADR 0016), or nothing when the plan has no
+ * such Service. Every start runs from the Target's current plan, so this is its checkout and Commit. */
+function startSource(
+  target: Pick<TargetRecord, "plan" | "commit">,
+  service: string,
+  evidence: StartEvidence | undefined,
+): ServiceSource | undefined {
+  const component = target.plan.components.find(
+    (candidate): candidate is ManagedComponent =>
+      candidate.kind === "managed" && candidate.name === service,
+  );
+  if (!component) return undefined;
+  const commit = target.commit ?? target.plan.commit;
+  return {
+    checkout: target.plan.workspacePath,
+    ...(commit ? { commit } : {}),
+    definition: serviceDefinition(target.plan, component),
+    ...(evidence?.environment !== undefined
+      ? { environment: evidence.environment }
+      : {}),
   };
 }
 /** `fresh` with what a start that is not explicit carries over from `current`: both budgets' spent attempts, and the

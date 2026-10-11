@@ -54,6 +54,13 @@ export interface TargetEffects {
     target: TargetRecord,
     component: ManagedComponent | InstalledComponent | PlanJob,
   ): Promise<Record<string, string>>;
+  /** The keyed digest of a composed environment `env` of `target`, its checkout path normalized (ADR 0016): equal for two
+   * environments that differ only in the checkout they name, and never reversible to a value. Absent: no digest is
+   * recorded, so a deploy keeps no Service running. */
+  digestEnvironment?(
+    target: TargetRecord,
+    env: Readonly<Record<string, string>>,
+  ): Promise<string>;
   /** The Service's own check, or without one a connection to every port it declares.
    * May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
   health(
@@ -94,8 +101,13 @@ export interface BuildJournal {
  * rejects, nothing is spawned. `activated` is told once that process is verified ready (alive, when it has no check) and before
  * the Target's route is published; when it rejects, the start fails like a failed readiness check. */
 export interface ActivationJournal {
-  starting(service: string): Promise<string>;
+  starting(service: string, evidence?: StartEvidence): Promise<string>;
   activated(service: string, incarnation: string): Promise<void>;
+}
+/** What the lifecycle knows about a start before it spawns the process, for the journal to record with it. */
+export interface StartEvidence {
+  /** The keyed digest of the environment the process is started with; absent when it could not be computed. */
+  environment?: string;
 }
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
@@ -171,6 +183,10 @@ export interface TargetLifecycle {
   checkRoute(target: TargetRecord): Promise<void>;
   /** Lets go of the hostnames `checkRoute` reserved for the Target; required, so a wrapper cannot drop it. */
   releaseRoute(target: TargetRecord): Promise<void>;
+  /** The keyed digest of the environment `service` of `target` would start with now (its env files read now), as a start
+   * records it, the checkout path normalized. Fails as composing that environment fails (an unreadable env file, say), or
+   * ENV_DIGEST when no digest can be taken. A deploy compares it with the running process's. */
+  environmentDigest(target: TargetRecord, service: string): Promise<string>;
   /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
    * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
    * starts it again. */
@@ -283,6 +299,8 @@ export function withStops(
       lifecycle.up(target, checkpoint, journal, control ?? stops),
     recover: (target, service, journal, control) =>
       lifecycle.recover(target, service, journal, control ?? stops),
+    environmentDigest: (target, service) =>
+      lifecycle.environmentDigest(target, service),
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
@@ -541,8 +559,8 @@ export function createTargetLifecycle(
       const started: string[] = [];
       let incarnation: string | undefined;
       const tracked: ActivationJournal = {
-        async starting(name) {
-          return (incarnation = await journal.starting(name));
+        async starting(name, evidence) {
+          return (incarnation = await journal.starting(name, evidence));
         },
         activated: (name, started) => journal.activated(name, started),
       };
@@ -610,6 +628,20 @@ export function createTargetLifecycle(
           failureCauses(error),
         );
       }
+    },
+    async environmentDigest(target, service) {
+      const component = managedComponent(target, service);
+      if (!effects.digestEnvironment)
+        throw new RigError(
+          "ENV_DIGEST",
+          "This rigd cannot take a digest of a Service's environment.",
+          "Run rig restart for the Target to start every Service again.",
+          { service },
+        );
+      return await effects.digestEnvironment(
+        target,
+        await effects.environment(target, component),
+      );
     },
     async stop(target, service, stops) {
       const component = target.plan.components.find(
@@ -745,9 +777,16 @@ export function createTargetLifecycle(
     const key = `${target.id}:${component.name}`;
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
     const env = await effects.environment(target, component);
+    // Best effort: a start never fails for its digest, and a run recorded without one is never kept by a deploy.
+    const environment = await effects
+      .digestEnvironment?.(target, env)
+      .catch(() => undefined);
     observer?.changing(target, component.name);
     const incarnation = journal
-      ? await journal.starting(component.name)
+      ? await journal.starting(
+          component.name,
+          environment !== undefined ? { environment } : {},
+        )
       : randomUUID();
     const kill = stops.kill?.(target);
     const result = await supervisor.ensureRunning(
@@ -1067,7 +1106,24 @@ export function loopbackAddress(address: string): boolean {
     /^(?:0{0,4}:){2,7}0{0,3}1$/.test(address)
   );
 }
-/** Whether another Component in the plan lists `name` in dependsOn. */
+/** The Service `service` of `target`'s plan; SERVICE_UNKNOWN when the plan has none. */
+function managedComponent(
+  target: TargetRecord,
+  service: string,
+): ManagedComponent {
+  const component = target.plan.components.find(
+    (candidate): candidate is ManagedComponent =>
+      candidate.kind === "managed" && candidate.name === service,
+  );
+  if (!component)
+    throw new RigError(
+      "SERVICE_UNKNOWN",
+      `${target.name} has no Service named '${service}'.`,
+      "Select a Service of the recorded plan.",
+      { service },
+    );
+  return component;
+}
 /** The Service a process key of `target` names. */
 function componentOf(target: TargetRecord, key: string): ManagedComponent {
   return target.plan.components.find(

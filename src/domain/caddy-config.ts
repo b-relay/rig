@@ -70,14 +70,15 @@ export function issuerCas(config: unknown): string[] {
   return [...cas].sort();
 }
 
-/** What Rig serves when a site's upstream is down: one line of plain text naming the status and the hostname, never what
- * the upstream said. */
+/** What Rig serves for an error Caddy itself raises for a site (its upstream cannot be reached or does not answer in time):
+ * one line of plain text naming the status and the hostname. */
 export const DOWN_PAGE_BODY =
   "{http.error.status_code} - {http.request.host} is currently down";
 const DOWN_STATUSES = [502, 503, 504];
-/** `config` with Rig's page for an upstream that is down, on every HTTP server: errors 502, 503 and 504 (an upstream that
- * refuses, is withheld or times out) answer with `DOWN_PAGE_BODY` as plain text, and Rig's own `respond 503` for a
- * withheld path says the same. Pure; Rig generates this JSON itself rather than take it from any config. */
+/** `config` with Rig's page on every HTTP server for errors Caddy itself raises, 502, 503 and 504 (an upstream it cannot
+ * reach or that does not answer in time), answered with `DOWN_PAGE_BODY` as plain text, and Rig's own `respond 503` for a
+ * withheld path saying the same. A response an app sends is not an error to Caddy: whatever its status, it passes through
+ * unchanged (an app may answer 503 on purpose). Pure; Rig generates this JSON itself rather than take it from any config. */
 export function withDownPages(config: unknown): unknown {
   const copy = structuredClone(config) as Json;
   const http = record(record(copy.apps).http);

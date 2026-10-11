@@ -77,7 +77,10 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
   const upstream = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: (request) => new Response(`app ${new URL(request.url).pathname}`),
+    fetch: (request) =>
+      new URL(request.url).pathname === "/busy"
+        ? new Response("free-space probe failed", { status: 503 })
+        : new Response(`app ${new URL(request.url).pathname}`),
   });
   cleanups.push(async () => upstream.stop(true));
   const https = freePort();
@@ -134,7 +137,7 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
   // An unknown name under the generated wildcard is closed, never routed.
   expect((await get("other.example.test", https)).status).toBe(0);
 
-  // A withheld path, and an upstream that refuses: Rig's own page, never what an upstream said.
+  // A withheld path, and an upstream Caddy cannot reach: Rig's own page. An app's own answer passes through (below).
   await caddy.router.apply(route(null));
   expect(await get("app.example.test", https)).toEqual({
     status: 503,
@@ -146,6 +149,11 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
     body: "502 - app.example.test is currently down",
   });
   await caddy.router.apply(route(`127.0.0.1:${upstream.port}`));
+  // An app's own 503 is its answer, not an error Caddy raised: it passes through unchanged.
+  expect(await get("app.example.test", https, "/busy")).toEqual({
+    status: 503,
+    body: "free-space probe failed",
+  });
 
   // The owner's own route, from proxy.routes: a plain reverse proxy, applied by a republish (rig proxy reload). A custom
   // Caddy file an earlier build read is ignored, even one that would take over Rig's hostname.

@@ -40,7 +40,7 @@ import type { CommandRunner } from "./contracts";
 import {
   editRouteFile,
   ownedBlock,
-  rerenderOwnedBlocks,
+  canonicalRouteFile,
   routeFileHostnames,
   withheldPaths,
   type RouteCheckpoint,
@@ -131,6 +131,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     (() =>
       `${Date.now().toString().padStart(14, "0")}-${randomUUID().slice(0, 8)}`);
   let pending: Promise<unknown> = Promise.resolve();
+  /** Hostnames a deploy checked and is about to publish, by route key, held in this process only. */
+  const reservations = new Map<string, string[]>();
   function queued<T>(work: () => Promise<T>): Promise<T> {
     const operation = pending.catch(() => {}).then(work);
     pending = operation;
@@ -164,7 +166,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       return undefined;
     }
   }
-  /** The settings the current generation was accepted with; Host config as it is before the first generation. */
+  /** The settings the current generation was accepted with; Host config as it is before the first generation. A generation
+   * that recorded none (only unreleased builds made such) is no last-good either: there is no migration, by decision. */
   async function acceptedSettings(): Promise<ProxySettings> {
     const recorded = (await metadataOf(await currentGeneration()))?.proxy;
     const parsed = proxySettingsSchema.safeParse(recorded);
@@ -299,13 +302,21 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     kind: PublicationKind,
     settings: ProxySettings,
   ): Promise<void> {
+    // Only what Rig renders from its owned blocks is ever published, whatever a caller passed.
+    routes = canonicalRouteFile(routes).text;
     const rigHosts = routeFileHostnames(routes);
     const customRoutes = hostRoutes(settings);
     // One name is one site to a client, whatever scheme or port either side writes it with: Caddy would merge the two blocks
-    // and one would take over the other's requests.
-    const rigOwned = new Map(
-      rigHosts.map((host) => [bareHostname(host), host]),
-    );
+    // and one would take over the other's requests. A hostname a deploy has checked and is about to publish counts too.
+    const rigOwned = new Map<string, string>([
+      ...[...reservations.values()]
+        .flat()
+        .map((host): [string, string] => [
+          host,
+          `${host}, which a deploy is about to publish`,
+        ]),
+      ...rigHosts.map((host): [string, string] => [bareHostname(host), host]),
+    ]);
     const taken = customRoutes.find((route) => rigOwned.has(route.hostname));
     if (taken)
       throw new RigError(
@@ -370,7 +381,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await rename(building, directory);
 
     // What Caddy will run, kept beside the generation: activation is confirmed against it. Every value in the Caddyfile went
-    // through caddyValue, so it holds nothing but Rig's own directives; Rig adds its page for an upstream that is down.
+    // through caddyValue, so it holds nothing but Rig's own directives; Rig adds its page for errors Caddy itself raises.
     const adapted = await adapt(executable, files.main, secret);
     if (adapted.config === undefined)
       throw await rejectedAs(adapted.reason, adapted.reason ?? "");
@@ -542,15 +553,22 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     settings: ProxySettings,
     kind: PublicationKind,
   ): Promise<void> {
-    const before = (await readText(paths.routes)) ?? "";
-    const routes = rerenderOwnedBlocks(before, []);
-    if (routes !== before) await writeRoutes(routes, before);
+    const raw = (await readText(paths.routes)) ?? "";
+    const routes = canonicalRouteFile(raw).text;
+    if (routes !== raw) await writeRoutes(routes, raw);
     try {
       await publish(routes, kind, settings);
     } catch (error) {
-      if (routes !== before) await writeRoutes(before, routes);
+      // Text Rig did not write is never put back.
+      if (routes !== raw)
+        await writeRoutes(canonicalRouteFile(raw).text, routes);
       throw error;
     }
+  }
+  /** The route file as Rig's Caddy may publish it: only what Rig renders from its owned blocks. */
+  async function canonicalRoutes(): Promise<{ raw: string; routes: string }> {
+    const raw = (await readText(paths.routes)) ?? "";
+    return { raw, routes: canonicalRouteFile(raw).text };
   }
   /** The route edit `route` or `restoration` makes, refused as `editRouteFile` refuses it, against the owner's routes Caddy
    * accepted. */
@@ -581,7 +599,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   ): Promise<void> {
     // Nothing changes while what Caddy serves is unknown: a withdrawal must be served before its upstream may stop.
     await reconcile("route");
-    const before = (await readText(paths.routes)) ?? "";
+    // Only what Rig renders goes forward: text it did not write is dropped here and overwritten on disk.
+    const { raw, routes: before } = await canonicalRoutes();
     const current = await currentGeneration();
     // A route change publishes with the settings Caddy last accepted: Host config Rig refused never blocks one.
     const settings = await acceptedSettings();
@@ -592,13 +611,29 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const served = current
       ? await readText(generationFiles(current).routes)
       : undefined;
-    if (after === served) return;
-    if (after !== before) await writeRoutes(after, before);
     try {
-      await publish(after, "route", settings);
-    } catch (error) {
-      if (after !== before) await writeRoutes(before, after);
-      throw error;
+      if (after === served) {
+        if (raw !== after) await writeRoutes(after, raw);
+        return;
+      }
+      if (after !== raw) await writeRoutes(after, raw);
+      try {
+        await publish(after, "route", settings);
+      } catch (error) {
+        if (after !== before) await writeRoutes(before, after);
+        throw error;
+      }
+    } finally {
+      // A reservation ends once the route that holds it is in the route file, or the deploy is rolled back or removed.
+      const reserved = reservations.get(key);
+      if (
+        reserved &&
+        (!route ||
+          reserved.every((host) =>
+            route.sites.some((site) => bareHostname(site.hostname) === host),
+          ))
+      )
+        reservations.delete(key);
     }
   }
   /** Read in the queue: a change writes the route file before it publishes and puts it back when publishing fails, so a read
@@ -618,9 +653,15 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       restore: (saved, expected) =>
         queued(() => change(saved.key, undefined, { saved, expected })),
       // What a deploy asks before it stops anything: whether this route would be refused.
+      // What a deploy asks before it stops anything: whether this route would be refused. Its hostnames are then reserved
+      // until the route is applied, rolled back or removed, so a Host config published in between cannot claim them.
       check: (route) =>
         queued(async () => {
-          await edited((await readText(paths.routes)) ?? "", route.key, route);
+          await edited((await canonicalRoutes()).routes, route.key, route);
+          reservations.set(
+            route.key,
+            route.sites.map((site) => bareHostname(site.hostname)),
+          );
         }),
     },
     republish: () =>
@@ -630,7 +671,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         const current = await currentGeneration();
         if (
           current &&
-          rerenderOwnedBlocks(before, []) === before &&
+          !canonicalRouteFile(before).dropped &&
           (await metadataOf(current))?.settings === settingsDigest(requested) &&
           (await readText(generationFiles(current).routes)) === before &&
           (await adaptedOf(current)) !== undefined
@@ -656,7 +697,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           // Rig's routes go on with the settings Caddy last accepted, so a route file ahead of what Caddy serves still is.
           const accepted = await acceptedSettings();
           await reconcile("settings");
-          const routes = rerenderOwnedBlocks(before, []);
+          const routes = canonicalRouteFile(before).text;
           if (
             routes !== (await readText(generationFiles(current).routes)) ||
             (await metadataOf(current))?.settings !== settingsDigest(accepted)

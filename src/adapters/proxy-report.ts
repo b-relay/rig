@@ -1,14 +1,11 @@
-import { readFile, readlink } from "node:fs/promises";
 import {
-  acceptedProxySettings,
-  currentCustomRoutes,
+  currentGeneration,
   pendingSettings,
   type PendingSettings,
 } from "./proxy-generation";
 import type { ProxySettings } from "../config/proxy-schema";
 import {
   certificateName,
-  generationFiles,
   proxyPaths,
   wildcardParents,
 } from "../domain/managed-proxy";
@@ -74,20 +71,23 @@ export async function proxyReport(options: {
   readonly targets: readonly ReportedTarget[];
 }): Promise<ProxyReport> {
   const paths = proxyPaths(options.root);
-  const generation = await readlink(paths.current).catch(() => undefined);
-  const files = generationFiles(paths.current);
-  const read = (path: string) => readFile(path, "utf8").catch(() => "");
-  const routes = await read(files.routes);
+  // One generation, resolved once: every field below is read from it, even if a publication switches `current` meanwhile.
+  const generation = await currentGeneration(options.root);
+  const routes = generation?.routes ?? "";
+  const customRoutes = generation?.customRoutes ?? [];
   const [reachable, state] = await Promise.all([
     options.admin.reachable(),
     options.job.state(),
   ]);
-  const customRoutes = await currentCustomRoutes(options.root);
-  // Before the first generation nothing is served; Host config is what the first one will be.
+  // Before an accepted generation nothing is served; Host config is what the first one will be.
   const served =
-    (await acceptedProxySettings(options.root)) ??
+    generation?.proxy ??
     (options.requested instanceof Error ? undefined : options.requested);
-  const pending = await pendingSettings(options.root, options.requested);
+  const pending = await pendingSettings(
+    options.root,
+    options.requested,
+    generation?.proxy,
+  );
   const parents =
     served?.tls.certificates === "wildcard"
       ? new Set(
@@ -135,7 +135,7 @@ export async function proxyReport(options: {
       ...(binary ? { binary } : {}),
       ports: served?.ports ?? { http: 80, https: 443 },
       ca: served?.tls.ca ?? "unknown",
-      ...(generation ? { generation: generation.split("/").at(-1)! } : {}),
+      ...(generation ? { generation: generation.id } : {}),
     },
     sites: sites.sort((a, b) => a.hostname.localeCompare(b.hostname)),
     ...(pending ? { pending } : {}),

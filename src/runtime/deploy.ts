@@ -61,7 +61,7 @@ export async function activateDeployment(
   try {
     await prepareTarget(candidate, "all", deps);
     // Before anything stops: a route that cannot be published would leave neither Deployment serving.
-    await deps.lifecycle.checkRoute?.(candidate);
+    await deps.lifecycle.checkRoute(candidate);
     transitioned = true;
     if (previous) {
       await deps.lifecycle.down(previous);

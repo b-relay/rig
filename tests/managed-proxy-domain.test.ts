@@ -388,7 +388,7 @@ test("tls.ca is a named CA or a plain https URL: a placeholder that could expand
   ).toThrow(expect.objectContaining({ code: "PROXY_CONFIG_INVALID" }));
 });
 
-test("Rig's own page answers for an upstream that is down, on every server, without echoing the upstream", () => {
+test("Rig's own page answers for errors Caddy itself raises and for withheld paths, on every server", () => {
   const config = withDownPages({
     apps: {
       http: {

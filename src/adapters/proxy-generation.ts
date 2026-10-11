@@ -1,4 +1,5 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import {
   proxySettingsSchema,
   type ProxySettings,
@@ -10,39 +11,35 @@ import {
   type HostRoute,
 } from "../domain/managed-proxy";
 
-/** What the current generation was built from, as its metadata recorded it; undefined before the first generation. */
-async function currentMetadata(
-  root: string,
-): Promise<Record<string, unknown> | undefined> {
-  try {
-    const parsed: unknown = JSON.parse(
-      await readFile(
-        generationFiles(proxyPaths(root).current).metadata,
-        "utf8",
-      ),
-    );
-    return typeof parsed === "object" && parsed !== null
-      ? (parsed as Record<string, unknown>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
+/** One generation as it was published: read from its own directory, never through the `current` link again, so a reader
+ * that pins it sees one generation even while a publication switches the link. */
+export interface PublishedGeneration {
+  readonly id: string;
+  /** Its copy of the route file. */
+  readonly routes: string;
+  /** The proxy settings it was accepted with. A generation without them (none was ever released) is no last-good: what it
+   * serves is described as before the first generation. */
+  readonly proxy?: ProxySettings;
+  /** The owner's `proxy.routes` it serves. */
+  readonly customRoutes: readonly HostRoute[];
 }
-/** The proxy settings Caddy was last given and accepted: the current generation's. What is served (ports, CA, certificates)
- * is described from these, never from Host config, which may hold settings Rig refused or has not applied yet. */
-export async function acceptedProxySettings(
+/** The generation `current` names now, resolved once; undefined before the first. */
+export async function currentGeneration(
   root: string,
-): Promise<ProxySettings | undefined> {
-  const parsed = proxySettingsSchema.safeParse(
-    (await currentMetadata(root))?.proxy,
-  );
-  return parsed.success ? parsed.data : undefined;
-}
-/** The owner's `proxy.routes` the current generation serves; none before the first generation. */
-export async function currentCustomRoutes(root: string): Promise<HostRoute[]> {
-  const routes = (await currentMetadata(root))?.customRoutes;
-  return Array.isArray(routes)
-    ? routes.flatMap((entry: unknown) => {
+): Promise<PublishedGeneration | undefined> {
+  const link = proxyPaths(root).current;
+  const target = await readlink(link).catch(() => undefined);
+  if (!target) return undefined;
+  const directory = target.startsWith("/")
+    ? target
+    : join(dirname(link), target);
+  const files = generationFiles(directory);
+  const metadata = await readFile(files.metadata, "utf8")
+    .then((text) => JSON.parse(text) as Record<string, unknown>)
+    .catch(() => ({}) as Record<string, unknown>);
+  const proxy = proxySettingsSchema.safeParse(metadata.proxy);
+  const customRoutes = Array.isArray(metadata.customRoutes)
+    ? metadata.customRoutes.flatMap((entry: unknown) => {
         const route = entry as Partial<HostRoute> | null;
         return typeof route?.hostname === "string" &&
           typeof route.upstream === "string"
@@ -50,6 +47,12 @@ export async function currentCustomRoutes(root: string): Promise<HostRoute[]> {
           : [];
       })
     : [];
+  return {
+    id: basename(directory),
+    routes: await readFile(files.routes, "utf8").catch(() => ""),
+    ...(proxy.success ? { proxy: proxy.data } : {}),
+    customRoutes,
+  };
 }
 /** Host config's proxy section that Caddy does not serve: which of its parts differ from the accepted settings, and why,
  * when Rig refused them. */
@@ -62,11 +65,12 @@ export interface PendingSettings {
   /** The refusal's code, when Rig refused them. */
   readonly code?: string;
 }
-/** What of `requested` (Host config now, or the error reading it) Caddy does not serve; undefined when it serves exactly
- * that. */
+/** What of `requested` (Host config now, or the error reading it) the settings `accepted` (a pinned generation's) do not
+ * say; undefined when they say exactly that, or when nothing was accepted yet. */
 export async function pendingSettings(
   root: string,
   requested: ProxySettings | Error,
+  accepted: ProxySettings | undefined,
 ): Promise<PendingSettings | undefined> {
   if (requested instanceof Error)
     return {
@@ -76,7 +80,6 @@ export async function pendingSettings(
         ? { code: requested.code }
         : {}),
     };
-  const accepted = await acceptedProxySettings(root);
   if (!accepted) return undefined;
   if (settingsDigest(accepted) === settingsDigest(requested)) return undefined;
   const fields = (Object.keys(requested) as (keyof ProxySettings)[]).filter(

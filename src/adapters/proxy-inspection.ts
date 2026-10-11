@@ -1,9 +1,10 @@
-import { readFile, readlink, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { generationFiles, proxyPaths } from "../domain/managed-proxy";
-import { pendingSettings } from "./proxy-generation";
+import { currentGeneration, pendingSettings } from "./proxy-generation";
+import { canonicalRouteFile } from "../providers/route-file";
 import { createCaddyAdmin } from "../providers/caddy-admin";
 import { installedBinary } from "../providers/caddy-binary";
 import { createCaddyJob } from "../providers/caddy-job";
@@ -147,8 +148,18 @@ async function generationChecks(
         reason: "proxy-custom-retired",
         hint: "Put each of its hostnames under proxy.routes in config.yaml, as hostname: port, run rig proxy reload, then delete the file.",
       });
-  const target = await readlink(paths.current).catch(() => undefined);
-  if (!target)
+  // Rig's Caddy publishes only what Rig renders from the route file's blocks; anything else in it is named and ignored.
+  const routeFile = await readFile(paths.routes, "utf8").catch(() => "");
+  if (canonicalRouteFile(routeFile).dropped)
+    checks.push({
+      name: "proxy-route-file",
+      ok: false,
+      message: `${paths.routes} holds text Rig did not write (an external router's extra_config, or an edit). Rig's Caddy never publishes it, and the next route change or reload rewrites the file without it.`,
+      reason: "proxy-route-file-foreign",
+      hint: "Run rig proxy reload to rewrite the route file now.",
+    });
+  const generation = await currentGeneration(root);
+  if (!generation)
     return [
       ...checks,
       {
@@ -159,7 +170,7 @@ async function generationChecks(
         hint: "Run rigd install.",
       },
     ];
-  const pending = await pendingSettings(root, settings);
+  const pending = await pendingSettings(root, settings, generation.proxy);
   checks.push(
     pending
       ? {

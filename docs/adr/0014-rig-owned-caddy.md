@@ -212,7 +212,7 @@ Publishing one change goes like this:
    - Then rename the directory to `generations/<id>/`.
 2. **Validate.** Run `caddy adapt` on its main file with Rig's binary, check the result, and only then `caddy validate` it.
    - Adapting provisions nothing. The adapted JSON must hold the admin socket, storage and ports Rig set.
-   - Rig adds its own page for an upstream that is down to every server, as JSON it generates itself: errors 502, 503 and 504 (an upstream that refuses, is withheld or times out) answer `<status> - <host> is currently down` as plain text, and a withheld path's `respond 503` says the same. It never echoes what an upstream said.
+   - Rig adds its own page to every server, as JSON it generates itself, for errors Caddy itself raises: 502, 503 and 504 when an upstream cannot be reached or does not answer in time answer `<status> - <host> is currently down` as plain text, and a withheld path's `respond 503` says the same. A response the app sends passes through unchanged, whatever its status: an app may answer 503 on purpose, as Share does when its free-space probe fails.
    - The result is kept as `adapted.json`, and `caddy validate --config adapted.json` provisions exactly what Caddy will run.
    - If any step fails, the generation is set aside as `.rejected`; nothing else has changed.
 3. **Switch.** Rename a new `current` link over the old one.
@@ -220,7 +220,7 @@ Publishing one change goes like this:
    - If that fails, put `current` back and make Caddy serve the previous generation, again confirmed.
    - If Caddy is unreachable, follow the rule under **The Caddy process**.
 
-The route file keeps its role. The Router edits its marked blocks, keeping the `.rig-backup` copy and its rollback, and a generation copies it. Rig keeps the current generation, the previous one and three more, and deletes older ones.
+The route file keeps its role, but in managed mode it is only what Rig renders: every change and republish rebuilds it from the sites parsed out of its owned blocks, each rendered again from validated values with no directive of any config. Nothing of the existing text is kept as text. Whatever lies outside the markers (an external router's `extra_config` that ended a block early, an edit), any other line in a block, and a site whose values fail the check are dropped from what is published and overwritten on disk, and doctor names a file that holds such text (`proxy-route-file`). External mode, kept only as the rollback path, still renders `extra_config`; none of its free text reaches Rig's Caddy. The Router edits its marked blocks, keeping the `.rig-backup` copy and its rollback, and a generation copies it. Rig keeps the current generation, the previous one and three more, and deletes older ones.
 
 **Recovery.** What Caddy serves is read from Caddy, so a crash at any step is recovered by the next change or by rigd's startup, whichever comes first:
 
@@ -273,7 +273,7 @@ import "<root>/caddy/generations/<id>/routes.caddy"
   - **Answers.** `withheld` answers per hostname.
   - **Refusals.** A hostname listed twice is `ROUTE_INVALID`, and one served elsewhere is `ROUTE_CONFLICT`.
   - **Plans.** `plannedSites(plan)` derives the sites. Today that is the one `domain`.
-- **Republishing.** The Router gains `republish`. It rewrites every owned block (dropping directives an external router's `extra_config` left in them) and builds a generation from Host config as it is now. rigd runs it at startup in every mode, and `rig proxy reload` runs it. A rollback that restores `providers.caddy` gets its `extra_config` back the same way.
+- **Republishing.** The Router gains `republish`. It rebuilds the route file from its owned blocks (see **Generations**) and builds a generation from Host config as it is now. rigd runs it at startup in every mode, and `rig proxy reload` runs it.
 - **One queue.** `republish`, `apply`, `remove` and `restore` all share the router's one serialized queue, which is the critical section ADR 0007 gives the route file. Settings come from a reader rather than from values captured when rigd starts.
 - **One issuer.** The config names exactly one issuer, so Caddy never falls back to ZeroSSL. `ca: internal` renders `local_certs` and `skip_install_trust` instead, for tests.
 - **The token stays out of config.** `{file.…}` stays a placeholder in adapted JSON (checked).
@@ -292,16 +292,16 @@ proxy:
 
 - **Validated by the schema.** Each key is a lowercase hostname under the same rules as `domain` (no scheme, port, path or wildcard). Each value is a port, or `127.0.0.1:<port>` or `localhost:<port>`. `tls.ca` is a named CA or an `https://` URL of letters, digits and `. - _ ~ % /`, and `tls.email` a plain address: neither may hold a placeholder.
 - **Rendered by Rig.** Each route becomes a site with a lone `reverse_proxy` to its upstream. Its certificate follows Rig's policy: the wildcard of its parent, or its own name with `certificates: hostname`.
-- **No `proxy.site`.** The directives it added to every Target's block are gone. Their one use here, the router's `backend_errors` page, is built in: Rig's page for an upstream that is down (see **Generations**). With no config text left, the allowlist that held site lines to a short list of handlers is gone too; `protectedDifferences` still checks that the adapted admin socket, storage and ports are Rig's.
+- **No `proxy.site`.** The directives it added to every Target's block are gone. Their one use here, the router's `backend_errors` page, is built in: Rig's page for errors Caddy itself raises, such as an upstream it cannot reach (see **Generations**). With no config text left, the allowlist that held site lines to a short list of handlers is gone too; `protectedDifferences` still checks that the adapted admin socket, storage and ports are Rig's.
 - **One hostname, one owner.** Both inventories are compared as bare lowercase hostnames, since Caddy merges two blocks for one name written with different schemes or ports, and one would take over the other's requests.
   - A route whose hostname a Target serves is refused (`PROXY_CONFIG_INVALID`); nothing changes and the Target keeps serving.
   - A Target, or a Preview created later, asking for one of these hostnames is refused as `ROUTE_CONFLICT`, naming `proxy.routes`.
 - **Last accepted settings.** Host config Rig refuses never blocks a Project.
   - `rig proxy reload` and rigd's start publish Host config as it is now. When Rig refuses it (`PROXY_CONFIG_INVALID`, `PROXY_PATH` or `PROXY_TOKEN`), the command fails with the reason, the refusal is recorded in `caddy/settings-rejected.json`, and Caddy keeps the settings it last accepted. A route file ahead of what Caddy serves is still published, with those.
-  - Every route change and recovery publishes with the accepted settings, which each generation records whole. An unrelated deploy therefore never fails on a refused Host config (the reproduction: a route colliding with Target A, then a deploy of B; B stays up).
-  - `rig proxy`, doctor (`proxy-settings`) and the dashboard show Host config that is not served apart from what is: refused, with the reason, or not applied yet. What they describe as served (ports, CA, certificates, routes) comes from the accepted generation.
+  - Every route change and recovery publishes with the accepted settings, which each generation records whole. A generation that recorded none is no last-good: it is treated as having no accepted generation (Host config is used, as for the first), and there is no migration, since no release made one. An unrelated deploy therefore never fails on a refused Host config (the reproduction: a route colliding with Target A, then a deploy of B; B stays up).
+  - `rig proxy`, doctor (`proxy-settings`) and the dashboard show Host config that is not served apart from what is: refused, with the reason, or not applied yet. What they describe as served (ports, CA, certificates, routes) comes from one accepted generation, resolved once per read, so a publication that switches `current` meanwhile cannot mix two.
   - A Host config that no longer parses or validates stops rigd from starting, as before; `rig proxy reload` against a running rigd fails with `PROXY_CONFIG`, naming the fields at fault.
-- **A deploy checks its route first.** Before it stops the previous Deployment, a deploy asks the router whether the candidate's route could be published (`ROUTE_INVALID`, `ROUTE_CONFLICT`), changing nothing. A route that cannot be published fails the deploy with the previous Deployment still serving.
+- **A deploy checks its route first.** Before it stops the previous Deployment, a deploy asks the router whether the candidate's route could be published (`ROUTE_INVALID`, `ROUTE_CONFLICT`), changing nothing. A route that cannot be published fails the deploy with the previous Deployment still serving. The hostnames it checked are then reserved, in rigd's memory, until the route is applied, rolled back or removed, so a `rig proxy reload` in between cannot claim one (it is refused as a hostname a deploy is about to publish). A deploy that fails without rolling back its route leaves its reservation until the next change of that route or rigd's restart; the deploy rollback covers the rest.
 - **Frozen.** Caddy runs the frozen `adapted.json`, so nothing is read again behind Rig's back.
 - **Custom Caddy files left from earlier builds.** `proxy/custom.caddy` and `proxy/custom-global.caddy` are not read. Doctor reports one left on disk (`proxy-custom-file`), with a hint to move its hostnames to `proxy.routes` and delete it.
 - **What has no home.** Anything beyond a plain reverse proxy and Rig's down page (a static site, redirects, other error pages) is not served by Rig's Caddy. A need for one becomes a structured option, not Caddy text.
@@ -388,6 +388,7 @@ The doctor checks replace `caddy-proxy`:
 | `proxy-ports`       | Who holds the HTTP and HTTPS ports.                                                              |
 | `proxy-settings`    | Whether Host config's proxy section is what Caddy serves: pending a reload, or refused with why. |
 | `proxy-custom-file` | A custom Caddy file an earlier build read is left on disk, ignored.                              |
+| `proxy-route-file`  | The route file holds text Rig did not write; it is never published and is rewritten.             |
 
 Certificate readiness is reported by `rig proxy verify`, not by doctor, because it needs network handshakes.
 

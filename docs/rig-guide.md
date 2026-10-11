@@ -232,9 +232,11 @@ No config carries Caddy directives: every value Rig writes into Caddy's
 configuration (paths, ports, `tls.ca`, the email, hostnames, upstreams) is
 checked against its own pattern and quoted, so none can hold a placeholder,
 an `{$ENV}` expansion or a directive. `tls.ca` is a named CA or a plain
-`https://` URL. When an upstream refuses, times out or is withheld, Caddy
-answers with Rig's own plain-text page, `<status> - <host> is currently down`,
-never with what the upstream said.
+`https://` URL. When Caddy cannot reach an upstream, the upstream does not
+answer in time, or Rig has withheld the path, Caddy answers with Rig's own
+plain-text page, `<status> - <host> is currently down`. A response your app
+sends passes through unchanged, whatever its status: an app may answer 503 on
+purpose.
 
 Host config Rig refuses never takes a Project offline. `rig proxy reload` (and
 rigd's start) applies Host config as it is now; when Rig refuses it, the
@@ -243,7 +245,13 @@ deploy and route change goes on with those. `rig proxy`, `rig doctor`
 (`proxy-settings`) and the dashboard show the refused settings as pending, with
 the reason. A Host config that no longer validates fails the reload with
 `PROXY_CONFIG`, naming the fields at fault. A deploy also checks that its
-route can be published before it stops the previous Deployment.
+route can be published before it stops the previous Deployment, and holds its
+hostnames until the route is published.
+
+Rig's own Caddy publishes only what Rig renders from the route file's blocks.
+Text it did not write there, such as an external router's `extra_config`, is
+never published, the next change rewrites the file without it, and
+`rig doctor` names it (`proxy-route-file`).
 
 `rig doctor` checks whether Caddy runs the current configuration (`proxy-serving`), the token (`proxy-token`), Rig's copy of Caddy
 (`proxy-binary`), whether the job runs and answers (`proxy-process`), and

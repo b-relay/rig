@@ -1,26 +1,20 @@
-import { readFile } from "node:fs/promises";
 import { checkServerIdentity, connect } from "node:tls";
 import {
   isStagingIssuer,
   judgeCertificate,
   type CertificateVerdict,
 } from "../domain/certificate-check";
-import {
-  certificateName,
-  generationFiles,
-  proxyPaths,
-} from "../domain/managed-proxy";
-import { currentCustomRoutes } from "./proxy-generation";
+import { certificateName } from "../domain/managed-proxy";
+import { currentGeneration } from "./proxy-generation";
 import { routeFileHostnames } from "../providers/route-file";
 
 /** Every hostname with a certificate that the current generation serves: Rig's sites and the owner's own routes. Read from
  * the generation itself, so it needs no rigd and names exactly what Caddy was given. */
 export async function servedHostnames(root: string): Promise<string[]> {
-  const files = generationFiles(proxyPaths(root).current);
-  const routes = await readFile(files.routes, "utf8").catch(() => "");
+  const generation = await currentGeneration(root);
   const names = [
-    ...routeFileHostnames(routes),
-    ...(await currentCustomRoutes(root)).map((route) => route.hostname),
+    ...routeFileHostnames(generation?.routes ?? ""),
+    ...(generation?.customRoutes ?? []).map((route) => route.hostname),
   ]
     .map(certificateName)
     .filter((name): name is string => name !== undefined);

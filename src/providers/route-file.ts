@@ -249,6 +249,38 @@ export function rerenderOwnedBlocks(
     },
   );
 }
+/** The route file as Rig's own Caddy publishes it: rendered entirely from the sites parsed out of its owned blocks, with no
+ * directive of any config. Nothing of the existing text is kept as text: whatever lies outside the markers (an external
+ * router's `extra_config` that ended a block early, an edit), any line in a block that is not one of its paths, and a site
+ * whose values fail `checkCaddyValue` or that has no '/' path are dropped. `dropped` says whether anything was. */
+export function canonicalRouteFile(text: string): {
+  text: string;
+  dropped: boolean;
+} {
+  const blocks = [
+    ...text.matchAll(
+      /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(?:\r?\n)?/g,
+    ),
+  ].flatMap((match) => {
+    const sites = parseOwnedSites(match[2]!).flatMap((site) => {
+      if (!site.routes.some((path) => path.prefix === "/")) return [];
+      try {
+        return [siteBlock(site, []).replace(/\n$/, "")];
+      } catch {
+        return [];
+      }
+    });
+    return sites.length
+      ? [
+          [`# rig begin ${match[1]}`, ...sites, `# rig end ${match[1]}`].join(
+            "\n",
+          ) + "\n",
+        ]
+      : [];
+  });
+  const canonical = blocks.join("");
+  return { text: canonical, dropped: canonical !== text };
+}
 /** Every hostname the owned blocks of a route file serve. */
 export function routeFileHostnames(text: string): string[] {
   return [

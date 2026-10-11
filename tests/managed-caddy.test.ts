@@ -487,3 +487,92 @@ test("when reconciling fails, the error says nothing was changed rather than cla
   expect(error.message).toContain("nothing was changed");
   expect(error.message).not.toContain("restored");
 });
+
+test("in managed mode the route file is only what Rig renders: text an external router's extra_config left past an early end marker is dropped, never published", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  const token = /# rig begin ([0-9a-f]{64})/.exec(await w.routes())![1]!;
+  // What `extra_config: ["# rig end <token>", "}", "evil.example.test {", "respond pwned"]` once rendered.
+  const injected = [
+    `# rig begin ${token}`,
+    "app.example.test {",
+    "  reverse_proxy 127.0.0.1:3001",
+    `  # rig end ${token}`,
+    "}",
+    "evil.example.test {",
+    "  respond pwned",
+    "}",
+    `# rig end ${token}`,
+    "",
+  ].join("\n");
+  await writeFile(join(w.root, "proxy", "Caddyfile"), injected);
+  expect(await w.caddy.republish()).toEqual({ published: true });
+  const routes = await w.routes();
+  expect(routes).toBe(
+    `# rig begin ${token}\napp.example.test {\n  reverse_proxy 127.0.0.1:3001\n}\n# rig end ${token}\n`,
+  );
+  expect(w.servedRoutes()).toBe(routes);
+  expect(JSON.stringify(w.control.loaded)).not.toContain("pwned");
+  // A route change rewrites such a file too, before anything is published.
+  await writeFile(join(w.root, "proxy", "Caddyfile"), injected);
+  await w.caddy.router.apply(app("127.0.0.1:3002"));
+  expect(await w.routes()).not.toContain("evil");
+  expect(w.servedRoutes()).not.toContain("evil");
+});
+
+test("a hostname a deploy checked is reserved until its route is applied: Host config published in between cannot claim it", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  const b = {
+    key: "b",
+    sites: [
+      {
+        hostname: "new.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3010" }],
+      },
+    ],
+  };
+  await w.caddy.router.check!(b);
+  // rig proxy reload adds a route for it mid-deploy.
+  w.setSettings({ routes: { "new.example.test": 3005 } });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_CONFIG_INVALID",
+    message: expect.stringContaining("which a deploy is about to publish"),
+  });
+  // The deploy publishes its route; the hostname is the Target's from then on.
+  await w.caddy.router.apply(b);
+  expect(w.servedRoutes()).toContain("new.example.test");
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    message: expect.stringContaining("which a Target serves"),
+  });
+  // A rolled-back deploy lets the reservation go.
+  await w.caddy.router.check!({
+    ...b,
+    key: "c",
+    sites: [{ ...b.sites[0]!, hostname: "c.example.test" }],
+  });
+  const saved = await w.caddy.router.checkpoint("c");
+  await w.caddy.router.restore(saved, saved);
+  w.setSettings({ routes: { "c.example.test": 3005 } });
+  expect(await w.caddy.republish()).toEqual({ published: true });
+});
+
+test("a generation without the settings it was accepted with is no last-good: route changes publish Host config as it is, as before the first generation", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // Shaped like one built before generations recorded their settings (none was ever released).
+  const metadataFile = join(w.root, "caddy", "current", "generation.json");
+  const { proxy: _, ...older } = JSON.parse(
+    await readFile(metadataFile, "utf8"),
+  );
+  await writeFile(metadataFile, JSON.stringify(older));
+  w.setSettings({ routes: { "own.example.test": 3005 } });
+  await w.caddy.router.apply(app("127.0.0.1:3002"));
+  expect(
+    JSON.parse(await w.file("caddy", "current", "generation.json")),
+  ).toMatchObject({
+    customRoutes: [
+      { hostname: "own.example.test", upstream: "127.0.0.1:3005" },
+    ],
+  });
+});

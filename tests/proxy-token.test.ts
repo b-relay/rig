@@ -131,6 +131,11 @@ test("doctor names a custom Caddy file an earlier build read as ignored, and Hos
     "proxy:\n  caddy: /usr/local/bin/caddy\n  routes:\n    grafana.example.com: 3000\n",
   );
   await mkdir(join(r, "proxy"), { recursive: true });
+  // An external router's extra_config left text past an early end marker.
+  await writeFile(
+    join(r, "proxy", "Caddyfile"),
+    `# rig begin ${"a".repeat(64)}\napp.example.com {\n  reverse_proxy 127.0.0.1:1\n  # rig end ${"a".repeat(64)}\n}\nevil.example.com {\n  respond pwned\n}\n# rig end ${"a".repeat(64)}\n`,
+  );
   await writeFile(
     join(r, "proxy", "custom.caddy"),
     "grafana.example.com {\n\treverse_proxy 127.0.0.1:3000\n}\n",
@@ -149,6 +154,13 @@ test("doctor names a custom Caddy file an earlier build read as ignored, and Hos
   await record(accepted);
   await symlink(join("generations", "g1"), join(r, "caddy", "current"));
   const checks = await inspectHost(r);
+  expect(
+    checks.find((check) => check.name === "proxy-route-file"),
+  ).toMatchObject({
+    ok: false,
+    reason: "proxy-route-file-foreign",
+    message: expect.stringContaining("holds text Rig did not write"),
+  });
   expect(checks.filter((check) => check.name === "proxy-custom-file")).toEqual([
     {
       name: "proxy-custom-file",

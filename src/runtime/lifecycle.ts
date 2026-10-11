@@ -164,8 +164,9 @@ export interface TargetLifecycle {
     stops?: StopControl,
   ): Promise<{ outcome: "started" | "unchanged" }>;
   /** Refuses the Target's route as publishing it would, changing nothing; a deploy asks before it stops the previous
-   * Deployment, so a route that cannot be published never takes a running one offline. */
-  checkRoute?(target: TargetRecord): Promise<void>;
+   * Deployment, so a route that cannot be published never takes a running one offline. Required, so a wrapper cannot drop
+   * it. */
+  checkRoute(target: TargetRecord): Promise<void>;
   /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
    * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
    * starts it again. */
@@ -264,6 +265,7 @@ export function withStops(
 ): TargetLifecycle {
   return {
     pruneCheckpoints: (live) => lifecycle.pruneCheckpoints(live),
+    checkRoute: (target) => lifecycle.checkRoute(target),
     checkpoint: (target, previous) => lifecycle.checkpoint(target, previous),
     restoreEffects: (target) => lifecycle.restoreEffects(target),
     commitEffects: (target) => lifecycle.commitEffects(target),

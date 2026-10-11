@@ -148,7 +148,7 @@ status, Activity and Target logs. See
 
 A backup job is a job with retention: each run writes a fresh directory under
 `<RIG_ROOT>/backups`, a failed run's is deleted, the newest `keep` successful
-ones are kept read-only, and `rig backup restore` runs the job's `restore`
+ones are kept, and `rig backup restore` runs the job's `restore`
 command as a run of the job. Deletions are queued in the state before they
 happen, behind a backup storage interface. See
 [ADR 0017](docs/adr/0017-backups.md).

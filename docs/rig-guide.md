@@ -1997,12 +1997,10 @@ jobs:
   can change it.
 - **A run that fails leaves nothing.** A non-zero exit, a timeout, a stop by
   Rig (`rig down`, a Preview destroy) or a start that failed deletes the run's
-  directory. A run that exits 0 becomes a backup: its directory is made
-  read-only (directories 0500, files without write bits) and its size
-  recorded. A file hard-linked into the backup (the same file as one
-  elsewhere, such as a live database) is left writable, and a symlink is
-  never followed, so sealing never changes anything outside the backup. A
-  run that exits 0 but deleted or replaced its directory keeps no backup.
+  directory. A run that exits 0 becomes a backup and its size is recorded;
+  its directory stays as the run left it (Rig changes no modes, and the
+  backups root is yours alone). A run that exits 0 but deleted or replaced
+  its directory keeps no backup.
 - **`keep`** (1 to 1000) is how many successful backups of the job each
   Target keeps. After each successful run only the newest `keep` stay, the
   one that just finished always among them. A failed run never deletes a
@@ -2016,10 +2014,13 @@ jobs:
   restore them; delete them by hand when you no longer want them. Rig copies
   nothing off the Mac; copy `<RIG_ROOT>/backups` elsewhere yourself
   if you need that.
-- Rig deletes only what it recorded. A deletion that fails (a busy disk) is
-  retried every 30 seconds, by this rigd or the next. A backup's directory is
-  read-only, so to delete one by hand, `chmod -R u+w` it first; `rig backup
-list` then shows it as missing.
+- Rig deletes only what it recorded, and never through a symlink: a deletion
+  never follows one inside a backup, and a backup reached through a symlinked
+  directory under `<RIG_ROOT>/backups` is neither written, read nor deleted
+  (a run of the job fails with `BACKUP_PATH` instead). A deletion that fails
+  (a busy disk, or a directory the job made unwritable) is retried every 30
+  seconds, by this rigd or the next. A backup deleted by hand shows as
+  missing in `rig backup list`.
 
 **Making a backup now.** `rig run db-backup` makes one exactly as the schedule
 does (in the stable Target unless you name another), and the dashboard's Jobs
@@ -2051,10 +2052,9 @@ another (`working`, `preview <branch>`):
 
 - It runs the same way `rig run` runs the job: from the Target's checkout, in
   its `working_dir`, with its `environment`, env files and references, under
-  the job's name in `rig logs`. `$RIG_BACKUP_DIR` is the chosen backup, made
-  read-only again first. The read-only part is a file-mode change, so it stops
-  accidental writes (a restore that writes next to the dump fails), but a
-  command running as you could `chmod` it back.
+  the job's name in `rig logs`. `$RIG_BACKUP_DIR` is the chosen backup.
+  Nothing stops the command writing into it, so a restore should only read
+  it.
 - It asks first, naming the backup and its size, unless you pass `--yes`.
   Without a terminal to ask on it is refused with that hint. `latest` is
   resolved before it asks, so what you confirm is what is restored.
@@ -2075,11 +2075,15 @@ another (`working`, `preview <branch>`):
 - A job without `restore` is refused with `BACKUP_NO_RESTORE`, a job without
   `backup` with `BACKUP_NOT_CONFIGURED`, an id that is not there with
   `BACKUP_UNKNOWN` (naming the ones there are), and a backup whose directory
-  was deleted with `BACKUP_MISSING`.
+  was deleted with `BACKUP_MISSING`. A run of the job that ended just before
+  is recorded first, so its retention runs before the backup is chosen: if
+  it let the chosen one go, the restore is refused with `BACKUP_EXPIRED`
+  rather than read a deleted backup.
 
 The dashboard's Jobs tab, on a Target or the Project, lists each backup job's
 backups with their times and sizes, and has **Back up now** and a **Restore**
-per backup that asks you to type the job's name.
+per backup that asks you to type the job's name. The dashboard's server checks
+what was typed, so nothing in a page can skip it.
 
 ### Databases and other local dependencies
 

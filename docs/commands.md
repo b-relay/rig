@@ -142,7 +142,8 @@ status` takes no Target.
   with `RESTORE_FAILED` unless it succeeded, and Ctrl-C stops only the wait.
   It is refused with `JOB_RUNNING` while a run or restore of the job goes,
   `BACKUP_NO_RESTORE` for a job without `restore`, `BACKUP_NOT_CONFIGURED`
-  for a job without `backup`, `BACKUP_UNKNOWN` for an id that is not kept, and
+  for a job without `backup`, `BACKUP_UNKNOWN` for an id that is not kept,
+  `BACKUP_EXPIRED` for one the retention of a run that just ended let go, and
   `BACKUP_MISSING` for a backup whose directory was deleted. It never stops
   Services.
 - `status` runs no health check for a Service with a `healthcheck`: it shows

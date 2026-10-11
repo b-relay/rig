@@ -36,8 +36,8 @@ test("a backup job keeps its newest successful backups under RIG_ROOT, drops fai
     await writeFile(join(f.repo, "api.ts"), API_SOURCE);
     // The dump names its own backup, and the API port shows the job's references resolve.
     const dump = `[ -f '${fail}' ] && exit 3; echo "$(basename "$RIG_BACKUP_DIR") api=\${services.api.port}" > "$RIG_BACKUP_DIR/db.dump"`;
-    // The restore copies the dump out, and says whether it could write into the backup.
-    const restore = `cp "$RIG_BACKUP_DIR/db.dump" '${restored}'; if touch "$RIG_BACKUP_DIR/scratch" 2>/dev/null; then echo backup-writable; else echo backup-read-only; fi`;
+    // The restore copies the dump out, and names the backup it read.
+    const restore = `cp "$RIG_BACKUP_DIR/db.dump" '${restored}'; echo "read $(basename "$RIG_BACKUP_DIR")"`;
     await writeFile(
       join(f.repo, "rig.yaml"),
       `name: melody
@@ -132,8 +132,7 @@ targets:
     );
     const logs = (await f.rig(["logs", "working", "--service", "db-backup"]))
       .stdout;
-    expect(logs).toContain("backup-read-only");
-    expect(logs).not.toContain("backup-writable");
+    expect(logs).toContain(`read ${kept[1]}`);
     const activity = (await f.rig(["activity"])).stdout;
     expect(activity).toMatch(/melody {2}working {2}restore {2}started/);
     expect(activity).toMatch(/melody {2}working {2}restore {2}succeeded/);

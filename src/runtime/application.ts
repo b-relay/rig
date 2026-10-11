@@ -127,6 +127,7 @@ import {
   settleJobRun,
   startJobRun,
   noRestore,
+  settlePreviousRun,
   stopJobRun,
   stopJobRuns,
 } from "./jobs";
@@ -198,7 +199,7 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Gives back the checkouts job runs of the Target `targetId` kept after a deploy, once nothing uses them, under the
    * Target's lease; drops those of a Target that is gone. Never rejects. */
   releaseJobCheckouts(targetId: string): Promise<void>;
-  /** Seals and measures any backup a rigd that stopped right after its run left unsealed, then deletes the backup
+  /** Measures any backup a rigd that stopped right after its run left without a size, then deletes the backup
    * directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview), forgetting each one
    * deleted. Never rejects. */
   tidyBackups(): Promise<void>;
@@ -1013,14 +1014,33 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             { job: job.name },
           );
         if (job.backup.restore === undefined) throw noRestore(job.name);
-        const backup = selectBackup(
-          await deps.store.read(),
-          target,
-          job.name,
-          command.backup ?? LATEST_BACKUP,
-        );
+        const which = command.backup ?? LATEST_BACKUP;
+        // An id that names no backup is a mistake in the request, refused before anything is done.
+        if (which !== LATEST_BACKUP)
+          selectBackup(await deps.store.read(), target, job.name, which);
         const storage = backupStorage(deps);
         attempted = true;
+        activityNote = `${job.name} from ${which}`;
+        // A run of the job that ended but is not recorded yet is settled first, under this Operation's hold on the Target,
+        // so its retention runs before the backup is chosen and can never delete the one chosen.
+        await settlePreviousRun(target, job.name, deps);
+        let backup;
+        try {
+          backup = selectBackup(
+            await deps.store.read(),
+            target,
+            job.name,
+            which,
+          );
+        } catch (error) {
+          if (which === LATEST_BACKUP) throw error;
+          throw new RigError(
+            "BACKUP_EXPIRED",
+            `Backup ${which} of ${job.name} on ${target.name} was just removed: the run of ${job.name} that ended before this restore kept a newer backup, and keep let this one go.`,
+            `Pick another backup (rig backup list ${job.name} shows them), then retry.`,
+            { job: job.name, backup: which },
+          );
+        }
         activityNote = `${job.name} from ${backup.id}`;
         if (!(await storage.exists(backup.path)))
           throw new RigError(
@@ -1029,8 +1049,6 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             `Restore another one (rig backup list ${job.name} shows them), or put the directory back.`,
             { job: job.name, backup: backup.id, path: backup.path },
           );
-        // Read-only again, should anything have opened it since it was kept.
-        await storage.seal(backup.path);
         const run = await startJobRun(
           target,
           job,
@@ -1771,7 +1789,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     status,
     restartUnhealthy,
     runScheduledJob,
-    // No Target is held: nothing reads a queued directory once it left the inventory, and sealing a kept one is idempotent.
+    // No Target is held: nothing reads a queued directory once it left the inventory, and measuring a kept one only reads it.
     tidyBackups: () => tidyBackups(deps),
     async releaseJobCheckouts(targetId) {
       const state = await deps.store.read();

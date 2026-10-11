@@ -681,9 +681,7 @@ export const runtimeStateSchema = z
           id: text.describe(
             "The backup's id: its run's start in UTC, such as 20261011T030000Z.",
           ),
-          path: absolutePath.describe(
-            "Its read-only directory under RIG_ROOT/backups.",
-          ),
+          path: absolutePath.describe("Its directory under RIG_ROOT/backups."),
           run: text.describe("The run that wrote it."),
           trigger: z
             .enum(["schedule", "manual"])
@@ -697,7 +695,7 @@ export const runtimeStateSchema = z
             .int()
             .nonnegative()
             .optional()
-            .describe("Its total size, once it was sealed."),
+            .describe("Its total size, once it was measured after its run."),
         }),
       )
       .optional()

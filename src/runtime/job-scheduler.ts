@@ -74,8 +74,8 @@ export interface JobSchedulerDependencies {
   releaseCheckouts(targetId: string): Promise<void>;
   /** Stops the Target's runs in progress when rig.yaml turns its role off. Never rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
-  /** Seals backups left unsealed and deletes the backup directories queued for deletion; absent where no job keeps
-   * backups. Never rejects. */
+  /** Measures backups left without a size and deletes the backup directories queued for deletion; absent where no job
+   * keeps backups. Never rejects. */
   tidyBackups?(): Promise<void>;
   diagnostic: RuntimeDependencies["diagnostic"];
 }
@@ -340,7 +340,7 @@ export function createJobScheduler(
       }
       for (const targetId of checkoutOffers.keys())
         if (!keeping.has(targetId)) checkoutOffers.delete(targetId);
-      // Backup directories queued for deletion, and backups left unsealed, are offered again until done, by this rigd or the next.
+      // Backup directories queued for deletion, and backups left without a size, are offered again until done, by this rigd or the next.
       if (
         deps.tidyBackups &&
         backupWorkPending(state) &&

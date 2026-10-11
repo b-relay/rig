@@ -223,7 +223,7 @@ export interface BackupRecord {
   trigger: "schedule" | "manual";
   startedAt: string;
   finishedAt: string;
-  /** Total bytes, recorded once the backup was sealed; absent until then. */
+  /** Total bytes, recorded once the backup was measured after its run; absent until then. */
   bytes?: number;
 }
 /** A backup directory Rig decided to delete (a failed run's, or one past `keep`), queued in the write that decided it. */

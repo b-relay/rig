@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createBackupStorage } from "../src/adapters/backup-storage";
 import { parseProjectConfig } from "../src/config";
@@ -21,11 +21,8 @@ import { localActivation } from "./support/activation-doubles";
 
 const roots: string[] = [];
 afterEach(async () => {
-  for (const root of roots.splice(0)) {
-    // Kept backups are read-only: their owner opens them before deleting, as Rig does.
-    await Bun.$`chmod -R u+w ${root}`.quiet().nothrow();
+  for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
-  }
 });
 
 async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
@@ -104,7 +101,7 @@ async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
             failRemovals--;
             throw new Error("disk busy");
           }
-          await real.remove(path);
+          return await real.remove(path);
         },
       };
       return {
@@ -229,14 +226,14 @@ test("each run of a backup job gets a fresh, empty 0700 directory as $RIG_BACKUP
   expect((await f.running())!.backup!.id).toBe("20261011T030002Z");
 });
 
-test("a successful run is kept, sealed read-only and measured; a failed, timed-out or stopped run leaves nothing", async () => {
+test("a successful run is kept and measured, its mode untouched; a failed, timed-out or stopped run leaves nothing", async () => {
   const f = await fixture();
   const kept = await f.backUp("0123456789");
   expect(await f.backups()).toMatchObject([
     { id: "20261011T030001Z", path: kept, bytes: 10, trigger: "manual" },
   ]);
-  expect(await mode(kept)).toBe(0o500);
-  expect((await mode(join(kept, "melody.dump"))) & 0o222).toBe(0);
+  // Nothing changes modes after the directory is made.
+  expect(await mode(kept)).toBe(0o700);
   // A failed exit deletes the run's own directory and no backup.
   await f.run();
   const failed = (await f.running())!.backup!.path;
@@ -328,13 +325,11 @@ test("a deletion that fails stays queued and is carried out by a later pass", as
   expect((await f.world.store.read()).backupRemovals).toBeUndefined();
 });
 
-test("a restore runs the job's restore command once in the job's environment, with the chosen backup read-only as $RIG_BACKUP_DIR", async () => {
+test("a restore runs the job's restore command once in the job's environment, with the chosen backup as $RIG_BACKUP_DIR", async () => {
   const f = await fixture();
   const older = await f.backUp("old");
   const newer = await f.backUp("new");
   const backupRun = f.starts.at(-1)!;
-  // Opened up since it was kept: the restore seals it again before it starts.
-  await Bun.$`chmod u+w ${older}`;
   const reply = await f.restore("20261011T030001Z", "restore-1");
   expect(reply).toMatchObject({
     outcome: "started",
@@ -351,7 +346,6 @@ test("a restore runs the job's restore command once in the job's environment, wi
   expect(start.cwd).toBe(backupRun.cwd);
   expect(start.key).toBe(backupRun.key);
   expect(start.incarnation).toBe("restore-1");
-  expect(await mode(older)).toBe(0o500);
   const run = (await f.running())!;
   expect(run).toMatchObject({
     trigger: "restore",
@@ -522,7 +516,7 @@ test("destroying a Preview deletes its backups; another Target's stay", async ()
   ]);
 });
 
-test("backup storage refuses any path outside RIG_ROOT/backups and never follows a symlink when it seals or deletes", async () => {
+test("backup storage refuses any path outside RIG_ROOT/backups and never follows a symlink inside a backup when it deletes", async () => {
   const f = await fixture();
   const storage = f.storage();
   await expect(storage.remove(f.world.repo)).rejects.toMatchObject({
@@ -531,32 +525,87 @@ test("backup storage refuses any path outside RIG_ROOT/backups and never follows
   await expect(
     storage.create(join(f.world.root, "backups", "..", "elsewhere")),
   ).rejects.toMatchObject({ code: "BACKUP_PATH" });
-  const outside = join(f.world.root, "precious.txt");
-  await writeFile(outside, "keep me");
-  const path = await f.backUp();
-  // A run that left a symlink to a file outside: sealing and deleting the backup leave the file alone.
-  await Bun.$`chmod u+w ${path} && ln -s ${outside} ${join(path, "link")}`;
-  await storage.seal(path);
-  expect((await stat(outside)).mode & 0o200).toBe(0o200);
-  await storage.remove(path);
+  const outsideFile = join(f.world.root, "precious.txt");
+  await writeFile(outsideFile, "keep me");
+  const outsideDirectory = join(f.world.root, "precious");
+  await mkdir(outsideDirectory);
+  await writeFile(join(outsideDirectory, "inside.txt"), "keep me too");
+  // A run that left symlinks to a file and to directories outside: deleting the backup removes the links only.
+  await f.run();
+  const path = (await f.running())!.backup!.path;
+  await symlink(outsideFile, join(path, "file-link"));
+  await symlink(outsideDirectory, join(path, "directory-link"));
+  await mkdir(join(path, "nested"));
+  await symlink(outsideDirectory, join(path, "nested", "deeper-link"));
+  await f.finish(0);
+  expect(await storage.remove(path)).toBe("removed");
   expect(await exists(path)).toBe(false);
-  expect(await Bun.file(outside).text()).toBe("keep me");
+  expect(await Bun.file(outsideFile).text()).toBe("keep me");
+  expect(await Bun.file(join(outsideDirectory, "inside.txt")).text()).toBe(
+    "keep me too",
+  );
   // Empty parents go with the last backup, up to the backup root itself.
   expect(await exists(join(f.world.root, "backups/melody"))).toBe(false);
   expect(await exists(join(f.world.root, "backups"))).toBe(true);
 });
 
-test("sealing leaves a hard-linked file writable, since the same file lives elsewhere", async () => {
+test("a symlinked directory between the backup root and a backup is never created through, read through, or deleted through", async () => {
   const f = await fixture();
-  const live = join(f.world.root, "live.db");
-  await writeFile(live, "live data");
+  const storage = f.storage();
+  const kept = await f.backUp();
+  // The job's directory is pointed outside the root, at a directory holding an entry of the same name.
+  const outside = join(f.world.root, "outside");
+  const jobDirectory = join(f.world.root, "backups/melody/working/db-backup");
+  await mkdir(join(outside, "20261011T030001Z"), { recursive: true });
+  await writeFile(join(outside, "20261011T030001Z", "data"), "not Rig's");
+  await rm(jobDirectory, { recursive: true });
+  await symlink(outside, jobDirectory);
+  const untouched = async () => {
+    expect(await readdir(outside)).toEqual(["20261011T030001Z"]);
+    expect(
+      await Bun.file(join(outside, "20261011T030001Z", "data")).text(),
+    ).toBe("not Rig's");
+  };
+  expect(await storage.exists(kept)).toBe(false);
+  expect(await storage.measure(kept)).toBeUndefined();
+  expect(await storage.remove(kept)).toBe("skipped");
+  await untouched();
+  await expect(
+    storage.create(join(jobDirectory, "20261011T040000Z")),
+  ).rejects.toMatchObject({ code: "BACKUP_PATH" });
+  await untouched();
+  // A run of the job fails to start rather than write through the symlink, and the list shows the backup missing.
+  f.world.clock.ms += 1000;
+  await expect(f.run()).rejects.toMatchObject({ code: "BACKUP_PATH" });
+  await untouched();
+  const listed = (await f.runtime.command({
+    action: "backups",
+    repoPath: f.world.repo,
+  })) as { backups: { missing?: true }[] };
+  expect(listed.backups).toEqual([expect.objectContaining({ missing: true })]);
+  // Queued for deletion, it is forgotten without anything outside being deleted.
+  await f.world.store.update((state) => {
+    state.backups = [];
+    state.backupRemovals = [
+      { target: f.target.id, project: state.projects[0]!.id, path: kept },
+    ];
+  });
+  await f.runtime.tidyBackups();
+  expect((await f.world.store.read()).backupRemovals).toBeUndefined();
+  await untouched();
+});
+
+test("a FIFO in a backup is measured and deleted without being opened", async () => {
+  const f = await fixture({ keep: 1 });
   await f.run();
-  const path = (await f.running())!.backup!.path;
-  await Bun.$`ln ${live} ${join(path, "live.db")}`;
-  await writeFile(join(path, "own.dump"), "dump");
+  const first = (await f.running())!.backup!.path;
+  await Bun.$`mkfifo ${join(first, "pipe")}`;
+  await writeFile(join(first, "dump"), "12345");
   await f.finish(0);
-  expect((await mode(live)) & 0o200).toBe(0o200);
-  expect((await mode(join(path, "own.dump"))) & 0o222).toBe(0);
+  expect((await f.backups())[0]!.bytes).toBeGreaterThanOrEqual(5);
+  // The next backup evicts it; deleting it never opens the FIFO either.
+  await f.backUp();
+  expect(await exists(first)).toBe(false);
 });
 
 test("a run that exits 0 but removed its directory keeps no backup and evicts none", async () => {
@@ -577,17 +626,43 @@ test("a run that exits 0 but removed its directory keeps no backup and evicts no
   );
 });
 
-test("a backup a stopped rigd left unsealed is sealed and measured by the next tidy", async () => {
+test("a backup a stopped rigd left without a size is measured by the next tidy", async () => {
   const f = await fixture();
-  const path = await f.backUp("abc");
-  // As a rigd that stopped between recording the end and sealing would leave it.
-  await Bun.$`chmod u+w ${path}`;
+  await f.backUp("abc");
+  // As a rigd that stopped between recording the end and measuring would leave it.
   await f.world.store.update((state) => {
     delete state.backups![0]!.bytes;
   });
   await f.runtime.tidyBackups();
-  expect(await mode(path)).toBe(0o500);
   expect((await f.backups())[0]!.bytes).toBe(3);
+});
+
+test("a restore settles the run that ended before it chooses, so retention never deletes the backup it chose", async () => {
+  const f = await fixture({ keep: 1 });
+  const older = await f.backUp("old");
+  // The next run has exited, but nothing has recorded its end yet.
+  f.world.clock.ms += 1000;
+  await f.run();
+  const pending = (await f.running())!;
+  f.processes.set(`${f.target.id}:job:db-backup`, {
+    state: "stopped",
+    exitCode: 0,
+    incarnation: pending.id,
+  });
+  const starts = f.starts.length;
+  // Restoring the older backup by its id: settling that run keeps its backup, and keep: 1 lets the older one go.
+  await expect(f.restore("20261011T030001Z")).rejects.toMatchObject({
+    code: "BACKUP_EXPIRED",
+  });
+  expect(f.starts.length).toBe(starts);
+  expect(await exists(older)).toBe(false);
+  expect((await f.backups()).map((b) => b.path)).toEqual([
+    pending.backup!.path,
+  ]);
+  // latest now means the backup that run kept, which the restore reads, still there.
+  await f.restore("latest");
+  expect((await f.running())!.restore!.path).toBe(pending.backup!.path);
+  expect(await exists(pending.backup!.path)).toBe(true);
 });
 
 test("forgetting a Project keeps its backups on disk, drops their records, and says where they are", async () => {

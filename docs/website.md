@@ -102,7 +102,9 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   place and lists its backups (from the `backups` read) with time, size and
   whether the schedule or `rig run` made each; **Restore** on a backup asks for
   the job's name to be typed, then sends what `rig backup restore` sends
-  (`action: "restore"` with `job` and `backup`). It is offered only for a job
+  (`action: "restore"` with `job` and `backup`) through a server action of its
+  own, `runRestore`, which checks what was typed on the server; the generic
+  command action refuses `restore`. It is offered only for a job
   with a `restore` command, while no run of it goes, for a backup still on disk.
 - **Activity**: Operations as a timeline grouped by local day, newest first,
   each linking to its own record (`?operation=<id>`).

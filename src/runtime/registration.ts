@@ -95,7 +95,7 @@ export async function forgetProject(
       ),
     ...[...kept].map(
       (directory) =>
-        `Its backups in ${directory} were kept on disk; Rig no longer lists them. They are read-only: chmod -R u+w before deleting them.`,
+        `Its backups in ${directory} were kept on disk; Rig no longer lists them.`,
     ),
   ];
 }

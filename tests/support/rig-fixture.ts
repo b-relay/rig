@@ -96,8 +96,6 @@ export async function rigFixture(
         base,
       ).catch(() => {});
     await rigd(["uninstall"]).catch(() => {});
-    // Kept backups are read-only (ADR 0017); their owner opens them before deleting, as Rig does.
-    await Bun.$`chmod -R u+w ${join(root, "backups")}`.quiet().nothrow();
     await rm(base, { recursive: true, force: true });
   };
   return {

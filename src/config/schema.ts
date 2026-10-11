@@ -412,12 +412,12 @@ const jobFields = {
       restore: command
         .optional()
         .describe(
-          `Shell command rig backup restore <job> <backup> runs once to put a backup back, such as pg_restore --clean --if-exists -d app "$RIG_BACKUP_DIR/app.dump". It runs as a run of this job: the same Target checkout, working_dir, environment, env_file and references as command, never beside a run of the job, and with $RIG_BACKUP_DIR set to the chosen backup, which is read-only. Rig does not stop the Target's Services around it, so the command must replace what it restores itself (pg_restore --clean, say). Default: none, and restore is refused. ${referencesIn("job")}`,
+          `Shell command rig backup restore <job> <backup> runs once to put a backup back, such as pg_restore --clean --if-exists -d app "$RIG_BACKUP_DIR/app.dump". It runs as a run of this job: the same Target checkout, working_dir, environment, env_file and references as command, never beside a run of the job, and with $RIG_BACKUP_DIR set to the chosen backup. Rig does not stop the Target's Services around it, so the command must replace what it restores itself (pg_restore --clean, say). Default: none, and restore is refused. ${referencesIn("job")}`,
         ),
     })
     .optional()
     .describe(
-      'Makes this job a backup job (a scheduled job with retention): every run, scheduled or rig run, gets a fresh, empty directory <RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>/ (mode 0700) as $RIG_BACKUP_DIR, and command writes the backup into it, such as pg_dump -Fc -f "$RIG_BACKUP_DIR/app.dump". A run that fails, times out or is stopped has its directory deleted; a successful one is kept, made read-only, and shown by rig backup list, rig status and the dashboard. Rig never needs to know what it backs up. Backups stay on this Mac, outside the Target\'s data and checkout, so deploys and rig down/up keep them; destroying a Preview deletes its backups.',
+      'Makes this job a backup job (a scheduled job with retention): every run, scheduled or rig run, gets a fresh, empty directory <RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>/ (mode 0700) as $RIG_BACKUP_DIR, and command writes the backup into it, such as pg_dump -Fc -f "$RIG_BACKUP_DIR/app.dump". A run that fails, times out or is stopped has its directory deleted; a successful one is kept and shown by rig backup list, rig status and the dashboard. Rig never needs to know what it backs up. Backups stay on this Mac, outside the Target\'s data and checkout, so deploys and rig down/up keep them; destroying a Preview deletes its backups.',
     ),
 };
 const job = z.strictObject(jobFields);

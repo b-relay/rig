@@ -524,7 +524,7 @@ function addBackupCommands(
   backup
     .command("restore")
     .description(
-      "Put a backup back: runs the job's backup.restore command once, as a run of the job (same checkout, environment and env files), with $RIG_BACKUP_DIR set to the backup, read-only. In the stable Target unless you name working or a preview. Asks first unless --yes, then waits for it to end. Refused while the job or another restore of it runs. Rig does not stop the Target's Services: the restore command replaces what it restores itself (pg_restore --clean, say).",
+      "Put a backup back: runs the job's backup.restore command once, as a run of the job (same checkout, environment and env files), with $RIG_BACKUP_DIR set to the backup. In the stable Target unless you name working or a preview. Asks first unless --yes, then waits for it to end. Refused while the job or another restore of it runs. Rig does not stop the Target's Services: the restore command replaces what it restores itself (pg_restore --clean, say).",
     )
     .argument("<job>", "Backup job name under jobs in rig.yaml", nonEmpty)
     .argument(

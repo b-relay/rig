@@ -13,6 +13,7 @@ import { when } from "@/lib/present";
 import type { JobReport, TargetReport } from "@/lib/types";
 import { Failure } from "./bits";
 import { useRun } from "./operations";
+import { runRestore } from "@/server/actions";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,7 +30,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 /** Puts one backup back, as `rig backup restore <job> <id> <target> --yes` does, once the job's name is typed: the job's
- * restore command runs as a run of the job, with the backup read-only as $RIG_BACKUP_DIR. Rig does not stop the
+ * restore command runs as a run of the job, with the backup as $RIG_BACKUP_DIR. Rig does not stop the
  * Target's Services. rigd refuses it while a run or restore of the job goes; the refusal shows beneath the button. */
 export function RestoreBackupButton({
   project,
@@ -97,6 +98,8 @@ export function RestoreBackupButton({
               onClick={() =>
                 void act.run(
                   restoreCommand(project, target, job.name, backup.id),
+                  // What was typed goes along: the server checks it again, so no script can skip this dialog.
+                  (command) => runRestore({ command, typed }),
                 )
               }
             >

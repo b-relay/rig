@@ -57,12 +57,17 @@ async function reconcile(
     failure: { ...transport, operationId: command.operationId },
   };
 }
+/** A server action that sends one command, with its Operation id, to rigd. */
+export type SendCommand = (
+  command: RuntimeCommand & { operationId: string },
+) => Promise<Outcome<unknown>>;
 export interface Run<T> {
   busy: boolean;
   failure?: Failure;
   result?: T;
-  /** Sends one command with a fresh Operation id; answers the reply, or `undefined` after a shown failure. */
-  run(command: RuntimeCommand): Promise<T | undefined>;
+  /** Sends one command with a fresh Operation id; answers the reply, or `undefined` after a shown failure. `send` replaces
+   * the generic command action for a command with its own (a restore, which carries its typed confirmation). */
+  run(command: RuntimeCommand, send?: SendCommand): Promise<T | undefined>;
   clear(): void;
 }
 /** One user-started command at a time. Its refusal is kept for display, never thrown; a lost
@@ -81,7 +86,7 @@ export function useRun<T = OperationResult>(
   });
   const latest = useRef(0);
   const run = useCallback(
-    async (command: RuntimeCommand) => {
+    async (command: RuntimeCommand, send: SendCommand = runCommand) => {
       const turn = ++latest.current;
       const sent = {
         ...command,
@@ -92,7 +97,7 @@ export function useRun<T = OperationResult>(
       notify();
       let outcome: Outcome<unknown>;
       try {
-        outcome = await runCommand(sent);
+        outcome = await send(sent);
       } catch (error) {
         outcome = await reconcile(sent, error);
       } finally {

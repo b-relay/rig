@@ -126,20 +126,21 @@ export interface BackupScope {
   job: string;
 }
 /** Where backups live on the Mac (ADR 0017). Every path must be one `location` gave; anything outside the backup root fails
- * BACKUP_PATH untouched. Symlinks inside a backup are never followed. */
+ * BACKUP_PATH untouched, and so does any path below a symlinked or non-directory component between the root and it.
+ * Nothing inside a backup is opened or followed, and no mode is changed after a directory is made. */
 export interface BackupStorage {
   /** Pure: the directory of the backup `id` of `scope`; not created. */
   location(scope: BackupScope, id: string): string;
-  /** Creates `path` fresh and empty, mode 0700, with its parents; fails BACKUP_DIRECTORY when it exists or cannot be made. */
+  /** Creates `path` fresh and empty, mode 0700, with its parents; fails BACKUP_DIRECTORY when it exists or cannot be made,
+   * BACKUP_PATH when a directory on the way is a symlink. */
   create(path: string): Promise<void>;
-  /** Whether `path` is a directory now. */
+  /** Whether `path` is a real directory now, reached through real directories only. */
   exists(path: string): Promise<boolean>;
-  /** Makes a backup read-only: its directories 0500, its files without write bits. Idempotent. */
-  seal(path: string): Promise<void>;
-  /** Total bytes under `path`, symlinks counted by their own size; undefined when it is gone. */
+  /** Total bytes under `path`, every entry by its own lstat size; undefined when it is gone or not reachable safely. */
   measure(path: string): Promise<number | undefined>;
-  /** Deletes `path` (making it writable first) and its empty parents up to the backup root; one already gone is done. */
-  remove(path: string): Promise<void>;
+  /** Deletes `path` without following any symlink, and its empty parents up to the backup root: `removed`, also when it was
+   * already gone; `skipped`, touching nothing, when a directory on the way is a symlink. Fails BACKUP_REMOVE. */
+  remove(path: string): Promise<"removed" | "skipped">;
 }
 /** Bounded evidence of a background channel that is failing inside the daemon. */
 export interface RuntimeNotice {

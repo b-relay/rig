@@ -268,7 +268,7 @@ export interface JobRunRequest {
   trigger: JobRun["trigger"];
   /** The scheduled time a scheduled run is for (Unix milliseconds). */
   scheduledFor?: number;
-  /** For a restore (`trigger: "restore"`): the backup its `restore` command reads, sealed read-only by the caller. */
+  /** For a restore (`trigger: "restore"`): the backup its `restore` command reads. */
   restore?: { id: string; path: string };
 }
 
@@ -285,20 +285,7 @@ export async function startJobRun(
   request: JobRunRequest,
   deps: JobRunDependencies,
 ): Promise<JobRun> {
-  const state = await deps.store.read();
-  const recorded = findJobRecord(state, target.id, job.name)?.running;
-  if (recorded) {
-    const settled = await settleJobRun(target, job.name, recorded.id, deps);
-    if (settled === "running" || settled === "unknown")
-      throw new RigError(
-        "JOB_RUNNING",
-        recorded.trigger === "restore"
-          ? `A restore of ${job.name} is still running on ${target.name} (started ${recorded.startedAt}).`
-          : `${job.name} is still running on ${target.name} (started ${recorded.startedAt}).`,
-        `Wait for it to finish (rig status shows it), or stop it with rig down. Runs of one job, restores included, never overlap.`,
-        { job: job.name, run: recorded.id, startedAt: recorded.startedAt },
-      );
-  }
+  await settlePreviousRun(target, job.name, deps);
   const startedAt = deps.now();
   const restoreCommand = job.backup?.restore;
   if (request.restore && restoreCommand === undefined)
@@ -378,6 +365,34 @@ export async function startJobRun(
     throw error;
   }
   return run;
+}
+/** Settles the run of `job` recorded in progress, if its process is gone (recording its end, so a backup run's retention
+ * is applied now), or refuses with JOB_RUNNING while it still goes. The caller holds the Target, so nothing else settles or
+ * starts a run of the job until it lets go: a restore calls it before it chooses a backup, so retention never deletes the
+ * backup it chose. */
+export async function settlePreviousRun(
+  target: TargetRecord,
+  job: string,
+  deps: EndDependencies & {
+    lifecycle: Pick<TargetLifecycle, "observeJob">;
+  },
+): Promise<void> {
+  const recorded = findJobRecord(
+    await deps.store.read(),
+    target.id,
+    job,
+  )?.running;
+  if (!recorded) return;
+  const settled = await settleJobRun(target, job, recorded.id, deps);
+  if (settled === "running" || settled === "unknown")
+    throw new RigError(
+      "JOB_RUNNING",
+      recorded.trigger === "restore"
+        ? `A restore of ${job} is still running on ${target.name} (started ${recorded.startedAt}).`
+        : `${job} is still running on ${target.name} (started ${recorded.startedAt}).`,
+      `Wait for it to finish (rig status shows it), or stop it with rig down. Runs of one job, restores included, never overlap.`,
+      { job, run: recorded.id, startedAt: recorded.startedAt },
+    );
 }
 /** The refusal of a restore for a job without a `restore` command. */
 export function noRestore(job: string): RigError {

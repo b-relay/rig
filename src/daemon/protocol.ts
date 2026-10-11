@@ -231,9 +231,7 @@ export const backupReportSchema = z
       .describe(
         "The backup's id: its run's start in UTC, such as 20261011T030000Z.",
       ),
-    path: z
-      .string()
-      .describe("Its read-only directory under RIG_ROOT/backups."),
+    path: z.string().describe("Its directory under RIG_ROOT/backups."),
     run: z
       .string()
       .describe("The run that wrote it, as rig activity names it."),
@@ -246,7 +244,7 @@ export const backupReportSchema = z
       .number()
       .int()
       .optional()
-      .describe("Its size in bytes; absent until it was sealed."),
+      .describe("Its size in bytes; absent until it was measured."),
     missing: z
       .literal(true)
       .optional()

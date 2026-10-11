@@ -21,20 +21,20 @@ import { cn } from "@/lib/utils";
 export const CARD = "rounded-xl border bg-card text-card-foreground shadow-xs";
 /** A small heading over a group, as the sidebar and the matrix corner name theirs. */
 export const EYEBROW =
-  "text-[11px] font-medium tracking-wider text-muted-foreground uppercase";
+  "text-[11px] font-medium tracking-wider text-idle uppercase";
 /** Each health as a dot. */
 export const HEALTH_DOT: Record<Health, string> = {
   green: "bg-good",
   orange: "bg-warn",
   red: "bg-bad",
-  gray: "bg-muted-foreground/40",
+  gray: "bg-idle",
 };
 /** Each health as a tinted tile and the text on it. */
 export const HEALTH_TILE: Record<Health, string> = {
   green: "bg-good-fill text-good",
   orange: "bg-warn-fill text-warn",
   red: "bg-bad-fill text-bad",
-  gray: "bg-muted text-muted-foreground",
+  gray: "bg-muted text-idle",
 };
 
 /** A refusal or transport failure, with rigd's code and hint when it gave them. */
@@ -132,9 +132,7 @@ export function Dot({
       title={value}
       className={cn(
         "inline-block size-2 shrink-0 rounded-full",
-        value === "configured"
-          ? "border border-muted-foreground/60"
-          : HEALTH_DOT[health],
+        value === "configured" ? "border border-idle" : HEALTH_DOT[health],
         toneOf(value) === "busy" && "busy-dot",
         className,
       )}

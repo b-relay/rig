@@ -67,7 +67,7 @@ export function ServiceCards({
                 />
                 {component.state}
               </span>
-              {summary ? <span className="opacity-80">{summary}</span> : null}
+              {summary ? <span>{summary}</span> : null}
             </div>
             <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 px-1 text-xs">
               <dt className="text-muted-foreground">PID</dt>

@@ -84,10 +84,15 @@
   /* Links in running text: the ramp's deep blue on light, its pale blue on dark. */
   --link: light-dark(oklch(0.5 0.134 242.749), oklch(0.828 0.111 230.318));
 
-  /* State: fine, needs a look, broken; each with a tint for tiles. `busy` marks rigd at work. */
-  --good: light-dark(#1a7f4b, #4ccb7f);
-  --warn: light-dark(#b25e09, #f0a848);
-  --bad: light-dark(#c8302e, #ff7a76);
+  /* State: fine, needs a look, broken; each with a tint for tiles. `busy` marks rigd at work.
+     Every ink reads at 4.5:1 or more on its own tint, the card and the page, in both schemes
+     (tests/dashboard-contrast.test.ts); the light inks are a step darker than the earlier
+     palette's for that. `idle` is the quiet grey for words and dots on tinted surfaces (tiles,
+     the sidebar, the tab row), where muted-foreground falls short of 4.5:1. */
+  --idle: light-dark(oklch(0.5 0.02 214), oklch(0.723 0.014 214.4));
+  --good: light-dark(#176e41, #4ccb7f);
+  --warn: light-dark(#9a520a, #f0a848);
+  --bad: light-dark(#b32a28, #ff7a76);
   --busy: var(--link);
   --good-fill: light-dark(#e6f4ec, #14301f);
   --warn-fill: light-dark(#fdf0dc, #33260f);
@@ -131,6 +136,7 @@
   --color-sidebar-ring: var(--sidebar-ring);
   --color-link: var(--link);
   --color-good: var(--good);
+  --color-idle: var(--idle);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
   --color-busy: var(--busy);

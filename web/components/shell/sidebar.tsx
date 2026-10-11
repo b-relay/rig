@@ -13,7 +13,7 @@ import { SECTIONS } from "./sections";
 import { cn } from "@/lib/utils";
 
 const ITEM =
-  "flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm text-muted-foreground no-underline transition-colors hover:bg-sidebar-accent hover:text-foreground";
+  "flex h-8 items-center gap-2.5 rounded-lg px-2 text-sm text-idle no-underline transition-colors hover:bg-sidebar-accent hover:text-foreground";
 const ACTIVE =
   "bg-card font-medium text-foreground shadow-xs ring-1 ring-border hover:bg-card";
 
@@ -45,7 +45,7 @@ export function Sidebar({ sandbox }: { sandbox: boolean }) {
           <span className={EYEBROW}>Projects</span>
           <Link
             href="/projects/new"
-            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+            className="inline-flex size-6 items-center justify-center rounded-md text-idle hover:bg-sidebar-accent hover:text-foreground"
             title="Add Project"
             aria-label="Add Project"
           >
@@ -91,7 +91,7 @@ async function ProjectTree() {
     );
   if (list.value.projects.length === 0)
     return (
-      <p className="px-2 text-xs text-muted-foreground">
+      <p className="px-2 text-xs text-idle">
         None yet. <Link href="/projects/new">Add one</Link>.
       </p>
     );

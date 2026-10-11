@@ -91,7 +91,7 @@ export default async function TargetLayout({
                     {report.route}
                   </a>
                 ) : (
-                  <span className="opacity-70">
+                  <span>
                     {report.kind === "working" ? "loopback only" : "no domain"}
                   </span>
                 )}

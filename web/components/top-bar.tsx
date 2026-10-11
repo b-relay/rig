@@ -89,7 +89,7 @@ function DaemonMark({
           state === "up" && "bg-good",
           state === "busy" && "busy-dot bg-busy",
           state === "down" && "bg-bad",
-          state === "probing" && "bg-muted-foreground/40",
+          state === "probing" && "bg-idle",
         )}
       />
       <span className="hidden md:inline">

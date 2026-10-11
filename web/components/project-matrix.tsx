@@ -272,7 +272,7 @@ function TargetCard({
               {target.route}
             </a>
           ) : (
-            <span className="opacity-60">
+            <span>
               {target.kind === "working" ? "loopback only" : "no domain"}
             </span>
           )}
@@ -317,7 +317,7 @@ function Cell({
         className={cn(
           COLUMN,
           ROW_HEIGHT,
-          "flex snap-start items-center rounded-lg border border-dashed px-3 text-xs text-muted-foreground/60",
+          "flex snap-start items-center rounded-lg border border-dashed px-3 text-xs text-muted-foreground",
         )}
       >
         <span aria-hidden>—</span>
@@ -348,7 +348,7 @@ function Cell({
         <span className="truncate">{tile.word}</span>
       </span>
       {tile.detail ? (
-        <span className="shrink-0 font-mono text-[11px] tabular-nums opacity-80">
+        <span className="shrink-0 font-mono text-[11px] tabular-nums">
           {tile.detail}
         </span>
       ) : null}

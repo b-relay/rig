@@ -90,7 +90,7 @@ function SectionTabs({
                 href={href}
                 aria-current={current ? "page" : undefined}
                 className={cn(
-                  "flex h-8 items-center rounded-lg px-3 text-sm font-medium whitespace-nowrap text-muted-foreground no-underline transition-colors hover:text-foreground",
+                  "flex h-8 items-center rounded-lg px-3 text-sm font-medium whitespace-nowrap text-idle no-underline transition-colors hover:text-foreground",
                   current && "bg-card text-foreground shadow-xs",
                 )}
               >

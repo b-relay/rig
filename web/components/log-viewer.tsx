@@ -413,7 +413,7 @@ export function LogViewer({
           aria-hidden
           className={cn(
             "size-1.5 rounded-full",
-            follow ? "busy-dot bg-good" : "bg-muted-foreground/40",
+            follow ? "busy-dot bg-good" : "bg-idle",
           )}
         />
         {follow ? "Following" : "Paused"}

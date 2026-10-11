@@ -60,12 +60,12 @@ export function DoctorTiles({ report }: { report: DoctorReport }) {
               <span className="min-w-0 break-words">{check.name}</span>
               <span className="sr-only">{check.ok ? "ok" : "failed"}</span>
             </p>
-            <p className="text-foreground/85">{check.message}</p>
+            <p className="text-foreground">{check.message}</p>
             {check.reason ? (
-              <p className="text-xs text-foreground/70">{check.reason}</p>
+              <p className="text-xs text-foreground">{check.reason}</p>
             ) : null}
             {check.hint ? (
-              <p className="text-xs text-foreground/70">{check.hint}</p>
+              <p className="text-xs text-foreground">{check.hint}</p>
             ) : null}
           </li>
         ))}

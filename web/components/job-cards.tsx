@@ -71,7 +71,7 @@ export function JobCards({
                   {tile.absent ? "unknown" : tile.word}
                 </span>
                 {job.state !== "running" && job.last ? (
-                  <span className="opacity-80" title={when(job.last.startedAt)}>
+                  <span title={when(job.last.startedAt)}>
                     {ago(job.last.startedAt, now)}
                     {job.last.durationMs !== undefined
                       ? `, ${formatDuration(job.last.durationMs)}`
@@ -80,7 +80,7 @@ export function JobCards({
                 ) : null}
               </span>
               {job.state !== "running" && job.last?.summary ? (
-                <span className="opacity-80">{job.last.summary}</span>
+                <span>{job.last.summary}</span>
               ) : null}
             </div>
             <p className="px-1 text-xs text-muted-foreground">

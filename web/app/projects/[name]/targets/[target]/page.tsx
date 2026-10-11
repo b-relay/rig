@@ -6,10 +6,10 @@ import { deploymentRows, formatDuration } from "@/lib/deployments";
 import { ago, when } from "@/lib/present";
 import { routeLines } from "@/lib/target-detail";
 import { deploymentHistory } from "@/server/deployments";
-import { targetHref } from "@/lib/target";
+import { targetHostnames, targetHref } from "@/lib/target";
 import { target } from "@/server/target";
 
-/** A Target at a glance: its Services, the paths its hostname serves, and what it runs from. */
+/** A Target at a glance: its Services, the paths each of its hostnames serves, and what it runs from. */
 export default async function TargetOverviewPage({
   params,
 }: {
@@ -17,6 +17,7 @@ export default async function TargetOverviewPage({
 }) {
   const { project, target: report } = await target(params);
   const routes = routeLines(report);
+  const hostnames = targetHostnames(report);
   // The deploy that put the running Commit in place, when rigd recorded it.
   const history =
     report.kind === "working"
@@ -50,8 +51,8 @@ export default async function TargetOverviewPage({
         <Panel
           title="Routes"
           description={
-            report.route
-              ? "The paths Caddy serves under this Target's hostname."
+            hostnames.length
+              ? "The paths Caddy serves under each of this Target's hostnames."
               : "This Target has no hostname."
           }
           flush
@@ -60,7 +61,7 @@ export default async function TargetOverviewPage({
             <ul className="divide-y text-sm">
               {routes.map((route) => (
                 <li
-                  key={route.prefix}
+                  key={route.url}
                   className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5"
                 >
                   <a
@@ -88,7 +89,7 @@ export default async function TargetOverviewPage({
             </ul>
           ) : (
             <p className="px-4 py-3 text-sm text-muted-foreground">
-              {report.route
+              {hostnames.length
                 ? "No Service is routed yet."
                 : report.kind === "working"
                   ? "The working Target is reached on its loopback ports."

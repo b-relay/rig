@@ -1158,7 +1158,10 @@ stop_timeout.` (or `Killed by --kill (SIGKILL)`) until it starts again, and the
 operation's Activity record says the same, so you can tell the grace was too
 short. A deployed Target's line shows the
 Branch and the short Commit it serves (`stable  healthy  main@abc1234`); the
-working Target shows `working copy` there instead. Recorded routes stay
+working Target shows `working copy` there instead. Each hostname is shown
+beside the Service its `/` reaches (`api  healthy  :4200  api.melody.b-relay.com`),
+and `rig status --json` lists them all in a Target's `hostnames`, its domain
+first, then each Service domain. Recorded routes stay
 visible when stopped, and show `unpublished` when no Host Caddyfile loads Rig's
 route file (see Setup). Doctor owns current-config drift and failed checks; it
 does not repair or deploy configuration implicitly.
@@ -1213,7 +1216,7 @@ Project config is committed and owns portable Project intent:
 - Production branch
 - Target names
 - Services and Tools: commands, ports, healthchecks, builds, environment
-- the hostname and the `proxy` routes
+- the hostname and the `proxy` routes, and each Service's own hostname
 
 Host config (`<RIG_ROOT>/config.yaml`, every key optional) owns machine
 capability:
@@ -1474,6 +1477,41 @@ Branch name, give the Preview a shorter `--deployment` name, or set
 `${rig.target}.preview.example.com`. The working Target has no route
 unless `targets.working.domain` is set. A Target with no resolved hostname
 gets no route. A Tool-only Project needs neither a hostname nor a `proxy`.
+
+A Service may also serve a hostname of its own with `domain` under the
+Service ([ADR 0015](adr/0015-service-domains.md)). Every path of that
+hostname reaches the Service's only port; a Service with several ports names
+one with `domain: { host: <hostname>, port: <port name> }`:
+
+```yaml
+domain: melody.b-relay.com
+proxy: { /: web }
+services:
+  web:
+    command: ./web --port ${port}
+    ports: { http: auto }
+  api:
+    command: ./api --port ${ports.http} --admin-port ${ports.admin}
+    ports: { http: auto, admin: auto }
+    domain: { host: api.melody.b-relay.com, port: http }
+targets: { working: true, stable: true, preview: true }
+```
+
+A Service domain follows the same rules as `domain`: one hostname,
+`${rig.target}` its only reference, the same per-Target rule. The stable
+Target serves it as written, a Preview the flat form
+(`api-feat-x-1a2b3c4d.melody.b-relay.com`), and the working Target only what
+`targets.working.services.api.domain` sets. A role patch's
+`services.<name>.domain` replaces it for that role; `{ host: ... }` in a patch
+keeps the inherited `port`, and a plain hostname drops it. A Service domain
+needs neither `proxy` nor a Project `domain`, and it does not change the
+default `/` rule above. Every hostname of one Target must differ, the Project
+domain included; a repeat is refused when rig.yaml is read, or, when it only
+appears once `${rig.target}` is replaced, when the Target is planned
+(`duplicate_hostname`). All the hostnames of a Target are published and
+withdrawn together, and while a Service is being started every path of its
+own hostname answers `503` as its `proxy` paths do. `rig status`, `rig doctor`
+and the dashboard list every hostname.
 
 The Production branch is `production_branch`, else the Host config's
 `deploy.production_branch`, else `main`.

@@ -74,6 +74,7 @@ import {
 } from "./targets";
 import { sameConfigDigest } from "../config/config-digest";
 import { assertLogServices } from "./log-services";
+import { plannedSites } from "./ports";
 import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
 import {
   assertSourceBuildsKnown,
@@ -1053,6 +1054,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           warnings,
           retired: replaced.retired,
           ...(target.plan.domain ? { route: target.plan.domain } : {}),
+          ...(plannedSites(target.plan).length
+            ? {
+                hostnames: plannedSites(target.plan).map(
+                  (site) => site.hostname,
+                ),
+              }
+            : {}),
           ...previous,
         });
       }

@@ -28,11 +28,18 @@ import {
   type ResolvedText,
 } from "./references";
 import { planWorkingDir } from "./working-dir";
+import {
+  roleHostname,
+  roleServiceDomains,
+  serviceDomainPort,
+  type RoleHostname,
+} from "./hostnames";
 import type {
   BuildUnit,
   EnvFileRef,
   ManagedComponent,
   PlanRoute,
+  PlanServiceDomain,
   ProjectConfig,
   PlanComponent,
   PlanJob,
@@ -88,39 +95,43 @@ export function resolveTargetPlan(
   const deploymentName =
     input.deploymentName ??
     (role === "preview" ? slug(input.branch ?? "preview") : role);
-  const patched = rolePatch(config, role).domain !== undefined;
-  const domain =
-    role === "stable" || patched
-      ? settings.domain
-      : role === "preview" && config.domain
-        ? previewDomain(config.domain)
-        : undefined;
-  const resolvedDomain = domain?.replaceAll("${rig.target}", deploymentName);
-  const longLabel = resolvedDomain
-    ?.split(".")
-    .find((label) => label.length > MAX_LABEL_LENGTH);
-  if (longLabel !== undefined)
-    throw new ConfigError(
-      `Hostname '${resolvedDomain}' has a ${longLabel.length}-character label, '${longLabel}'; DNS allows ${MAX_LABEL_LENGTH}.`,
-      "hostname_label_too_long",
-      {
-        domain: resolvedDomain,
-        label: longLabel,
-        path: patched ? `targets.${role}.domain` : "domain",
-      },
-      role === "preview" && !patched
-        ? "A Preview's default hostname puts its name inside the first label of domain. Deploy from a shorter Branch name, give the Preview a shorter --deployment name, or set targets.preview.domain to a pattern such as ${rig.target}.preview.example.com."
-        : `Shorten that label in ${patched ? `targets.${role}.domain` : "domain"}, or deploy from a shorter Branch name when the label holds \${rig.target}.`,
-    );
-  if (resolvedDomain !== undefined && !validHostname(resolvedDomain))
-    throw new ConfigError(
-      `Domain '${resolvedDomain}' is not a hostname.`,
-      "invalid_domain",
-      { domain: resolvedDomain, path: "domain" },
-      "Use a hostname such as app.test or ${rig.target}.app.test; schemes, ports, paths, wildcards and lists are not allowed.",
-    );
+  const domain = roleHostname(
+    config.domain,
+    rolePatch(config, role).domain,
+    role,
+  );
+  const resolvedDomain =
+    domain && resolveHostname(domain, "domain", role, deploymentName);
   const services = Object.entries(settings.services ?? {});
   const ports = resolvePorts(services, input);
+  // Each Service domain routes '/' of its own hostname to one port of its Service; validation refused an ambiguous one.
+  const serviceDomains = roleServiceDomains(
+    config.services,
+    rolePatch(config, role).services,
+    settings.services,
+    role,
+  ).map((entry): PlanServiceDomain => {
+    const hostname = resolveHostname(
+      entry,
+      `services.${entry.service}.domain`,
+      role,
+      deploymentName,
+    );
+    const port = serviceDomainPort(
+      entry.service,
+      { host: entry.pattern, ...(entry.port ? { port: entry.port } : {}) },
+      settings.services?.[entry.service]?.ports,
+    );
+    if ("problem" in port)
+      throw new ConfigError(port.problem, "invalid_domain", {
+        path: entry.path,
+      });
+    return {
+      hostname,
+      service: entry.service,
+      port: ports[`services.${entry.service}.ports.${port.port}`]!,
+    };
+  });
   // Without a proxy, '/' is the one Service with one port: a hostname routes to it (validation refused a hostname with no
   // such Service), and without a hostname ${rig.url} still names it, as an explicit proxy would.
   const proxy = settings.proxy ?? defaultProxy(settings.services);
@@ -130,6 +141,18 @@ export function resolveTargetPlan(
   const root = routes?.find((route) => route.prefix === "/");
   const proxied = root?.service;
   const rootPort = root?.port;
+  uniqueSites(
+    [
+      ...(resolvedDomain !== undefined && proxied
+        ? [{ hostname: resolvedDomain, path: "domain" }]
+        : []),
+      ...serviceDomains.map(({ hostname, service }) => ({
+        hostname,
+        path: `services.${service}.domain`,
+      })),
+    ],
+    role,
+  );
   const references = referenceResolver(settings, {
     target: deploymentName,
     workspace: input.workspacePath,
@@ -400,6 +423,7 @@ export function resolveTargetPlan(
           proxy: { upstream: proxied, routes: routes! },
         }
       : {}),
+    ...(serviceDomains.length ? { serviceDomains } : {}),
   };
 }
 
@@ -450,13 +474,59 @@ function declaredPorts(
 
 /** The longest DNS label: a hostname part between two dots. */
 const MAX_LABEL_LENGTH = 63;
-/** A Preview's default hostname: the Project domain with a dash and the Preview name after its first label, so
- * pantry.dev.example.com gives pantry-<preview>.dev.example.com: a sibling of the domain, not a subdomain of it. */
-export function previewDomain(domain: string): string {
-  const dot = domain.indexOf(".");
-  return dot === -1
-    ? `${domain}-\${rig.target}`
-    : `${domain.slice(0, dot)}-\${rig.target}${domain.slice(dot)}`;
+/** One role's hostname with `${rig.target}` replaced by the Target's name. `setting` is the top-level path of the setting
+ * it comes from, such as domain or services.api.domain. Throws ConfigError `hostname_label_too_long` for a label DNS
+ * cannot hold, never cutting it short, and `invalid_domain` for a result that is no hostname. */
+function resolveHostname(
+  hostname: RoleHostname,
+  setting: string,
+  role: ResolveTargetPlanInput["target"],
+  deploymentName: string,
+): string {
+  const resolved = hostname.pattern.replaceAll("${rig.target}", deploymentName);
+  const path = hostname.patched ? `targets.${role}.${setting}` : setting;
+  const longLabel = resolved
+    .split(".")
+    .find((label) => label.length > MAX_LABEL_LENGTH);
+  const service = /^services\.([^.]+)\.domain$/.exec(setting)?.[1];
+  if (longLabel !== undefined)
+    throw new ConfigError(
+      `Hostname '${resolved}' has a ${longLabel.length}-character label, '${longLabel}'; DNS allows ${MAX_LABEL_LENGTH}.`,
+      "hostname_label_too_long",
+      { domain: resolved, label: longLabel, path },
+      role === "preview" && !hostname.patched
+        ? `A Preview's default hostname puts its name inside the first label of ${setting}. Deploy from a shorter Branch name, give the Preview a shorter --deployment name, or set targets.preview.${setting} to a pattern such as \${rig.target}.${service ? `${service}.` : ""}preview.example.com.`
+        : `Shorten that label in ${path}, or deploy from a shorter Branch name when the label holds \${rig.target}.`,
+    );
+  if (!validHostname(resolved))
+    throw new ConfigError(
+      service
+        ? `The domain '${resolved}' of Service '${service}' is not a hostname.`
+        : `Domain '${resolved}' is not a hostname.`,
+      "invalid_domain",
+      { domain: resolved, path: service ? path : "domain" },
+      "Use a hostname such as app.test or ${rig.target}.app.test; schemes, ports, paths, wildcards and lists are not allowed.",
+    );
+  return resolved;
+}
+/** Refuses a Target that would serve one hostname twice, which Caddy cannot route: its domain and a Service domain, or
+ * two Service domains, after `${rig.target}` is replaced. Hostnames compare without case, as DNS does. */
+function uniqueSites(
+  sites: readonly { hostname: string; path: string }[],
+  role: ResolveTargetPlanInput["target"],
+): void {
+  const seen = new Map<string, string>();
+  for (const { hostname, path } of sites) {
+    const first = seen.get(hostname.toLowerCase());
+    if (first !== undefined)
+      throw new ConfigError(
+        `The ${role} Target would serve ${hostname} twice, from ${first} and ${path}.`,
+        "duplicate_hostname",
+        { hostname, paths: [first, path] },
+        "Give every hostname of a Target its own value: change one of the two settings.",
+      );
+    seen.set(hostname.toLowerCase(), path);
+  }
 }
 /** A Branch as a hostname label, for a Preview the caller did not name. */
 function slug(branch: string): string {

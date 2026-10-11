@@ -12,6 +12,7 @@ import { targetOn, usesRenamedKeys } from "../config/schema";
 import { roleLabel, turnOnInstruction } from "./targets";
 import { withPlanDefaults } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
+import { plannedSites } from "./ports";
 import { transitionInProgress } from "./project-status";
 import {
   identityDriftHint,
@@ -161,6 +162,18 @@ export async function doctor(
         deps,
       ),
     );
+    const sites = plannedSites(target.plan);
+    if (sites.length)
+      checks.push({
+        name: `${target.name}/hostnames`,
+        ok: true,
+        message: `Recorded hostnames: ${sites
+          .map(
+            (site) =>
+              `${site.hostname} (${[...new Set(site.routes.map((route) => route.service))].join(", ")})`,
+          )
+          .join(", ")}.`,
+      });
     if (target.kind === "stable" && repository.outcome === "usable")
       checks.push(
         productionBranchCheck(

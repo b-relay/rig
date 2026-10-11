@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Globe } from "lucide-react";
 import {
   CARD,
   Dot,
   Failure,
+  Hostnames,
   KindTag,
   PageHeader,
   Revision,
@@ -15,7 +15,7 @@ import { ProjectIcon } from "@/components/project-icon";
 import { TargetTabs } from "@/components/project-tabs";
 import { TargetActions } from "@/components/target-actions";
 import { targetWarnings } from "@/lib/present";
-import { projectHref, routeUrl } from "@/lib/target";
+import { projectHref } from "@/lib/target";
 import { settled } from "@/server/settled";
 import { target } from "@/server/target";
 import { cn } from "@/lib/utils";
@@ -79,23 +79,7 @@ export default async function TargetLayout({
             </h1>
             <div className="flex min-w-0 flex-col gap-1 text-sm text-muted-foreground sm:flex-row sm:items-center sm:gap-5">
               <Revision target={report} className="text-sm" />
-              <span className="flex min-w-0 items-center gap-1.5">
-                <Globe className="size-3.5 shrink-0" aria-hidden />
-                {report.route ? (
-                  <a
-                    href={routeUrl(report.route)}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="truncate"
-                  >
-                    {report.route}
-                  </a>
-                ) : (
-                  <span>
-                    {report.kind === "working" ? "loopback only" : "no domain"}
-                  </span>
-                )}
-              </span>
+              <Hostnames target={report} />
             </div>
             {warnings.length ? (
               <div className="flex flex-col gap-1">

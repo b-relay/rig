@@ -276,8 +276,23 @@ export function createLaunchAgentCaddyJob(options: {
         throw startFailure(options.paths, deadlineMs);
       return { changed };
     },
+    /** Removed only once launchd confirms the job is gone (print exits 113), as everywhere else: a refused or unfinished
+     * bootout leaves a Caddy serving stale routes, so it fails closed and keeps the plist for the next attempt. */
     async remove() {
-      await launchctl(["bootout", `${domain}/${label}`]).catch(() => {});
+      const target = `${domain}/${label}`;
+      const absent = async () =>
+        (await launchctl(["print", target]).catch(() => undefined))?.code ===
+        LAUNCHCTL_NOT_FOUND;
+      if (!(await absent())) {
+        await launchctl(["bootout", target]).catch(() => undefined);
+        if (!(await until(absent, Math.min(deadlineMs, 20_000))))
+          throw new RigError(
+            "LAUNCHD",
+            `Rig's Caddy job ${label} is still loaded, or launchd could not say, after it was asked to stop.`,
+            `Run launchctl bootout ${target}, confirm launchctl print ${target} says it could not find the service, then retry.`,
+            { label, state: (await observe()).state },
+          );
+      }
       await rm(plistPath, { force: true });
     },
   };
@@ -349,7 +364,17 @@ export function createProcessCaddyJob(options: {
         async () => !processExists(recorded.pid),
         10_000,
       );
-      if (!gone) process.kill(recorded.pid, "SIGKILL");
+      if (!gone) {
+        process.kill(recorded.pid, "SIGKILL");
+        // The record goes only once the process is confirmed gone; otherwise it may still serve stale routes.
+        if (!(await until(async () => !processExists(recorded.pid), 5_000)))
+          throw new RigError(
+            "PROXY_STOP",
+            `Rig's Caddy (pid ${recorded.pid}) did not exit.`,
+            `Stop process ${recorded.pid}, then retry.`,
+            { pid: recorded.pid },
+          );
+      }
     }
     await rm(paths.processRecord, { force: true });
   }

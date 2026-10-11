@@ -104,7 +104,10 @@ export async function verifyProxyCertificates(options: {
   const pause =
     options.pause ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const deadline = Date.now() + options.waitMs;
+  // A passed handshake is not asked again while the generation and port it was made against still hold; either changing
+  // makes every verdict stale, so all are asked again.
   const verdicts = new Map<string, CertificateVerdict>();
+  let madeAgainst: string | undefined;
   for (;;) {
     // Hostnames and port from one generation, resolved once per pass: never a port from Host config Caddy has not taken.
     const generation = await currentGeneration(options.root);
@@ -114,6 +117,9 @@ export async function verifyProxyCertificates(options: {
       options.defaultPort ??
       443;
     const names = servedHostnames(generation);
+    const against = `${generation?.id ?? ""}:${port}`;
+    if (against !== madeAgainst) verdicts.clear();
+    madeAgainst = against;
     const pending = names.filter((name) => !verdicts.get(name)?.ok);
     for (const verdict of await Promise.all(
       pending.map((name) =>

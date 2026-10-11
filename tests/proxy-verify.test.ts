@@ -3,6 +3,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   symlink,
   writeFile,
@@ -174,4 +175,51 @@ test("without --port, verify dials the HTTPS port the pinned generation was acce
     waitMs: 0,
   });
   expect(verdict).toMatchObject({ hostname: "app.example.test", ok: true });
+});
+
+test("a verdict holds only for the generation and port it was made against: a new generation asks every hostname again", async () => {
+  const w = await world(["app.example.test", "other.example.test"]);
+  const closed = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(""),
+  });
+  const closedPort = closed.port!;
+  closed.stop(true);
+  let passes = 0;
+  const verdicts = await verifyProxyCertificates({
+    root: w.root,
+    defaultPort: w.port,
+    stagingOk: true,
+    waitMs: 1500,
+    pause: async () => {
+      passes++;
+      if (passes !== 1) return;
+      // app passed and other failed; the next generation drops other and serves HTTPS on a port nothing listens on.
+      const g2 = join(w.root, "caddy", "generations", "g2");
+      await mkdir(g2, { recursive: true });
+      await writeFile(
+        join(g2, "routes.caddy"),
+        `# rig begin ${"0".repeat(64)}\napp.example.test {\n  reverse_proxy 127.0.0.1:1\n}\n# rig end ${"0".repeat(64)}\n`,
+      );
+      await writeFile(
+        join(g2, "generation.json"),
+        JSON.stringify({
+          proxy: parseHostConfig({
+            proxy: { caddy: "/c", ports: { http: 18080, https: closedPort } },
+          }).proxy,
+          customRoutes: [],
+        }),
+      );
+      await symlink(join("generations", "g2"), join(w.root, "caddy", "next"));
+      await rename(
+        join(w.root, "caddy", "next"),
+        join(w.root, "caddy", "current"),
+      );
+    },
+  });
+  expect(passes).toBeGreaterThan(1);
+  expect(verdicts).toEqual([
+    expect.objectContaining({ hostname: "app.example.test", ok: false }),
+  ]);
 });

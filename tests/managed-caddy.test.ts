@@ -520,7 +520,7 @@ test("in managed mode the route file is only what Rig renders: text an external 
   expect(w.servedRoutes()).not.toContain("evil");
 });
 
-test("a hostname a deploy checked is reserved until its route is applied: Host config published in between cannot claim it", async () => {
+test("a hostname a deploy checked is reserved until the deploy lets go: Host config published in between cannot claim it", async () => {
   const w = await world();
   await w.caddy.router.apply(app());
   const b = {
@@ -545,16 +545,87 @@ test("a hostname a deploy checked is reserved until its route is applied: Host c
   await expect(w.caddy.republish()).rejects.toMatchObject({
     message: expect.stringContaining("which a Target serves"),
   });
-  // A rolled-back deploy lets the reservation go.
+  // A route change during the deploy does not end the reservation; the deploy's release does.
   await w.caddy.router.check!({
     ...b,
     key: "c",
     sites: [{ ...b.sites[0]!, hostname: "c.example.test" }],
   });
-  const saved = await w.caddy.router.checkpoint("c");
-  await w.caddy.router.restore(saved, saved);
+  await w.caddy.router.remove("c");
   w.setSettings({ routes: { "c.example.test": 3005 } });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    message: expect.stringContaining("which a deploy is about to publish"),
+  });
+  await w.caddy.router.release!("c");
   expect(await w.caddy.republish()).toEqual({ published: true });
+});
+
+test("a deploy reserves the hostnames its route serves now as well as the candidate's, and a restoration honours reservations", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  const saved = await w.caddy.router.checkpoint("app");
+  // Deploying the Target to another hostname: app.example.test is what a rollback restores.
+  await w.caddy.router.check!({
+    key: "app",
+    sites: [
+      {
+        hostname: "next.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3002" }],
+      },
+    ],
+  });
+  await w.caddy.router.apply({
+    key: "app",
+    sites: [
+      {
+        hostname: "next.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3002" }],
+      },
+    ],
+  });
+  // The route file no longer holds app.example.test, but a reload still cannot claim it before the deploy is decided.
+  w.setSettings({ routes: { "app.example.test": 3005 } });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    message: expect.stringContaining("which a deploy is about to publish"),
+  });
+  // Nor can another deploy.
+  await expect(
+    w.caddy.router.check!({
+      key: "other",
+      sites: [
+        {
+          hostname: "app.example.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:1" }],
+        },
+      ],
+    }),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  // The rollback restores it.
+  const expected = await w.caddy.router.checkpoint("app");
+  await w.caddy.router.restore(saved, expected);
+  expect(w.servedRoutes()).toContain("app.example.test");
+  await w.caddy.router.release!("app");
+
+  // A restoration of a hostname another deploy has reserved is refused.
+  const v = await world();
+  await v.caddy.router.apply(app());
+  const kept = await v.caddy.router.checkpoint("app");
+  await v.caddy.router.remove("app");
+  await v.caddy.router.check!({
+    key: "other",
+    sites: [
+      {
+        hostname: "app.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:1" }],
+      },
+    ],
+  });
+  await expect(
+    v.caddy.router.restore(kept, await v.caddy.router.checkpoint("app")),
+  ).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    details: { owner: "another deploy" },
+  });
 });
 
 test("a generation without the settings it was accepted with is no last-good: route changes publish Host config as it is, as before the first generation", async () => {

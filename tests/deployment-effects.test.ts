@@ -931,3 +931,43 @@ test("concurrent deploys of one hostname: the second is refused before it stops 
   expect(f.running.size).toBe(1);
   expect(caddy.servedRoutes()).toContain("old.test");
 });
+
+test("a reload cannot claim the previous Deployment's hostname while a failed deploy rolls back: the rollback restores it and the previous plan serves", async () => {
+  const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+  roots.push(caddy.root);
+  const f = await fixture({ router: caddy.caddy.router });
+  await f.lifecycle.up(f.previous);
+  failReadiness(f.candidate);
+  const up = f.deps.lifecycle.up.bind(f.deps.lifecycle);
+  let claimed: unknown;
+  f.deps.lifecycle.up = async (target, checkpoint, journal) => {
+    try {
+      return await up(target, checkpoint, journal);
+    } catch (error) {
+      // The candidate failed; before the rollback restores old.test, the owner reloads a route claiming it.
+      if (target.commit === "new") {
+        caddy.setSettings({
+          tls: { ca: "internal" },
+          routes: { "old.test": 3005 },
+        });
+        claimed = await caddy.caddy.republish().catch((caught) => caught);
+      }
+      throw error;
+    }
+  };
+  await expect(
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
+  ).rejects.toMatchObject({ code: "HEALTH_FAILED" });
+  expect(claimed).toMatchObject({
+    code: "PROXY_CONFIG_INVALID",
+    message: expect.stringContaining("which a deploy is about to publish"),
+  });
+  // Rolled back, not blocked: the previous plan runs and Caddy serves its hostname.
+  expect(f.state.targets[0]).toMatchObject({ commit: "old" });
+  expect(caddy.servedRoutes()).toContain("old.test");
+});

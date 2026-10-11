@@ -40,6 +40,7 @@ import type { CommandRunner } from "./contracts";
 import {
   editRouteFile,
   ownedBlock,
+  parseOwnedSites,
   canonicalRouteFile,
   routeFileHostnames,
   withheldPaths,
@@ -578,7 +579,17 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ) {
-    for (const site of route?.sites ?? []) {
+    // A restoration publishes the saved block's sites, so they are held to the same reservations and owner routes as a new
+    // route's: a rollback never takes a hostname another deploy reserved or the owner's routes hold.
+    const sites =
+      route?.sites ??
+      (restoration?.saved.value
+        ? parseOwnedSites(restoration.saved.value)
+        : []);
+    const owned = hostRoutes(await acceptedSettings()).map(
+      (entry) => entry.hostname,
+    );
+    for (const site of sites) {
       const hostname = bareHostname(site.hostname);
       const holder = [...reservations].find(
         ([other, hosts]) => other !== key && hosts.includes(hostname),
@@ -590,6 +601,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           "Wait for that deploy to finish, or choose a different hostname.",
           { hostname: site.hostname, owner: "another deploy" },
         );
+      if (restoration && owned.includes(hostname))
+        throw new RigError(
+          "ROUTE_CONFLICT",
+          `The hostname ${site.hostname} is served by proxy.routes in Host config.`,
+          "Remove it from proxy.routes and run rig proxy reload, then restore the route.",
+          { hostname: site.hostname, owner: "proxy.routes in Host config" },
+        );
     }
     return editRouteFile({
       before,
@@ -597,12 +615,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       ...(route ? { route } : {}),
       ...(restoration ? { restoration } : {}),
       siteConfig: [],
-      reserved: {
-        sites: hostRoutes(await acceptedSettings()).map(
-          (owned) => owned.hostname,
-        ),
-        owner: "proxy.routes in Host config",
-      },
+      reserved: { sites: owned, owner: "proxy.routes in Host config" },
     });
   }
   async function change(
@@ -624,29 +637,18 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const served = current
       ? await readText(generationFiles(current).routes)
       : undefined;
+    // A reservation outlives every change the deploy makes (a withdrawal, the candidate's route, a restoration): only the
+    // deploy's release, once it is decided, ends it.
+    if (after === served) {
+      if (raw !== after) await writeRoutes(after, raw);
+      return;
+    }
+    if (after !== raw) await writeRoutes(after, raw);
     try {
-      if (after === served) {
-        if (raw !== after) await writeRoutes(after, raw);
-        return;
-      }
-      if (after !== raw) await writeRoutes(after, raw);
-      try {
-        await publish(after, "route", settings);
-      } catch (error) {
-        if (after !== before) await writeRoutes(before, after);
-        throw error;
-      }
-    } finally {
-      // A reservation ends once the route that holds it is in the route file, or the deploy is rolled back or removed.
-      const reserved = reservations.get(key);
-      if (
-        reserved &&
-        (!route ||
-          reserved.every((host) =>
-            route.sites.some((site) => bareHostname(site.hostname) === host),
-          ))
-      )
-        reservations.delete(key);
+      await publish(after, "route", settings);
+    } catch (error) {
+      if (after !== before) await writeRoutes(before, after);
+      throw error;
     }
   }
   /** Read in the queue: a change writes the route file before it publishes and puts it back when publishing fails, so a read
@@ -672,13 +674,20 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         queued(async () => {
           reservations.delete(key);
         }),
+      // The reservation covers the candidate's hostnames and those the route serves now (the previous Deployment's), since a
+      // failed deploy restores them: until it is decided, no reload or other deploy can take either.
       check: (route) =>
         queued(async () => {
-          await edited((await canonicalRoutes()).routes, route.key, route);
-          reservations.set(
-            route.key,
-            route.sites.map((site) => bareHostname(site.hostname)),
-          );
+          const { routes } = await canonicalRoutes();
+          await edited(routes, route.key, route);
+          const serving = parseOwnedSites(ownedBlock(routes, route.key) ?? "");
+          reservations.set(route.key, [
+            ...new Set(
+              [...route.sites, ...serving].map((site) =>
+                bareHostname(site.hostname),
+              ),
+            ),
+          ]);
         }),
     },
     republish: () =>

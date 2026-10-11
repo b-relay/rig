@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { SearchX } from "lucide-react";
 import { attempt } from "@/lib/outcome";
 import type { ActivityResult } from "@/lib/types";
 import { read } from "@/server/daemon";
-import { ActivityTable, OperationRecord } from "@/components/activity-table";
+import {
+  ActivityTimeline,
+  OperationRecord,
+} from "@/components/activity-timeline";
 import { Empty, Failure, PageHeader } from "@/components/bits";
 
 export const metadata: Metadata = { title: "Activity" };
@@ -23,6 +28,13 @@ export default async function ActivityPage({
     <>
       <PageHeader
         title="Activity"
+        eyebrow={
+          operation ? (
+            <Link href="/activity" className="text-muted-foreground">
+              All activity
+            </Link>
+          ) : undefined
+        }
         description={
           operation
             ? "One Operation, by its id."
@@ -32,14 +44,16 @@ export default async function ActivityPage({
       {!activity.ok ? <Failure failure={activity.failure} /> : null}
       {operation && activity.ok ? (
         operations.length === 0 ? (
-          <Empty>rigd has no record of an Operation with that id.</Empty>
+          <Empty icon={SearchX}>
+            rigd has no record of an Operation with that id.
+          </Empty>
         ) : (
           operations.map((each) => (
             <OperationRecord key={each.id} operation={each} />
           ))
         )
       ) : activity.ok ? (
-        <ActivityTable operations={operations} />
+        <ActivityTimeline operations={operations} now={Date.now()} />
       ) : null}
     </>
   );

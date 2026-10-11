@@ -66,7 +66,8 @@ export interface Run<T> {
   failure?: Failure;
   result?: T;
   /** Sends one command with a fresh Operation id; answers the reply, or `undefined` after a shown failure. `send` replaces
-   * the generic command action for a command with its own (a restore, which carries its typed confirmation). */
+   * the generic command action for a command with its own (a restore or a DNS delete, which carry their typed
+   * confirmation). */
   run(command: RuntimeCommand, send?: SendCommand): Promise<T | undefined>;
   clear(): void;
 }

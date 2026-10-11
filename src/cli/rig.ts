@@ -244,6 +244,13 @@ export async function runRigCli(
     execute,
     dependencies.now,
     dependencies.local,
+    {
+      read: (request) =>
+        dependencies.client.command(request, dependencies.signal),
+      ...(dependencies.interaction
+        ? { interaction: dependencies.interaction }
+        : {}),
+    },
   );
   try {
     await command.parseAsync(args.length ? [...args] : ["--help"], {

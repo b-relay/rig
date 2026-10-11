@@ -71,9 +71,18 @@ export function generationFiles(directory: string) {
   };
 }
 
-/** A digest of proxy settings, as each generation records the ones it was rendered from. */
+/** The proxy fields Caddy never reads: `dns` is read by rigd's DNS records at every request (ADR 0018), so changing it is
+ * never a pending proxy setting and needs no reload. */
+export const CADDY_IGNORED_FIELDS: ReadonlySet<string> = new Set(["dns"]);
+/** A digest of the proxy settings Caddy is rendered from, as each generation records them. Fields Caddy ignores are left
+ * out, so a digest recorded before they existed still matches. */
 export function settingsDigest(settings: ProxySettings): string {
-  return createHash("sha256").update(JSON.stringify(settings)).digest("hex");
+  const rendered = Object.fromEntries(
+    Object.entries(settings).filter(
+      ([field]) => !CADDY_IGNORED_FIELDS.has(field),
+    ),
+  );
+  return createHash("sha256").update(JSON.stringify(rendered)).digest("hex");
 }
 /** The ACME directory URL `tls.ca` names, or undefined for `internal`. */
 export function caDirectory(

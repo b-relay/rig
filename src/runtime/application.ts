@@ -112,6 +112,7 @@ import {
   HOST_SCOPE,
   configScope,
   createOperationLocks,
+  dnsScope,
   isWithin,
   projectScope,
   projectTargetsScope,
@@ -121,6 +122,8 @@ import {
   type LockScope,
 } from "./operation-locks";
 import { createHostReservations } from "./host-reservations";
+import { targetHostnames } from "./dns-hostnames";
+import { DNS_REFUSALS, requestedDnsChange } from "../domain/dns-records";
 import {
   recordScheduling,
   recordSkippedRun,
@@ -631,6 +634,45 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               target.projectId,
           })),
         );
+      }
+      if (
+        command.action === "dns" ||
+        command.action === "dns-create" ||
+        command.action === "dns-update" ||
+        command.action === "dns-delete"
+      ) {
+        if (!deps.dns)
+          throw new RigError(
+            "DNS_UNAVAILABLE",
+            "This rigd does not manage DNS records.",
+            "Run rigd install from this version of Rig.",
+          );
+        const request = command.dns ?? {};
+        if (command.action === "dns")
+          return await deps.dns.read({
+            ...(request.zone !== undefined ? { zone: request.zone } : {}),
+            hostnames: targetHostnames(await deps.store.read()),
+          });
+        // Changes of one zone run one at a time, so each re-reads what it changes with no other change of Rig's between.
+        await admission.admit([dnsScope(request.zone ?? "")], {});
+        // From here a failure is an Operation in Activity, provider failures before the write included; a request that is
+        // malformed or names a stale record is refused as a usage mistake, as other commands' are.
+        activityNote = requestedDnsChange(command.action, request);
+        attempted = true;
+        const write = await deps.dns
+          .prepare(command.action, request)
+          .catch((error: unknown) => {
+            if (error instanceof RigError && DNS_REFUSALS.has(error.code))
+              attempted = false;
+            throw error;
+          });
+        activityNote = write.change;
+        const record = await write.apply();
+        return await finish("updated", {
+          zone: write.zone,
+          summary: write.summary,
+          ...(record ? { record } : {}),
+        });
       }
       if (command.action === "list") {
         const state = await deps.store.read();

@@ -222,6 +222,27 @@
             ],
             "description": "Where requests go: a port on 127.0.0.1, such as 3000, or 127.0.0.1:<port> or localhost:<port>."
           }
+        },
+        "dns": {
+          "description": "DNS record management from rig dns and the dashboard (ADR 0018), with the same token Caddy uses (auth/acme-dns.token, which needs Zone:Zone:Read and Zone:DNS:Edit). Read at every request, so an edit needs no reload; Caddy ignores it.",
+          "type": "object",
+          "properties": {
+            "zones": {
+              "description": "The zones Rig may list and change, such as [example.com]. Without it, every zone the DNS token can see.",
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "address": {
+              "description": "This Mac's address for the hostname check and Point at this Mac. Without it, Rig asks Tailscale (tailscale ip -4).",
+              "type": "string",
+              "format": "ipv4",
+              "pattern": "^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

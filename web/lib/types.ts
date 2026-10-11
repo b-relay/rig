@@ -24,6 +24,19 @@ export type { DeploymentReport } from "../../src/domain/deployments";
 export type { EnvEditorRequest, EnvFiles } from "../../src/daemon/env-editor";
 export type { EnvFileView, EnvScope } from "../../src/adapters/env-store";
 export type { EnvChange } from "../../src/adapters/env-file-edit";
+export type { DnsReport } from "../../src/runtime/contracts";
+import type { DnsReport } from "../../src/runtime/contracts";
+export type {
+  DnsRecord,
+  DnsRecordInput,
+  DnsRecordType,
+  DnsZone,
+} from "../../src/domain/dns-records";
+export type {
+  HostnameCheck,
+  HostnameSource,
+  PointFix,
+} from "../../src/domain/dns-hostnames";
 import type { DeploymentReport } from "../../src/domain/deployments";
 /** A Project's deploys, oldest first. */
 export interface DeploymentsResult {
@@ -126,6 +139,7 @@ export interface Replies {
   deployments: DeploymentsResult;
   backups: import("../../src/daemon/protocol").BackupsResult;
   proxy: import("../../src/adapters/proxy-report").ProxyReport;
+  dns: DnsReport;
   "prepare-uninstall": { ready: true };
   "cancel-uninstall": { cancelled: true };
 }

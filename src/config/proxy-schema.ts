@@ -134,6 +134,41 @@ export const proxySettingsSchema = z
       .describe(
         "Your own hostnames, outside any Rig Project, each sent to a service on this Mac, such as grafana.example.com: 3000. Rig serves each with a certificate like its own and nothing but a reverse proxy to the upstream. A hostname a Target serves is refused, and a Target asking for one of these is refused as ROUTE_CONFLICT. Applied by rig proxy reload and when rigd starts; until then, and if Rig refuses it, Caddy keeps the routes it last accepted.",
       ),
+    dns: z
+      .strictObject({
+        zones: z
+          .array(
+            z
+              .string()
+              .refine(
+                (zone) =>
+                  validHostname(zone) &&
+                  zone === zone.toLowerCase() &&
+                  zone.includes("."),
+                "must be a lowercase zone name such as example.com",
+              ),
+          )
+          .min(1)
+          .optional()
+          .describe(
+            "The zones Rig may list and change, such as [example.com]. Without it, every zone the DNS token can see.",
+          ),
+        address: z
+          .ipv4({ error: "must be an IPv4 address such as 100.64.0.1" })
+          .refine(
+            (address) =>
+              !/^(?:0\.|127\.|169\.254\.|22[4-9]\.|2[3-5]\d\.)/.test(address),
+            "must be an address other machines reach this Mac at: not unspecified (0.0.0.0/8), loopback (127.0.0.0/8), link-local, multicast or broadcast",
+          )
+          .optional()
+          .describe(
+            "This Mac's address for the hostname check and Point at this Mac. Without it, Rig asks Tailscale (tailscale ip -4).",
+          ),
+      })
+      .optional()
+      .describe(
+        "DNS record management from rig dns and the dashboard (ADR 0018), with the same token Caddy uses (auth/acme-dns.token, which needs Zone:Zone:Read and Zone:DNS:Edit). Read at every request, so an edit needs no reload; Caddy ignores it.",
+      ),
   })
   .describe(
     "Rig runs its own Caddy, which terminates TLS with ACME DNS-01 certificates and routes every hostname. Without this section Rig runs no Caddy and only writes its route file.",

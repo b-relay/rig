@@ -1,6 +1,58 @@
 import type { ProxyPublication } from "../domain/proxy-publication";
 import type { FailureCauses } from "../domain/errors";
 import type { ProxyReport, ReportedTarget } from "../adapters/proxy-report";
+import type { DnsRecord, DnsZone } from "../domain/dns-records";
+import type { HostnameCheck, ServedHostname } from "../domain/dns-hostnames";
+import type { DnsRequest } from "../daemon/protocol";
+/** What the `dns` read answers (ADR 0018): the zones Rig manages, their records, and where each served hostname points. */
+export interface DnsReport {
+  /** The provider `proxy.tls.dns` names. */
+  readonly provider: string;
+  /** This Mac's IPv4 address, when Rig knows it. */
+  readonly address?: string;
+  /** Where the address came from: `proxy.dns.address`, or Tailscale. */
+  readonly addressSource?: "config" | "tailscale";
+  /** Zones whose records were read. */
+  readonly zones: readonly DnsZone[];
+  /** Zones `proxy.dns.zones` names that the token cannot see. */
+  readonly unseenZones?: readonly string[];
+  /** Zones Rig manages whose records could not be read this time, and why; the rest are reported all the same. */
+  readonly unreadableZones?: readonly {
+    readonly zone: string;
+    readonly code: string;
+    readonly message: string;
+  }[];
+  /** Every record of the zones read, by name and then type. */
+  readonly records: readonly DnsRecord[];
+  readonly hostnames: readonly HostnameCheck[];
+}
+export type DnsWriteAction = "dns-create" | "dns-update" | "dns-delete";
+/** A checked DNS write, ready to make. Neither text holds any credential. */
+export interface PreparedDnsWrite {
+  readonly zone: string;
+  /** The change asked for, as Activity records it whatever the outcome: `create A app.example.com -> 100.64.0.1`. */
+  readonly change: string;
+  /** What was done, for the reply: `created A app.example.com -> 100.64.0.1`. */
+  readonly summary: string;
+  /** Makes the change. A write whose answer is lost (a timeout) is checked by reading the record again, so a change
+   * Cloudflare made is reported as made. */
+  apply(): Promise<DnsRecord | undefined>;
+}
+/** DNS record management as rigd's runtime asks for it (ADR 0018). */
+export interface DnsControl {
+  read(input: {
+    readonly zone?: string;
+    /** Every hostname a Target serves; `proxy.routes` is added from Host config. */
+    readonly hostnames: readonly ServedHostname[];
+  }): Promise<DnsReport>;
+  /** Validates one write and checks it against the records as they are now: an update or delete of a record whose
+   * `modifiedOn` changed since the caller read it, or a create that expects no record where one now is, is refused as
+   * DNS_CHANGED. Call it while holding the zone's lock and `apply` straight after. */
+  prepare(
+    action: DnsWriteAction,
+    request: DnsRequest,
+  ): Promise<PreparedDnsWrite>;
+}
 /** What the runtime asks of Rig's own Caddy beyond routing, which goes through the Router. */
 export interface ProxyControl {
   /** The job and every served site, Rig's and the owner's proxy.routes, for `rig proxy`. */
@@ -169,6 +221,8 @@ export interface RuntimeDependencies {
   inspectProxy(): Promise<ProxyPublication>;
   /** Rig's own Caddy, when Host config has a proxy section (ADR 0014); absent otherwise. */
   proxy?: ProxyControl;
+  /** DNS record management (ADR 0018); absent where rigd offers none, as in most tests. */
+  dns?: DnsControl;
   store: StateStore;
   documents: ProjectDocuments;
   sources: DeploymentSources;

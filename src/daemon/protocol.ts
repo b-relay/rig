@@ -16,6 +16,83 @@ export const backupSelector = z
 export const absolutePath = z.string().min(1).refine(isAbsolute, {
   message: "must be an absolute path",
 });
+/** The `dns` field of a DNS command as the control plane carries it. Record content rules are checked by `prepare`, so a
+ * mistyped address is a DNS_RECORD refusal naming the field rather than an invalid request. */
+export const dnsRequestSchema = z.strictObject({
+  zone: z
+    .string()
+    .max(253)
+    .optional()
+    .describe(
+      "The zone, such as example.com. A read without one reads every zone Rig manages.",
+    ),
+  id: z
+    .string()
+    .regex(/^[A-Za-z0-9]{1,64}$/)
+    .optional()
+    .describe("The record an update or delete acts on, as the read listed it."),
+  modifiedOn: z
+    .string()
+    .min(1)
+    .max(64)
+    .optional()
+    .describe(
+      "When the record was last changed, as the read listed it; the write is refused once it differs.",
+    ),
+  record: z
+    .strictObject({
+      name: z
+        .string()
+        .max(253)
+        .describe(
+          "Fully qualified record name in the zone, such as app.example.com or *.example.com.",
+        ),
+      type: z.string().max(16).describe("A, AAAA, CNAME, TXT, MX or CAA."),
+      content: z
+        .string()
+        .max(4096)
+        .describe(
+          "An address, a hostname, TXT text or CAA data, by type; rigd checks it against the type's rules.",
+        ),
+      ttl: z
+        .number()
+        .int()
+        .describe("Seconds: 1 for automatic, or 30 to 86400."),
+      proxied: z
+        .boolean()
+        .optional()
+        .describe(
+          "A, AAAA and CNAME only: answer through the provider's proxy.",
+        ),
+      priority: z
+        .number()
+        .int()
+        .optional()
+        .describe("MX only, and required there."),
+      comment: z
+        .string()
+        .max(1000)
+        .optional()
+        .describe(
+          "A note kept with the record; absent on an update keeps the stored one.",
+        ),
+    })
+    .optional()
+    .describe("The record a create or update writes."),
+  absent: z
+    .boolean()
+    .optional()
+    .describe(
+      "A create that expects the name to have no record of its type (nor a CNAME) yet, as the read showed.",
+    ),
+  confirm: z
+    .string()
+    .max(254)
+    .optional()
+    .describe(
+      "dns-delete only, and required there: the record's full name as the person typed it to confirm. rigd compares it with the record it reads just before deleting.",
+    ),
+});
 export const commandSchema = z
   .object({
     action: z.enum([
@@ -45,6 +122,10 @@ export const commandSchema = z
       "proxy-apply",
       "backups",
       "restore",
+      "dns",
+      "dns-create",
+      "dns-update",
+      "dns-delete",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
@@ -100,8 +181,11 @@ export const commandSchema = z
     after: z.string().optional(),
     newName: z.string().optional(),
     newPath: absolutePath.optional(),
+    /** The zone, record and expected state a `dns` read or write names (ADR 0018). */
+    dns: dnsRequestSchema.optional(),
   })
   .strict();
+export type DnsRequest = z.infer<typeof dnsRequestSchema>;
 export type RuntimeCommand = z.infer<typeof commandSchema>;
 /** Reads probe committed state and are never queued behind mutations. */
 export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
@@ -117,6 +201,7 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "deployments",
   "proxy",
   "backups",
+  "dns",
 ] as const);
 /** Replies to the reads whose collections rig renders. A missing or malformed
  * collection is a protocol failure, never an empty page; unknown top-level keys

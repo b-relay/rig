@@ -13,6 +13,7 @@ import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addLogsCommand } from "./logs-command";
+import { addDnsCommands, type DnsCommandDependencies } from "./dns-command";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
@@ -35,6 +36,8 @@ export function createRigCommand(
   /** The clock relative `rig logs` times count back from. */
   now: () => Date = () => new Date(),
   local?: LocalCommands,
+  /** What `rig dns set` and `delete` plan with: rigd's DNS read, and the terminal to confirm at. */
+  dns?: Pick<DnsCommandDependencies, "read" | "interaction">,
 ): Command {
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
@@ -98,6 +101,21 @@ export function createRigCommand(
     positiveInteger,
   });
   addProxyCommands(command, cwd, execute, output, local);
+  addDnsCommands(command, {
+    cwd,
+    execute,
+    output,
+    read:
+      dns?.read ??
+      (async () => {
+        throw new RigError(
+          "COMMAND_UNAVAILABLE",
+          "rig dns is unavailable here.",
+          "Run it from a terminal on the Host.",
+        );
+      }),
+    ...(dns?.interaction ? { interaction: dns.interaction } : {}),
+  });
   addHelpCommand(command, "rig");
   command
     .command("rename")

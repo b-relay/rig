@@ -37,6 +37,12 @@ export function projectTargetsScope(projectId: string): LockScope {
   return ["project", projectId, "target"];
 }
 
+/** One DNS zone's records as a write changes them (ADR 0018). Beside every Project and Target, so a DNS change never waits
+ * for a deploy; two changes of one zone run one at a time, each re-reading what it changes just before writing. */
+export function dnsScope(zone: string): LockScope {
+  return ["dns", zone];
+}
+
 /** A Project name that is being registered, so two registrations of one name cannot both succeed. */
 export function registrationScope(name: string): LockScope {
   return ["registration", name];

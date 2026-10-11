@@ -17,6 +17,9 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "activity") return renderActivity(report);
   if (action === "proxy") return renderProxy(report);
   if (action === "backups") return renderBackups(report);
+  if (action === "dns") return renderDns(report);
+  if (["dns-create", "dns-update", "dns-delete"].includes(action))
+    return `${capitalized(word(report.summary)) || "DNS record changed"}.\n`;
   if (action === "proxy-apply")
     return "Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n";
   if (action === "daemon-status")
@@ -331,6 +334,77 @@ function renderProxy(report: Record<string, unknown>): string {
       "",
       `Pending    proxy settings in config.yaml${fields.length ? ` (${fields.map(word).join(", ")})` : ""} are not served: ${word(pending.reason)}`,
     );
+  }
+  return `${lines.join("\n")}\n`;
+}
+const capitalized = (text: string) =>
+  text ? `${text[0]!.toUpperCase()}${text.slice(1)}` : text;
+/** `rig dns list`: each zone's records, then every hostname Rig serves and whether it points at this Mac. */
+function renderDns(report: Record<string, unknown>): string {
+  const address = word(report.address);
+  const lines = [
+    address
+      ? `This Mac   ${address} (${report.addressSource === "config" ? "proxy.dns.address" : "Tailscale"})`
+      : "This Mac   address unknown: set proxy.dns.address, or install Tailscale",
+  ];
+  const unseen = Array.isArray(report.unseenZones)
+    ? report.unseenZones.map(word)
+    : [];
+  if (unseen.length)
+    lines.push(
+      `Warning: the token cannot see ${unseen.join(", ")} from proxy.dns.zones.`,
+    );
+  for (const failure of rows(report.unreadableZones))
+    lines.push(
+      `Warning: the records of ${word(failure.zone)} could not be read (${word(failure.code)}): ${word(failure.message)}`,
+    );
+  const records = rows(report.records);
+  const zones = rows(report.zones);
+  if (!zones.length) lines.push("", "The DNS token sees no zone.");
+  for (const zone of zones) {
+    const own = records.filter((record) => record.zone === zone.name);
+    lines.push("", `${word(zone.name)}  ${own.length} records`);
+    const width = Math.min(
+      40,
+      Math.max(0, ...own.map((record) => word(record.name).length)),
+    );
+    for (const record of own) {
+      const ttl =
+        Number(record.ttl) === 1 ? "auto" : String(Number(record.ttl));
+      const extra = [
+        record.priority !== undefined
+          ? `priority ${Number(record.priority)}`
+          : "",
+        record.proxied === true ? "proxied" : "",
+        `ttl ${ttl}`,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      lines.push(
+        `  ${word(record.name).padEnd(width)}  ${word(record.type).padEnd(5)}  ${word(record.content)}  (${extra})`,
+      );
+    }
+  }
+  const hostnames = rows(report.hostnames);
+  if (hostnames.length) {
+    lines.push("", "Hostnames Rig serves");
+    for (const check of hostnames) {
+      const mark =
+        check.verdict === "mac"
+          ? "ok     "
+          : check.verdict === "unknown"
+            ? "?      "
+            : "FIX    ";
+      lines.push(`  ${mark}${word(check.hostname)}  ${word(check.reason)}`);
+      const fix = object(check.fix);
+      const record = object(fix.record);
+      if (check.fix !== undefined)
+        lines.push(
+          `         rig dns set ${word(record.name)} A ${word(record.content)}${fix.op === "update" ? " --no-proxied" : ""}`,
+        );
+      else if (check.fixBlocked)
+        lines.push(`         ${word(check.fixBlocked)}`);
+    }
   }
   return `${lines.join("\n")}\n`;
 }

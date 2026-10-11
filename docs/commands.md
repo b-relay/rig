@@ -80,6 +80,23 @@ rig
 │  │   --staging-ok                 accept certificates from a staging CA
 │  └─ token                         store the DNS API token read from a pipe (pbpaste | rig proxy token)
 │
+├─ dns                              your Cloudflare records, with the proxy's token (ADR 0018)
+│  ├─ list [zone]                   every zone's records, and where each served hostname points
+│  │   --json
+│  ├─ set <name> <type> <content>   create, or change the one A/AAAA/CNAME of that name; TXT/MX/CAA add one
+│  │   --ttl <seconds|auto>         default: the record's own, else auto
+│  │   --proxied / --no-proxied     A, AAAA, CNAME only
+│  │   --priority <number>          MX (default: the record's own, else 10)
+│  │   --comment <text>
+│  │   --add                        add another record of that name and type
+│  │   --replace                    TXT, MX, CAA: change the one record there instead of adding
+│  │   --zone <zone>                makes the name relative to this zone (needed for a dotted one)
+│  │   -y, --yes                    write without asking (required without a terminal)
+│  └─ delete <name> <type>          delete the record of that name and type
+│      --content <content>          pick one of several
+│      --zone <zone>
+│      -y, --yes
+│
 └─ help [command...]                for example: rig help deploy preview
 ```
 

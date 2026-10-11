@@ -5,6 +5,7 @@ import {
   type ProxySettings,
 } from "../config/proxy-schema";
 import {
+  CADDY_IGNORED_FIELDS,
   generationFiles,
   proxyPaths,
   settingsDigest,
@@ -89,7 +90,9 @@ export async function pendingSettings(
   if (!accepted) return undefined;
   if (settingsDigest(accepted) === settingsDigest(requested)) return undefined;
   const fields = (Object.keys(requested) as (keyof ProxySettings)[]).filter(
-    (field) => !Bun.deepEquals(accepted[field], requested[field]),
+    (field) =>
+      !CADDY_IGNORED_FIELDS.has(field) &&
+      !Bun.deepEquals(accepted[field], requested[field]),
   );
   const rejection = await readFile(proxyPaths(root).rejectedSettings, "utf8")
     .then((text) => JSON.parse(text) as Record<string, unknown>)

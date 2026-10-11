@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowRight, FileCode2, Network } from "lucide-react";
+import { ArrowRight, FileCode2, Globe, Network } from "lucide-react";
+import type { Failure as FailureShape } from "@/lib/outcome";
 import type { ProjectEntry } from "@/lib/overview";
 import {
   managedProxyRoutes,
@@ -9,7 +10,17 @@ import {
   proxyRoutes,
 } from "@/lib/proxy";
 import { projectHref, targetHref } from "@/lib/target";
-import { projectList, projectStatus, proxyReport } from "@/server/status";
+import {
+  dnsReport,
+  projectList,
+  projectStatus,
+  proxyReport,
+} from "@/server/status";
+import { dnsSetup } from "@/lib/dns";
+import type { Outcome } from "@/lib/outcome";
+import type { DnsReport } from "@/lib/types";
+import { DnsHostnames } from "@/components/dns-hostnames";
+import { DnsZoneRecords } from "@/components/dns-records";
 import {
   CARD,
   Empty,
@@ -25,6 +36,75 @@ import {
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Proxy" };
+/** DNS (ADR 0018): where each served hostname points, then every zone's records with Add, Edit and Delete; or, when rigd
+ * cannot read them, what is missing and how to set it up. */
+function DnsSection({ read }: { read: Outcome<DnsReport> }) {
+  return (
+    <section id="dns" className="flex scroll-mt-20 flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h2 className="text-sm font-semibold">DNS</h2>
+        <p className="text-xs text-muted-foreground">
+          Your Cloudflare records, changed through rigd with the token rig proxy
+          token stored. The page never sees the token; Activity records every
+          change.
+        </p>
+      </div>
+      {read.ok ? (
+        <>
+          {read.value.unreadableZones?.map((failure) => (
+            <Warning key={failure.zone} className="text-sm">
+              The records of {failure.zone} could not be read ({failure.code}):{" "}
+              {failure.message}
+            </Warning>
+          ))}
+          {read.value.unseenZones?.length ? (
+            <Warning className="text-sm">
+              The DNS token cannot see {read.value.unseenZones.join(", ")},
+              which proxy.dns.zones names.
+            </Warning>
+          ) : null}
+          <DnsHostnames
+            checks={read.value.hostnames}
+            {...(read.value.address ? { address: read.value.address } : {})}
+            {...(read.value.addressSource
+              ? { addressSource: read.value.addressSource }
+              : {})}
+          />
+          {read.value.zones.length === 0 ? (
+            <Empty icon={Globe} title="No zone">
+              The DNS token sees no zone. Give it Zone:Zone:Read and
+              Zone:DNS:Edit on your zone in the Cloudflare dashboard.
+            </Empty>
+          ) : (
+            read.value.zones.map((zone) => (
+              <DnsZoneRecords
+                key={zone.id}
+                zone={zone}
+                records={read.value.records.filter(
+                  (record) => record.zone === zone.name,
+                )}
+              />
+            ))
+          )}
+        </>
+      ) : (
+        <DnsUnavailable failure={read.failure} />
+      )}
+    </section>
+  );
+}
+function DnsUnavailable({ failure }: { failure: FailureShape }) {
+  const setup = dnsSetup(failure);
+  return (
+    <Empty icon={Globe} title={setup.title}>
+      <ol className="list-decimal space-y-1 pl-4">
+        {setup.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+    </Empty>
+  );
+}
 /** Every hostname and path Caddy serves for this Host, the Target and Service each reaches, and, with
  * Rig's own Caddy, the owner's own routes from proxy.routes, read-only. */
 export default async function ProxyPage() {
@@ -42,7 +122,7 @@ export default async function ProxyPage() {
       ...(project.missing ? {} : { status: await projectStatus(project.name) }),
     })),
   );
-  const proxy = await proxyReport();
+  const [proxy, dns] = await Promise.all([proxyReport(), dnsReport()]);
   // Rig's own Caddy reports what it serves; otherwise the Host's Caddy serves what status says.
   const routes = proxy.ok
     ? managedProxyRoutes(proxy.value, proxyRoutes(entries))
@@ -163,6 +243,7 @@ export default async function ProxyPage() {
           </ul>
         )}
       </section>
+      <DnsSection read={dns} />
       <Panel
         title="Your own routes"
         description="Hostnames outside any Project, each sent to a service on this Mac."

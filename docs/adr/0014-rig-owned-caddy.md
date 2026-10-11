@@ -29,7 +29,7 @@ Rig runs **one Caddy**. That Caddy terminates TLS with Let's Encrypt certificate
 
 - The front Caddy, the router and the ask service retire, so b-secret and its users can be removed. The owner does that outside Rig.
 - The router's own sites (code, core, dev.core, dev.pantry) are deleted, not migrated.
-- There are no wildcard routes, and Rig manages no DNS records.
+- There are no wildcard routes, and Rig manages no DNS records (since reversed by [ADR 0018](0018-dns-records.md), which manages them with the same token).
 - The owner can add routes that are not Rig Projects.
 - Sites come up at boot, before anyone logs in, as they do today.
 
@@ -43,7 +43,7 @@ The coordinator settled these questions:
 - A scoped token file.
 - Boot start is built last, as its own slice, with `login` kept as the default until the owner answers. The owner's answer is expected to be yes, so this Host's cutover requires boot mode.
 - `providers.caddy` retires after the rollback window.
-- No DNS management.
+- No DNS management (reversed by [ADR 0018](0018-dns-records.md)).
 
 A second hostname on one Target is supported internally. Its rig.yaml syntax is still open: the proposal is a per-Service `domain`, such as `services.api.domain: api.melody.b-relay.com`, whose Preview applies the flat rule (`api-<preview>.melody.b-relay.com`). No schema key exists yet.
 

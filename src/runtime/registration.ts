@@ -169,12 +169,19 @@ function notForgotten(project: ProjectRecord, error: unknown): RigError {
       {},
       failureCauses(error),
     );
+  // Routes were withdrawn and could not all be put back: a failed rollback, which names the hostnames still missing.
+  if (error.code === "WITHDRAW_ROLLBACK")
+    return new RigError(
+      "FORGET_ROLLBACK",
+      `Project '${project.name}' was not forgotten, and its routes could not all be put back. ${error.message}`,
+      `${error.hint} Or run rig forget ${project.name} again to finish forgetting it.`,
+      error.details,
+      error.causes,
+    );
   return new RigError(
     error.code,
     `Project '${project.name}' was not forgotten: its routes could not be withdrawn. ${error.message}`,
-    error.code === "WITHDRAW_ROLLBACK"
-      ? `${error.hint} Its registration is unchanged: fix that, then run rig forget ${project.name} again.`
-      : `${error.hint} Its registration and routes are unchanged: fix that, then run rig forget ${project.name} again.`,
+    `${error.hint} Its registration and routes are unchanged: fix that, then run rig forget ${project.name} again.`,
     error.details,
     error.causes,
   );

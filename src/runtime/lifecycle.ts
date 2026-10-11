@@ -14,7 +14,12 @@ import type {
 } from "../providers/contracts";
 import { isStopDetached, serviceGraceMs } from "../domain/stop-budget";
 import type { ListenerEvidence } from "../providers/listener-inspection";
-import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
+import {
+  RigError,
+  failureCauses,
+  failureReason,
+  retainFailureCauses,
+} from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
 import { componentDirectory, jobDirectory } from "../config/working-dir";
 import { randomUUID } from "node:crypto";
@@ -427,20 +432,20 @@ export function createTargetLifecycle(
           if (withdrawal) withdrawn.push(withdrawal);
         }
       } catch (error) {
+        /** The hostnames a failure names as withdrawn and not published again (WITHDRAW_ROLLBACK, ROUTE_RESTORE). */
+        const missing = (failure: unknown): string[] =>
+          failure instanceof RigError &&
+          Array.isArray(failure.details.hostnames)
+            ? failure.details.hostnames.map(String)
+            : [];
         try {
           await restore();
         } catch (recovery) {
           throw new RigError(
             "WITHDRAW_ROLLBACK",
-            "A route could not be withdrawn, and some withdrawn before it could not be published again.",
-            "Their Targets are stopped; rig up or rig deploy of each publishes its route again. Run rig doctor before retrying.",
-            {
-              hostnames:
-                recovery instanceof RigError &&
-                Array.isArray(recovery.details.hostnames)
-                  ? recovery.details.hostnames
-                  : [],
-            },
+            `A route could not be withdrawn (${failureReason(error)}), and the routes for ${[...missing(error), ...missing(recovery)].join(", ")} withdrawn meanwhile could not be published again.`,
+            "Their Targets are stopped, so nothing was served through them; rig up or rig deploy of each publishes its route again. Run rig doctor before retrying.",
+            { hostnames: [...missing(error), ...missing(recovery)] },
             failureCauses(error, recovery),
           );
         }

@@ -907,6 +907,88 @@ for (const mode of modes) {
   });
 }
 
+test("managed: an ordinary route change never writes into a file the route file was swapped for after the change read it", async () => {
+  const w = await rigWorld("managed");
+  await w.deployedThenStopped();
+  const before = await w.routes();
+  const other = await mkdtemp(join(tmpdir(), "rig-other-root-"));
+  roots.push(other);
+  const otherFile = join(other, "Caddyfile");
+  const otherRoutes = `# rig begin ${"b".repeat(64)}\nother.test {\n  reverse_proxy 127.0.0.1:5000\n}\n# rig end ${"b".repeat(64)}\n`;
+  await writeFile(otherFile, otherRoutes);
+  // The settings Caddy accepted are read from Host config once the current generation records none, which a change does
+  // after it read the route file: that is when the link is swapped in.
+  const current = await w.managed!.current();
+  const metadata = join(
+    w.root,
+    "caddy",
+    "generations",
+    current!,
+    "generation.json",
+  );
+  const recorded = JSON.parse(await readFile(metadata, "utf8"));
+  delete recorded.proxy;
+  await writeFile(metadata, JSON.stringify(recorded));
+  let reads = 0;
+  w.managed!.control.beforeSettings = async () => {
+    // The first read is reconcile's, before the change reads the route file; the second follows that read.
+    if (++reads === 2) {
+      await rm(w.routeFile);
+      await symlink(otherFile, w.routeFile);
+    }
+  };
+  await expect(
+    w.runtime.command({ action: "forget", project: "ledger" }),
+  ).rejects.toMatchObject({
+    code: "ROUTE_CHANGED",
+    message: expect.stringContaining("was not forgotten"),
+  });
+  expect(reads).toBeGreaterThanOrEqual(2);
+  // The other root's routes are untouched, and the Project is still registered with its routes in its own file.
+  expect(await readFile(otherFile, "utf8")).toBe(otherRoutes);
+  expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
+  w.managed!.control.beforeSettings = undefined;
+  await rm(w.routeFile);
+  await writeFile(w.routeFile, before);
+  expect(await blocksOf(w.routeFile)).toHaveLength(2);
+});
+
+test("external: a withdrawal that took effect, then failed, and could not be put back is reported as a failed rollback naming the missing hostname", async () => {
+  let afterRemoval = false;
+  const w = await rigWorld("external", {
+    router: (router) => ({
+      ...router,
+      async remove(key) {
+        await router.remove(key);
+        if (!afterRemoval) {
+          afterRemoval = true;
+          // The removal took effect; what follows it fails, and so does the reload that would put it back.
+          w.failNextReloads(1);
+          throw new Error("recording the removal failed");
+        }
+      },
+    }),
+  });
+  await w.deployedThenStopped();
+  const refused = (await w.runtime
+    .command({ action: "forget", project: "ledger" })
+    .catch((error: unknown) => error)) as RigError;
+  // Read before toMatchObject, which leaves a matched message replaced by its matcher.
+  expect(refused.message).toContain("recording the removal failed");
+  expect(refused).toMatchObject({
+    code: "FORGET_ROLLBACK",
+    message: expect.stringContaining(
+      "Project 'ledger' was not forgotten, and its routes could not all be put back.",
+    ),
+    hint: expect.stringContaining("rig up or rig deploy of"),
+  });
+  const missing = refused.details.hostnames as string[];
+  expect(missing).toHaveLength(1);
+  const routes = (await w.routes()).split("\n");
+  expect(routes).not.toContain(`${missing[0]} {`);
+  expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
+});
+
 test("a state write that fails and cannot be read back leaves the routes withdrawn and says the outcome is uncertain", async () => {
   const w = await rigWorld("external");
   await w.deployedThenStopped();

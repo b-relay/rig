@@ -23,6 +23,6 @@ export function nextTheme(current: Theme | undefined): Theme | undefined {
 /** Pure: the Set-Cookie text for a choice; following the system again deletes the cookie. */
 export function themeCookie(theme: Theme | undefined): string {
   return theme
-    ? `${THEME_COOKIE}=${theme}; Path=/; Max-Age=${THEME_SECONDS}; SameSite=Strict`
-    : `${THEME_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict`;
+    ? `${THEME_COOKIE}=${theme}; Path=/; Max-Age=${THEME_SECONDS}; SameSite=Lax`
+    : `${THEME_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
 }

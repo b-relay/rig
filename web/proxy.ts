@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { admit, sessionCookie } from "./server/guard";
 import { SIGNING_IN_HEADER } from "./server/signing-in";
 import { sitePolicy } from "./server/site";
+import { returnPath } from "./lib/return-path";
 /** Decides every page and action before Next renders anything, and gives each page the nonce
  * its scripts run under. Static assets and the readiness probe are excluded by the matcher. */
 export async function proxy(request: NextRequest) {
@@ -39,13 +40,23 @@ export async function proxy(request: NextRequest) {
  * page, which is served to it with none of the site's frame, and its Server Actions reach Next
  * so that `signIn` can accept the key; every other action refuses again by itself. Anything
  * else is refused here. */
-function decide(
+export function decide(
   request: NextRequest,
   admission: ReturnType<typeof admit>,
   requestHeaders: Headers,
 ): NextResponse {
-  if (admission.admitted)
+  if (admission.admitted) {
+    // A browser that is already signed in has nothing to do on the sign-in page: send it on to where it was going.
+    if (request.method === "GET" && request.nextUrl.pathname === "/sign-in")
+      return NextResponse.redirect(
+        new URL(
+          returnPath(request.nextUrl.searchParams.get("next")),
+          request.url,
+        ),
+        303,
+      );
     return NextResponse.next({ request: { headers: requestHeaders } });
+  }
   if (admission.code === "KEY_REQUIRED") {
     requestHeaders.set(SIGNING_IN_HEADER, "1");
     const { pathname, search } = request.nextUrl;

@@ -1,0 +1,43 @@
+import { expect, test } from "bun:test";
+import { NextRequest } from "next/server";
+import { decide } from "../web/proxy";
+
+const admitted = { admitted: true as const, by: "session" as const };
+const visit = (path: string) =>
+  decide(
+    new NextRequest(`https://rig.example.test${path}`),
+    admitted,
+    new Headers(),
+  );
+
+test("a signed-in browser that lands on the sign-in page goes on to where it was going", () => {
+  const onward = visit("/sign-in?next=%2Fprojects%2Fpantry%3Ftab%3Dlogs");
+  expect(onward.status).toBe(303);
+  expect(onward.headers.get("location")).toBe(
+    "https://rig.example.test/projects/pantry?tab=logs",
+  );
+  expect(visit("/sign-in").headers.get("location")).toBe(
+    "https://rig.example.test/",
+  );
+  // Only a path on this site is followed.
+  expect(
+    visit("/sign-in?next=%2F%2Fevil.example").headers.get("location"),
+  ).toBe("https://rig.example.test/");
+});
+
+test("a signed-in browser reaches every other page as before", () => {
+  expect(visit("/projects/pantry").status).toBe(200);
+  expect(visit("/projects/pantry").headers.get("location")).toBeNull();
+});
+
+test("a browser without a session is still sent to sign in", () => {
+  const refused = decide(
+    new NextRequest("https://rig.example.test/projects/pantry"),
+    { admitted: false, status: 401, code: "KEY_REQUIRED", message: "Sign in" },
+    new Headers(),
+  );
+  expect(refused.status).toBe(303);
+  expect(refused.headers.get("location")).toBe(
+    "https://rig.example.test/sign-in?next=%2Fprojects%2Fpantry",
+  );
+});

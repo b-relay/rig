@@ -414,14 +414,14 @@ test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
   expect(signedIn(value, "key-a", now + days(401))).toBe(false);
   expect(signedIn(value, "key-b", now)).toBe(false);
   expect(header).toContain("Max-Age=34560000");
-  expect(header).toContain("Path=/; HttpOnly; Secure; SameSite=Strict");
+  expect(header).toContain("Path=/; HttpOnly; Secure; SameSite=Lax");
   expect(cookie).toMatchObject({
     name: "rig_session",
     maxAge: 34_560_000,
     path: "/",
     httpOnly: true,
     secure: true,
-    sameSite: "strict",
+    sameSite: "lax",
   });
   // A visit on day 399 issues a cookie that outlives the first.
   const later = sessionCookie("key-a", now + days(399));

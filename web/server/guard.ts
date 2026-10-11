@@ -101,7 +101,11 @@ const signature = (key: string, expires: number) =>
 export const sessionValue = (key: string, expires: number): string =>
   `${expires}.${signature(key, expires)}`;
 /** Pure: the cookie that signs a browser in from `now` (epoch milliseconds), as a Set-Cookie
- * header and as the attributes a framework cookie jar takes. Every page reads rigd, so it covers the whole site. */
+ * header and as the attributes a framework cookie jar takes. Every page reads rigd, so it covers the whole site.
+ * SameSite=Lax, not Strict: a browser sends a Strict cookie only on navigations started from this site, so opening
+ * the dashboard from a home-screen icon, a bookmark or a link in another app arrived without it and landed on the
+ * sign-in page. Lax still withholds it from another site's POSTs, and every change here is a POST (a Server Action,
+ * which Next also refuses from another origin); the GET routes only read. */
 export function sessionCookie(key: string, now: number) {
   const value = sessionValue(key, Math.floor(now / 1000) + SESSION_SECONDS);
   return {
@@ -111,8 +115,8 @@ export function sessionCookie(key: string, now: number) {
     path: "/",
     httpOnly: true,
     secure: true,
-    sameSite: "strict" as const,
-    header: `${SESSION_COOKIE}=${value}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`,
+    sameSite: "lax" as const,
+    header: `${SESSION_COOKIE}=${value}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Lax`,
   };
 }
 const sameText = (a: string, b: string): boolean => {

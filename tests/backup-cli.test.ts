@@ -208,9 +208,9 @@ test("rig backup restore resolves latest, asks before it acts, then waits for th
     backup: "20261011T030000Z",
   });
   expect(h.out()).toBe(
-    "melody stable db-backup restored from 20261011T030000Z (restore from 20261011T030000Z succeeded in 5s)\n",
+    "melody stable db-backup restored from 20261011T030000Z (succeeded in 5s)\n",
   );
-  expect(h.err()).toContain("rig logs --service db-backup");
+  expect(h.err()).toContain("rig logs stable --service db-backup");
 });
 
 test("rig backup restore is cancelled when the answer is no, refused without a terminal unless --yes, and fails when the restore fails", async () => {

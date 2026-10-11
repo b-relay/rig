@@ -23,6 +23,13 @@ jobs:
     schedule: "0 2 * * *"
     environment:
       API_URL: http://127.0.0.1:${services.api.port}
+  # A backup job, so the Jobs tab shows backups, Back up now and Restore.
+  books-backup:
+    command: curl -fsS http://127.0.0.1:${services.api.port}/healthz > "$RIG_BACKUP_DIR/books.json"
+    schedule: "30 2 * * *"
+    backup:
+      keep: 7
+      restore: cat "$RIG_BACKUP_DIR/books.json"
 
 # The seed deploys the stable Target, so it is on.
 targets:

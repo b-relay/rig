@@ -44,7 +44,7 @@ export function renderResult(action: string, value: unknown): string {
       outcome === "restored"
         ? `restored from ${word(report.backup)}${
             typeof ended.message === "string"
-              ? ` (${word(ended.message).replace(/^[^:]*: /, "")})`
+              ? ` (${word(ended.message).replace(/^[^:]*: (?:restore from \S+ )?/, "")})`
               : ""
           }`
         : `restore from ${word(report.backup)} ${outcome}`

@@ -11,6 +11,7 @@ import {
   type ProgressDisplay,
 } from "./progress-display";
 import { formatClock } from "./stop-display";
+import { terminalText } from "./terminal-text";
 import { awaitRestore } from "./restore-wait";
 import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
 import { PREVIEW_SELECTOR } from "../config/schema";
@@ -286,9 +287,14 @@ async function restoreOutcome(
   dependencies: CliDependencies,
 ): Promise<unknown> {
   if (!json(started)) return started;
+  const logs = `rig logs ${
+    request.target === PREVIEW_SELECTOR
+      ? `preview --deployment ${terminalText(String(started.target))}`
+      : terminalText(String(started.target ?? request.target))
+  } --service ${request.job}`;
   if (!dependencies.signal?.aborted)
     dependencies.output.error(
-      `Restoring ${request.job} from ${String(started.backup ?? request.backup)}; its output is in rig logs --service ${request.job}.\n`,
+      `Restoring ${request.job} from ${terminalText(String(started.backup ?? request.backup))}; its output is in ${logs}.\n`,
     );
   const ended = await awaitRestore(operationId, dependencies);
   if (!ended) {
@@ -301,7 +307,7 @@ async function restoreOutcome(
     throw new RigError(
       "RESTORE_FAILED",
       `${ended.message ?? `${request.job}: the restore ${ended.outcome}`}.`,
-      `Its output is in rig logs ${request.target === PREVIEW_SELECTOR ? `preview --deployment ${String(started.target)}` : String(started.target ?? request.target)} --service ${request.job}.`,
+      `Its output is in ${logs}.`,
       { operationId },
     );
   return { ...started, outcome: "restored", ended };

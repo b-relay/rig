@@ -142,7 +142,10 @@ export function TargetActions({
             );
           })}
         <DropdownMenuItem asChild>
-          <Link href={`${targetHref(project, target.name)}/logs`}>
+          <Link
+            href={`${targetHref(project, target.name)}/logs`}
+            className="text-popover-foreground no-underline"
+          >
             <Logs /> Logs
           </Link>
         </DropdownMenuItem>

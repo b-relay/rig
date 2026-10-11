@@ -49,6 +49,10 @@ async function fixture(config: ProjectConfig = melody()) {
   const processes = new Map<string, ProcessObservation>();
   /** Process keys whose observation cannot be made. */
   const unobservable = new Set<string>();
+  /** Services the health monitor reports unhealthy. */
+  const unhealthy = new Set<string>();
+  /** Called before a running process is stopped. */
+  const hooks: { beforeStop?: () => Promise<void> } = {};
   /** Services whose next spawn fails, once. */
   const failStarts = new Set<string>();
   let pid = 5000;
@@ -75,6 +79,7 @@ async function fixture(config: ProjectConfig = melody()) {
     },
     async stop(key) {
       const running = processes.get(key)?.state === "running";
+      if (running) await hooks.beforeStop?.();
       if (running) events.push(`stop ${key.split(":").at(-1)}`);
       processes.set(key, { state: "stopped" });
       return { outcome: running ? "stopped" : "unchanged" };
@@ -96,6 +101,11 @@ async function fixture(config: ProjectConfig = melody()) {
     startsAt: "2026-10-11T09:00:00.000Z",
     readinessDeadlineMs: 2000,
     dependencies: () => ({
+      // The health monitor's cached results: the Services named here are unhealthy.
+      healthResults: (_target: unknown, service: string) =>
+        unhealthy.has(service)
+          ? { status: "unhealthy", failures: 3, retries: 3, restarts: 0 }
+          : undefined,
       sources: {
         async preflight() {
           return { commit: git.head, warnings: [] };
@@ -152,6 +162,8 @@ async function fixture(config: ProjectConfig = melody()) {
     runtime,
     processes,
     unobservable,
+    unhealthy,
+    hooks,
     failStarts,
     events,
     git,
@@ -313,7 +325,18 @@ test("a changed definition restarts that Service and every dependent, in depende
   f.git.head = "c2";
   f.git.changed = () => false;
   edit(f.config, "db", { stop_timeout: "60s" });
+  // Before the first stop, the pending candidate already owns the kept run, so a rigd that stops here knows its plans.
+  let atFirstStop: TargetRecord | undefined;
+  f.hooks.beforeStop = async () => {
+    atFirstStop ??= await f.stable();
+  };
   const result = await f.deploy();
+  expect(atFirstStop!.recovery).toMatchObject({ stage: "pending" });
+  expect(atFirstStop!.commit).toBe("c2");
+  expect(atFirstStop!.services!.search).toMatchObject({
+    deployment: atFirstStop!.plan.workspacePath,
+    source: { commit: "c1" },
+  });
   expect(result).toMatchObject({
     kept: ["search"],
     restarted: [
@@ -363,6 +386,18 @@ test("an env file whose contents changed restarts the Service that loads it, tho
   expect(
     await readFile(join(f.world.root, "runtime", "state.json"), "utf8"),
   ).not.toContain("rotated");
+});
+
+test("a running but unhealthy Service is restarted by a deploy that changed nothing it uses", async () => {
+  const f = await fixture();
+  await f.deploy();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  f.unhealthy.add("web");
+  expect(await f.deploy()).toMatchObject({
+    kept: ["db", "search", "api"],
+    restarted: [{ service: "web", reason: "unhealthy" }],
+  });
 });
 
 test("--force and --no-up keep nothing, and a deploy whose files changed restarts every Service that watches the whole checkout", async () => {

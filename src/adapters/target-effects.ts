@@ -707,6 +707,9 @@ export function createTargetEffects(
         })),
       });
     },
+    async releaseRoute(target) {
+      await options.router.release?.(target.id);
+    },
     async removeRoute(target) {
       await transactions.withRouteChange(target.id, () =>
         options.router.remove(target.id),

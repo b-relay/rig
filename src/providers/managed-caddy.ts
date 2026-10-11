@@ -571,13 +571,26 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     return { raw, routes: canonicalRouteFile(raw).text };
   }
   /** The route edit `route` or `restoration` makes, refused as `editRouteFile` refuses it, against the owner's routes Caddy
-   * accepted. */
+   * accepted and the hostnames another deploy has checked and is about to publish. */
   async function edited(
     before: string,
     key: string,
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ) {
+    for (const site of route?.sites ?? []) {
+      const hostname = bareHostname(site.hostname);
+      const holder = [...reservations].find(
+        ([other, hosts]) => other !== key && hosts.includes(hostname),
+      );
+      if (holder)
+        throw new RigError(
+          "ROUTE_CONFLICT",
+          `The hostname ${site.hostname} is about to be published by another deploy.`,
+          "Wait for that deploy to finish, or choose a different hostname.",
+          { hostname: site.hostname, owner: "another deploy" },
+        );
+    }
     return editRouteFile({
       before,
       key,
@@ -655,6 +668,10 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       // What a deploy asks before it stops anything: whether this route would be refused.
       // What a deploy asks before it stops anything: whether this route would be refused. Its hostnames are then reserved
       // until the route is applied, rolled back or removed, so a Host config published in between cannot claim them.
+      release: (key) =>
+        queued(async () => {
+          reservations.delete(key);
+        }),
       check: (route) =>
         queued(async () => {
           await edited((await canonicalRoutes()).routes, route.key, route);

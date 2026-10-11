@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyProxyCertificates } from "../src/adapters/proxy-verify";
+import { parseHostConfig } from "../src/config";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -155,3 +156,22 @@ test("nothing listening on the port is a failure that names the port", async () 
   });
   expect(verdict).toMatchObject({ ok: false });
 }, 30_000);
+
+test("without --port, verify dials the HTTPS port the pinned generation was accepted with, not a pending one in Host config", async () => {
+  const w = await world(["app.example.test"]);
+  const accepted = parseHostConfig({
+    proxy: { caddy: "/c", ports: { http: 18080, https: w.port } },
+  }).proxy!;
+  await writeFile(
+    join(w.root, "caddy", "generations", "g1", "generation.json"),
+    JSON.stringify({ proxy: accepted, customRoutes: [] }),
+  );
+  // Host config says 28443, which Caddy has not taken: nothing listens there.
+  const [verdict] = await verifyProxyCertificates({
+    root: w.root,
+    defaultPort: 28443,
+    stagingOk: true,
+    waitMs: 0,
+  });
+  expect(verdict).toMatchObject({ hostname: "app.example.test", ok: true });
+});

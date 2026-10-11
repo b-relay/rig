@@ -41,6 +41,8 @@ export interface Router {
   /** Refuses `route` as `apply` would (ROUTE_INVALID, ROUTE_CONFLICT) without changing anything, so a deploy learns before it
    * stops the previous Deployment that its route cannot be published. */
   check?(route: RouteRequest): Promise<void>;
+  /** Lets go of the hostnames `check` reserved for `key`, once the deployment that asked is decided. */
+  release?(key: string): Promise<void>;
 }
 
 /** One change to the route file, worked out from its text alone. */

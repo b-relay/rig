@@ -2,10 +2,18 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
-import { generationFiles, proxyPaths } from "../domain/managed-proxy";
-import { currentGeneration, pendingSettings } from "./proxy-generation";
+import { proxyPaths } from "../domain/managed-proxy";
+import {
+  currentGeneration,
+  pendingSettings,
+  type PublishedGeneration,
+} from "./proxy-generation";
 import { canonicalRouteFile } from "../providers/route-file";
-import { createCaddyAdmin } from "../providers/caddy-admin";
+import {
+  createCaddyAdmin,
+  type CaddyAdminClient,
+} from "../providers/caddy-admin";
+import type { CaddyJob } from "../providers/managed-caddy";
 import { installedBinary } from "../providers/caddy-binary";
 import { createCaddyJob } from "../providers/caddy-job";
 import type { DaemonMode } from "../daemon/installation";
@@ -18,6 +26,11 @@ export async function inspectManagedProxy(
   root: string,
   settings: ProxySettings,
   mode: DaemonMode,
+  /** The admin socket and job to ask; Rig's own for `root` unless a test passes others. */
+  observe?: {
+    readonly admin: CaddyAdminClient;
+    readonly job: Pick<CaddyJob, "state"> & { readonly description: string };
+  },
 ): Promise<DoctorCheck[]> {
   const paths = proxyPaths(root);
   const checks: DoctorCheck[] = [];
@@ -61,16 +74,18 @@ export async function inspectManagedProxy(
           hint: "Run rigd install, which copies and checks the Caddy proxy.caddy names.",
         },
   );
-  const admin = createCaddyAdmin(paths.socket);
-  const job = createCaddyJob({
-    root,
-    paths,
-    mode,
-    userHome: homedir(),
-    uid: process.getuid?.() ?? 501,
-    userName: userInfo().username,
-    admin,
-  });
+  const admin = observe?.admin ?? createCaddyAdmin(paths.socket);
+  const job =
+    observe?.job ??
+    createCaddyJob({
+      root,
+      paths,
+      mode,
+      userHome: homedir(),
+      uid: process.getuid?.() ?? 501,
+      userName: userInfo().username,
+      admin,
+    });
   const [state, reachable] = await Promise.all([
     job.state(),
     admin.reachable(),
@@ -101,15 +116,13 @@ export async function inspectManagedProxy(
             hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
           },
   );
-  checks.push(...(await generationChecks(root, paths, settings)));
+  // One generation for the whole inspection, resolved once: its settings, routes and adapted JSON all come from it.
+  const generation = await currentGeneration(root);
+  checks.push(...(await generationChecks(root, paths, settings, generation)));
   // What Caddy runs, not what the files say: after a crash between switching and activating they differ.
   if (reachable) {
-    const [loaded, expected] = await Promise.all([
-      admin.config(),
-      readFile(generationFiles(paths.current).adapted, "utf8")
-        .then((text) => JSON.parse(text) as unknown)
-        .catch(() => undefined),
-    ]);
+    const loaded = await admin.config();
+    const expected = generation?.adapted;
     if (expected !== undefined)
       checks.push(
         Bun.deepEquals(loaded, expected)
@@ -137,6 +150,7 @@ async function generationChecks(
   root: string,
   paths: ReturnType<typeof proxyPaths>,
   settings: ProxySettings,
+  generation: PublishedGeneration | undefined,
 ): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   for (const file of paths.retiredCustomFiles)
@@ -158,7 +172,6 @@ async function generationChecks(
       reason: "proxy-route-file-foreign",
       hint: "Run rig proxy reload to rewrite the route file now.",
     });
-  const generation = await currentGeneration(root);
   if (!generation)
     return [
       ...checks,

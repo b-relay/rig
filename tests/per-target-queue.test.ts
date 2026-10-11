@@ -196,6 +196,7 @@ async function fixture(host: Record<string, unknown> = {}) {
     },
     lifecycle: {
       async checkRoute() {},
+      async releaseRoute() {},
       async startJob() {},
       async observeJob() {
         return { state: "stopped" as const };

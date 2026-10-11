@@ -87,7 +87,8 @@ export async function main(args: readonly string[]): Promise<number> {
             );
           return verifyProxyCertificates({
             root,
-            port: options.port ?? host.proxy.ports.https,
+            ...(options.port !== undefined ? { port: options.port } : {}),
+            defaultPort: host.proxy.ports.https,
             stagingOk: options.stagingOk,
             waitMs: options.waitSeconds * 1000,
           });

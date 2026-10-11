@@ -246,7 +246,8 @@ deploy and route change goes on with those. `rig proxy`, `rig doctor`
 the reason. A Host config that no longer validates fails the reload with
 `PROXY_CONFIG`, naming the fields at fault. A deploy also checks that its
 route can be published before it stops the previous Deployment, and holds its
-hostnames until the route is published.
+hostnames until the deploy is decided, so neither another deploy nor a
+`rig proxy reload` can take them meanwhile.
 
 Rig's own Caddy publishes only what Rig renders from the route file's blocks.
 Text it did not write there, such as an external router's `extra_config`, is
@@ -265,7 +266,7 @@ Target behind it, or `proxy.routes` and its upstream, its routes and the
 certificate that covers it, all as Caddy serves them, then any proxy settings
 in Host config that are not served yet. `rig proxy reload` applies the `proxy`
 section of Host config as it is now. `rig proxy verify` makes a
-real TLS handshake with every served hostname on this Host's HTTPS port. A
+real TLS handshake with every served hostname on the HTTPS port Caddy serves (not a pending one in Host config; `--port` overrides it). A
 hostname passes only with a certificate trusted by Mozilla's root store, from a production
 CA, valid for more than seven days. A new certificate can take minutes while
 DNS propagates, so `--wait 600` keeps checking until then. A reload that

@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
   symlink,
@@ -16,6 +17,7 @@ import {
   writeProxyToken,
 } from "../src/adapters/proxy-token";
 import { inspectHost } from "../src/adapters/host-inspection";
+import { inspectManagedProxy } from "../src/adapters/proxy-inspection";
 import { parseHostConfig } from "../src/config";
 import type { ProxySettings } from "../src/config/proxy-schema";
 import { hostRoutes, settingsDigest } from "../src/domain/managed-proxy";
@@ -206,4 +208,44 @@ test("doctor names a custom Caddy file an earlier build read as ignored, and Hos
   expect(
     (await inspectHost(r)).find((check) => check.name === "proxy-settings"),
   ).toMatchObject({ ok: true });
+});
+
+test("doctor pins one generation for the whole inspection: a publication that switches current meanwhile cannot mix two", async () => {
+  const r = await root();
+  const settings = parseHostConfig({
+    proxy: { caddy: "/usr/local/bin/caddy", tls: { ca: "internal" } },
+  }).proxy!;
+  const newer = { ...settings, routes: { "new.example.com": 3000 } };
+  const write = async (id: string, proxy: ProxySettings, adapted: unknown) => {
+    const directory = join(r, "caddy", "generations", id);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "generation.json"),
+      JSON.stringify({ proxy, customRoutes: hostRoutes(proxy) }),
+    );
+    await writeFile(join(directory, "adapted.json"), JSON.stringify(adapted));
+  };
+  await write("g1", settings, { generation: 1 });
+  await write("g2", newer, { generation: 2 });
+  await symlink(join("generations", "g1"), join(r, "caddy", "current"));
+  const switchToG2 = async () => {
+    await symlink(join("generations", "g2"), join(r, "caddy", "next"));
+    await rename(join(r, "caddy", "next"), join(r, "caddy", "current"));
+  };
+  // Caddy still runs g1 when doctor asks; a publication switches current to g2 at that very moment.
+  const checks = await inspectManagedProxy(r, settings, "process", {
+    admin: {
+      reachable: async () => true,
+      config: async () => {
+        await switchToG2();
+        return { generation: 1 };
+      },
+      stop: async () => true,
+    },
+    job: { state: async () => "running", description: "test job" },
+  });
+  const byName = new Map(checks.map((check) => [check.name, check]));
+  // Both checks describe g1, the generation the inspection began with.
+  expect(byName.get("proxy-serving")).toMatchObject({ ok: true });
+  expect(byName.get("proxy-settings")).toMatchObject({ ok: true });
 });

@@ -576,3 +576,29 @@ test("a generation without the settings it was accepted with is no last-good: ro
     ],
   });
 });
+
+test("two deploys cannot reserve one hostname: the second is refused at its check, and apply honours another's reservation", async () => {
+  const w = await world();
+  const route = (key: string) => ({
+    key,
+    sites: [
+      {
+        hostname: "shared.example.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:3010" }],
+      },
+    ],
+  });
+  await w.caddy.router.check!(route("a"));
+  // The same Target checking again is its own reservation, not a conflict.
+  await w.caddy.router.check!(route("a"));
+  await expect(w.caddy.router.check!(route("b"))).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    details: { owner: "another deploy" },
+  });
+  await expect(w.caddy.router.apply(route("b"))).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+  });
+  // Once the first deploy is decided and lets go, the hostname is free again.
+  await w.caddy.router.release!("a");
+  await w.caddy.router.check!(route("b"));
+});

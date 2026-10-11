@@ -5,13 +5,17 @@ import {
   type CertificateVerdict,
 } from "../domain/certificate-check";
 import { certificateName } from "../domain/managed-proxy";
-import { currentGeneration } from "./proxy-generation";
+import {
+  currentGeneration,
+  type PublishedGeneration,
+} from "./proxy-generation";
 import { routeFileHostnames } from "../providers/route-file";
 
-/** Every hostname with a certificate that the current generation serves: Rig's sites and the owner's own routes. Read from
- * the generation itself, so it needs no rigd and names exactly what Caddy was given. */
-export async function servedHostnames(root: string): Promise<string[]> {
-  const generation = await currentGeneration(root);
+/** Every hostname with a certificate that `generation` serves: Rig's sites and the owner's own routes. Read from the
+ * generation itself, so it needs no rigd and names exactly what Caddy was given. */
+function servedHostnames(
+  generation: PublishedGeneration | undefined,
+): string[] {
   const names = [
     ...routeFileHostnames(generation?.routes ?? ""),
     ...(generation?.customRoutes ?? []).map((route) => route.hostname),
@@ -86,7 +90,10 @@ function handshake(
  * one passes or `waitMs` runs out. It reports what was served, never what Caddy's log suggests. */
 export async function verifyProxyCertificates(options: {
   readonly root: string;
-  readonly port: number;
+  /** The HTTPS port to dial, when the caller names one; otherwise the one the pinned generation was accepted with. */
+  readonly port?: number;
+  /** The port for a generation that recorded no settings: Host config's. */
+  readonly defaultPort?: number;
   readonly stagingOk: boolean;
   readonly waitMs: number;
   readonly now?: () => Date;
@@ -99,11 +106,18 @@ export async function verifyProxyCertificates(options: {
   const deadline = Date.now() + options.waitMs;
   const verdicts = new Map<string, CertificateVerdict>();
   for (;;) {
-    const names = await servedHostnames(options.root);
+    // Hostnames and port from one generation, resolved once per pass: never a port from Host config Caddy has not taken.
+    const generation = await currentGeneration(options.root);
+    const port =
+      options.port ??
+      generation?.proxy?.ports.https ??
+      options.defaultPort ??
+      443;
+    const names = servedHostnames(generation);
     const pending = names.filter((name) => !verdicts.get(name)?.ok);
     for (const verdict of await Promise.all(
       pending.map((name) =>
-        handshake(name, options.port, now(), options.stagingOk, options.trust),
+        handshake(name, port, now(), options.stagingOk, options.trust),
       ),
     ))
       verdicts.set(verdict.hostname, verdict);

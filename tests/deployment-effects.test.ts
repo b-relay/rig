@@ -873,3 +873,61 @@ test("a deploy whose route cannot be published is refused before the previous De
   expect(caddy.servedRoutes()).toBe(served);
   expect(served).toContain("old.test");
 });
+
+test("a deploy's reservation is released however it ends: activated, prepared without starting, or failed", async () => {
+  for (const ending of ["activated", "prepared", "failed"] as const) {
+    const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+    roots.push(caddy.root);
+    const f = await fixture({ router: caddy.caddy.router });
+    await f.lifecycle.up(f.previous);
+    if (ending === "failed") failReadiness(f.candidate);
+    const deployed = activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: ending === "prepared" ? "prepare" : "start" },
+      f.deps,
+    );
+    if (ending === "failed")
+      await expect(deployed).rejects.toMatchObject({ code: "HEALTH_FAILED" });
+    else await deployed;
+    // The owner then claims the candidate's hostname for a route of their own.
+    caddy.setSettings({
+      tls: { ca: "internal" },
+      routes: { "new.test": 3005 },
+    });
+    if (ending === "activated")
+      // Served by the Target now: refused as the Target's, not as a deploy's reservation.
+      await expect(caddy.caddy.republish()).rejects.toMatchObject({
+        message: expect.stringContaining("which a Target serves (new.test)"),
+      });
+    // Nothing holds it: the owner's route is accepted.
+    else expect(await caddy.caddy.republish()).toEqual({ published: true });
+  }
+});
+
+test("concurrent deploys of one hostname: the second is refused before it stops its previous Deployment", async () => {
+  const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+  roots.push(caddy.root);
+  // Another Target's deploy has checked new.test and is about to publish it.
+  await caddy.caddy.router.check!({
+    key: "other",
+    sites: [
+      {
+        hostname: "new.test",
+        routes: [{ prefix: "/", upstream: "127.0.0.1:4000" }],
+      },
+    ],
+  });
+  const f = await fixture({ router: caddy.caddy.router });
+  await f.lifecycle.up(f.previous);
+  await expect(
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  expect(f.running.size).toBe(1);
+  expect(caddy.servedRoutes()).toContain("old.test");
+});

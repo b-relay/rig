@@ -33,6 +33,20 @@ export async function activateDeployment(
   intent: { activation: "start" | "prepare"; operationId?: string },
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
+  try {
+    return await activate(candidate, previous, intent, deps);
+  } finally {
+    // The route check reserved the candidate's hostnames. Once the deployment is decided, on every path (activated, prepared
+    // without starting, failed or rolled back), the reservation goes: an activated route already holds them in the route file.
+    await deps.lifecycle.releaseRoute(candidate).catch(() => {});
+  }
+}
+async function activate(
+  candidate: TargetRecord,
+  previous: TargetRecord | undefined,
+  intent: { activation: "start" | "prepare"; operationId?: string },
+  deps: RuntimeDependencies,
+): Promise<TargetRecord> {
   assertDeploymentRecovered(previous);
   candidate.deploymentIncomplete = true;
   candidate.recovery = {

@@ -22,6 +22,8 @@ export interface PublishedGeneration {
   readonly proxy?: ProxySettings;
   /** The owner's `proxy.routes` it serves. */
   readonly customRoutes: readonly HostRoute[];
+  /** Its adapted JSON: what a Caddy serving it reports at GET /config/; absent when unreadable. */
+  readonly adapted?: unknown;
 }
 /** The generation `current` names now, resolved once; undefined before the first. */
 export async function currentGeneration(
@@ -47,9 +49,13 @@ export async function currentGeneration(
           : [];
       })
     : [];
+  const adapted = await readFile(files.adapted, "utf8")
+    .then((text) => JSON.parse(text) as unknown)
+    .catch(() => undefined);
   return {
     id: basename(directory),
     routes: await readFile(files.routes, "utf8").catch(() => ""),
+    ...(adapted !== undefined ? { adapted } : {}),
     ...(proxy.success ? { proxy: proxy.data } : {}),
     customRoutes,
   };

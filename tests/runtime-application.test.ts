@@ -126,6 +126,7 @@ function fixture() {
     },
     lifecycle: {
       async checkRoute() {},
+      async releaseRoute() {},
       async startJob() {},
       async observeJob() {
         return { state: "stopped" as const };

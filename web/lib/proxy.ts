@@ -1,5 +1,5 @@
 import type { ProxyReport } from "../../src/adapters/proxy-report";
-import type { ProjectEntry } from "./board-rows";
+import type { ProjectEntry } from "./overview";
 import type { Outcome } from "./outcome";
 import { orderedTargets } from "./overview";
 import { routeLines } from "./target-detail";

@@ -1,12 +1,15 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, Rocket } from "lucide-react";
-import { Failure, Mono, PageHeader } from "@/components/bits";
+import { Failure, HealthDot, Mono, PageHeader } from "@/components/bits";
+import { ProjectIcon } from "@/components/project-icon";
 import { ProjectTabs } from "@/components/project-tabs";
 import { Button } from "@/components/ui/button";
+import { projectHealth } from "@/lib/health";
 import { projectHref } from "@/lib/target";
 import { project } from "@/server/project";
 import { settled } from "@/server/settled";
+import { projectStatus } from "@/server/status";
 
 export async function generateMetadata({
   params,
@@ -15,7 +18,7 @@ export async function generateMetadata({
 }) {
   return { title: (await params).name };
 }
-/** A Project's own sections, under its name and repository, with the tabs that move between them. */
+/** A Project's own sections, under its icon, name and repository, with the tabs that move between them. */
 export default async function ProjectLayout({
   params,
   children,
@@ -32,21 +35,39 @@ export default async function ProjectLayout({
       </>
     );
   const found = read.value;
+  const status = found.missing ? undefined : await projectStatus(found.name);
+  const targets = status?.ok ? status.value.targets : [];
+  const stable = targets.find((target) => target.kind === "stable");
   return (
     <>
       <PageHeader
+        icon={
+          <span className="relative">
+            <ProjectIcon
+              project={found.name}
+              favicon={stable?.route !== undefined}
+            />
+            <HealthDot
+              health={
+                found.missing || (status && !status.ok)
+                  ? "red"
+                  : projectHealth(targets.map((target) => target.state))
+              }
+              className="absolute -right-1 -bottom-1 size-3.5 ring-[3px] ring-background"
+            />
+          </span>
+        }
         eyebrow={
-          <>
-            <Link href="/" className="text-muted-foreground">
-              Projects
-            </Link>{" "}
-            /
-          </>
+          <Link href="/" className="text-muted-foreground">
+            Projects
+          </Link>
         }
         title={found.name}
         description={
-          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <Mono className="text-muted-foreground">{found.repoPath}</Mono>
+          <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            <Mono className="truncate break-normal text-muted-foreground">
+              {found.repoPath}
+            </Mono>
             {found.missing ? (
               <span className="inline-flex items-center gap-1 text-xs text-bad">
                 <AlertTriangle className="size-3.5" aria-hidden /> repository

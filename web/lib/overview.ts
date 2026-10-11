@@ -1,7 +1,18 @@
-import type { ProjectEntry } from "./board-rows";
-import { KIND_RANK } from "./board-rows";
+import type { Outcome } from "./outcome";
 import { targetWarnings, toneOf, type Tone } from "./present";
-import type { TargetReport } from "./types";
+import type { ListResult, ProjectStatusReport, TargetReport } from "./types";
+
+/** One registered Project and what rigd said about it; the status is absent while still on its way. */
+export interface ProjectEntry {
+  project: ListResult["projects"][number];
+  status?: Outcome<ProjectStatusReport>;
+}
+/** The order Targets take within a Project: working, then stable, then Previews. */
+export const KIND_RANK: Record<TargetReport["kind"], number> = {
+  working: 0,
+  stable: 1,
+  preview: 2,
+};
 
 /** How bad a tone is, so a group of Targets can be summed up by its worst member. */
 const SEVERITY: Record<Tone, number> = {

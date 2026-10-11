@@ -1,60 +1,75 @@
 import { CircleCheck, CircleX } from "lucide-react";
 import type { DoctorReport } from "@/lib/types";
-import { Notice } from "./bits";
+import { CARD } from "./bits";
+import { cn } from "@/lib/utils";
 
-const HEAD =
-  "h-8 px-4 text-left text-[11px] font-medium tracking-wide whitespace-nowrap text-muted-foreground uppercase";
-const CELL = "px-4 py-2 align-top";
-/** Each check on one row; a failed check shows its reason and the hint that fixes it. */
-export function DoctorTable({ report }: { report: DoctorReport }) {
+/** The report as tinted tiles, failed checks first: each names the check and what it found, and a
+ * failed one its reason and the hint that fixes it. */
+export function DoctorTiles({ report }: { report: DoctorReport }) {
+  const failed = report.checks.filter((check) => !check.ok);
+  const checks = [...failed, ...report.checks.filter((check) => check.ok)];
   return (
     <div className="flex flex-col gap-4">
-      <Notice tone={report.ok ? "good" : "warn"}>
-        {report.ok
-          ? "Every check passed."
-          : "Some checks failed; each row names what to do."}
-        {report.note ? ` ${report.note}` : ""}
-      </Notice>
-      <div className="-mx-4 overflow-x-auto bg-sheet sm:mx-0 sm:rounded-lg sm:border sm:border-rule sm:shadow-xs">
-        <table className="w-full min-w-[36rem] text-sm">
-          <thead className="border-b border-rule">
-            <tr>
-              <th className={HEAD}>Check</th>
-              <th className={HEAD}>Result</th>
-              <th className={HEAD}>Detail</th>
-            </tr>
-          </thead>
-          <tbody className="ruled">
-            {report.checks.map((check) => (
-              <tr key={check.name}>
-                <td className={`${CELL} whitespace-nowrap font-medium`}>
-                  {check.name}
-                </td>
-                <td className={`${CELL} whitespace-nowrap`}>
-                  {check.ok ? (
-                    <span className="inline-flex items-center gap-1.5 text-good">
-                      <CircleCheck className="size-4" aria-hidden /> ok
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1.5 text-bad">
-                      <CircleX className="size-4" aria-hidden /> failed
-                    </span>
-                  )}
-                </td>
-                <td className={CELL}>
-                  <p>{check.message}</p>
-                  {check.reason ? (
-                    <p className="text-muted-foreground">{check.reason}</p>
-                  ) : null}
-                  {check.hint ? (
-                    <p className="text-muted-foreground">{check.hint}</p>
-                  ) : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className={cn(CARD, "flex items-center gap-3 p-4")}>
+        <span
+          className={cn(
+            "flex size-10 shrink-0 items-center justify-center rounded-xl",
+            report.ok ? "bg-good-fill text-good" : "bg-bad-fill text-bad",
+          )}
+        >
+          {report.ok ? (
+            <CircleCheck className="size-5" aria-hidden />
+          ) : (
+            <CircleX className="size-5" aria-hidden />
+          )}
+        </span>
+        <div className="min-w-0">
+          <p className="font-semibold">
+            {report.ok
+              ? "Every check passed"
+              : `${failed.length} of ${report.checks.length} checks failed`}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            {report.ok
+              ? `${report.checks.length} checks.`
+              : "Each failed check names what to do."}
+            {report.note ? ` ${report.note}` : ""}
+          </p>
+        </div>
       </div>
+      <ul className="grid items-start gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+        {checks.map((check) => (
+          <li
+            key={check.name}
+            className={cn(
+              "flex flex-col gap-1 rounded-xl p-3.5 text-sm",
+              check.ok ? "bg-good-fill" : "bg-bad-fill sm:col-span-full",
+            )}
+          >
+            <p
+              className={cn(
+                "flex items-center gap-1.5 font-medium",
+                check.ok ? "text-good" : "text-bad",
+              )}
+            >
+              {check.ok ? (
+                <CircleCheck className="size-4 shrink-0" aria-hidden />
+              ) : (
+                <CircleX className="size-4 shrink-0" aria-hidden />
+              )}
+              <span className="min-w-0 break-words">{check.name}</span>
+              <span className="sr-only">{check.ok ? "ok" : "failed"}</span>
+            </p>
+            <p className="text-foreground/85">{check.message}</p>
+            {check.reason ? (
+              <p className="text-xs text-foreground/70">{check.reason}</p>
+            ) : null}
+            {check.hint ? (
+              <p className="text-xs text-foreground/70">{check.hint}</p>
+            ) : null}
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

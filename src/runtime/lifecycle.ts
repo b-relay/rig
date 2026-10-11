@@ -107,7 +107,10 @@ export interface TargetEffects {
   withdrawRoute(target: TargetRecord): Promise<RouteWithdrawal | undefined>;
   /** Withdraws every route whose Target `owners` does not name; see `Router.withdrawUnowned`. Resolves with the hostnames
    * withdrawn. */
-  pruneRoutes(owners: () => Promise<ReadonlySet<string>>): Promise<string[]>;
+  pruneRoutes(
+    owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
+  ): Promise<string[]>;
   /** Refuses the Target's route map as publishing it would (ROUTE_INVALID, ROUTE_CONFLICT), changing nothing. */
   checkRoute?(target: TargetRecord): Promise<void>;
   /** Lets go of what `checkRoute` reserved for the Target. */
@@ -229,7 +232,10 @@ export interface TargetLifecycle {
   withdrawRoutes(targets: readonly TargetRecord[]): Promise<RouteWithdrawal>;
   /** Withdraws every route whose Target `owners` does not name, reading `owners` after every route change queued before
    * it; resolves with the hostnames withdrawn. */
-  pruneRoutes(owners: () => Promise<ReadonlySet<string>>): Promise<string[]>;
+  pruneRoutes(
+    owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
+  ): Promise<string[]>;
   /** The keyed digest of the environment `service` of `target` would start with now (its env files read now), as a start
    * records it, the checkout path normalized. Fails as composing that environment fails (an unreadable env file, say), or
    * ENV_DIGEST when no digest can be taken. A deploy compares it with the running process's. */
@@ -337,7 +343,8 @@ export function withStops(
     checkRoute: (target) => lifecycle.checkRoute(target),
     releaseRoute: (target) => lifecycle.releaseRoute(target),
     withdrawRoutes: (targets) => lifecycle.withdrawRoutes(targets),
-    pruneRoutes: (owners) => lifecycle.pruneRoutes(owners),
+    pruneRoutes: (owners, confinement) =>
+      lifecycle.pruneRoutes(owners, confinement),
     checkpoint: (target, previous) => lifecycle.checkpoint(target, previous),
     restoreEffects: (target) => lifecycle.restoreEffects(target),
     commitEffects: (target) => lifecycle.commitEffects(target),
@@ -444,7 +451,8 @@ export function createTargetLifecycle(
         restore,
       };
     },
-    pruneRoutes: (owners) => effects.pruneRoutes(owners),
+    pruneRoutes: (owners, confinement) =>
+      effects.pruneRoutes(owners, confinement),
     async checkpoint(target, previous) {
       return await effects.checkpoint(target, previous);
     },

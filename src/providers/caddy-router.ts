@@ -1,15 +1,9 @@
 import { randomUUID } from "node:crypto";
-import {
-  mkdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
+import { within } from "../domain/paths";
+import { realPath } from "./real-path";
 import type { CommandRunner } from "./contracts";
 import {
   assertSingleOwners,
@@ -51,18 +45,33 @@ export function createCaddyRouter(options: {
 } {
   const { run } = options;
   let pending: Promise<unknown> = Promise.resolve();
-  const readRoutes = () =>
-    readFile(options.caddyfile, "utf8").catch((error) => {
+  const readRoutes = (file: string = options.caddyfile) =>
+    readFile(file, "utf8").catch((error) => {
       if (error.code === "ENOENT") return "";
       throw error;
     });
+  /** The file a change reads and writes: the route file's real path, resolved once, so a write goes through a symlinked
+   * Caddyfile (the file Caddy reads changes and the link survives) and lands in the file that was read. */
+  const resolveRoutes = () => realPath(options.caddyfile);
+  /** Refuses, before anything is renamed into `file`, when the route file no longer resolves to it: replaced by a link
+   * to another file since the change read it. Nothing was written to either file then. */
+  async function assertPinned(file: string): Promise<void> {
+    if ((await resolveRoutes()) !== file)
+      throw new RigError(
+        "ROUTE_CHANGED",
+        `The route file ${options.caddyfile} was replaced while Rig was changing it; nothing was written.`,
+        `Inspect ${options.caddyfile} (and what it links to), then retry.`,
+        { caddyfile: options.caddyfile, resolved: file },
+      );
+  }
   async function change(
     key: string,
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ): Promise<void> {
     await mkdir(dirname(options.caddyfile), { recursive: true });
-    const before = await readRoutes();
+    const file = await resolveRoutes();
+    const before = await readRoutes(file);
     const edit = editRouteFile({
       before,
       key,
@@ -74,16 +83,17 @@ export function createCaddyRouter(options: {
     if (!edit) return;
     const { after, withdrawing } = edit;
     if (after === before && !withdrawing) return;
-    await commit(before, after);
+    await commit(file, before, after);
   }
-  /** Validates `after`, writes it in place of `before` and reloads Caddy, putting `before` back when Caddy refuses it. */
-  async function commit(before: string, after: string): Promise<void> {
+  /** Validates `after`, writes it into `file` (the route file's resolved path, read as `before`) and reloads Caddy, putting
+   * `before` back when Caddy refuses it. Refused with ROUTE_CHANGED when the route file stops resolving to `file`. */
+  async function commit(
+    file: string,
+    before: string,
+    after: string,
+  ): Promise<void> {
     // The invariant at the one point every change writes the route file: a hostname has one owner, as Caddy addresses sites.
     assertSingleOwners(after, siteAddress);
-    // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
-    const file = await realpath(options.caddyfile).catch(
-      () => options.caddyfile,
-    );
     const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${file}.${randomUUID()}.tmp`;
     const executable = options.executable ?? "caddy";
@@ -103,6 +113,7 @@ export function createCaddyRouter(options: {
       // what it last loaded, not the file, so a rejected change is put back before anything reloads. It is adapted rather than
       // validated: validating provisions TLS with Host secrets rigd does not hold, and the reload provisions it inside Caddy anyway.
       if (hostCaddyfile) {
+        await assertPinned(file);
         await writeFile(`${file}.rig-backup`, before, { mode });
         await rename(temporary, file);
       }
@@ -148,6 +159,7 @@ export function createCaddyRouter(options: {
         );
       }
       if (!hostCaddyfile) {
+        await assertPinned(file);
         await writeFile(`${file}.rig-backup`, before, { mode });
         await rename(temporary, file);
       }
@@ -208,25 +220,30 @@ export function createCaddyRouter(options: {
       const operation = pending
         .catch(() => {})
         .then(async () => {
-          const before = await readRoutes();
+          const file = await resolveRoutes();
+          const before = await readRoutes(file);
           const after = rerenderOwnedBlocks(before, options.extraConfig ?? []);
-          if (after !== before) await commit(before, after);
+          if (after !== before) await commit(file, before, after);
         });
       pending = operation;
       return operation;
     },
     remove: (key) => serialized(key),
-    withdrawUnowned(owners) {
+    withdrawUnowned(owners, confinement) {
       const operation = pending
         .catch(() => {})
         .then(async () => {
-          const before = await readRoutes();
+          // Resolved once and checked before anything is read: the sweep reads, and writes, only this file.
+          const file = await resolveRoutes();
+          if (confinement && !within(await realPath(confinement.within), file))
+            return [];
+          const before = await readRoutes(file);
           const { text: after, hostnames } = withoutUnownedBlocks(
             before,
             await owners(),
           );
           if (after === before) return [];
-          await commit(before, after);
+          await commit(file, before, after);
           return hostnames;
         });
       pending = operation;

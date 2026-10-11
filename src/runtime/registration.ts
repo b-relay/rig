@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import { RigError, failureCauses } from "../domain/errors";
+import { RigError, failureCauses, failureReason } from "../domain/errors";
 import { observeTargets } from "./status";
 import { keepPublishedNames, planTarget } from "./targets";
 /** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
@@ -98,6 +98,26 @@ export async function forgetProject(
         );
     });
   } catch (error) {
+    // A write can fail after it committed (the state file renamed into place, then its directory not synced): the
+    // registration is gone then, and its routes must stay withdrawn, or they would be orphans again. Read back, the state
+    // says which; routes are published again only while their Project is still registered.
+    const registered = await deps.store
+      .read()
+      .then((state) => state.projects.some((p) => p.id === project.id))
+      .catch(() => undefined);
+    if (registered === false)
+      return [
+        ...forgottenWarnings(targets, kept),
+        `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${project.name} again.`,
+      ];
+    if (registered === undefined)
+      throw new RigError(
+        "FORGET_UNCERTAIN",
+        `Project '${project.name}' may or may not be forgotten: its routes (${withdrawal.hostnames.join(", ")}) were withdrawn, saving the forget failed, and the state could not be read back.`,
+        `Run rig list. If ${project.name} is still registered, run rig forget ${project.name} again; rig up or rig deploy of a Target publishes its route again otherwise.`,
+        { hostnames: [...withdrawal.hostnames] },
+        failureCauses(error),
+      );
     try {
       await withdrawal.restore();
     } catch (recovery) {
@@ -117,6 +137,13 @@ export async function forgetProject(
     }
     throw error;
   }
+  return forgottenWarnings(targets, kept);
+}
+/** What a forget leaves on disk: the stable Target's workspace and data, and the backup directories in `kept`. */
+function forgottenWarnings(
+  targets: readonly TargetRecord[],
+  kept: ReadonlySet<string>,
+): string[] {
   return [
     ...targets
       .filter((t) => t.kind === "stable")

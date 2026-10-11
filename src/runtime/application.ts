@@ -632,7 +632,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // rigd, and Host config whose proxy.routes names that hostname is not refused because of it. This is the explicit
         // sweep: it runs even where the route file lies outside the Rig root. Publication runs in the router's own queue,
         // so it never interleaves with a route change; no Target scope is held.
-        const withdrawn = await withdrawOrphanedRoutes(deps);
+        const withdrawn = await withdrawOrphanedRoutes(deps, false);
         // Without Rig's own Caddy there is no proxy section to apply: the reload only withdraws.
         if (!deps.proxy) return { outcome: "withdrawn", withdrawn };
         await deps.proxy.apply();
@@ -1879,8 +1879,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     void running.finally(() => executing.delete(running)).catch(() => {});
     await running;
   };
-  /** The automatic sweep: `withdrawOrphanedRoutes` unless the route file lies outside the Rig root (`routeFileInRoot`),
-   * where another root may own its blocks and only `rig proxy reload` withdraws them. Never rejects: a failure is recorded
+  /** The automatic sweep: `withdrawOrphanedRoutes` confined to the Rig root, so a route file whose real path lies outside
+   * it (where another root may own its blocks) is left to `rig proxy reload`. Never rejects: a failure is recorded
    * and returned as `failure`, so an Operation that then meets the orphan can say why it is still there. No Target is held:
    * the router reads the recorded Targets inside its own queue, after every route change queued before the sweep, and
    * every Target is recorded before its route is published. */
@@ -1890,9 +1890,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   }> {
     const operationId = deps.id();
     try {
-      if (deps.routeFileInRoot && !(await deps.routeFileInRoot()))
-        return { withdrawn: [] };
-      return { withdrawn: await withdrawOrphanedRoutes(deps, operationId) };
+      return {
+        withdrawn: await withdrawOrphanedRoutes(deps, true, operationId),
+      };
     } catch (failure) {
       await deps
         .diagnostic({
@@ -2416,14 +2416,21 @@ async function pruneCheckpoints(
 }
 /** Withdraws every route block whose Target no state record names (one an earlier `rig forget` left, #336, or a state that
  * lost a Target), so it no longer holds its hostnames from a new owner. The owners are read inside the router's queue.
- * Records that it withdrew some and resolves with their hostnames; fails as the route change fails. */
+ * `confined` (the automatic sweep) withdraws nothing unless the route file really lies inside the Rig root, checked by
+ * the router where it reads and writes. Records that it withdrew some and resolves with their hostnames; fails as the
+ * route change fails. */
 async function withdrawOrphanedRoutes(
-  deps: Pick<RuntimeDependencies, "lifecycle" | "store" | "diagnostic" | "id">,
+  deps: Pick<
+    RuntimeDependencies,
+    "lifecycle" | "store" | "diagnostic" | "id" | "root"
+  >,
+  confined: boolean,
   operationId = deps.id(),
 ): Promise<string[]> {
   const withdrawn = await deps.lifecycle.pruneRoutes(
     async () =>
       new Set((await deps.store.read()).targets.map((target) => target.id)),
+    confined ? { within: deps.root } : undefined,
   );
   // Hostnames come from config, which diagnostics never carry: the entry says how many were withdrawn.
   if (withdrawn.length)

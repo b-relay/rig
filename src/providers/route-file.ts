@@ -49,9 +49,12 @@ export interface Router {
    * router's queue, after every change queued before this one, so a block published for a Target recorded meanwhile is
    * never taken for an orphan (every Target is recorded before its route is published). Resolves with the hostnames
    * withdrawn; with none to withdraw it publishes nothing and asks nothing of the proxy. Fails as `remove` fails (such as
-   * PROXY_UNREACHABLE), with the route file as it was. */
+   * PROXY_UNREACHABLE), with the route file as it was. With `confinement`, the route file's real path is resolved once,
+   * inside the queue, and nothing is withdrawn unless it lies inside `confinement.within`; that resolved file is the one
+   * read and written, and the write is refused (ROUTE_CHANGED) when the route file stops resolving to it meanwhile. */
   withdrawUnowned(
     owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
   ): Promise<string[]>;
 }
 

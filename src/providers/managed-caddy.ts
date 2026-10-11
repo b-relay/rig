@@ -37,6 +37,8 @@ import {
   type ProxySettings,
 } from "../config/proxy-schema";
 import type { CommandRunner } from "./contracts";
+import { realPath } from "./real-path";
+import { within } from "../domain/paths";
 import {
   editRouteFile,
   ownedBlock,
@@ -543,11 +545,25 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
 
   /** Writes the route file whole, through a symlink and keeping its mode, as the external router does: the emergency
    * rollback hands this same file to the old router Caddy, which must still find and read it. */
-  async function writeRoutes(text: string, before: string): Promise<void> {
+  async function writeRoutes(
+    text: string,
+    before: string,
+    /** The route file's real path as the caller resolved it before reading; the write is refused (ROUTE_CHANGED) when the
+     * route file no longer resolves to it, so it never lands in a file the caller did not read. */
+    pinned?: string,
+  ): Promise<void> {
     await mkdir(dirname(paths.routes), { recursive: true });
-    const file = await realpath(paths.routes).catch(() => paths.routes);
+    const file =
+      pinned ?? (await realpath(paths.routes).catch(() => paths.routes));
     const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${file}.${randomUUID()}.tmp`;
+    if (pinned !== undefined && (await realPath(paths.routes)) !== pinned)
+      throw new RigError(
+        "ROUTE_CHANGED",
+        `The route file ${paths.routes} was replaced while Rig was changing it; nothing was written.`,
+        `Inspect ${paths.routes} (and what it links to), then retry.`,
+        { caddyfile: paths.routes, resolved: pinned },
+      );
     await writeFile(`${file}.rig-backup`, before, { mode });
     await writeFile(temporary, text, { mode });
     await chmod(temporary, mode & 0o777);
@@ -680,8 +696,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   /** Withdraws the owned blocks whose key `owners` does not hold, published as one change; see `Router.withdrawUnowned`. */
   async function withdrawUnowned(
     owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
   ): Promise<string[]> {
-    const { raw, routes: before } = await canonicalRoutes();
+    // Resolved once and checked before anything is read: the sweep reads, and writes, only this file.
+    const file = await realPath(paths.routes);
+    if (confinement && !within(await realPath(confinement.within), file))
+      return [];
+    const raw = (await readText(file)) ?? "";
+    const before = canonicalRouteFile(raw).text;
     const { text: after, hostnames } = withoutUnownedBlocks(
       before,
       await owners(),
@@ -692,11 +714,11 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     await reconcile("route");
     const settings = await acceptedSettings();
     assertOwners(after, settings);
-    await writeRoutes(after, raw);
+    await writeRoutes(after, raw, file);
     try {
       await publish(after, "route", settings);
     } catch (error) {
-      await writeRoutes(before, after);
+      await writeRoutes(before, after, file);
       throw error;
     }
     return hostnames;
@@ -713,7 +735,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     router: {
       apply: (route) => queued(() => change(route.key, route)),
       remove: (key) => queued(() => change(key)),
-      withdrawUnowned: (owners) => queued(() => withdrawUnowned(owners)),
+      withdrawUnowned: (owners, confinement) =>
+        queued(() => withdrawUnowned(owners, confinement)),
       withheld: async (key) => withheldPaths((await readOwned(key)) ?? ""),
       checkpoint: async (key) => ({ key, value: await readOwned(key) }),
       restore: (saved, expected) =>

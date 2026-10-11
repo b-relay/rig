@@ -237,9 +237,9 @@ export interface RuntimeDependencies {
     }[]
   >;
   inspectProxy(): Promise<ProxyPublication>;
-  /** Whether the route file lies inside the Rig root (through any symlink), so no other Rig root can own a block in it.
-   * Only then does rigd withdraw route blocks no recorded Target owns on its own (at start, before a deploy, up or
-   * restart); otherwise only `rig proxy reload` does, and doctor says another root may own them. Absent: inside. */
+  /** Whether the route file lies inside the Rig root (through any symlink), so no other Rig root can own a block in it;
+   * doctor says otherwise that another root may own its orphans. (The automatic sweep makes the same check itself, in the
+   * router, where it reads and writes the file.) Absent: inside. */
   routeFileInRoot?(): Promise<boolean>;
   /** Rig's own Caddy, when Host config has a proxy section (ADR 0014); absent otherwise. */
   proxy?: ProxyControl;

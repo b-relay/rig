@@ -1,6 +1,7 @@
-import { readFile, realpath } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { within } from "../domain/paths";
+import { realPath } from "../providers/real-path";
 import type { HostConfig } from "../config/types";
 import {
   countOwnedRoutes,
@@ -28,16 +29,12 @@ export async function routeFileInRoot(
   host: Pick<HostConfig, "providers" | "proxyMode">,
 ): Promise<boolean> {
   if (host.proxyMode === "managed") return true;
-  const file = resolve(
-    host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
+  return within(
+    await realPath(root),
+    await realPath(
+      host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
+    ),
   );
-  const real = async (path: string): Promise<string> =>
-    await realpath(path).catch(async () =>
-      dirname(path) === path
-        ? path
-        : join(await real(dirname(path)), basename(path)),
-    );
-  return within(await real(resolve(root)), await real(file));
 }
 /** Reads the proxy file and host Caddyfiles from disk; missing files count as absent rather than failing. */
 export function inspectHostProxy(

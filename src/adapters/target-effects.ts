@@ -739,16 +739,30 @@ export function createTargetEffects(
       const saved = await options.router.checkpoint(target.id);
       // A Target that publishes nothing asks nothing of the proxy.
       if (saved.value === null) return undefined;
-      await transactions.withRouteChange(target.id, () =>
-        options.router.remove(target.id),
-      );
-      const expected = await options.router.checkpoint(target.id);
+      // Once removed, the route as it is is known without reading it again: absent.
+      const expected = { key: target.id, value: null };
+      try {
+        await transactions.withRouteChange(target.id, () =>
+          options.router.remove(target.id),
+        );
+      } catch (error) {
+        // A failure after the removal took effect (recording it in an active effect journal, say) must not leave it
+        // uncompensated: when the block is gone, or that cannot be read, it is published again before the failure is.
+        const now = await options.router
+          .checkpoint(target.id)
+          .catch(() => undefined);
+        if (now?.value !== saved.value)
+          await options.router.restore(saved, expected).catch(() => {});
+        throw error;
+      }
+      // Nothing that can fail runs between the confirmed removal and the handle that puts it back.
       return {
         hostnames: parseOwnedSites(saved.value).map((site) => site.hostname),
         restore: () => options.router.restore(saved, expected),
       };
     },
-    pruneRoutes: (owners) => options.router.withdrawUnowned(owners),
+    pruneRoutes: (owners, confinement) =>
+      options.router.withdrawUnowned(owners, confinement),
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),

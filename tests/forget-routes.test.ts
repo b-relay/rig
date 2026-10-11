@@ -28,6 +28,7 @@ import type { Supervisor } from "../src/providers/contracts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { RuntimeState } from "../src/domain/runtime";
 import { STATE_VERSION } from "../src/runtime/state-schema";
+import { FileStateStore } from "../src/runtime/state-store";
 import {
   parseHostConfig,
   parseProjectConfig,
@@ -48,7 +49,11 @@ const modes: Mode[] = ["managed", "external"];
 
 /** The proxy a Rig root publishes through: Rig's own Caddy (scripted job and socket), or the external router writing the
  * route file of a Caddy Rig does not run (every reload succeeds unless `failReloads` says otherwise). */
-async function proxyWorld(mode: Mode) {
+async function proxyWorld(
+  mode: Mode,
+  /** The external route file, when not `<root>/proxy/Caddyfile`. */
+  externalRouteFile?: string,
+) {
   if (mode === "managed") {
     const world = await managedCaddyWorld({ tls: { ca: "internal" } });
     roots.push(world.root);
@@ -71,7 +76,7 @@ async function proxyWorld(mode: Mode) {
   }
   const root = await mkdtemp(join(tmpdir(), "rig-external-"));
   roots.push(root);
-  const routeFile = join(root, "proxy", "Caddyfile");
+  const routeFile = externalRouteFile ?? join(root, "proxy", "Caddyfile");
   let failReloads = false;
   let failing = 0;
   const router = createCaddyRouter({
@@ -105,8 +110,15 @@ async function proxyWorld(mode: Mode) {
 
 /** A runtime over an in-memory state whose Targets publish their routes through `router` with the real lifecycle and
  * effects; Services run under an in-memory supervisor and are ready at once. */
-async function rigWorld(mode: Mode) {
-  const proxy = await proxyWorld(mode);
+async function rigWorld(
+  mode: Mode,
+  options: {
+    externalRouteFile?: string;
+    /** Stands between the effects and the router, to fail or observe its calls. */
+    router?: (router: Router) => Router;
+  } = {},
+) {
+  const proxy = await proxyWorld(mode, options.externalRouteFile);
   const state: RuntimeState = {
     version: STATE_VERSION,
     projects: [],
@@ -151,7 +163,7 @@ async function rigWorld(mode: Mode) {
       run: runCommand,
       bunExecutable: process.execPath,
     }),
-    router: proxy.router,
+    router: options.router ? options.router(proxy.router) : proxy.router,
     connect: async () => ({ ready: true }),
     listeners: { inspect: async (pid) => loopbackListeners(pid, [4567]) },
     environment: {},
@@ -184,6 +196,11 @@ async function rigWorld(mode: Mode) {
     async inspectHost() {
       return [];
     },
+    routeFileInRoot: () =>
+      routeFileInRoot(proxy.root, {
+        proxyMode: proxy.managed ? "managed" : "external",
+        providers: { caddy: { caddyfile: proxy.routeFile } },
+      } as Parameters<typeof routeFileInRoot>[1]),
     async inspectProxy() {
       return await inspectProxyPublication({
         proxyFile: proxy.routeFile,
@@ -636,11 +653,14 @@ test("an orphaned route in a route file written by hand is named by its hostname
 });
 
 test("a route file outside the Rig root, which another root may share, is never swept on rigd's own: doctor says so and only rig proxy reload withdraws", async () => {
-  const w = await rigWorld("external");
+  // A providers.caddy.caddyfile outside RIG_ROOT, such as a sandbox naming the real root's.
+  const shared = await mkdtemp(join(tmpdir(), "rig-shared-"));
+  roots.push(shared);
+  const w = await rigWorld("external", {
+    externalRouteFile: join(shared, "Caddyfile"),
+  });
   await w.deployedThenStopped();
   w.forgetLeavingRoutes();
-  // As composition decides for a providers.caddy.caddyfile outside RIG_ROOT, such as a sandbox naming the real root's.
-  w.deps.routeFileInRoot = async () => false;
   const before = await w.routes();
   expect(await w.runtime.withdrawOrphanedRoutes()).toEqual([]);
   expect(await w.routes()).toBe(before);
@@ -749,4 +769,165 @@ test("a withdrawal that fails with no RigError still refuses the forget as one t
     hint: expect.stringContaining("then run rig forget ledger again"),
   });
   expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
+});
+
+/** The route file's blocks, in any order. */
+async function blocksOf(file: string) {
+  return ownedRouteBlocks(await readFile(file, "utf8").catch(() => "")).sort(
+    (a, b) => a.token.localeCompare(b.token),
+  );
+}
+
+for (const mode of modes) {
+  test(`${mode}: a sweep never writes into a file the route file was swapped for after the sweep resolved it`, async () => {
+    const w = await rigWorld(mode);
+    await w.router.apply({
+      key: "gone",
+      sites: [
+        {
+          hostname: "gone.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:4000" }],
+        },
+      ],
+    });
+    // Another root's route file, with a block its own state records.
+    const other = await mkdtemp(join(tmpdir(), "rig-other-root-"));
+    roots.push(other);
+    const otherFile = join(other, "Caddyfile");
+    const otherRoutes =
+      "# rig begin " +
+      "a".repeat(64) +
+      "\nother.test {\n  reverse_proxy 127.0.0.1:5000\n}\n# rig end " +
+      "a".repeat(64) +
+      "\n";
+    await writeFile(otherFile, otherRoutes);
+    const before = await w.routes();
+    // While the sweep waits for the owners it read, the in-root route file becomes a link to the other root's.
+    const refused = await w.router
+      .withdrawUnowned(
+        async () => {
+          await rm(w.routeFile);
+          await symlink(otherFile, w.routeFile);
+          return new Set<string>();
+        },
+        { within: w.root },
+      )
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: "ROUTE_CHANGED" });
+    expect(await readFile(otherFile, "utf8")).toBe(otherRoutes);
+    // The link is undone: the root's own file was never touched either.
+    await rm(w.routeFile);
+    await writeFile(w.routeFile, before);
+    // A route file that already resolves outside the root is not swept at all.
+    await rm(w.routeFile);
+    await symlink(otherFile, w.routeFile);
+    expect(
+      await w.router.withdrawUnowned(async () => new Set<string>(), {
+        within: w.root,
+      }),
+    ).toEqual([]);
+    expect(await readFile(otherFile, "utf8")).toBe(otherRoutes);
+  });
+
+  test(`${mode}: a withdrawal whose route cannot be read back after its removal is still compensated, and never needs reading back`, async () => {
+    // Every read of a route after its removal fails; the second removal is refused.
+    const failing = (router: Router): Router => {
+      const removed = new Set<string>();
+      let removals = 0;
+      return {
+        ...router,
+        async remove(key) {
+          if (refuseSecond && ++removals === 2)
+            throw Object.assign(new Error("reload refused"), {
+              code: "ROUTE_RELOAD",
+            });
+          await router.remove(key);
+          removed.add(key);
+        },
+        async checkpoint(key) {
+          if (removed.has(key)) throw new Error("route file unreadable");
+          return await router.checkpoint(key);
+        },
+        async restore(saved, expected) {
+          await router.restore(saved, expected);
+          removed.delete(saved.key);
+        },
+      };
+    };
+    let refuseSecond = true;
+    const w = await rigWorld(mode, { router: failing });
+    await w.deployedThenStopped();
+    const before = await blocksOf(w.routeFile);
+    await expect(
+      w.runtime.command({ action: "forget", project: "ledger" }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("was not forgotten"),
+    });
+    // The first Target's withdrawn route was published again: nothing changed.
+    expect(await blocksOf(w.routeFile)).toEqual(before);
+    expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
+    // With every removal confirmed, no read after one is needed: the forget completes.
+    refuseSecond = false;
+    expect(
+      await w.runtime.command({ action: "forget", project: "ledger" }),
+    ).toMatchObject({ outcome: "forgotten" });
+    expect(await blocksOf(w.routeFile)).toEqual([]);
+  });
+
+  test(`${mode}: a state write that fails after it committed leaves the routes withdrawn and reports the Project forgotten`, async () => {
+    const w = await rigWorld(mode);
+    // The real store: a write is renamed into place, then its directory synced; the sync is what fails here.
+    const store = new FileStateStore(w.root);
+    let failed = false;
+    w.deps.store = {
+      read: () => store.read(),
+      async update(change) {
+        await store.update(change);
+        if (!failed && (await store.read()).projects.length === 0) {
+          failed = true;
+          throw new Error("fsync of the runtime directory failed");
+        }
+      },
+    };
+    await w.deployedThenStopped();
+    const forgotten = (await w.runtime.command({
+      action: "forget",
+      project: "ledger",
+    })) as { outcome: string; warnings: string[] };
+    expect(failed).toBe(true);
+    expect(forgotten.outcome).toBe("forgotten");
+    expect(forgotten.warnings).toContainEqual(
+      expect.stringContaining(
+        "The forget was saved, but confirming it on disk failed",
+      ),
+    );
+    expect((await store.read()).projects).toEqual([]);
+    // No orphan was published again.
+    expect(await blocksOf(w.routeFile)).toEqual([]);
+  });
+}
+
+test("a state write that fails and cannot be read back leaves the routes withdrawn and says the outcome is uncertain", async () => {
+  const w = await rigWorld("external");
+  await w.deployedThenStopped();
+  const update = w.deps.store.update.bind(w.deps.store);
+  const read = w.deps.store.read.bind(w.deps.store);
+  let broken = false;
+  w.deps.store.update = async (change) => {
+    const probe = structuredClone(w.state);
+    await change(probe);
+    if (probe.projects.length === 0) {
+      broken = true;
+      throw new Error("state write failed");
+    }
+    await update(change);
+  };
+  w.deps.store.read = async () => {
+    if (broken) throw new Error("state unreadable");
+    return await read();
+  };
+  await expect(
+    w.runtime.command({ action: "forget", project: "ledger" }),
+  ).rejects.toMatchObject({ code: "FORGET_UNCERTAIN" });
+  expect(await blocksOf(w.routeFile)).toEqual([]);
 });

@@ -13,6 +13,7 @@ import {
   siteAddress,
   withheldPaths,
   withoutUnownedBlocks,
+  routeFileChanged,
   type RouteCheckpoint,
   type RouteRequest,
   type Router,
@@ -54,15 +55,11 @@ export function createCaddyRouter(options: {
    * Caddyfile (the file Caddy reads changes and the link survives) and lands in the file that was read. */
   const resolveRoutes = () => realPath(options.caddyfile);
   /** Refuses, before anything is renamed into `file`, when the route file no longer resolves to it: replaced by a link
-   * to another file since the change read it. Nothing was written to either file then. */
+   * to another file since the change read it. A best-effort guard (ADR 0014, Threat model): the error claims nothing
+   * about what was already applied. */
   async function assertPinned(file: string): Promise<void> {
     if ((await resolveRoutes()) !== file)
-      throw new RigError(
-        "ROUTE_CHANGED",
-        `The route file ${options.caddyfile} was replaced while Rig was changing it; nothing was written.`,
-        `Inspect ${options.caddyfile} (and what it links to), then retry.`,
-        { caddyfile: options.caddyfile, resolved: file },
-      );
+      throw routeFileChanged(options.caddyfile, file);
   }
   async function change(
     key: string,

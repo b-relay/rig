@@ -381,6 +381,20 @@ function routeMarkers(key: string): { begin: string; end: string } {
   const token = routeOwnerToken(key);
   return { begin: `# rig begin ${token}`, end: `# rig end ${token}` };
 }
+/** The refusal of a write whose route file no longer resolves to the file the change read (`resolved`): something swapped
+ * it for a link mid-operation. A best-effort guard against mistakes, not a boundary (ADR 0014, Threat model), so it claims
+ * nothing about what was already applied. */
+export function routeFileChanged(
+  caddyfile: string,
+  resolved: string,
+): RigError {
+  return new RigError(
+    "ROUTE_CHANGED",
+    `The route file ${caddyfile} changed under Rig mid-operation (it no longer resolves to ${resolved}); routes may be partly applied.`,
+    `Run rig doctor, then rig proxy reload, and rig up or rig deploy of each Target whose route is missing, before retrying.`,
+    { caddyfile, resolved },
+  );
+}
 /** `text` without the owned blocks whose key is not in `owners`, everything else left as it is, and the hostnames those
  * blocks served. A block is matched by its markers' token, the sha256 of its key; incomplete markers are left alone. */
 export function withoutUnownedBlocks(

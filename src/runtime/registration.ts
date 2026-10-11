@@ -178,6 +178,15 @@ function notForgotten(project: ProjectRecord, error: unknown): RigError {
       error.details,
       error.causes,
     );
+  // The route file changed under Rig: what was applied is unknown, so nothing is claimed about the routes.
+  if (error.code === "ROUTE_CHANGED")
+    return new RigError(
+      error.code,
+      `Project '${project.name}' was not forgotten. ${error.message}`,
+      `${error.hint} Its registration is unchanged; run rig forget ${project.name} again once rig doctor is clean.`,
+      error.details,
+      error.causes,
+    );
   return new RigError(
     error.code,
     `Project '${project.name}' was not forgotten: its routes could not be withdrawn. ${error.message}`,

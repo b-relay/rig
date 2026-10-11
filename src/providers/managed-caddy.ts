@@ -47,6 +47,7 @@ import {
   routeFileHostnames,
   withheldPaths,
   withoutUnownedBlocks,
+  routeFileChanged,
   type RouteCheckpoint,
   type RouteRequest,
   type Router,
@@ -556,12 +557,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${file}.${randomUUID()}.tmp`;
     if ((await realPath(paths.routes)) !== file)
-      throw new RigError(
-        "ROUTE_CHANGED",
-        `The route file ${paths.routes} was replaced while Rig was changing it; nothing was written.`,
-        `Inspect ${paths.routes} (and what it links to), then retry.`,
-        { caddyfile: paths.routes, resolved: file },
-      );
+      throw routeFileChanged(paths.routes, file);
     await writeFile(`${file}.rig-backup`, before, { mode });
     await writeFile(temporary, text, { mode });
     await chmod(temporary, mode & 0o777);

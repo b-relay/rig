@@ -718,8 +718,41 @@ test("whether the route file lies inside the Rig root is decided by its real pat
   await writeFile(join(elsewhere, "Caddyfile"), "");
   await symlink(join(elsewhere, "Caddyfile"), join(root, "proxy", "Caddyfile"));
   expect(await routeFileInRoot(root, host())).toBe(false);
-  // Rig's own Caddy's route file is always its own.
-  expect(await routeFileInRoot(root, host(undefined, "managed"))).toBe(true);
+  // Rig's own Caddy's route file is <root>/proxy/Caddyfile whatever providers.caddy says, and the same link puts it
+  // outside the root too.
+  expect(
+    await routeFileInRoot(root, host(join(root, "x", "Caddyfile"), "managed")),
+  ).toBe(false);
+  await rm(join(root, "proxy", "Caddyfile"));
+  await writeFile(join(root, "proxy", "Caddyfile"), "");
+  expect(
+    await routeFileInRoot(root, host(join(elsewhere, "Caddyfile"), "managed")),
+  ).toBe(true);
+});
+
+test("managed: a route file linked outside the Rig root gets doctor's shared-file caution, and the automatic sweep skips it", async () => {
+  const w = await rigWorld("managed");
+  await w.deployedThenStopped();
+  w.forgetLeavingRoutes();
+  // Rig's own route file, deliberately linked to a file outside the root that holds the same routes.
+  const outside = await mkdtemp(join(tmpdir(), "rig-linked-"));
+  roots.push(outside);
+  const linked = join(outside, "Caddyfile");
+  const routes = await w.routes();
+  await writeFile(linked, routes);
+  await rm(w.routeFile);
+  await symlink(linked, w.routeFile);
+  const report = (await w.runtime.command({ action: "doctor" })) as {
+    checks: { name: string; message: string; hint?: string }[];
+  };
+  expect(
+    report.checks.find((check) => check.name === "route-owners"),
+  ).toMatchObject({
+    message: expect.stringContaining("another Rig root may own them"),
+    hint: `If no other Rig root writes routes to ${w.routeFile}, run rig proxy reload to withdraw them.`,
+  });
+  expect(await w.runtime.withdrawOrphanedRoutes()).toEqual([]);
+  expect(await readFile(linked, "utf8")).toBe(routes);
 });
 
 test("when forget cannot write its state and only some routes come back, FORGET_ROLLBACK names only those that did not", async () => {

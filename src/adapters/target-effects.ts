@@ -753,8 +753,8 @@ export function createTargetEffects(
           options.router.remove(target.id),
         );
       } catch (error) {
-        // ROUTE_CHANGED wrote nothing: the route file was swapped for another file meanwhile, which a compensation
-        // reading it now would write into.
+        // ROUTE_CHANGED: the route file was swapped for another file meanwhile, which a compensation reading it now
+        // would write into. It is not compensated; its error says routes may be partly applied (ADR 0014, Threat model).
         if (error instanceof RigError && error.code === "ROUTE_CHANGED")
           throw error;
         // A failure after the removal took effect (recording it in an active effect journal, say) must not leave it

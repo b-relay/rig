@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { releaseUnreferencedRevisions } from "../src/runtime/revisions";
 import { parseProjectConfig } from "../src/config";
@@ -49,6 +49,8 @@ async function fixture(config: ProjectConfig = melody()) {
   const processes = new Map<string, ProcessObservation>();
   /** Process keys whose observation cannot be made. */
   const unobservable = new Set<string>();
+  /** Services whose next spawn fails, once. */
+  const failStarts = new Set<string>();
   let pid = 5000;
   /** Every spawn and stop, by Service name, in order. */
   const events: string[] = [];
@@ -61,6 +63,8 @@ async function fixture(config: ProjectConfig = melody()) {
     async ensureRunning(request) {
       if (processes.get(request.key)?.state === "running")
         return { outcome: "unchanged" };
+      if (failStarts.delete(request.componentName))
+        throw new Error(`${request.componentName} could not be spawned`);
       events.push(`start ${request.componentName}`);
       processes.set(request.key, {
         state: "running",
@@ -148,6 +152,7 @@ async function fixture(config: ProjectConfig = melody()) {
     runtime,
     processes,
     unobservable,
+    failStarts,
     events,
     git,
     released,
@@ -247,4 +252,206 @@ test("a process under the Service's key with another incarnation does not hold t
   );
   expect(f.released).toEqual([old]);
   expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);
+});
+
+/** A config edit committed with the next Commit: the Project's rig.yaml is read live, so the next deploy plans from it. */
+function edit(
+  config: ProjectConfig,
+  service: string,
+  settings: Record<string, unknown>,
+) {
+  Object.assign(config.services![service]!, settings);
+}
+
+test("a deploy whose Commit changed nothing a Service uses keeps every Service running in its checkout; the new Deployment adopts them", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const first = await f.stable();
+  const before = await f.pids();
+  f.events.length = 0;
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  const result = await f.deploy();
+  expect(result).toMatchObject({
+    outcome: "deployed",
+    commit: "c2",
+    previousCommit: "c1",
+    kept: ["db", "search", "api", "web"],
+    restarted: [],
+  });
+  expect(f.events).toEqual([]);
+  expect(await f.pids()).toEqual(before);
+  const second = await f.stable();
+  expect(second.plan.workspacePath).not.toBe(first.plan.workspacePath);
+  // Each run now belongs to the new Deployment, and still says where its process runs.
+  for (const service of ["db", "search", "api", "web"])
+    expect(second.services![service]).toEqual({
+      ...first.services![service]!,
+      deployment: second.plan.workspacePath,
+    });
+  // The earlier checkout stays on disk while they run in it, recorded for the sweep.
+  expect(f.released).toEqual([]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([
+    {
+      target: first.id,
+      project: first.projectId,
+      workspace: first.plan.workspacePath,
+    },
+  ]);
+  expect((await f.world.store.read()).deployments?.at(-1)).toMatchObject({
+    outcome: "deployed",
+    commit: "c2",
+    kept: ["db", "search", "api", "web"],
+  });
+});
+
+test("a changed definition restarts that Service and every dependent, in dependency order, and leaves the rest running", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const before = await f.pids();
+  f.events.length = 0;
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "db", { stop_timeout: "60s" });
+  const result = await f.deploy();
+  expect(result).toMatchObject({
+    kept: ["search"],
+    restarted: [
+      { service: "db", reason: "definition" },
+      { service: "api", reason: "dependency", dependency: "db" },
+      { service: "web", reason: "dependency", dependency: "api" },
+    ],
+  });
+  // Stopped in reverse dependency order, started in order; search was never touched.
+  expect(f.events).toEqual([
+    "stop web",
+    "stop api",
+    "stop db",
+    "start db",
+    "start api",
+    "start web",
+  ]);
+  const after = await f.pids();
+  expect(after.search).toBe(before.search);
+  for (const service of ["db", "api", "web"])
+    expect(after[service]).not.toBe(before[service]);
+  const target = await f.stable();
+  expect(target.services!.db!.source!.checkout).toBe(target.plan.workspacePath);
+  expect(target.services!.search!.source!.checkout).not.toBe(
+    target.plan.workspacePath,
+  );
+});
+
+test("an env file whose contents changed restarts the Service that loads it, though nothing else changed", async () => {
+  const f = await fixture();
+  const file = join(f.world.root, "env", "melody", "search", "all.env");
+  await mkdir(join(file, ".."), { recursive: true });
+  await writeFile(file, "TYPESENSE_API_KEY=first\n");
+  await f.deploy();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  await writeFile(file, "TYPESENSE_API_KEY=rotated\n");
+  expect(await f.deploy()).toMatchObject({
+    kept: ["db"],
+    restarted: [
+      { service: "search", reason: "environment" },
+      { service: "api", reason: "dependency", dependency: "search" },
+      { service: "web", reason: "dependency", dependency: "api" },
+    ],
+  });
+  // No value reaches the state file.
+  expect(
+    await readFile(join(f.world.root, "runtime", "state.json"), "utf8"),
+  ).not.toContain("rotated");
+});
+
+test("--force and --no-up keep nothing, and a deploy whose files changed restarts every Service that watches the whole checkout", async () => {
+  const f = await fixture();
+  await f.deploy();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  expect(await f.deploy({ force: true })).toMatchObject({ kept: [] });
+  f.git.head = "c3";
+  expect(await f.deploy({ noUp: true })).toMatchObject({ kept: [] });
+  expect((await f.stable()).desired).toBe("stopped");
+  await f.runtime.command({
+    action: "up",
+    repoPath: f.world.repo,
+    target: "stable",
+  });
+  f.git.head = "c4";
+  f.git.changed = () => true;
+  expect(await f.deploy()).toMatchObject({
+    kept: [],
+    restarted: [
+      { service: "db", reason: "files" },
+      { service: "search", reason: "files" },
+      { service: "api", reason: "files" },
+      { service: "web", reason: "files" },
+    ],
+  });
+  // Nothing was kept, so no earlier checkout is held.
+  expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);
+});
+
+test("a failed deploy stops only what it started and restores the previous plan; a kept Service is never stopped", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const first = await f.stable();
+  const before = await f.pids();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "web", { command: "node web2.js" });
+  f.failStarts.add("web");
+  f.events.length = 0;
+  await expect(f.deploy()).rejects.toThrow("web could not be spawned");
+  // Only web was stopped, and the previous plan started it again; the rest kept running throughout.
+  expect(f.events).toEqual(["stop web", "start web"]);
+  const after = await f.pids();
+  for (const service of ["db", "search", "api"])
+    expect(after[service]).toBe(before[service]);
+  const restored = await f.stable();
+  expect(restored.commit).toBe("c1");
+  expect(restored.plan.workspacePath).toBe(first.plan.workspacePath);
+  for (const service of ["db", "search", "api"])
+    expect(restored.services![service]).toEqual(first.services![service]);
+  // The rejected candidate's checkout went; the previous one is the plan's again.
+  expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);
+});
+
+test("a kept Service that crashes later starts from the current checkout, and the earlier one is given back", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const first = await f.stable();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "web", { command: "node web2.js" });
+  expect(await f.deploy()).toMatchObject({
+    kept: ["db", "search", "api"],
+  });
+  const target = await f.stable();
+  // db exits; the next supervision pass starts it again, from the current plan.
+  f.processes.set(`${target.id}:db`, {
+    state: "stopped",
+    exitCode: 1,
+    incarnation: target.services!.db!.incarnation!,
+  });
+  await f.runtime.supervise();
+  f.world.clock.ms += 60_000;
+  await f.runtime.supervise();
+  const restarted = (await f.stable()).services!.db!;
+  expect(restarted.source!.checkout).toBe(target.plan.workspacePath);
+  // search and api still run in the earlier checkout, so it stays.
+  await f.runtime.releaseHeldCheckouts(target.id);
+  expect(f.released).toEqual([]);
+  // rig restart starts every Service from the current checkout and gives the earlier one back at once.
+  await f.runtime.command({
+    action: "restart",
+    repoPath: f.world.repo,
+    target: "stable",
+  });
+  expect(f.released).toEqual([first.plan.workspacePath]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([]);
+  for (const run of Object.values((await f.stable()).services!))
+    expect(run.source!.checkout).toBe(target.plan.workspacePath);
 });

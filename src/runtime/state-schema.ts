@@ -666,6 +666,12 @@ const deployment = z.object({
   outcome: z
     .enum(["deployed", "unchanged", "failed"])
     .describe("How the deploy ended."),
+  kept: z
+    .array(text)
+    .optional()
+    .describe(
+      "The Services a successful deploy kept running instead of restarting, because nothing they use changed; absent when it restarted every Service.",
+    ),
   startedAt: text.describe("When rigd began the deploy (ISO 8601)."),
   finishedAt: text.describe("When it recorded the outcome (ISO 8601)."),
   message: z

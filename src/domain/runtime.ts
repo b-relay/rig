@@ -177,6 +177,9 @@ export interface DeploymentRecord {
   /** The Commit the Target ran before, when it had one. */
   previousCommit?: string;
   outcome: "deployed" | "unchanged" | "failed";
+  /** The Services a successful deploy kept running from an earlier checkout instead of restarting (ADR 0016); absent when
+   * it restarted every Service. */
+  kept?: string[];
   startedAt: string;
   finishedAt: string;
   /** The failure's error code; never a value from the environment. */

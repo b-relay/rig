@@ -102,8 +102,8 @@ import { prepareTarget } from "./preparation";
 import { observeTargets } from "./status";
 import { projectStatus } from "./project-status";
 import {
-  activateDeployment,
   assertDeploymentRecovered,
+  deployCandidate,
   stopForRecovery,
 } from "./deploy";
 import {
@@ -152,6 +152,7 @@ import {
   type ScheduledRunResult,
 } from "./job-scheduler";
 import { boundedObservations } from "./bounded-observations";
+import type { KeepDecision } from "./keep-decision";
 import {
   initialPhase,
   type OperationPhase,
@@ -559,6 +560,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           startedAt: string;
         }
       | undefined;
+    /** The Services a deploy kept running (ADR 0016), for its history. */
+    let deployKept: readonly string[] = [];
     try {
       if (command.action === "cancel-uninstall") {
         draining = false;
@@ -1127,13 +1130,19 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         const wasRunning = target?.desired === "running";
         const revisions = [...(target ? [target] : []), candidate];
+        let decision: KeepDecision;
         try {
-          target = await activateDeployment(
+          ({ target, decision } = await deployCandidate(
             candidate,
             target,
-            { activation: command.noUp ? "prepare" : "start", operationId },
+            {
+              activation: command.noUp ? "prepare" : "start",
+              operationId,
+              ...(command.force ? { force: true } : {}),
+              repository: project.repoPath,
+            },
             deps,
-          );
+          ));
         } catch (error) {
           // A rejected candidate's checkout is reclaimed; the deployment failure stays the outcome.
           for (const retained of await releaseUnreferencedRevisions(
@@ -1166,6 +1175,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           deps,
         );
         warnings.push(...replaced.warnings);
+        deployKept = decision.kept;
         return await finish("deployed", {
           warnings,
           retired: replaced.retired,
@@ -1178,6 +1188,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               }
             : {}),
           ...previous,
+          kept: decision.kept,
+          restarted: decision.restarted,
         });
       }
       if (command.action === "destroy") {
@@ -1404,6 +1416,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               ? { previousCommit: deploySource.previousCommit }
               : {}),
             outcome,
+            ...(outcome === "deployed" && deployKept.length
+              ? { kept: [...deployKept] }
+              : {}),
             startedAt:
               deploySource?.startedAt ??
               operations.get(operationId)?.view.startedAt ??

@@ -253,6 +253,9 @@ function world(
         return "main";
       },
       async release() {},
+      async changed() {
+        return true;
+      },
     },
     lifecycle: createTargetLifecycle(effects, {
       schedule(delayMs, fire) {

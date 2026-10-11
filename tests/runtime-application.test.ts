@@ -123,6 +123,9 @@ function fixture() {
         return "main";
       },
       async release() {},
+      async changed() {
+        return true;
+      },
     },
     lifecycle: {
       async checkRoute() {},

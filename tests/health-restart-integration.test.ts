@@ -165,6 +165,9 @@ async function world(
           return "main";
         },
         async release() {},
+        async changed() {
+          return true;
+        },
       },
       hostSession: (() => {
         const probe = {

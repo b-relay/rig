@@ -105,6 +105,9 @@ async function fixture() {
           return "feature";
         },
         async release() {},
+        async changed() {
+          return true;
+        },
       },
       hostSession: {
         async current() {

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 import Link from "next/link";
 import { AlertTriangle, Rocket } from "lucide-react";
 import { Failure, HealthDot, Mono, PageHeader } from "@/components/bits";
@@ -35,27 +35,14 @@ export default async function ProjectLayout({
       </>
     );
   const found = read.value;
-  const status = found.missing ? undefined : await projectStatus(found.name);
-  const targets = status?.ok ? status.value.targets : [];
-  const stable = targets.find((target) => target.kind === "stable");
   return (
     <>
       <PageHeader
         icon={
-          <span className="relative">
-            <ProjectIcon
-              project={found.name}
-              favicon={stable?.route !== undefined}
-            />
-            <HealthDot
-              health={
-                found.missing || (status && !status.ok)
-                  ? "red"
-                  : projectHealth(targets.map((target) => target.state))
-              }
-              className="absolute -right-1 -bottom-1 size-3.5 ring-[3px] ring-background"
-            />
-          </span>
+          // The icon waits for status (favicon and health); the sections that do not need it render meanwhile.
+          <Suspense fallback={<ProjectIcon project={found.name} />}>
+            <HeaderIcon project={found.name} missing={found.missing === true} />
+          </Suspense>
         }
         eyebrow={
           <Link href="/" className="text-muted-foreground">
@@ -90,5 +77,30 @@ export default async function ProjectLayout({
       <ProjectTabs project={found.name} />
       {children}
     </>
+  );
+}
+/** The Project's icon with its health dot, once its status has answered. */
+async function HeaderIcon({
+  project,
+  missing,
+}: {
+  project: string;
+  missing: boolean;
+}) {
+  const status = missing ? undefined : await projectStatus(project);
+  const targets = status?.ok ? status.value.targets : [];
+  const stable = targets.find((target) => target.kind === "stable");
+  return (
+    <span className="relative">
+      <ProjectIcon project={project} favicon={stable?.route !== undefined} />
+      <HealthDot
+        health={
+          missing || (status && !status.ok)
+            ? "red"
+            : projectHealth(targets.map((target) => target.state))
+        }
+        className="absolute -right-1 -bottom-1 size-3.5 ring-[3px] ring-background"
+      />
+    </span>
   );
 }

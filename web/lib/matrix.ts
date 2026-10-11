@@ -82,7 +82,12 @@ export function projectMatrix({
       problem: {
         tone: "bad",
         href,
-        text: `${status.failure.code}: ${status.failure.message}`,
+        text: [
+          `${status.failure.code}: ${status.failure.message}`,
+          status.failure.hint,
+        ]
+          .filter(Boolean)
+          .join(" "),
       },
     };
   const columns = orderedTargets(status.value.targets);

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { FolderX } from "lucide-react";
-import { Empty } from "@/components/bits";
+import { Empty, Failure } from "@/components/bits";
 import { ProjectMatrix } from "@/components/project-matrix";
 import { projectMatrix } from "@/lib/matrix";
 import { projectHref } from "@/lib/target";
@@ -25,9 +25,9 @@ export default async function ProjectPage({
         .
       </Empty>
     );
-  const matrix = projectMatrix({
-    project: found,
-    status: await projectStatus(found.name),
-  });
+  const status = await projectStatus(found.name);
+  // On its own page a refusal is said in full: code, message, hint and Operation.
+  if (!status.ok) return <Failure failure={status.failure} />;
+  const matrix = projectMatrix({ project: found, status });
   return <ProjectMatrix matrix={matrix} now={Date.now()} corner="rows" />;
 }

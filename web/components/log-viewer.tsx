@@ -39,12 +39,12 @@ const KEPT_LINES = 5000;
 const FOLLOW_MS = 1000;
 const FIRST_LINES = 200;
 const SLOT_CLASS = [
-  "text-sky-300",
-  "text-violet-300",
-  "text-emerald-300",
-  "text-amber-300",
-  "text-pink-300",
-  "text-cyan-300",
+  "text-sky-700 dark:text-sky-300",
+  "text-violet-700 dark:text-violet-300",
+  "text-emerald-700 dark:text-emerald-300",
+  "text-amber-700 dark:text-amber-300",
+  "text-pink-700 dark:text-pink-300",
+  "text-cyan-700 dark:text-cyan-300",
 ];
 /** One Target's log, streamed a second at a time through rigd's cursor while following. The
  * component and stream filters narrow what rigd reads; the search box narrows what is shown. The
@@ -181,8 +181,8 @@ export function LogViewer({
         : [...current.services, name],
     }));
   return (
-    <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-rule bg-sheet shadow-xs">
-      <div className="flex flex-wrap items-center gap-2 border-b border-rule px-3 py-2">
+    <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-xs">
+      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         {pickTarget && targets.length ? (
           <Select
             value={key}
@@ -295,7 +295,7 @@ export function LogViewer({
         </div>
       </div>
       {components.length > 1 ? (
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-rule px-3 py-2">
+        <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-2">
           <span className="mr-1 text-xs text-muted-foreground">Components</span>
           <Chip
             on={query.services.length === 0}
@@ -324,7 +324,7 @@ export function LogViewer({
         </div>
       ) : null}
       {failure ? (
-        <div className="border-b border-rule p-3">
+        <div className="border-b p-3">
           <Failure failure={failure} />
         </div>
       ) : null}
@@ -340,14 +340,14 @@ export function LogViewer({
           }}
           role="log"
           aria-live="off"
-          className="h-[min(70vh,44rem)] overflow-auto bg-pane px-3 py-2 font-mono text-xs leading-5 text-on-pane"
+          className="h-[min(70vh,44rem)] overflow-auto bg-card px-3 py-2 font-mono text-xs leading-5 text-foreground"
         >
           {targets.length === 0 ? (
-            <span className="text-pane-muted">
+            <span className="text-muted-foreground">
               This Project has no recorded Targets.
             </span>
           ) : shown.length === 0 ? (
-            <span className="text-pane-muted">
+            <span className="text-muted-foreground">
               {entries.length
                 ? "No line matches the search."
                 : query.services.length || query.stream
@@ -359,13 +359,13 @@ export function LogViewer({
             <div
               key={index}
               className={cn(
-                "flex gap-x-3 rounded-sm px-1 hover:bg-white/5",
+                "flex gap-x-3 rounded-md px-1 hover:bg-muted/70",
                 wrap ? "flex-wrap sm:flex-nowrap" : "w-max",
-                entry.stream === "stderr" && "bg-pane-warn/5",
+                entry.stream === "stderr" && "bg-warn-fill/50",
               )}
             >
               <span
-                className="shrink-0 text-pane-muted tabular-nums"
+                className="shrink-0 text-muted-foreground tabular-nums"
                 title={entry.timestamp}
                 suppressHydrationWarning
               >
@@ -386,8 +386,8 @@ export function LogViewer({
                   wrap
                     ? "basis-full break-all whitespace-pre-wrap sm:flex-1 sm:basis-auto"
                     : "whitespace-pre",
-                  entry.stream === "stderr" && "text-pane-warn",
-                  entry.stream === "health" && "text-pane-muted",
+                  entry.stream === "stderr" && "text-warn",
+                  entry.stream === "health" && "text-muted-foreground",
                 )}
               >
                 {entry.stream !== "stdout" ? (
@@ -402,18 +402,18 @@ export function LogViewer({
           <button
             type="button"
             onClick={() => setPinned(true)}
-            className="absolute right-4 bottom-4 inline-flex items-center gap-1.5 rounded-full bg-on-pane px-3 py-1.5 text-xs font-medium text-pane shadow-lg"
+            className="absolute right-4 bottom-4 inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground shadow-md"
           >
             <ArrowDownToLine className="size-3.5" aria-hidden /> Latest
           </button>
         ) : null}
       </div>
-      <div className="flex items-center gap-3 border-t border-rule px-3 py-1.5 text-xs text-muted-foreground">
+      <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-muted-foreground">
         <span
           aria-hidden
           className={cn(
             "size-1.5 rounded-full",
-            follow ? "busy-dot bg-good" : "bg-muted-ink",
+            follow ? "busy-dot bg-good" : "bg-muted-foreground/40",
           )}
         />
         {follow ? "Following" : "Paused"}
@@ -445,7 +445,7 @@ function ToolButton({
       aria-pressed={pressed}
       onClick={onClick}
       className={cn(
-        "inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-4",
+        "inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-4",
         pressed && "bg-muted text-foreground",
       )}
     >
@@ -468,8 +468,9 @@ function Chip({
       aria-pressed={on}
       onClick={onClick}
       className={cn(
-        "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs ring-1 ring-rule ring-inset hover:bg-muted",
-        on && "bg-ink text-sheet ring-ink hover:bg-ink/90",
+        "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs ring-1 ring-border ring-inset hover:bg-muted",
+        on &&
+          "bg-primary text-primary-foreground ring-primary hover:bg-primary/90",
       )}
     >
       {children}
@@ -508,7 +509,10 @@ function highlight(text: string, words: readonly string[]): ReactNode {
   );
   return text.split(pattern).map((part, index) =>
     index % 2 ? (
-      <mark key={index} className="rounded-sm bg-pane-warn/30 text-on-pane">
+      <mark
+        key={index}
+        className="rounded-sm bg-warn-fill text-foreground ring-1 ring-warn/30"
+      >
         {part}
       </mark>
     ) : (

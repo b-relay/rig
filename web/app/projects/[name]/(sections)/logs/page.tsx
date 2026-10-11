@@ -1,3 +1,5 @@
+import { preferredLogTarget } from "@/lib/logs";
+import { orderedTargets } from "@/lib/overview";
 import { targetKey } from "@/lib/target";
 import { project } from "@/server/project";
 import { projectStatus } from "@/server/status";
@@ -20,8 +22,13 @@ export default async function LogsPage({
   const status = await projectStatus(found.name);
   if (!status.ok) return <Failure failure={status.failure} />;
   const targets = logTargets(status.value.targets);
+  const preferred = preferredLogTarget(orderedTargets(status.value.targets));
   const target =
-    targets.find((each) => targetKey(each) === selected) ?? targets[0];
+    targets.find((each) => targetKey(each) === selected) ??
+    targets.find(
+      (each) => preferred && targetKey(each) === targetKey(preferred),
+    ) ??
+    targets[0];
   return (
     <LogViewer
       project={found.name}

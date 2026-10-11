@@ -155,6 +155,41 @@ test("every hostname and path on the Host leads to its Target's Service, by host
   });
 });
 
+test("a Target's Service domains are listed on the proxy page beside its domain, each leading to its Service's port", () => {
+  const routes = proxyRoutes([
+    {
+      project: { name: "melody", repoPath: "/m", targetCount: 1 },
+      status: {
+        ok: true,
+        value: {
+          project: "melody",
+          targets: [
+            target({
+              route: "melody.test",
+              hostnames: ["melody.test", "api.melody.test"],
+              routes: [{ prefix: "/", service: "web", port: 1 }],
+              serviceDomains: [
+                { hostname: "api.melody.test", service: "api", port: 2 },
+              ],
+            }),
+          ],
+        },
+      },
+    },
+  ]);
+  expect(
+    routes.map((route) => [
+      route.host,
+      route.prefix,
+      route.service,
+      route.upstream,
+    ]),
+  ).toEqual([
+    ["api.melody.test", "/", "api", "127.0.0.1:2"],
+    ["melody.test", "/", "web", "127.0.0.1:1"],
+  ]);
+});
+
 test("with Rig's own Caddy, its proxy read names every hostname served, Targets' and the owner's own routes, and status adds each Service and state", () => {
   const fromStatus = proxyRoutes([
     {

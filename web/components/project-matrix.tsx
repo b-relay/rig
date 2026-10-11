@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CalendarClock, Globe, TriangleAlert } from "lucide-react";
+import { CalendarClock, TriangleAlert } from "lucide-react";
 import { HEALTH_WORD } from "@/lib/health";
 import {
   matrixTile,
@@ -7,9 +7,17 @@ import {
   type ProjectMatrix as Matrix,
 } from "@/lib/matrix";
 import { targetWarnings } from "@/lib/present";
-import { routeUrl, targetHref } from "@/lib/target";
+import { targetHref } from "@/lib/target";
 import type { TargetReport } from "@/lib/types";
-import { CARD, Dot, EYEBROW, HEALTH_DOT, HEALTH_TILE, Revision } from "./bits";
+import {
+  CARD,
+  Dot,
+  EYEBROW,
+  HEALTH_DOT,
+  HEALTH_TILE,
+  Hostnames,
+  Revision,
+} from "./bits";
 import { ProjectIcon } from "./project-icon";
 import { TargetActions } from "./target-actions";
 import { cn } from "@/lib/utils";
@@ -259,24 +267,10 @@ function TargetCard({
       </div>
       <div className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
         <Revision target={target} />
-        <span className="flex min-w-0 items-center gap-1.5">
-          <Globe className="size-3.5 shrink-0" aria-hidden />
-          {target.route ? (
-            <a
-              href={routeUrl(target.route)}
-              target="_blank"
-              rel="noreferrer"
-              className="min-w-0 truncate text-foreground no-underline hover:underline hover:underline-offset-4"
-              title={target.route}
-            >
-              {target.route}
-            </a>
-          ) : (
-            <span>
-              {target.kind === "working" ? "loopback only" : "no domain"}
-            </span>
-          )}
-        </span>
+        <Hostnames
+          target={target}
+          linkClassName="text-foreground no-underline hover:underline hover:underline-offset-4"
+        />
       </div>
     </div>
   );

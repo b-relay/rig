@@ -3,12 +3,14 @@ import {
   CircleAlert,
   CircleCheck,
   GitBranch,
+  Globe,
   Info,
   TriangleAlert,
 } from "lucide-react";
 import { HEALTH_WORD, healthOf, type Health } from "@/lib/health";
 import type { Failure as FailureShape } from "@/lib/outcome";
 import { shortCommit, toneOf } from "@/lib/present";
+import { routeUrl, targetHostnames } from "@/lib/target";
 import type { OperationResult, TargetReport } from "@/lib/types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
@@ -255,6 +257,46 @@ export function Revision({
           {target.branch ?? "no branch"}
           {sha ? <span className="text-foreground"> @ {sha}</span> : null}
         </span>
+      )}
+    </span>
+  );
+}
+/** Every hostname a Target serves, its domain first, each a link, on one line that truncates as a
+ * whole. A Target with none reads "loopback only" (the working Target) or "no domain". */
+export function Hostnames({
+  target,
+  className,
+  linkClassName,
+}: {
+  target: Pick<TargetReport, "kind" | "route" | "hostnames">;
+  className?: string;
+  linkClassName?: string;
+}) {
+  const hostnames = targetHostnames(target);
+  return (
+    <span
+      className={cn("flex min-w-0 items-center gap-1.5", className)}
+      title={hostnames.join(", ") || undefined}
+    >
+      <Globe className="size-3.5 shrink-0" aria-hidden />
+      {hostnames.length ? (
+        <span className="min-w-0 truncate">
+          {hostnames.map((hostname, index) => (
+            <span key={hostname}>
+              {index ? ", " : null}
+              <a
+                href={routeUrl(hostname)}
+                target="_blank"
+                rel="noreferrer"
+                className={linkClassName}
+              >
+                {hostname}
+              </a>
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span>{target.kind === "working" ? "loopback only" : "no domain"}</span>
       )}
     </span>
   );

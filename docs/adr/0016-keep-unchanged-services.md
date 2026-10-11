@@ -98,7 +98,7 @@ The old checkout is **held** while any process that runs in it is or may be aliv
 
 - `ServiceRun.deployment` now means the Deployment the run belongs to, which is the adopting one for a kept Service. `currentRun`, incarnation evidence and budgets work unchanged. The new optional `ServiceRun.source = { checkout, commit, definition, environment }` is written on every start.
 - A run without `source` (any run started before this change) is never kept. **The first deploy after upgrading restarts everything once**, as today, and later deploys keep.
-- `jobCheckouts` becomes `heldCheckouts`. ADR 0013 shipped first, so runtime state moves to its next version (7, or 8 if the backups change takes 7 first): every earlier version is read with `jobCheckouts` as `heldCheckouts`, and the next write saves the new version, which an older rigd refuses.
+- `jobCheckouts` becomes `heldCheckouts`. ADR 0013 shipped first, so runtime state moves to its next version, 8, since backups (ADR 0017) took 7: every earlier version is read with `jobCheckouts` as `heldCheckouts`, and the next write saves the new version, which an older rigd refuses.
 - **No default changes for existing Projects.** Without `watch`, a Service restarts whenever the tree changes, which is every deploy of a different Commit except one whose tree is identical. Those deploys are now kept, which is correct by definition. The working Target is never deployed and is unaffected.
 
 ## Alternatives rejected

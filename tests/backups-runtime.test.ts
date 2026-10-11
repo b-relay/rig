@@ -19,6 +19,8 @@ import type { BackupStorage } from "../src/runtime/contracts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import { runtimeWorld } from "./support/runtime-world";
 import { localActivation } from "./support/activation-doubles";
+import { STATE_VERSION } from "../src/runtime/state-schema";
+import { revisionStanding } from "../src/runtime/revisions";
 
 /** Backups (ADR 0017) through the real runtime and the real backup storage under a temporary RIG_ROOT, over a scripted
  * supervisor: what each run gets, what a run's end keeps or deletes, and what a restore runs. */
@@ -685,7 +687,7 @@ test("backup numbers only grow per backup directory: not reset by deletion, a Pr
     ) => `/rig/backups/${scope.project}/${scope.target}/${scope.job}/${id}`,
   };
   const state = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [{ id: "p1", name: "melody" }],
     targets: [],
     activity: [],
@@ -845,4 +847,42 @@ test("forgetting a Project keeps its backups on disk, drops their records, and s
       ),
     ]),
   );
+});
+
+test("a backup run holds the checkout it started in while it runs, and its end records it among the held checkouts (ADR 0016)", async () => {
+  const f = await fixture();
+  await f.run();
+  // A deploy moved the Target to another checkout while the backup ran in this one.
+  const started = (await f.running())!.workspace!;
+  await f.world.store.update((state) => {
+    const saved = state.targets.find((t) => t.id === f.target.id)!;
+    saved.plan = { ...saved.plan, workspacePath: join(f.world.root, "next") };
+  });
+  const standing = async () =>
+    await revisionStanding(started, await f.world.store.read(), f.world.deps);
+  expect(await standing()).toBe("held");
+  // Every write from here on, to see the one that records the run's end.
+  const store = f.world.deps.store;
+  const update = store.update.bind(store);
+  const writes: RuntimeState[] = [];
+  store.update = async (change) => {
+    await update(change);
+    writes.push(await store.read());
+  };
+  await f.finish(0);
+  expect(await f.backups()).toHaveLength(1);
+  // The write that kept the backup also held the checkout the run started in.
+  const ending = writes.find((state) =>
+    state.backups?.some((backup) => backup.run === "r1"),
+  )!;
+  expect(ending.heldCheckouts).toEqual([
+    { target: f.target.id, project: f.target.projectId, workspace: started },
+  ]);
+  // db, started from the same checkout, still runs there, so it stays held; once db is gone nothing runs in it, and the
+  // next sweep forgets it (the working Target owns no revision to remove; a deployed Target's would be given back).
+  expect(await standing()).toBe("held");
+  f.processes.set(`${f.target.id}:db`, { state: "stopped" });
+  expect(await standing()).toBe("free");
+  await f.runtime.releaseHeldCheckouts(f.target.id);
+  expect((await store.read()).heldCheckouts ?? []).toEqual([]);
 });

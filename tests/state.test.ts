@@ -245,34 +245,77 @@ const inventory = {
   activity: [],
 };
 
-test("state version 6 is read with the checkouts job runs kept as held checkouts, and saved as the current version", async () => {
-  const root = await mkdtemp(join(tmpdir(), "rig-state-held-"));
-  try {
-    await mkdir(join(root, "runtime"));
-    const path = join(root, "runtime", "state.json");
-    const kept = [
-      { target: "t", project: "p", workspace: "/tmp/rig/revisions/old" },
-    ];
-    await writeFile(
-      path,
-      JSON.stringify({ version: 6, jobCheckouts: kept, ...inventory }),
-    );
-    const store = new FileStateStore(root);
-    const read = await store.read();
-    expect(read.version).toBe(STATE_VERSION);
-    expect(read.heldCheckouts).toEqual(kept);
-    expect(read).not.toHaveProperty("jobCheckouts");
-    await store.update(() => {});
-    const written = JSON.parse(await readFile(path, "utf8"));
-    expect(written).toMatchObject({
-      version: STATE_VERSION,
-      heldCheckouts: kept,
-    });
-    expect(written).not.toHaveProperty("jobCheckouts");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
+for (const version of [6, 7])
+  test(`state version ${version} is read with the checkouts job runs kept as held checkouts, its backups as they are, and saved as the current version`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-state-held-"));
+    try {
+      await mkdir(join(root, "runtime"));
+      const path = join(root, "runtime", "state.json");
+      const kept = [
+        { target: "t", project: "p", workspace: "/tmp/rig/revisions/old" },
+      ];
+      // Version 7 (ADR 0017) records backups beside the job runs; they are read and written back unchanged.
+      const backups =
+        version === 7
+          ? {
+              backups: [
+                {
+                  target: "t",
+                  project: "p",
+                  job: "db-backup",
+                  id: "20261011T030000Z-17",
+                  path: "/tmp/rig/backups/p/working/db-backup/20261011T030000Z-17",
+                  run: "run-1",
+                  trigger: "schedule",
+                  startedAt: "2026-10-11T03:00:00.000Z",
+                  finishedAt: "2026-10-11T03:00:09.000Z",
+                  bytes: 12,
+                },
+              ],
+              backupRemovals: [
+                {
+                  target: "t",
+                  project: "p",
+                  path: "/tmp/rig/backups/p/working/db-backup/old",
+                },
+              ],
+              backupSequences: [
+                {
+                  project: "demo",
+                  target: "working",
+                  job: "db-backup",
+                  last: 17,
+                },
+              ],
+            }
+          : {};
+      await writeFile(
+        path,
+        JSON.stringify({
+          version,
+          jobCheckouts: kept,
+          ...backups,
+          ...inventory,
+        }),
+      );
+      const store = new FileStateStore(root);
+      const read = await store.read();
+      expect(read.version).toBe(STATE_VERSION);
+      expect(read.heldCheckouts).toEqual(kept);
+      expect(read).not.toHaveProperty("jobCheckouts");
+      expect(read).toMatchObject(backups);
+      await store.update(() => {});
+      const written = JSON.parse(await readFile(path, "utf8"));
+      expect(written).toMatchObject({
+        version: STATE_VERSION,
+        heldCheckouts: kept,
+        ...backups,
+      });
+      expect(written).not.toHaveProperty("jobCheckouts");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
 test("keys this rigd does not know survive a read-modify-write round trip, so a newer version's fields are not lost through an older one", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-passthrough-"));
@@ -300,14 +343,14 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
   }
 });
 
-test("state version 6, written before backups, is read as it is and saved as version 7 with the backups recorded since", async () => {
+test("state version 6, written before backups, is read as it is and saved as the current version with the backups recorded since", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-before-backups-"));
   try {
     await mkdir(join(root, "runtime"));
     const path = join(root, "runtime", "state.json");
     await writeFile(path, JSON.stringify({ version: 6, ...inventory }));
     const store = new FileStateStore(root);
-    expect((await store.read()).version).toBe(7);
+    expect((await store.read()).version).toBe(STATE_VERSION);
     await store.update((s) => {
       s.backups = [
         {
@@ -332,7 +375,7 @@ test("state version 6, written before backups, is read as it is and saved as ver
       ];
     });
     const written = JSON.parse(await readFile(path, "utf8"));
-    expect(written.version).toBe(7);
+    expect(written.version).toBe(STATE_VERSION);
     expect(written.backups).toHaveLength(1);
     expect(written.backupRemovals).toHaveLength(1);
     // A backup outside an absolute path is refused before anything is written.

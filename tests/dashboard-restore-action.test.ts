@@ -48,7 +48,7 @@ const restore = {
   project: "melody",
   target: "stable",
   job: "db-backup",
-  backup: "20261011T030000Z",
+  backup: "20261011T030000Z-4f1c2b3a",
   operationId: "op-1",
 } as const;
 

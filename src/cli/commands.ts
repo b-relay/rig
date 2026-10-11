@@ -529,7 +529,7 @@ function addBackupCommands(
     .argument("<job>", "Backup job name under jobs in rig.yaml", nonEmpty)
     .argument(
       "<backup>",
-      "Backup id from rig backup list, such as 20261011T030000Z, or latest",
+      "Backup id from rig backup list, such as 20261011T030000Z-4f1c2b3a, or latest",
       nonEmpty,
     )
     .argument(
@@ -554,7 +554,7 @@ function addBackupCommands(
           throw new RigError(
             "USAGE",
             `'${terminalText(id)}' is not a backup id.`,
-            "Pass latest, or an id from rig backup list, such as 20261011T030000Z.",
+            "Pass latest, or an id from rig backup list, such as 20261011T030000Z-4f1c2b3a.",
           );
         // A restore is a run of the job, so it means the stable Target unless another is named, as rig run does.
         const request = targetRequest(

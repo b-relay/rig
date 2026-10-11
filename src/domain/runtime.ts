@@ -214,7 +214,7 @@ export interface BackupRecord {
   /** The Project's id. */
   project: string;
   job: string;
-  /** The run's start in UTC, such as `20261011T030000Z`; unique per Target and job. */
+  /** The run's start in UTC and a tag from the run's own id, such as `20261011T030000Z-4f1c2b3a`; never reused, even once the backup is deleted. */
   id: string;
   /** Absolute directory under `<RIG_ROOT>/backups`. */
   path: string;

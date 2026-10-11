@@ -8,10 +8,10 @@ export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 /** A component name `rig logs --service` or `rig run` may send: the shape every Service, Tool and job name has. Like config, it sets no
  * length limit of its own; the control plane's request size bounds it. */
 export const logComponentName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
-/** A backup id (`20261011T030000Z`, `-2` for a second one that started in the same second), or `latest`. */
+/** A backup id, its run's start in UTC and a tag from the run's own id (`20261011T030000Z-4f1c2b3a`), or `latest`. */
 export const backupSelector = z
   .string()
-  .regex(/^(?:latest|\d{8}T\d{6}Z(?:-[1-9]\d*)?)$/);
+  .regex(/^(?:latest|\d{8}T\d{6}Z-[a-z0-9]{1,32})$/);
 /** rig resolves paths against the caller's directory before sending; rigd never resolves against its own. */
 export const absolutePath = z.string().min(1).refine(isAbsolute, {
   message: "must be an absolute path",
@@ -229,7 +229,7 @@ export const backupReportSchema = z
     id: z
       .string()
       .describe(
-        "The backup's id: its run's start in UTC, such as 20261011T030000Z.",
+        "The backup's id: its run's start in UTC and a tag from the run's own id, such as 20261011T030000Z-4f1c2b3a; never reused.",
       ),
     path: z.string().describe("Its directory under RIG_ROOT/backups."),
     run: z

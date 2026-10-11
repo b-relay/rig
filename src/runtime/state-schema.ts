@@ -679,7 +679,7 @@ export const runtimeStateSchema = z
           project: text.describe("The Project's id."),
           job: text.describe("The backup job's name."),
           id: text.describe(
-            "The backup's id: its run's start in UTC, such as 20261011T030000Z.",
+            "The backup's id: its run's start in UTC and a tag from the run's own id, such as 20261011T030000Z-4f1c2b3a; never reused.",
           ),
           path: absolutePath.describe("Its directory under RIG_ROOT/backups."),
           run: text.describe("The run that wrote it."),

@@ -15,9 +15,6 @@ import type { BackupStorage, RuntimeDependencies } from "./contracts";
  * in the write that decides it, then carried out, so a rigd that stops in between finds it and nothing Rig did not record
  * is ever deleted. */
 
-/** A backup's id: the UTC second its run started, such as `20261011T030000Z`, and `-2`, `-3` for later runs that started in
- * the same second. */
-export const BACKUP_ID = /^\d{8}T\d{6}Z(?:-[1-9]\d*)?$/;
 /** What `rig backup restore` takes instead of an id: the newest backup. */
 export const LATEST_BACKUP = "latest";
 
@@ -67,13 +64,33 @@ export function expiredBackups(
     .slice(Math.max(0, keep - 1));
 }
 
-/** The directory a new run of `job` writes: named for `startedAt`, with the first suffix no record and no directory on disk
- * has. The caller holds the Target, so no other run of the job picks one meanwhile. */
+/** Pure: the id of the backup the run `runId` started at `startedAt` writes, `<UTC second>-<tag>`, such as
+ * `20261011T030000Z-4f1c2b3a`: sortable by time, and never the id of another run's backup, since the tag is taken from the
+ * run's own unique id (its first `length` letters and digits, lowercased). An id is never reused, even after the backup
+ * that had it was deleted, so an id a user names can only ever mean that one backup. */
+export function backupId(
+  startedAt: string,
+  runId: string,
+  length = BACKUP_TAG_LENGTH,
+): string {
+  const tag = runId.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return `${backupStamp(startedAt)}-${(tag || "run").slice(0, length)}`;
+}
+/** How much of a run's id names its backup: 8 hex digits of a UUID, a clash between two runs of one second unthinkable. */
+const BACKUP_TAG_LENGTH = 8;
+/** The longest tag an id may carry, should a run's short tag ever be taken. */
+const BACKUP_TAG_MAX = 32;
+
+/** The directory the run `runId` of `job` writes: named `backupId`, with more of the run's id should a record or a
+ * directory already have that name (two runs of one second whose ids start alike). Never a name used before by another
+ * run, so a deleted backup's id is never given to a new one. The caller holds the Target, so no other run of the job picks
+ * one meanwhile. Fails BACKUP_DIRECTORY when even the run's whole id is taken. */
 export async function newBackupLocation(
   state: Pick<RuntimeState, "backups" | "backupRemovals" | "jobs" | "projects">,
   target: Pick<TargetRecord, "id" | "projectId" | "name">,
   job: string,
   startedAt: string,
+  runId: string,
   storage: BackupStorage,
 ): Promise<{ id: string; path: string }> {
   const project =
@@ -89,13 +106,18 @@ export async function newBackupLocation(
       ),
     ),
   ]);
-  const stamp = backupStamp(startedAt);
-  for (let n = 1; ; n++) {
-    const id = n === 1 ? stamp : `${stamp}-${n}`;
+  for (const length of [BACKUP_TAG_LENGTH, 16, BACKUP_TAG_MAX]) {
+    const id = backupId(startedAt, runId, length);
     const path = storage.location(scope, id);
     if (!recorded.has(path) && !(await storage.exists(path)))
       return { id, path };
   }
+  throw new RigError(
+    "BACKUP_DIRECTORY",
+    `Every name for run ${runId}'s backup of ${job} on ${target.name} is taken already, so no run was started.`,
+    "Run the job again; a new run has a new id.",
+    { job, run: runId },
+  );
 }
 
 /** Records, inside the write that records the end of `run`, what becomes of the directory it wrote: a successful run's is

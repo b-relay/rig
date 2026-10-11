@@ -12,8 +12,8 @@ const BACKUPS = {
     {
       target: "stable",
       job: "db-backup",
-      id: "20261011T030000Z",
-      path: "/isolated/.rig/backups/melody/stable/db-backup/20261011T030000Z",
+      id: "20261011T030000Z-4f1c2b3a",
+      path: "/isolated/.rig/backups/melody/stable/db-backup/20261011T030000Z-4f1c2b3a",
       run: "4f1c2b3a-9d8e-4f00-8a1b-2c3d4e5f6a7b",
       trigger: "schedule",
       startedAt: "2026-10-11T03:00:00.000Z",
@@ -23,8 +23,8 @@ const BACKUPS = {
     {
       target: "stable",
       job: "db-backup",
-      id: "20261010T030000Z",
-      path: "/isolated/.rig/backups/melody/stable/db-backup/20261010T030000Z",
+      id: "20261010T030000Z-0a1b2c3d",
+      path: "/isolated/.rig/backups/melody/stable/db-backup/20261010T030000Z-0a1b2c3d",
       run: "0a1b2c3d-0000-4000-8000-000000000000",
       trigger: "manual",
       startedAt: "2026-10-10T03:00:00.000Z",
@@ -80,7 +80,7 @@ function harness(
                 action: "restore",
                 outcome: "started",
                 occurredAt: "2026-10-11T09:00:00.000Z",
-                message: "db-backup from 20261011T030000Z",
+                message: "db-backup from 20261011T030000Z-4f1c2b3a",
               },
               ...(options.ended && polls > 1
                 ? [
@@ -89,7 +89,7 @@ function harness(
                       action: "restore",
                       outcome: options.ended,
                       occurredAt: "2026-10-11T09:00:05.000Z",
-                      message: `db-backup: restore from 20261011T030000Z ${options.ended === "succeeded" ? "succeeded in 5s" : "failed in 5s: exit 1"}`,
+                      message: `db-backup: restore from 20261011T030000Z-4f1c2b3a ${options.ended === "succeeded" ? "succeeded in 5s" : "failed in 5s: exit 1"}`,
                     },
                   ]
                 : []),
@@ -145,10 +145,10 @@ test("rig backup list sends the backups read, every Target's unless one is named
     { action: "backups", repoPath: "/workspace", operationId: "op-1" },
   ]);
   expect(all.out()).toContain(
-    "stable  db-backup  20261011T030000Z  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a",
+    "stable  db-backup  20261011T030000Z-4f1c2b3a  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a",
   );
   expect(all.out()).toContain(
-    "20261010T030000Z  2026-10-10 03:00:39Z  812 B  rig run  run 0a1b2c3d  MISSING",
+    "20261010T030000Z-0a1b2c3d  2026-10-10 03:00:39Z  812 B  rig run  run 0a1b2c3d  MISSING",
   );
   expect(all.out()).toContain(
     "In /isolated/.rig/backups/melody/<target>/<job>/<id>",
@@ -209,7 +209,7 @@ test("rig backup restore resolves latest, asks before it acts, then waits for th
   ).toBe(0);
   expect(h.questions).toEqual([
     expect.stringContaining(
-      "Restore db-backup on stable from backup 20261011T030000Z (made 2026-10-11T03:00:41.000Z, 13 MB)?",
+      "Restore db-backup on stable from backup 20261011T030000Z-4f1c2b3a (made 2026-10-11T03:00:41.000Z, 13 MB)?",
     ),
   ]);
   expect(h.questions[0]).toContain("Services keep running");
@@ -218,10 +218,10 @@ test("rig backup restore resolves latest, asks before it acts, then waits for th
     action: "restore",
     target: "stable",
     job: "db-backup",
-    backup: "20261011T030000Z",
+    backup: "20261011T030000Z-4f1c2b3a",
   });
   expect(h.out()).toBe(
-    "melody stable db-backup restored from 20261011T030000Z (succeeded in 5s)\n",
+    "melody stable db-backup restored from 20261011T030000Z-4f1c2b3a (succeeded in 5s)\n",
   );
   expect(h.err()).toContain("rig logs stable --service db-backup");
 });
@@ -236,7 +236,7 @@ test("rig backup restore is cancelled when the answer is no, refused without a t
   const headless = harness({ interactive: false });
   expect(
     await runRigCli(
-      ["backup", "restore", "db-backup", "20261011T030000Z"],
+      ["backup", "restore", "db-backup", "20261011T030000Z-4f1c2b3a"],
       headless.deps,
     ),
   ).toBe(1);
@@ -252,7 +252,7 @@ test("rig backup restore is cancelled when the answer is no, refused without a t
   ).toBe(0);
   expect(yes.requests.find((r) => r.action === "restore")).toMatchObject({
     target: "working",
-    backup: "20261011T030000Z",
+    backup: "20261011T030000Z-4f1c2b3a",
   });
   const failed = harness({ ended: "failed" });
   expect(
@@ -267,13 +267,13 @@ test("rig backup restore is cancelled when the answer is no, refused without a t
   const unknown = harness();
   expect(
     await runRigCli(
-      ["backup", "restore", "db-backup", "20200101T000000Z"],
+      ["backup", "restore", "db-backup", "20200101T000000Z-gone"],
       unknown.deps,
     ),
   ).toBe(1);
   expect(unknown.requests.map((r) => r.action)).toEqual(["backups"]);
-  expect(unknown.err()).toContain("has no backup 20200101T000000Z");
-  expect(unknown.err()).toContain("20261011T030000Z");
+  expect(unknown.err()).toContain("has no backup 20200101T000000Z-gone");
+  expect(unknown.err()).toContain("20261011T030000Z-4f1c2b3a");
   const bad = harness();
   expect(
     await runRigCli(["backup", "restore", "db-backup", "yesterday"], bad.deps),

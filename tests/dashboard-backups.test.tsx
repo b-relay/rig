@@ -17,8 +17,8 @@ import type { JobReport } from "../web/lib/types";
 const backup = (fields: Partial<BackupView>): BackupView => ({
   target: "stable",
   job: "db-backup",
-  id: "20261011T030000Z",
-  path: "/rig/backups/melody/stable/db-backup/20261011T030000Z",
+  id: "20261011T030000Z-4f1c2b3a",
+  path: "/rig/backups/melody/stable/db-backup/20261011T030000Z-4f1c2b3a",
   run: "run-1",
   trigger: "schedule",
   startedAt: "2026-10-11T03:00:00.000Z",
@@ -38,15 +38,15 @@ const job = (fields: Partial<JobReport> = {}): JobReport => ({
 
 test("a card lists its own job's backups in its own Target, newest first", () => {
   const older = backup({
-    id: "20261010T030000Z",
+    id: "20261010T030000Z-0a1b2c3d",
     finishedAt: "2026-10-10T03:00:39.000Z",
   });
   const newer = backup({});
   const all = [
     older,
     newer,
-    backup({ target: "working", id: "20261011T040000Z" }),
-    backup({ job: "files-backup", id: "20261011T050000Z" }),
+    backup({ target: "working", id: "20261011T040000Z-5b6c7d8e" }),
+    backup({ job: "files-backup", id: "20261011T050000Z-9f0a1b2c" }),
   ];
   expect(backupsOf(all, { name: "stable" }, "db-backup")).toEqual([
     newer,
@@ -81,7 +81,7 @@ test("the typed confirmation is the job's name exactly, and the restore sends ri
     "melody",
     { kind: "preview", name: "feat-1a2b3c4d" },
     "db-backup",
-    "20261011T030000Z",
+    "20261011T030000Z-4f1c2b3a",
   );
   expect(command).toEqual({
     action: "restore",
@@ -89,7 +89,7 @@ test("the typed confirmation is the job's name exactly, and the restore sends ri
     target: "preview",
     deployment: "feat-1a2b3c4d",
     job: "db-backup",
-    backup: "20261011T030000Z",
+    backup: "20261011T030000Z-4f1c2b3a",
   });
   expect(commandSchema.safeParse(command).success).toBe(true);
 });
@@ -101,7 +101,7 @@ test("a restore in progress reads as restoring on the job's tile", () => {
         state: "running",
         running: {
           trigger: "restore",
-          restore: "20261011T030000Z",
+          restore: "20261011T030000Z-4f1c2b3a",
           startedAt: "2026-10-11T09:00:00.000Z",
           summary: "running",
         },
@@ -119,7 +119,7 @@ test("the backup list shows each backup's time, size and origin with its control
       backups={[
         backup({}),
         backup({
-          id: "20261010T030000Z",
+          id: "20261010T030000Z-0a1b2c3d",
           trigger: "manual",
           finishedAt: "2026-10-10T03:00:39.000Z",
           bytes: 812,
@@ -138,11 +138,11 @@ test("the backup list shows each backup's time, size and origin with its control
   expect(html).toContain("9 h ago");
   expect(html).toContain("directory deleted");
   expect(html).toContain('title="Run run-1"');
-  expect(html).toContain("Restore 20261011T030000Z");
-  expect(html).toContain("Restore 20261010T030000Z");
+  expect(html).toContain("Restore 20261011T030000Z-4f1c2b3a");
+  expect(html).toContain("Restore 20261010T030000Z-0a1b2c3d");
   // The newest first, as given.
-  expect(html.indexOf("20261011T030000Z")).toBeLessThan(
-    html.indexOf("20261010T030000Z"),
+  expect(html.indexOf("20261011T030000Z-4f1c2b3a")).toBeLessThan(
+    html.indexOf("20261010T030000Z-0a1b2c3d"),
   );
   const empty = renderToStaticMarkup(
     <BackupList

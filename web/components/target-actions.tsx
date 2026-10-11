@@ -172,7 +172,7 @@ export function TargetActions({
       }
     >
       {stacked ? null : layout === "card" ? (
-        <OutcomeMark act={act} />
+        <OutcomeMark act={act} target={target.name} />
       ) : (
         <Outcome act={act} />
       )}
@@ -283,34 +283,55 @@ export function TargetActions({
 }
 /** The last outcome as one small mark, for a card with no room for words; the tooltip and the
  * Operation link tell the rest. */
-function OutcomeMark({ act }: { act: Run<OperationResult> }) {
+function OutcomeMark({
+  act,
+  target,
+}: {
+  act: Run<OperationResult>;
+  target: string;
+}) {
+  const [open, setOpen] = useState(false);
   const failure = act.failure;
   const result = act.result;
   if (!failure && !result) return null;
-  const operation = failure?.operationId ?? result?.operationId;
   const text = failure
     ? `${failure.code}: ${failure.message}${failure.hint ? ` ${failure.hint}` : ""}`
     : `${result?.outcome}${result?.warnings?.length ? `. ${result.warnings.join(" ")}` : ""}`;
+  // A tooltip alone never reaches a phone, so a tap opens the whole outcome.
   return (
-    <a
-      href={
-        operation
-          ? `/activity?operation=${encodeURIComponent(operation)}`
-          : "/activity"
-      }
-      title={text}
-      className={cn(
-        "inline-flex size-7 items-center justify-center rounded-md hover:bg-muted",
-        failure ? "text-bad" : "text-good",
-      )}
-    >
-      {failure ? (
-        <CircleAlert className="size-4" aria-hidden />
-      ) : (
-        <CircleCheck className="size-4" aria-hidden />
-      )}
-      <span className="sr-only">{text}</span>
-    </a>
+    <>
+      <button
+        type="button"
+        title={text}
+        aria-label={`Last action on ${target}: ${text}`}
+        onClick={() => setOpen(true)}
+        className={cn(
+          "inline-flex size-7 items-center justify-center rounded-md hover:bg-muted",
+          failure ? "text-bad" : "text-good",
+        )}
+      >
+        {failure ? (
+          <CircleAlert className="size-4" aria-hidden />
+        ) : (
+          <CircleCheck className="size-4" aria-hidden />
+        )}
+      </button>
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Last action on {target}</AlertDialogTitle>
+            <AlertDialogDescription className="sr-only">
+              {text}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Failure failure={failure} />
+          <OperationNotice result={result} />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 /** The last outcome in a few words; the Operation link tells the rest. */

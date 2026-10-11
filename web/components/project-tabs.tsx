@@ -60,22 +60,24 @@ function SectionTabs({
   label: string;
 }) {
   const pathname = decodeURIComponent(usePathname());
-  const list = useRef<HTMLUListElement>(null);
-  // On a phone the row scrolls; the current tab is brought into view whenever it changes.
+  const row = useRef<HTMLElement>(null);
+  // On a phone the row scrolls sideways; the current tab is centred in it whenever it changes.
+  // Only the row moves, never the page, so back and forward keep their scroll position.
   useEffect(() => {
-    list.current
-      ?.querySelector<HTMLElement>("[aria-current=page]")
-      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const nav = row.current;
+    const tab = nav?.querySelector<HTMLElement>("[aria-current=page]");
+    if (!nav || !tab || nav.scrollWidth <= nav.clientWidth) return;
+    nav.scrollTo({
+      left: tab.offsetLeft - (nav.clientWidth - tab.offsetWidth) / 2,
+    });
   }, [pathname]);
   return (
     <nav
+      ref={row}
       aria-label={label}
-      className="no-scrollbar -mx-4 overflow-x-auto px-4 [mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] sm:mx-0 sm:px-0 sm:[mask-image:none]"
+      className="no-scrollbar relative -mx-4 overflow-x-auto px-4 [mask-image:linear-gradient(to_right,transparent,black_1rem,black_calc(100%-1rem),transparent)] sm:mx-0 sm:px-0 sm:[mask-image:none]"
     >
-      <ul
-        ref={list}
-        className="flex w-max gap-0.5 rounded-xl border bg-muted/60 p-1"
-      >
+      <ul className="flex w-max gap-0.5 rounded-xl border bg-muted/60 p-1">
         {tabs.map(([segment, text]) => {
           const href = segment ? `${base}/${segment}` : base;
           const current =

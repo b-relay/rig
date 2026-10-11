@@ -64,60 +64,50 @@ export function expiredBackups(
     .slice(Math.max(0, keep - 1));
 }
 
-/** Pure: the id of the backup the run `runId` started at `startedAt` writes, `<UTC second>-<tag>`, such as
- * `20261011T030000Z-4f1c2b3a`: sortable by time, and never the id of another run's backup, since the tag is taken from the
- * run's own unique id (its first `length` letters and digits, lowercased). An id is never reused, even after the backup
- * that had it was deleted, so an id a user names can only ever mean that one backup. */
-export function backupId(
-  startedAt: string,
-  runId: string,
-  length = BACKUP_TAG_LENGTH,
-): string {
-  const tag = runId.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return `${backupStamp(startedAt)}-${(tag || "run").slice(0, length)}`;
+/** Pure: a backup id, `<UTC second>-<sequence>`, such as `20261011T030000Z-17`. */
+export function backupId(startedAt: string, sequence: number): string {
+  return `${backupStamp(startedAt)}-${sequence}`;
 }
-/** How much of a run's id names its backup: 8 hex digits of a UUID, a clash between two runs of one second unthinkable. */
-const BACKUP_TAG_LENGTH = 8;
-/** The longest tag an id may carry, should a run's short tag ever be taken. */
-const BACKUP_TAG_MAX = 32;
+/** Pure: the sequence number in a backup id; undefined for an id of another shape. */
+function sequenceOf(id: string): number | undefined {
+  const match = /-([1-9]\d*)$/.exec(id);
+  return match ? Number(match[1]) : undefined;
+}
 
-/** The directory the run `runId` of `job` writes: named `backupId`, with more of the run's id should a record or a
- * directory already have that name (two runs of one second whose ids start alike). Never a name used before by another
- * run, so a deleted backup's id is never given to a new one. The caller holds the Target, so no other run of the job picks
- * one meanwhile. Fails BACKUP_DIRECTORY when even the run's whole id is taken. */
-export async function newBackupLocation(
-  state: Pick<RuntimeState, "backups" | "backupRemovals" | "jobs" | "projects">,
+/** Allocates the directory a new run of `job` on `target` writes, inside the state write that records the run before the
+ * directory is made, so no two runs, and no rigd that stops in between, are ever handed the same one. Its id is the run's
+ * UTC second and the next number of the job's backup sequence, which only ever grows.
+ *
+ * The sequence is kept per backup directory, `<project>/<target>/<job>` by name (`backupSequences`), and is never reset or
+ * forgotten: not when its backups are deleted, not by a Preview destroy or `rig forget`, so a Preview made again under the
+ * same name, or a Project registered again, continues it. It also starts past every number the Target's kept backups of the
+ * job carry, so a Project renamed while it has backups never repeats one. A backup id is therefore never issued twice for a
+ * Target's job, and naming one can only ever find the backup it was issued to, or nothing. */
+export function allocateBackup(
+  state: RuntimeState,
   target: Pick<TargetRecord, "id" | "projectId" | "name">,
   job: string,
   startedAt: string,
-  runId: string,
-  storage: BackupStorage,
-): Promise<{ id: string; path: string }> {
+  storage: Pick<BackupStorage, "location">,
+): { id: string; path: string } {
   const project =
     state.projects.find((p) => p.id === target.projectId)?.name ??
     target.projectId;
   const scope = { project, target: target.name, job };
-  const recorded = new Set([
-    ...(state.backups ?? []).map((backup) => backup.path),
-    ...(state.backupRemovals ?? []).map((removal) => removal.path),
-    ...(state.jobs ?? []).flatMap((record) =>
-      [record.running?.backup?.path, record.last?.backup?.path].filter(
-        (path): path is string => path !== undefined,
-      ),
-    ),
-  ]);
-  for (const length of [BACKUP_TAG_LENGTH, 16, BACKUP_TAG_MAX]) {
-    const id = backupId(startedAt, runId, length);
-    const path = storage.location(scope, id);
-    if (!recorded.has(path) && !(await storage.exists(path)))
-      return { id, path };
-  }
-  throw new RigError(
-    "BACKUP_DIRECTORY",
-    `Every name for run ${runId}'s backup of ${job} on ${target.name} is taken already, so no run was started.`,
-    "Run the job again; a new run has a new id.",
-    { job, run: runId },
+  const counter = (state.backupSequences ?? []).find(
+    (sequence) =>
+      sequence.project === project &&
+      sequence.target === target.name &&
+      sequence.job === job,
   );
+  const kept = jobBackups(state, target.id, job).map(
+    (backup) => sequenceOf(backup.id) ?? 0,
+  );
+  const next = Math.max(counter?.last ?? 0, ...kept) + 1;
+  if (counter) counter.last = next;
+  else (state.backupSequences ??= []).push({ ...scope, last: next });
+  const id = backupId(startedAt, next);
+  return { id, path: storage.location(scope, id) };
 }
 
 /** Records, inside the write that records the end of `run`, what becomes of the directory it wrote: a successful run's is

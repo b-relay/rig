@@ -417,7 +417,7 @@ const jobFields = {
     })
     .optional()
     .describe(
-      'Makes this job a backup job (a scheduled job with retention): every run, scheduled or rig run, gets a fresh, empty directory <RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>-<run tag>/ (mode 0700; the name is never reused) as $RIG_BACKUP_DIR, and command writes the backup into it, such as pg_dump -Fc -f "$RIG_BACKUP_DIR/app.dump". A run that fails, times out or is stopped has its directory deleted; a successful one is kept and shown by rig backup list, rig status and the dashboard. Rig never needs to know what it backs up. Backups stay on this Mac, outside the Target\'s data and checkout, so deploys and rig down/up keep them; destroying a Preview deletes its backups.',
+      'Makes this job a backup job (a scheduled job with retention): every run, scheduled or rig run, gets a fresh, empty directory <RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>-<number>/ (mode 0700; the number only grows, so a name is never issued twice) as $RIG_BACKUP_DIR, and command writes the backup into it, such as pg_dump -Fc -f "$RIG_BACKUP_DIR/app.dump". A run that fails, times out or is stopped has its directory deleted; a successful one is kept and shown by rig backup list, rig status and the dashboard. Rig never needs to know what it backs up. Backups stay on this Mac, outside the Target\'s data and checkout, so deploys and rig down/up keep them; destroying a Preview deletes its backups.',
     ),
 };
 const job = z.strictObject(jobFields);

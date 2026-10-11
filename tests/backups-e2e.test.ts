@@ -80,9 +80,7 @@ targets:
       });
     const kept = (await readdir(jobDir)).sort();
     expect(kept).toHaveLength(2);
-    expect(kept.every((id) => /^\d{8}T\d{6}Z-[a-z0-9]{8}$/.test(id))).toBe(
-      true,
-    );
+    expect(kept.every((id) => /^\d{8}T\d{6}Z-\d+$/.test(id))).toBe(true);
     const listed = JSON.parse(
       (await f.rig(["backup", "list", "db-backup", "working", "--json"]))
         .stdout,
@@ -143,7 +141,7 @@ targets:
       "backup",
       "restore",
       "db-backup",
-      "20200101T000000Z-gone",
+      "20200101T000000Z-1",
       "working",
       "--yes",
     ]);

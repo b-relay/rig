@@ -1990,13 +1990,15 @@ jobs:
 ```
 
 - **`$RIG_BACKUP_DIR`** is a new, empty directory for each run,
-  `<RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>-<run tag>/` (such as
-  `.../db-backup/20261011T030000Z-4f1c2b3a/`), mode 0700. Write it as the shell
+  `<RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>-<number>/` (such as
+  `.../db-backup/20261011T030000Z-17/`), mode 0700. Write it as the shell
   variable `$RIG_BACKUP_DIR` (or `$${RIG_BACKUP_DIR}`); `${...}` without the
   extra `$` is a Rig reference. rigd sets it after the env files, so no file
-  can change it. The directory's name, its backup id, is never reused, even
-  after the backup was deleted, so an id you name can only mean that one
-  backup.
+  can change it. The directory's name, its backup id, ends in a number that
+  only grows per `<project>/<target>/<job>`, and is never reset: not when
+  backups are deleted, a Preview is destroyed and made again under the same
+  name, or a Project is forgotten and registered again. An id is never issued
+  twice, so an id you name can only mean that one backup.
 - **A run that fails leaves nothing.** A non-zero exit, a timeout, a stop by
   Rig (`rig down`, a Preview destroy) or a start that failed deletes the run's
   directory. A run that exits 0 becomes a backup and its size is recorded;
@@ -2034,8 +2036,8 @@ backups, one job's (`rig backup list db-backup`), one job's in one Target
 stable`), newest first:
 
 ```
-stable  db-backup  20261011T030000Z-4f1c2b3a  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a
-stable  db-backup  20261010T030000Z-0a1b2c3d  2026-10-10 03:00:39Z  13 MB  schedule  run 0a1b2c3d
+stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a
+stable  db-backup  20261010T030000Z-16  2026-10-10 03:00:39Z  13 MB  schedule  run 0a1b2c3d
 
 In /Users/you/.rig/backups/melody/<target>/<job>/<id>
 ```
@@ -2044,7 +2046,7 @@ In /Users/you/.rig/backups/melody/<target>/<job>/<id>
 that made it, as `rig activity` names it), `trigger`, `startedAt`,
 `finishedAt`, `bytes`, and `missing: true` when its directory is gone.
 `rig status` adds a line under each backup job,
-`backups 2 of 14 kept, 26 MB · latest 20261011T030000Z-4f1c2b3a, 9h ago`, and
+`backups 2 of 14 kept, 26 MB · latest 20261011T030000Z-17, 9h ago`, and
 `rig status --json` has it as the job's `backup` (`keep`, `restore`, `count`,
 `bytes`, `latest`).
 

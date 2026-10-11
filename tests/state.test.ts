@@ -284,7 +284,7 @@ test("state version 6, written before backups, is read as it is and saved as ver
           target: s.targets[0]!.id,
           project: s.projects[0]!.id,
           job: "db-backup",
-          id: "20261011T030000Z-4f1c2b3a",
+          id: "20261011T030000Z-17",
           path: join(root, "backups", "p", "working", "db-backup", "x"),
           run: "run-1",
           trigger: "schedule",

@@ -359,7 +359,7 @@ and next run, and `rig logs --service <job>` its output.
 The directory one successful run of a backup job wrote: a job with `backup:`
 in `rig.yaml` ([ADR 0017](docs/adr/0017-backups.md)). Each run gets a fresh,
 empty `$RIG_BACKUP_DIR` under `<RIG_ROOT>/backups/<project>/<target>/<job>/`,
-named for its UTC start and its run (an id never reused); a run that fails has
+named for its UTC start and a number that only grows (an id never issued twice); a run that fails has
 it deleted, and a successful one is kept.
 _Avoid_: snapshot, dump (what a backup holds is the job's business), preset
 

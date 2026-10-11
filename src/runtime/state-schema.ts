@@ -679,7 +679,7 @@ export const runtimeStateSchema = z
           project: text.describe("The Project's id."),
           job: text.describe("The backup job's name."),
           id: text.describe(
-            "The backup's id: its run's start in UTC and a tag from the run's own id, such as 20261011T030000Z-4f1c2b3a; never reused.",
+            "The backup's id: its run's start in UTC and its number in the job's backup sequence, such as 20261011T030000Z-17; never issued twice.",
           ),
           path: absolutePath.describe("Its directory under RIG_ROOT/backups."),
           run: text.describe("The run that wrote it."),
@@ -701,6 +701,23 @@ export const runtimeStateSchema = z
       .optional()
       .describe(
         "Kept backups of backup jobs (ADR 0017): the successful runs' directories, the newest keep per Target and job.",
+      ),
+    backupSequences: z
+      .array(
+        z.object({
+          project: text.describe("The Project's name."),
+          target: text.describe("The Target's name."),
+          job: text.describe("The backup job's name."),
+          last: z
+            .number()
+            .int()
+            .positive()
+            .describe("The last backup number issued; the next gets one more."),
+        }),
+      )
+      .optional()
+      .describe(
+        "The last backup number issued per backup directory (<project>/<target>/<job> by name), so a backup id (UTC second and number) is never issued twice; never reset, even when the backups, the Preview or the Project's registration go.",
       ),
     backupRemovals: z
       .array(

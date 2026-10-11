@@ -15,7 +15,7 @@ import type {
 import type { ProcessObservation } from "../providers/contracts";
 import {
   backupStorage,
-  newBackupLocation,
+  allocateBackup,
   queueRemoval,
   recordBackupEnd,
   settleBackupFiles,
@@ -292,20 +292,6 @@ export async function startJobRun(
     throw noRestore(job.name);
   const storage =
     job.backup && !request.restore ? backupStorage(deps) : undefined;
-  const made =
-    storage && job.backup
-      ? {
-          ...(await newBackupLocation(
-            await deps.store.read(),
-            target,
-            job.name,
-            startedAt,
-            request.id,
-            storage,
-          )),
-          keep: job.backup.keep,
-        }
-      : undefined;
   const run: JobRun = {
     id: request.id,
     trigger: request.trigger,
@@ -316,12 +302,20 @@ export async function startJobRun(
     workspace: target.plan.workspacePath,
     ...(job.timeout !== undefined ? { timeout: job.timeout } : {}),
     ...(job.stopTimeout !== undefined ? { stopTimeout: job.stopTimeout } : {}),
-    ...(made ? { backup: made } : {}),
     ...(request.restore
       ? { restore: { id: request.restore.id, path: request.restore.path } }
       : {}),
   };
+  // A backup run's directory is allocated in the write that records the run, before it is made.
+  let made: JobRun["backup"];
   await deps.store.update((state) => {
+    if (storage && job.backup) {
+      made = {
+        ...allocateBackup(state, target, job.name, startedAt, storage),
+        keep: job.backup.keep,
+      };
+      run.backup = made;
+    }
     const record = ensureJobRecord(state, target.id, job.name);
     record.running = run;
     if (run.scheduledFor) record.lastScheduled = run.scheduledFor;

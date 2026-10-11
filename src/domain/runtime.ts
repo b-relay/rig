@@ -214,7 +214,7 @@ export interface BackupRecord {
   /** The Project's id. */
   project: string;
   job: string;
-  /** The run's start in UTC and a tag from the run's own id, such as `20261011T030000Z-4f1c2b3a`; never reused, even once the backup is deleted. */
+  /** The run's start in UTC and its number in the job's backup sequence, such as `20261011T030000Z-17`; never issued twice, even once the backup is deleted. */
   id: string;
   /** Absolute directory under `<RIG_ROOT>/backups`. */
   path: string;
@@ -225,6 +225,17 @@ export interface BackupRecord {
   finishedAt: string;
   /** Total bytes, recorded once the backup was measured after its run; absent until then. */
   bytes?: number;
+}
+/** The backup numbers issued for one backup directory, `<project>/<target>/<job>` by name. Kept by name, not by record id,
+ * and never dropped, so a Preview made again under the same name or a Project registered again continues it. */
+export interface BackupSequence {
+  /** The Project's name. */
+  project: string;
+  /** The Target's name. */
+  target: string;
+  job: string;
+  /** The last number issued; the next backup gets one more. */
+  last: number;
 }
 /** A backup directory Rig decided to delete (a failed run's, or one past `keep`), queued in the write that decided it. */
 export interface BackupRemoval {
@@ -277,6 +288,8 @@ export interface RuntimeState {
   backups?: BackupRecord[];
   /** Backup directories waiting to be deleted. */
   backupRemovals?: BackupRemoval[];
+  /** The last backup number issued per backup directory; never reset, so no backup id is issued twice. */
+  backupSequences?: BackupSequence[];
   /** The last value handed out to order starts and Host restarts: each journalled start takes the next one as its run's
    * `startSeq`, and a recorded Host restart notes the value it found as its `seq`. It only grows. */
   startSeq?: number;

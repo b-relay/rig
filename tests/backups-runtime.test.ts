@@ -4,16 +4,16 @@ import { join } from "node:path";
 import { createBackupStorage } from "../src/adapters/backup-storage";
 import { parseProjectConfig } from "../src/config";
 import type { ProjectConfig } from "../src/config/types";
-import type { BackupRecord } from "../src/domain/runtime";
+import type { BackupRecord, RuntimeState } from "../src/domain/runtime";
 import type {
   ProcessObservation,
   Supervisor,
   ManagedProcess,
 } from "../src/providers/contracts";
 import {
+  allocateBackup,
   backupId,
   expiredBackups,
-  newBackupLocation,
 } from "../src/runtime/backups";
 import type { BackupStorage } from "../src/runtime/contracts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
@@ -54,7 +54,8 @@ async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
       },
       plain: { command: "echo plain", schedule: "0 5 * * *" },
     },
-    targets: { working: true },
+    // Previews are on so a test can record the working Target as one and destroy it.
+    targets: { working: true, preview: true },
   });
   const processes = new Map<string, ProcessObservation>();
   const starts: ManagedProcess[] = [];
@@ -134,7 +135,6 @@ async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
   });
   const target = (await world.store.read()).targets[0]!;
   const keyOf = (job: string) => `${target.id}:job:${job}`;
-  // Runs are r1, r2, ... in order, so a backup's id (its start and its run's tag) is known: 20261011T030001Z-r1.
   let runs = 0;
   const run = (job = "db-backup", operationId = `r${++runs}`) =>
     runtime.command({
@@ -206,10 +206,10 @@ test("each run of a backup job gets a fresh, empty 0700 directory as $RIG_BACKUP
   await f.run();
   const run = (await f.running())!;
   expect(run.backup).toEqual({
-    id: "20261011T030000Z-r1",
+    id: "20261011T030000Z-1",
     path: join(
       f.world.root,
-      "backups/melody/working/db-backup/20261011T030000Z-r1",
+      "backups/melody/working/db-backup/20261011T030000Z-1",
     ),
     keep: 2,
   });
@@ -229,14 +229,14 @@ test("each run of a backup job gets a fresh, empty 0700 directory as $RIG_BACKUP
   // A second run in the same second gets its own directory.
   await f.finish(1);
   await f.run();
-  expect((await f.running())!.backup!.id).toBe("20261011T030002Z-r3");
+  expect((await f.running())!.backup!.id).toBe("20261011T030002Z-2");
 });
 
 test("a successful run is kept and measured, its mode untouched; a failed, timed-out or stopped run leaves nothing", async () => {
   const f = await fixture();
   const kept = await f.backUp("0123456789");
   expect(await f.backups()).toMatchObject([
-    { id: "20261011T030001Z-r1", path: kept, bytes: 10, trigger: "manual" },
+    { id: "20261011T030001Z-1", path: kept, bytes: 10, trigger: "manual" },
   ]);
   // Nothing changes modes after the directory is made.
   expect(await mode(kept)).toBe(0o700);
@@ -263,7 +263,7 @@ test("a successful run is kept and measured, its mode untouched; a failed, timed
     .map((entry) => entry.message);
   expect(activity).toEqual([
     expect.stringContaining(
-      "succeeded in 2s (rig run); kept backup 20261011T030001Z-r1",
+      "succeeded in 2s (rig run); kept backup 20261011T030001Z-1",
     ),
     expect.stringContaining(
       "failed in 2s: exit 1 (rig run); its backup directory was deleted",
@@ -336,10 +336,10 @@ test("a restore runs the job's restore command once in the job's environment, wi
   const older = await f.backUp("old");
   const newer = await f.backUp("new");
   const backupRun = f.starts.at(-1)!;
-  const reply = await f.restore("20261011T030001Z-r1", "restore-1");
+  const reply = await f.restore("20261011T030001Z-1", "restore-1");
   expect(reply).toMatchObject({
     outcome: "started",
-    backup: "20261011T030001Z-r1",
+    backup: "20261011T030001Z-1",
   });
   const start = f.starts.at(-1)!;
   expect(start.command).toEqual([
@@ -355,7 +355,7 @@ test("a restore runs the job's restore command once in the job's environment, wi
   const run = (await f.running())!;
   expect(run).toMatchObject({
     trigger: "restore",
-    restore: { id: "20261011T030001Z-r1", path: older },
+    restore: { id: "20261011T030001Z-1", path: older },
   });
   expect(run.backup).toBeUndefined();
   // While it goes, neither a run of the job nor another restore starts.
@@ -378,13 +378,13 @@ test("a restore runs the job's restore command once in the job's environment, wi
     expect.objectContaining({
       action: "restore",
       outcome: "started",
-      message: "db-backup from 20261011T030001Z-r1",
+      message: "db-backup from 20261011T030001Z-1",
     }),
     expect.objectContaining({
       action: "restore",
       outcome: "succeeded",
       message: expect.stringContaining(
-        "db-backup: restore from 20261011T030001Z-r1 succeeded in 2s",
+        "db-backup: restore from 20261011T030001Z-1 succeeded in 2s",
       ),
     }),
   ]);
@@ -402,9 +402,9 @@ test("a restore is refused while a backup runs, for a job without restore, for a
     message: expect.stringContaining("db-backup is still running"),
   });
   await f.finish(0);
-  await expect(f.restore("20200101T000000Z-gone")).rejects.toMatchObject({
+  await expect(f.restore("20200101T000000Z-99")).rejects.toMatchObject({
     code: "BACKUP_UNKNOWN",
-    hint: expect.stringContaining("20261011T030001Z-r1"),
+    hint: expect.stringContaining("20261011T030001Z-1"),
   });
   const restore = (job: string) =>
     f.runtime.command({
@@ -423,7 +423,7 @@ test("a restore is refused while a backup runs, for a job without restore, for a
   });
   // A backup whose directory was deleted by hand is refused, and shown missing.
   await f.storage().remove(kept);
-  await expect(f.restore("20261011T030001Z-r1")).rejects.toMatchObject({
+  await expect(f.restore("20261011T030001Z-1")).rejects.toMatchObject({
     code: "BACKUP_MISSING",
   });
   const listed = (await f.runtime.command({
@@ -431,7 +431,7 @@ test("a restore is refused while a backup runs, for a job without restore, for a
     repoPath: f.world.repo,
   })) as { backups: { id: string; missing?: true }[] };
   expect(
-    listed.backups.find((b) => b.id === "20261011T030001Z-r1"),
+    listed.backups.find((b) => b.id === "20261011T030001Z-1"),
   ).toMatchObject({ missing: true });
 });
 
@@ -448,11 +448,11 @@ test("the backups read lists every Target's backups newest first, narrowed by jo
     expect.objectContaining({
       target: "working",
       job: "db-backup",
-      id: "20261011T030004Z-r2",
+      id: "20261011T030004Z-2",
       bytes: 6,
       trigger: "manual",
     }),
-    expect.objectContaining({ id: "20261011T030001Z-r1", bytes: 4 }),
+    expect.objectContaining({ id: "20261011T030001Z-1", bytes: 4 }),
   ]);
   const narrowed = (await f.runtime.command({
     action: "backups",
@@ -477,7 +477,7 @@ test("the backups read lists every Target's backups newest first, narrowed by jo
     count: 2,
     bytes: 10,
     latest: {
-      id: "20261011T030004Z-r2",
+      id: "20261011T030004Z-2",
       finishedAt: expect.any(String),
       bytes: 6,
     },
@@ -562,14 +562,14 @@ test("a symlinked directory between the backup root and a backup is never create
   // The job's directory is pointed outside the root, at a directory holding an entry of the same name.
   const outside = join(f.world.root, "outside");
   const jobDirectory = join(f.world.root, "backups/melody/working/db-backup");
-  await mkdir(join(outside, "20261011T030001Z-r1"), { recursive: true });
-  await writeFile(join(outside, "20261011T030001Z-r1", "data"), "not Rig's");
+  await mkdir(join(outside, "20261011T030001Z-1"), { recursive: true });
+  await writeFile(join(outside, "20261011T030001Z-1", "data"), "not Rig's");
   await rm(jobDirectory, { recursive: true });
   await symlink(outside, jobDirectory);
   const untouched = async () => {
-    expect(await readdir(outside)).toEqual(["20261011T030001Z-r1"]);
+    expect(await readdir(outside)).toEqual(["20261011T030001Z-1"]);
     expect(
-      await Bun.file(join(outside, "20261011T030001Z-r1", "data")).text(),
+      await Bun.file(join(outside, "20261011T030001Z-1", "data")).text(),
     ).toBe("not Rig's");
   };
   expect(await storage.exists(kept)).toBe(false);
@@ -635,10 +635,14 @@ test("a run that exits 0 but removed its directory keeps no backup and evicts no
 test("a backup id is never reused, so an evicted backup's id never names another backup", async () => {
   const f = await fixture({ keep: 1 });
   const key = `${f.target.id}:job:db-backup`;
-  // Three successful runs within one UTC second, each evicting the one before.
+  // Three successful runs within one UTC second, each evicting the one before, with run ids that start alike.
   const made: { id: string; path: string }[] = [];
-  for (const content of ["first", "second", "third"]) {
-    await f.run();
+  for (const [content, operationId] of [
+    ["first", "backup-001"],
+    ["second", "backup-002"],
+    ["third", "backup-003"],
+  ] as const) {
+    await f.run("db-backup", operationId);
     const run = (await f.running())!;
     await writeFile(join(run.backup!.path, "melody.dump"), content);
     f.processes.set(key, {
@@ -654,56 +658,130 @@ test("a backup id is never reused, so an evicted backup's id never names another
     made.push(run.backup!);
   }
   expect(made.map((backup) => backup.id)).toEqual([
-    "20261011T030000Z-r1",
-    "20261011T030000Z-r2",
-    "20261011T030000Z-r3",
+    "20261011T030000Z-1",
+    "20261011T030000Z-2",
+    "20261011T030000Z-3",
   ]);
   expect(new Set(made.map((backup) => backup.path)).size).toBe(3);
   expect((await f.backups()).map((backup) => backup.id)).toEqual([
-    "20261011T030000Z-r3",
+    "20261011T030000Z-3",
   ]);
   // The first run's id names nothing now: refused, never matched to the third run's backup.
   const starts = f.starts.length;
-  await expect(f.restore("20261011T030000Z-r1")).rejects.toMatchObject({
+  await expect(f.restore("20261011T030000Z-1")).rejects.toMatchObject({
     code: "BACKUP_UNKNOWN",
   });
   expect(f.starts.length).toBe(starts);
-  await f.restore("20261011T030000Z-r3");
+  await f.restore("20261011T030000Z-3");
   expect(f.starts.at(-1)!.env.RIG_BACKUP_DIR).toBe(made[2]!.path);
 });
 
-test("a backup id is its run's UTC second and a tag from the run's id, longer only when two runs' tags clash", async () => {
-  const uuid = "4F1C2B3A-9D8E-4F00-8A1B-2C3D4E5F6A7B";
-  expect(backupId("2026-10-11T03:00:00.987Z", uuid)).toBe(
-    "20261011T030000Z-4f1c2b3a",
+test("backup numbers only grow per backup directory: not reset by deletion, a Preview made again, a Project registered again, or a rename", () => {
+  expect(backupId("2026-10-11T03:00:00.987Z", 17)).toBe("20261011T030000Z-17");
+  const storage = {
+    location: (
+      scope: { project: string; target: string; job: string },
+      id: string,
+    ) => `/rig/backups/${scope.project}/${scope.target}/${scope.job}/${id}`,
+  };
+  const state = {
+    version: 7,
+    projects: [{ id: "p1", name: "melody" }],
+    targets: [],
+    activity: [],
+  } as unknown as RuntimeState;
+  const at = "2026-10-11T03:00:00.000Z";
+  const allocate = (
+    target: string,
+    project: string,
+    name = "feat-x",
+    job = "db-backup",
+  ) =>
+    allocateBackup(
+      state,
+      { id: target, projectId: project, name },
+      job,
+      at,
+      storage,
+    );
+  /** Records the backup a run allocated as kept, as a successful end would. */
+  const keep = (
+    target: string,
+    project: string,
+    made: { id: string; path: string },
+  ) =>
+    (state.backups ??= []).push({
+      target,
+      project,
+      job: "db-backup",
+      ...made,
+      run: made.id,
+      trigger: "manual",
+      startedAt: at,
+      finishedAt: at,
+    });
+  expect(allocate("t1", "p1")).toEqual({
+    id: "20261011T030000Z-1",
+    path: "/rig/backups/melody/feat-x/db-backup/20261011T030000Z-1",
+  });
+  keep("t1", "p1", allocate("t1", "p1"));
+  expect(state.backups!.map((b) => b.id)).toEqual(["20261011T030000Z-2"]);
+  // Destroyed (its backups go) and made again under the same name: the sequence continues.
+  state.backups = [];
+  expect(allocate("t2", "p1").id).toBe("20261011T030000Z-3");
+  // Forgotten and registered again under the same name, with new ids: it continues still.
+  state.projects = [{ id: "p2", name: "melody" }] as RuntimeState["projects"];
+  const kept = allocate("t3", "p2");
+  expect(kept.id).toBe("20261011T030000Z-4");
+  keep("t3", "p2", kept);
+  // Renamed while it has backups: the new directory's sequence starts past the numbers its kept backups carry.
+  state.projects = [{ id: "p2", name: "tune" }] as RuntimeState["projects"];
+  expect(allocate("t3", "p2")).toEqual({
+    id: "20261011T030000Z-5",
+    path: "/rig/backups/tune/feat-x/db-backup/20261011T030000Z-5",
+  });
+  // Another Target or job has a sequence of its own.
+  expect(allocate("t4", "p2", "stable").id).toBe("20261011T030000Z-1");
+  expect(allocate("t3", "p2", "feat-x", "files-backup").id).toBe(
+    "20261011T030000Z-1",
   );
-  expect(backupId("2026-10-11T03:00:00.000Z", "--")).toBe(
-    "20261011T030000Z-run",
-  );
-  const f = await fixture();
-  const storage = f.storage();
-  const state = await f.world.store.read();
-  const target = { ...f.target, name: "working" };
-  const first = await newBackupLocation(
-    state,
-    target,
-    "db-backup",
-    "2026-10-11T03:00:00.000Z",
-    uuid,
-    storage,
-  );
-  expect(first.id).toBe("20261011T030000Z-4f1c2b3a");
-  // Another run of that second whose id starts alike gets more of its own id, never a number.
-  await storage.create(first.path);
-  const second = await newBackupLocation(
-    state,
-    target,
-    "db-backup",
-    "2026-10-11T03:00:00.000Z",
-    "4f1c2b3a-0000-4000-8000-000000000000",
-    storage,
-  );
-  expect(second.id).toBe("20261011T030000Z-4f1c2b3a00004000");
+});
+
+test("a backup number survives a Preview destroy, so a Preview made again under the same name never reissues an id", async () => {
+  const f = await fixture({ keep: 1 });
+  await f.world.store.update((state) => {
+    const recorded = state.targets.find((t) => t.id === f.target.id)!;
+    recorded.kind = "preview";
+    recorded.name = "feat-1a2b3c4d";
+    recorded.plan.target = "preview";
+    recorded.plan.deploymentName = "feat-1a2b3c4d";
+  });
+  // A backup of the Preview, made and settled as rig run preview --deployment feat-1a2b3c4d would.
+  await f.runtime.command({
+    action: "run",
+    repoPath: f.world.repo,
+    target: "preview",
+    deployment: "feat-1a2b3c4d",
+    job: "db-backup",
+    operationId: "preview-run",
+  });
+  const run = (await f.running())!;
+  expect(run.backup!.id).toBe("20261011T030000Z-1");
+  await f.finish(0);
+  expect((await f.backups()).map((b) => b.id)).toEqual(["20261011T030000Z-1"]);
+  const destroyed = (await f.world.store.read()).backupSequences;
+  expect(destroyed).toEqual([
+    { project: "melody", target: "feat-1a2b3c4d", job: "db-backup", last: 1 },
+  ]);
+  await f.world.open().command({
+    action: "destroy",
+    repoPath: f.world.repo,
+    target: "preview",
+    deployment: "feat-1a2b3c4d",
+  });
+  // The destroy forgot the Preview and its backups, but not the numbers it issued.
+  expect((await f.world.store.read()).backups).toEqual([]);
+  expect((await f.world.store.read()).backupSequences).toEqual(destroyed);
 });
 
 test("a backup a stopped rigd left without a size is measured by the next tidy", async () => {
@@ -731,7 +809,7 @@ test("a restore settles the run that ended before it chooses, so retention never
   });
   const starts = f.starts.length;
   // Restoring the older backup by its id: settling that run keeps its backup, and keep: 1 lets the older one go.
-  await expect(f.restore("20261011T030001Z-r1")).rejects.toMatchObject({
+  await expect(f.restore("20261011T030001Z-1")).rejects.toMatchObject({
     code: "BACKUP_EXPIRED",
   });
   expect(f.starts.length).toBe(starts);

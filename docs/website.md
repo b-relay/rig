@@ -173,11 +173,15 @@ column, so Targets snap into view one at a time.
 A Project's icon is its stable Target's favicon when its published site has
 one, otherwise its first two letters in Space Grotesk on one of five chart
 colours chosen from its name, so it wears the same colour on every page. The
-page never loads another origin's image: `/project-icon?project=<name>` reads
-the favicon on the server from the hostname `rigd` records for that Project
-(never one the request names) without following redirects, keeps only a raster
-image under 100 kB (never SVG), keeps each answer on the server for ten
-minutes, and serves it from the site's own origin behind the same admission as
+page never loads another origin's image, and the server never resolves a
+Project's public hostname: `/project-icon?project=<name>` asks the stable
+Target's own Service for `/favicon.ico` on `127.0.0.1` (the port `rigd`'s status
+routes `/` to, never anything the request names), sending the Target's hostname
+as `Host`. A source that is not loopback is refused before anything is sent;
+redirects are not followed; the answer must be under 100 kB and its bytes a PNG,
+ICO, JPEG, GIF or WebP (never SVG, whatever its label), and is served with the
+type its bytes show and `nosniff`. Each answer is kept on the server for ten
+minutes and served from the site's own origin behind the same admission as
 every page; anything else is a 404 and the monogram stays.
 
 ## Lost replies

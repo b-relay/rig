@@ -1,27 +1,37 @@
-import { faviconCache, projectIconResponse } from "@/server/favicon";
+import {
+  faviconCache,
+  faviconSource,
+  projectIconResponse,
+  type IconSource,
+} from "@/server/favicon";
 import { projectStatus } from "@/server/status";
 
 const icons = faviconCache({ fetch, now: Date.now });
-/** Each Project's stable hostname, kept a minute so a page of icons is not one status read each. */
-const routes = new Map<string, { at: number; route: string | undefined }>();
-async function stableRoute(project: string): Promise<string | undefined> {
-  const hit = routes.get(project);
-  if (hit && Date.now() - hit.at < 60_000) return hit.route;
+/** Each Project's icon source, kept a minute so a page of icons is not one status read each. */
+const sources = new Map<
+  string,
+  { at: number; source: IconSource | undefined }
+>();
+async function iconSource(project: string): Promise<IconSource | undefined> {
+  const hit = sources.get(project);
+  if (hit && Date.now() - hit.at < 60_000) return hit.source;
   const status = await projectStatus(project);
-  const route = status.ok
-    ? status.value.targets.find((target) => target.kind === "stable")?.route
+  const stable = status.ok
+    ? status.value.targets.find((target) => target.kind === "stable")
     : undefined;
-  routes.set(project, { at: Date.now(), route });
-  return route;
+  const source = stable ? faviconSource(stable) : undefined;
+  sources.set(project, { at: Date.now(), source });
+  return source;
 }
 
-/** A Project's icon: the favicon of its stable Target's published site, read by the server and
- * served from this origin, or 404 so the page shows the Project's monogram. It sits behind the
- * same admission, Content-Security-Policy and no-store as every page (web/proxy.ts). */
+/** A Project's icon: the favicon its stable Target's Service serves on loopback, under the
+ * Target's hostname, re-served from this origin; or 404 so the page shows the Project's monogram.
+ * It sits behind the same admission, Content-Security-Policy and no-store as every page
+ * (web/proxy.ts). */
 export const dynamic = "force-dynamic";
 export async function GET(request: Request): Promise<Response> {
   return projectIconResponse(new URL(request.url).searchParams.get("project"), {
-    stableRoute,
+    iconSource,
     icons,
   });
 }

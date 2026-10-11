@@ -1,34 +1,77 @@
 import { routeUrl } from "../lib/target";
+import type { TargetReport } from "../lib/types";
 
-/** A Project's icon as the site serves it from its own origin: the bytes and their image type. */
+/** A Project's icon as the site serves it from its own origin: the bytes and the image type they are. */
 export interface Icon {
   body: Uint8Array<ArrayBuffer>;
   type: string;
 }
-/** Raster types only. An SVG is a document that can carry script, so it is never re-served from
- * this origin, whatever the Project's site answers. */
-const IMAGE_TYPES = new Set([
-  "image/x-icon",
-  "image/vnd.microsoft.icon",
-  "image/png",
-  "image/gif",
-  "image/jpeg",
-  "image/webp",
-]);
+/** Where a Project's favicon is read: the loopback address of the stable Target's Service that
+ * serves `/`, asked for `/favicon.ico` under the Target's own hostname. The public hostname is never
+ * resolved, so the dashboard never reaches into the network on a Project's behalf. */
+export interface IconSource {
+  /** `http://127.0.0.1:<port>/favicon.ico`. */
+  url: string;
+  /** The Target's hostname, sent as `Host` so the Service answers as it does for that site. */
+  host: string;
+}
 const MAX_BYTES = 100_000;
+const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
-/** Pure: where a Target's hostname keeps its favicon; nothing for a route that is no URL. */
-export function faviconUrl(route: string): string | undefined {
+/** Pure: the favicon source of a stable Target: the port its route map sends `/` to (or, for an
+ * older plan, the Service status marks as routed) on 127.0.0.1, with its hostname. Nothing without
+ * a hostname or a Service behind `/`. */
+export function faviconSource(
+  target: Pick<TargetReport, "route" | "routes" | "components">,
+): IconSource | undefined {
+  if (!target.route) return undefined;
+  let host: string;
   try {
-    return `${new URL(routeUrl(route)).origin}/favicon.ico`;
+    host = new URL(routeUrl(target.route)).host;
   } catch {
     return undefined;
   }
+  const port =
+    target.routes?.find((route) => route.prefix === "/")?.port ??
+    target.components.find((component) => component.route !== undefined)?.port;
+  if (port === undefined || !Number.isInteger(port) || port <= 0)
+    return undefined;
+  return { url: `http://127.0.0.1:${port}/favicon.ico`, host };
+}
+/** Pure: whether `url` is plain HTTP to this Mac's loopback, the only place an icon is read from. */
+export function isLoopbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" && LOOPBACK.has(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+const startsWith = (bytes: Uint8Array, prefix: readonly number[], at = 0) =>
+  prefix.every((byte, index) => bytes[at + index] === byte);
+const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
+/** Pure: the raster type `bytes` are by their magic numbers (PNG, ICO, JPEG, GIF, WebP), whatever a
+ * server labelled them; anything else, an SVG above all, is nothing. */
+export function imageType(bytes: Uint8Array): string | undefined {
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    return "image/png";
+  if (startsWith(bytes, [0x00, 0x00, 0x01, 0x00]) && bytes.length > 6)
+    return "image/x-icon";
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  if (startsWith(bytes, ascii("GIF87a")) || startsWith(bytes, ascii("GIF89a")))
+    return "image/gif";
+  if (startsWith(bytes, ascii("RIFF")) && startsWith(bytes, ascii("WEBP"), 8))
+    return "image/webp";
+  return undefined;
 }
 export interface FaviconDependencies {
   fetch(
     url: string,
-    init: { signal: AbortSignal; redirect: "manual" },
+    init: {
+      signal: AbortSignal;
+      redirect: "manual";
+      headers: { host: string };
+    },
   ): Promise<Response>;
   now(): number;
   /** How long an answer, found or not, is kept before the site asks again. */
@@ -63,10 +106,11 @@ async function boundedBody(
   }
   return body;
 }
-/** The favicons of the Projects' published sites, fetched by the server so the page's
- * Content-Security-Policy keeps images to its own origin. Redirects are not followed, so only the
- * host rigd records is ever asked. Each answer (an icon or none) is kept for `ttlMs`, so a site
- * that is down costs one slow read per window, not one per page. */
+/** The favicons of the Projects' stable sites, read by the server from each site's loopback
+ * upstream so the page's Content-Security-Policy keeps images to its own origin. A source that is
+ * not loopback is refused before anything is sent; redirects are not followed; the bytes decide
+ * the type. Each answer (an icon or none) is kept for `ttlMs`, so a Service that is down costs one
+ * slow read per window, not one per page. */
 export function faviconCache({
   fetch,
   now,
@@ -74,51 +118,50 @@ export function faviconCache({
   timeoutMs = 2_000,
 }: FaviconDependencies) {
   const kept = new Map<string, { at: number; icon: Icon | undefined }>();
-  async function read(url: string): Promise<Icon | undefined> {
+  async function read({ url, host }: IconSource): Promise<Icon | undefined> {
+    if (!isLoopbackUrl(url)) return undefined;
     try {
       const response = await fetch(url, {
         signal: AbortSignal.timeout(timeoutMs),
         redirect: "manual",
+        headers: { host },
       });
-      const type = (response.headers.get("content-type") ?? "")
-        .split(";")[0]!
-        .trim()
-        .toLowerCase();
-      if (response.status !== 200 || !IMAGE_TYPES.has(type)) return undefined;
+      if (response.status !== 200) return undefined;
       const declared = Number(response.headers.get("content-length"));
       if (declared > MAX_BYTES) return undefined;
       const body = await boundedBody(response, MAX_BYTES);
-      if (!body || body.byteLength === 0) return undefined;
-      return { body, type };
+      const type = body ? imageType(body) : undefined;
+      return body && type ? { body, type } : undefined;
     } catch {
       return undefined;
     }
   }
   return {
-    /** The icon at `url`, from the cache while it is fresh. */
-    async get(url: string): Promise<Icon | undefined> {
-      const hit = kept.get(url);
+    /** The icon at `source`, from the cache while it is fresh. */
+    async get(source: IconSource): Promise<Icon | undefined> {
+      const key = `${source.host} ${source.url}`;
+      const hit = kept.get(key);
       if (hit && now() - hit.at < ttlMs) return hit.icon;
-      const icon = await read(url);
-      kept.set(url, { at: now(), icon });
+      const icon = await read(source);
+      kept.set(key, { at: now(), icon });
       return icon;
     },
   };
 }
 export interface ProjectIconDependencies {
-  /** The stable Target's hostname rigd records for `project`; nothing when it has none or rigd refused. */
-  stableRoute(project: string): Promise<string | undefined>;
-  icons: { get(url: string): Promise<Icon | undefined> };
+  /** Where the Project's stable Target serves its favicon, from what rigd records; nothing when
+   * it has none or rigd refused. */
+  iconSource(project: string): Promise<IconSource | undefined>;
+  icons: { get(source: IconSource): Promise<Icon | undefined> };
 }
 /** The answer to `/project-icon?project=<name>`: the favicon of the Project's stable site, from the
- * hostname rigd records and never from the request, or 404 so the page keeps the monogram. */
+ * source rigd's status names and never from the request, or 404 so the page keeps the monogram. */
 export async function projectIconResponse(
   project: string | null,
-  { stableRoute, icons }: ProjectIconDependencies,
+  { iconSource, icons }: ProjectIconDependencies,
 ): Promise<Response> {
-  const route = project ? await stableRoute(project) : undefined;
-  const url = route ? faviconUrl(route) : undefined;
-  const icon = url ? await icons.get(url) : undefined;
+  const source = project ? await iconSource(project) : undefined;
+  const icon = source ? await icons.get(source) : undefined;
   if (!icon) return new Response(null, { status: 404 });
   return new Response(icon.body, {
     headers: {

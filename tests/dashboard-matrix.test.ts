@@ -14,7 +14,11 @@ import {
   projectMatrix,
   until,
 } from "../web/lib/matrix";
-import { faviconCache, faviconUrl } from "../web/server/favicon";
+import {
+  faviconCache,
+  faviconUrl,
+  projectIconResponse,
+} from "../web/server/favicon";
 import type {
   JobReport,
   ProjectStatusReport,
@@ -131,7 +135,11 @@ describe("projectMatrix", () => {
         project: project("broken"),
         status: {
           ok: false,
-          failure: { code: "DAEMON_DOWN", message: "rigd did not answer." },
+          failure: {
+            code: "DAEMON_DOWN",
+            message: "rigd did not answer.",
+            hint: "Run rigd status.",
+          },
         },
       },
       {
@@ -147,7 +155,9 @@ describe("projectMatrix", () => {
       tone: "bad",
       href: "/projects/gone/settings",
     });
-    expect(broken?.problem?.text).toBe("DAEMON_DOWN: rigd did not answer.");
+    expect(broken?.problem?.text).toBe(
+      "DAEMON_DOWN: rigd did not answer. Run rigd status.",
+    );
     expect(broken?.columns).toEqual([]);
     expect(noisy?.notices).toEqual([
       { tone: "warn", href: "/projects/noisy", text: "rig.yaml changed." },
@@ -297,13 +307,22 @@ describe("project icons", () => {
       "https://huge/favicon.ico": new Response(new Uint8Array(200_000), {
         headers: { "content-type": "image/png" },
       }),
+      "https://declared/favicon.ico": new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png", "content-length": "500000" },
+      }),
+      "https://moved/favicon.ico": new Response(null, {
+        status: 302,
+        headers: { location: "http://127.0.0.1:9/secret.png" },
+      }),
       "https://down/favicon.ico": new Error("ECONNREFUSED"),
     };
+    const redirects: string[] = [];
     const icons = faviconCache({
       now: () => now,
       ttlMs: 1000,
-      fetch: async (url) => {
+      fetch: async (url, init) => {
         calls.push(url);
+        redirects.push(init.redirect);
         const answer = answers[url];
         if (answer instanceof Error) throw answer;
         return answer ?? new Response(null, { status: 404 });
@@ -316,6 +335,10 @@ describe("project icons", () => {
     expect(await icons.get("https://svg/favicon.ico")).toBeUndefined();
     expect(await icons.get("https://html/favicon.ico")).toBeUndefined();
     expect(await icons.get("https://huge/favicon.ico")).toBeUndefined();
+    expect(await icons.get("https://declared/favicon.ico")).toBeUndefined();
+    expect(await icons.get("https://moved/favicon.ico")).toBeUndefined();
+    expect(calls).not.toContain("http://127.0.0.1:9/secret.png");
+    expect(new Set(redirects)).toEqual(new Set(["manual"]));
     expect(await icons.get("https://down/favicon.ico")).toBeUndefined();
     expect(await icons.get("https://missing/favicon.ico")).toBeUndefined();
     await icons.get("https://down/favicon.ico");
@@ -327,5 +350,35 @@ describe("project icons", () => {
     expect(
       calls.filter((url) => url === "https://down/favicon.ico"),
     ).toHaveLength(2);
+  });
+  test("the icon route asks only for the stable hostname rigd records, and 404s without one", async () => {
+    const asked: string[] = [];
+    const deps = {
+      stableRoute: async (project: string) =>
+        project === "pantry" ? "pantry.test" : undefined,
+      icons: {
+        get: async (url: string) => {
+          asked.push(url);
+          return { body: new Uint8Array([7]), type: "image/png" };
+        },
+      },
+    };
+    const found = await projectIconResponse("pantry", deps);
+    expect(found.status).toBe(200);
+    expect(found.headers.get("content-type")).toBe("image/png");
+    expect(found.headers.get("x-content-type-options")).toBe("nosniff");
+    expect((await projectIconResponse("quill", deps)).status).toBe(404);
+    expect((await projectIconResponse(null, deps)).status).toBe(404);
+    expect(asked).toEqual(["https://pantry.test/favicon.ico"]);
+  });
+  test("the icon route sits behind the site's admission", async () => {
+    const source = await Bun.file(
+      new URL("../web/proxy.ts", import.meta.url),
+    ).text();
+    const matcher = source.match(/matcher: \["(.+)"\]/)?.[1];
+    expect(matcher).toBeDefined();
+    const pattern = new RegExp(`^${matcher!.replace(/\\\\/g, "\\")}$`);
+    expect(pattern.test("/project-icon")).toBe(true);
+    expect(pattern.test("/healthz")).toBe(false);
   });
 });

@@ -175,10 +175,10 @@ one, otherwise its first two letters in Space Grotesk on one of five chart
 colours chosen from its name, so it wears the same colour on every page. The
 page never loads another origin's image: `/project-icon?project=<name>` reads
 the favicon on the server from the hostname `rigd` records for that Project
-(never one the request names), keeps only a raster image under 100 kB (never
-SVG), caches each answer for ten minutes, and serves it from the site's own
-origin behind the same admission as every page; anything else is a 404 and the
-monogram stays.
+(never one the request names) without following redirects, keeps only a raster
+image under 100 kB (never SVG), keeps each answer on the server for ten
+minutes, and serves it from the site's own origin behind the same admission as
+every page; anything else is a 404 and the monogram stays.
 
 ## Lost replies
 

@@ -13,5 +13,6 @@
     "declaration": false,
     "types": ["bun-types"]
   },
-  "include": ["src", "tests", "scripts"]
+  "include": ["src", "tests", "scripts"],
+  "exclude": ["tests/**/*.tsx"]
 }

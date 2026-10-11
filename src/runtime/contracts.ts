@@ -119,6 +119,28 @@ export interface RuntimeFiles {
     filter?: LogFilter,
   ): Promise<{ entries: TargetLogEntry[]; cursor: string }>;
 }
+/** Whose backups a directory holds: names, as the backup directory tree is laid out. */
+export interface BackupScope {
+  project: string;
+  target: string;
+  job: string;
+}
+/** Where backups live on the Mac (ADR 0017). Every path must be one `location` gave; anything outside the backup root fails
+ * BACKUP_PATH untouched. Symlinks inside a backup are never followed. */
+export interface BackupStorage {
+  /** Pure: the directory of the backup `id` of `scope`; not created. */
+  location(scope: BackupScope, id: string): string;
+  /** Creates `path` fresh and empty, mode 0700, with its parents; fails BACKUP_DIRECTORY when it exists or cannot be made. */
+  create(path: string): Promise<void>;
+  /** Whether `path` is a directory now. */
+  exists(path: string): Promise<boolean>;
+  /** Makes a backup read-only: its directories 0500, its files without write bits. Idempotent. */
+  seal(path: string): Promise<void>;
+  /** Total bytes under `path`, symlinks counted by their own size; undefined when it is gone. */
+  measure(path: string): Promise<number | undefined>;
+  /** Deletes `path` (making it writable first) and its empty parents up to the backup root; one already gone is done. */
+  remove(path: string): Promise<void>;
+}
 /** Bounded evidence of a background channel that is failing inside the daemon. */
 export interface RuntimeNotice {
   channel: string;
@@ -156,6 +178,9 @@ export interface RuntimeDependencies {
   /** Schedules that budget's expiry; the timer in production, scripted in tests. */
   observationDeadline: ObservationDeadline;
   files: RuntimeFiles;
+  /** Backup directories under RIG_ROOT/backups. Absent where no job keeps backups, as in tests that run none; a backup job
+   * then fails BACKUP_UNAVAILABLE. */
+  backups?: BackupStorage;
   /** The running Operation's port claims. Present while an Operation plans, so ports it chose but has
    * not recorded yet are never handed to an Operation running beside it; absent, planning sees only
    * the recorded Targets. */

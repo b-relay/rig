@@ -1,6 +1,10 @@
 import { cache } from "react";
 import { attempt, type Outcome } from "../lib/outcome";
-import type { ListResult, ProjectStatusReport } from "../lib/types";
+import type {
+  BackupsResult,
+  ListResult,
+  ProjectStatusReport,
+} from "../lib/types";
 import { read } from "./daemon";
 
 /** The Projects this Host has registered, read once per request however many parts of the page ask. */
@@ -16,3 +20,8 @@ export const projectStatus = cache(
 /** What Rig's own Caddy serves and the operator's custom file, read once per request; PROXY_UNMANAGED
  * when the Host's Caddy serves Rig's routes instead. */
 export const proxyReport = cache(() => attempt(read({ action: "proxy" })));
+/** A Project's kept backups (ADR 0017), every Target's, read once per request. */
+export const projectBackups = cache(
+  (project: string): Promise<Outcome<BackupsResult>> =>
+    attempt(read({ action: "backups", project })),
+);

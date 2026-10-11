@@ -2,7 +2,8 @@ import { z } from "zod";
 import { terminalText } from "./terminal-text";
 import { RigError, cancelled } from "../domain/errors";
 import { shellWord } from "../domain/target-selector";
-import type { RuntimeCommand } from "../daemon/protocol";
+import { backupsResultSchema, type RuntimeCommand } from "../daemon/protocol";
+import { formatBytes } from "../domain/bytes";
 import type { CliDependencies } from "./types";
 export interface CliInteraction {
   text(message: string, defaultValue: string): Promise<string>;
@@ -28,7 +29,7 @@ const deployment = z.object({
 export async function prepareInteractiveRequest(
   request: RuntimeCommand,
   deps: Pick<CliDependencies, "signal" | "interaction" | "client" | "output">,
-  options: { json?: boolean } = {},
+  options: { json?: boolean; yes?: boolean } = {},
 ): Promise<RuntimeCommand> {
   assertActive(deps.signal);
   const interaction = deps.interaction;
@@ -114,8 +115,56 @@ export async function prepareInteractiveRequest(
       );
     request = { ...request, branch: info.productionBranch };
   }
+  if (request.action === "restore")
+    request = await confirmRestore(request, deps, options.yes === true);
   assertActive(deps.signal);
   return request;
+}
+/** Resolves which backup a restore names (`latest` becomes the newest one's id, so what is restored is what was shown) and,
+ * unless `yes`, asks before anything is replaced. Without a terminal to ask on it is refused, naming --yes. A backup the
+ * read does not find is sent as named, for rigd to refuse with the backups there are. */
+async function confirmRestore(
+  request: RuntimeCommand,
+  deps: Pick<CliDependencies, "signal" | "interaction" | "client" | "output">,
+  yes: boolean,
+): Promise<RuntimeCommand> {
+  const listed = backupsResultSchema.safeParse(
+    await deps.client.command({
+      action: "backups",
+      ...(request.repoPath ? { repoPath: request.repoPath } : {}),
+      ...(request.project ? { project: request.project } : {}),
+      ...(request.target ? { target: request.target } : {}),
+      ...(request.branch ? { branch: request.branch } : {}),
+      ...(request.deployment ? { deployment: request.deployment } : {}),
+      ...(request.job ? { job: request.job } : {}),
+    }),
+  );
+  if (!listed.success)
+    throw new RigError(
+      "DAEMON_PROTOCOL",
+      "rigd returned an invalid backup list.",
+      "Check that rig and rigd use the same version.",
+    );
+  assertActive(deps.signal);
+  const backups = listed.data.backups;
+  const chosen =
+    request.backup === "latest"
+      ? backups[0]
+      : backups.find((backup) => backup.id === request.backup);
+  if (!chosen) return request;
+  const resolved = { ...request, backup: chosen.id };
+  if (yes) return resolved;
+  const question = `Restore ${terminalText(chosen.job)} on ${terminalText(chosen.target)} from backup ${terminalText(chosen.id)} (made ${terminalText(chosen.finishedAt)}${
+    chosen.bytes !== undefined ? `, ${formatBytes(chosen.bytes)}` : ""
+  })? Its restore command runs now and replaces what it restores; Services keep running.`;
+  if (!deps.interaction)
+    throw new RigError(
+      "RESTORE_CONFIRMATION",
+      "A restore replaces data, so it needs confirmation, and there is no terminal to ask on.",
+      `Pass --yes to restore without asking: rig backup restore ${shellWord(terminalText(chosen.job))} ${terminalText(chosen.id)} --yes (with the Target, when it is not stable).`,
+    );
+  if (!(await deps.interaction.confirm(question))) throw cancelled();
+  return resolved;
 }
 
 function readReply<T>(schema: z.ZodType<T>, value: unknown): T {

@@ -173,7 +173,8 @@ export type JobOutcome =
 export interface JobRun {
   /** The run's identity: the incarnation its process carries, and the id of its Activity entries. */
   id: string;
-  trigger: "schedule" | "manual";
+  /** What started it: the schedule, `rig run`, or `rig backup restore` (a run of the job's `restore` command). */
+  trigger: "schedule" | "manual" | "restore";
   /** The scheduled time a scheduled run is for (ISO 8601). */
   scheduledFor?: string;
   startedAt: string;
@@ -194,6 +195,38 @@ export interface JobRun {
   /** Rig decided to stop the run, and why: written before the stop signal, so a rigd that restarts before the end is
    * recorded still records it as stopped by Rig or timed out. */
   stopping?: { cause: "stopped" | "timed-out"; at: string };
+  /** The fresh directory a backup job's run writes (`$RIG_BACKUP_DIR`), recorded before it is made, with the `keep` the
+   * run started with. Absent for a job without `backup` and for a restore. */
+  backup?: { id: string; path: string; keep: number };
+  /** The backup a restore run reads (`$RIG_BACKUP_DIR`). */
+  restore?: { id: string; path: string };
+}
+/** One kept backup: the directory a successful run of a backup job wrote (ADR 0017). */
+export interface BackupRecord {
+  /** The Target's id. */
+  target: string;
+  /** The Project's id. */
+  project: string;
+  job: string;
+  /** The run's start in UTC, such as `20261011T030000Z`; unique per Target and job. */
+  id: string;
+  /** Absolute directory under `<RIG_ROOT>/backups`. */
+  path: string;
+  /** The run that wrote it. */
+  run: string;
+  trigger: "schedule" | "manual";
+  startedAt: string;
+  finishedAt: string;
+  /** Total bytes, recorded once the backup was sealed; absent until then. */
+  bytes?: number;
+}
+/** A backup directory Rig decided to delete (a failed run's, or one past `keep`), queued in the write that decided it. */
+export interface BackupRemoval {
+  /** The Target's id. */
+  target: string;
+  /** The Project's id. */
+  project: string;
+  path: string;
 }
 /** What rigd knows about one job of one Target. Kept apart from the Target record, so an Operation that saves its Target
  * never replaces what the job runner recorded meanwhile. */
@@ -224,7 +257,7 @@ export interface JobCheckout {
 }
 
 export interface RuntimeState {
-  version: 6;
+  version: 7;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
@@ -234,6 +267,10 @@ export interface RuntimeState {
   jobs?: JobRecord[];
   /** Checkouts job runs kept after a deploy, waiting to be given back. */
   jobCheckouts?: JobCheckout[];
+  /** Kept backups of backup jobs, per Target and job (ADR 0017). */
+  backups?: BackupRecord[];
+  /** Backup directories waiting to be deleted. */
+  backupRemovals?: BackupRemoval[];
   /** The last value handed out to order starts and Host restarts: each journalled start takes the next one as its run's
    * `startSeq`, and a recorded Host restart notes the value it found as its `seq`. It only grows. */
   startSeq?: number;

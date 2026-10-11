@@ -351,7 +351,19 @@ export function resolveTargetPlan(
           `Point jobs.${name}.command at 127.0.0.1 or localhost.`,
         );
       const workingDir = planWorkingDir(job.working_dir);
-      const inputs = commandInputs(run.inputs);
+      const restore =
+        job.backup?.restore === undefined
+          ? undefined
+          : references.shell(job.backup.restore, `${at}.backup.restore`);
+      if (restore && !localhostCommand(restore.value))
+        throw new ConfigError(
+          "Resolved restore command binds outside localhost.",
+          "invalid_binding",
+          { job: name },
+          `Point jobs.${name}.backup.restore at 127.0.0.1 or localhost.`,
+        );
+      // The restore runs in the job's environment, so a file may change no public input it was built from either.
+      const inputs = commandInputs(run.inputs, restore?.inputs ?? []);
       return {
         name,
         command: run.value,
@@ -375,6 +387,14 @@ export function resolveTargetPlan(
           : {}),
         ...(job.stop_timeout !== undefined
           ? { stopTimeout: durationSeconds(job.stop_timeout) }
+          : {}),
+        ...(job.backup
+          ? {
+              backup: {
+                keep: job.backup.keep,
+                ...(restore ? { restore: restore.value } : {}),
+              },
+            }
           : {}),
       };
     });

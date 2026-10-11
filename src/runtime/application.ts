@@ -18,6 +18,7 @@ import type { ConfigDocument, PlanJob, ProjectConfig } from "../config/types";
 import {
   readActions,
   type ActivityResult,
+  type BackupsResult,
   type ListResult,
   type LogsResult,
   type RuntimeCommand,
@@ -125,9 +126,18 @@ import {
   recordSkippedRun,
   settleJobRun,
   startJobRun,
+  noRestore,
   stopJobRun,
   stopJobRuns,
 } from "./jobs";
+import {
+  LATEST_BACKUP,
+  backupReports,
+  backupStorage,
+  queueTargetBackups,
+  removeQueuedBackups,
+  selectBackup,
+} from "./backups";
 import {
   JOB_LATE_LIMIT_MS,
   pastTimeout,
@@ -187,6 +197,9 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Gives back the checkouts job runs of the Target `targetId` kept after a deploy, once nothing uses them, under the
    * Target's lease; drops those of a Target that is gone. Never rejects. */
   releaseJobCheckouts(targetId: string): Promise<void>;
+  /** Deletes the backup directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview),
+   * forgetting each one deleted. Never rejects. */
+  removeBackups(): Promise<void>;
   /** Settles a run the scheduler judged ended or past its timeout, under its Target's lease: reads the run again and acts
    * only when the record still names it, stopping it (timed out) only while its own process runs. Never rejects. */
   settleJob(request: JobSettleRequest): Promise<void>;
@@ -270,7 +283,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   let reconcilePending = input.reconcileGate !== "open";
   /** Refuses a command that would start a Service while the gate above is closed. */
   const assertReconciled = (action: string) => {
-    if (reconcilePending && ["up", "restart", "deploy", "run"].includes(action))
+    if (
+      reconcilePending &&
+      ["up", "restart", "deploy", "run", "restore"].includes(action)
+    )
       throw new RigError(
         "HOST_STATE_PENDING",
         "rigd is still starting and has not read its state yet, so it cannot tell whether the Mac restarted, and nothing was started.",
@@ -362,6 +378,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         stopping,
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
         ...(state.jobs ? { jobRecords: state.jobs } : {}),
+        ...(state.backups ? { backupRecords: state.backups } : {}),
       },
     );
   };
@@ -524,6 +541,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     // Set once selection and argument checks are done: a failure after this point is an
     // Operation outcome and is recorded in activity; one before it is a usage mistake and is not.
     let attempted = false;
+    // What the Operation acted on, for its Activity entry, such as the job and backup a restore put back.
+    let activityNote: string | undefined;
     // What a deploy set out to deploy, so its history names the source even when it fails before a Target records it.
     let deploySource:
       | {
@@ -779,6 +798,28 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         };
       if (command.action === "doctor")
         return await doctor(project, targets, { ...deps, inProgress });
+      if (command.action === "backups") {
+        // Without a Target every Target's backups are listed; with one, only that Target's, whether or not it still runs.
+        const selected =
+          command.target === undefined
+            ? undefined
+            : (({ kind, name }) =>
+                targets.find((t) =>
+                  kind === "preview" ? t.name === name : t.kind === kind,
+                ) ?? null)(selectTarget(command));
+        return {
+          project: project.name,
+          backups: await backupReports(
+            state,
+            targets,
+            {
+              ...(selected === undefined ? {} : { target: selected?.id ?? "" }),
+              ...(command.job ? { job: command.job } : {}),
+            },
+            deps,
+          ),
+        } satisfies BackupsResult;
+      }
       if (command.action === "rename" || command.action === "repoint") {
         if (command.action === "repoint" || command.newName !== project.name)
           refuseActive(targets);
@@ -808,8 +849,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ...command,
           branch: await deps.sources.currentBranch(selection.checkout),
         };
-      // A job runs in the stable Target unless the command names another, as jobs are scheduled there by default.
-      if (command.action === "run" && command.target === undefined)
+      // A job runs in the stable Target unless the command names another, as jobs are scheduled there by default; so does a
+      // restore, a run of the job.
+      if (
+        (command.action === "run" || command.action === "restore") &&
+        command.target === undefined
+      )
         command = { ...command, target: "stable" };
       // One document snapshot serves the whole action: whether the Target is on, and the plan made from it.
       const configured = await checkoutConfig(
@@ -833,7 +878,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       // config cannot say, and leaves a recorded Target to its record as before.
       if (
         configured.document &&
-        (["up", "restart", "deploy", "run"].includes(command.action) ||
+        (["up", "restart", "deploy", "run", "restore"].includes(
+          command.action,
+        ) ||
           (command.action === "logs" && !target))
       )
         assertTargetOn(configured.document.config, kind);
@@ -884,7 +931,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (
           target &&
           !(await recordUnmarked(target)) &&
-          ["up", "restart", "deploy", "run"].includes(command.action)
+          ["up", "restart", "deploy", "run", "restore"].includes(command.action)
         )
           throw new RigError(
             "STATE_WRITE",
@@ -950,6 +997,52 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         await releaseJobCheckouts(target, deps);
         return await finish("started", {
           job: job.name,
+          startedAt: run.startedAt,
+        });
+      }
+      if (command.action === "restore") {
+        if (!target) throw missingTarget(command, name);
+        const job = runnableJob(target, command.job, configured.document);
+        if (!job.backup)
+          throw new RigError(
+            "BACKUP_NOT_CONFIGURED",
+            `${job.name} on ${target.name} is not a backup job, so it has no backups to restore.`,
+            `Add backup: { keep: <n>, restore: <command> } to jobs.${job.name} in rig.yaml (rig-guide: Backups).`,
+            { job: job.name },
+          );
+        if (job.backup.restore === undefined) throw noRestore(job.name);
+        const backup = selectBackup(
+          await deps.store.read(),
+          target,
+          job.name,
+          command.backup ?? LATEST_BACKUP,
+        );
+        const storage = backupStorage(deps);
+        attempted = true;
+        activityNote = `${job.name} from ${backup.id}`;
+        if (!(await storage.exists(backup.path)))
+          throw new RigError(
+            "BACKUP_MISSING",
+            `Backup ${backup.id} of ${job.name} on ${target.name} is no longer on disk (${backup.path}).`,
+            `Restore another one (rig backup list ${job.name} shows them), or put the directory back.`,
+            { job: job.name, backup: backup.id, path: backup.path },
+          );
+        // Read-only again, should anything have opened it since it was kept.
+        await storage.seal(backup.path);
+        const run = await startJobRun(
+          target,
+          job,
+          {
+            id: operationId,
+            trigger: "restore",
+            restore: { id: backup.id, path: backup.path },
+          },
+          deps,
+        );
+        await releaseJobCheckouts(target, deps);
+        return await finish("started", {
+          job: job.name,
+          backup: backup.id,
           startedAt: run.startedAt,
         });
       }
@@ -1249,7 +1342,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           outcome,
           occurredAt: deps.now(),
           ...((message) => (message ? { message } : {}))(
-            [errorCode, killedMessage(operations.get(operationId)!)]
+            [
+              activityNote,
+              errorCode,
+              killedMessage(operations.get(operationId)!),
+            ]
               .filter((part) => part !== undefined)
               .join(": "),
           ),
@@ -1672,6 +1769,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     status,
     restartUnhealthy,
     runScheduledJob,
+    // Queued directories are no Target's to hold: nothing reads one once it left the inventory.
+    removeBackups: () => removeQueuedBackups(deps),
     async releaseJobCheckouts(targetId) {
       const state = await deps.store.read();
       if (state.targets.some((target) => target.id === targetId))
@@ -2360,9 +2459,12 @@ async function destroyPreview(
   const workspacePath = ownedRevision(target);
   if (workspacePath)
     await deps.sources.release({ project: target.projectId, workspacePath });
+  // The Preview's backups go with it (ADR 0017), queued in the write that forgets it, so a failed deletion is retried.
   await deps.store.update((s) => {
     s.targets = s.targets.filter((t) => t.id !== target.id);
+    queueTargetBackups(s, target.id);
   });
+  await removeQueuedBackups(deps, target.id);
   // Checkouts job runs kept went with the Preview root too; their registrations are dropped, and a record is forgotten only
   // once that worked, so a failure is offered again by the scheduler.
   await forgetReleasedCheckouts(

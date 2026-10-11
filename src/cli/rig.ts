@@ -11,6 +11,7 @@ import {
   type ProgressDisplay,
 } from "./progress-display";
 import { formatClock } from "./stop-display";
+import { awaitRestore } from "./restore-wait";
 import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { z } from "zod";
@@ -192,7 +193,10 @@ export async function runRigCli(
     json = options.json === true;
     // Assigned before preflight so a failure while gathering answers still names the Operation.
     operationId = dependencies.newOperationId();
-    request = await prepareInteractiveRequest(request, dependencies, { json });
+    request = await prepareInteractiveRequest(request, dependencies, {
+      json,
+      yes: options.yes === true,
+    });
     const correlated = { ...request, operationId };
     await recordDiagnostic(dependencies.diagnostics, {
       event: "command.started",
@@ -206,11 +210,14 @@ export async function runRigCli(
       request.action === "status"
         ? await dependencies.client.status(correlated)
         : undefined;
-    const result =
+    let result =
       status ??
       (readActions.has(request.action)
         ? await dependencies.client.command(correlated, dependencies.signal)
         : await awaitMutation(correlated, dependencies, operationId));
+    // A restore answers once its run started; rig waits for it to end, so the command says how the restore went.
+    if (request.action === "restore")
+      result = await restoreOutcome(request, result, operationId, dependencies);
     dependencies.output.write(
       json
         ? `${JSON.stringify(result)}\n`
@@ -270,6 +277,38 @@ export async function runRigCli(
   }
 }
 
+/** Waits for the restore `started` began and resolves the reply with how it `ended`; fails RESTORE_FAILED, with where its
+ * output is, when it did not succeed. A Ctrl-C while waiting leaves it running and says how to see its end. */
+async function restoreOutcome(
+  request: RuntimeCommand,
+  started: unknown,
+  operationId: string,
+  dependencies: CliDependencies,
+): Promise<unknown> {
+  if (!json(started)) return started;
+  if (!dependencies.signal?.aborted)
+    dependencies.output.error(
+      `Restoring ${request.job} from ${String(started.backup ?? request.backup)}; its output is in rig logs --service ${request.job}.\n`,
+    );
+  const ended = await awaitRestore(operationId, dependencies);
+  if (!ended) {
+    dependencies.output.error(
+      `Stopped waiting; the restore goes on. rig activity ${operationId} shows how it ends.\n`,
+    );
+    return started;
+  }
+  if (ended.outcome !== "succeeded")
+    throw new RigError(
+      "RESTORE_FAILED",
+      `${ended.message ?? `${request.job}: the restore ${ended.outcome}`}.`,
+      `Its output is in rig logs ${request.target === PREVIEW_SELECTOR ? `preview --deployment ${String(started.target)}` : String(started.target ?? request.target)} --service ${request.job}.`,
+      { operationId },
+    );
+  return { ...started, outcome: "restored", ended };
+}
+function json(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 /** Entries fetched per follow poll: --lines sizes the first page only, so a busy Target is not throttled to it. */
 const FOLLOW_BATCH_LINES = 1000;
 /** Follow consumes opaque daemon cursors; duplicate text is never used as identity.

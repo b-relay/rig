@@ -127,6 +127,14 @@ export interface PlanJob {
   timeout?: number;
   /** Seconds a run may take to exit after SIGTERM before SIGKILL; absent means the 10 s default. */
   stopTimeout?: number;
+  /** Present for a backup job (ADR 0017): each run writes a fresh `$RIG_BACKUP_DIR`, and the newest `keep` are kept. */
+  backup?: PlanBackup;
+}
+export interface PlanBackup {
+  /** How many successful backups are kept, 1 to 1000. */
+  keep: number;
+  /** /bin/sh command that restores one, references resolved; absent: restore is refused. */
+  restore?: string;
 }
 export type PreparedComponent =
   | { name: string; uses: "sqlite"; path: string }

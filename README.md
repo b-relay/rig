@@ -62,6 +62,23 @@ jobs:
     timeout: 2h
 ```
 
+A job with `backup:` is a backup job: each run gets a fresh, empty
+`$RIG_BACKUP_DIR` under `<RIG_ROOT>/backups`, a failed run's directory is
+deleted, and only the newest `keep` successful backups stay.
+`rig backup list` shows them, and `rig backup restore <job> latest` runs the
+job's `restore` command against one, after asking
+([ADR 0017](docs/adr/0017-backups.md)):
+
+```yaml
+jobs:
+  db-backup:
+    command: pg_dump -Fc -h 127.0.0.1 -p ${services.db.port} -d notes -f "$RIG_BACKUP_DIR/notes.dump"
+    schedule: "0 3 * * *"
+    backup:
+      keep: 14
+      restore: pg_restore --clean --if-exists -h 127.0.0.1 -p ${services.db.port} -d notes "$RIG_BACKUP_DIR/notes.dump"
+```
+
 `${port}` is the Service's one port, and with one Service that has one port the
 domain routes to it without a `proxy`. A Service can also serve a hostname of
 its own, such as `domain: api.notes.example.com` under it; a Preview gets

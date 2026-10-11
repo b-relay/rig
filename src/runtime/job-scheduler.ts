@@ -73,6 +73,8 @@ export interface JobSchedulerDependencies {
   releaseCheckouts(targetId: string): Promise<void>;
   /** Stops the Target's runs in progress when rig.yaml turns its role off. Never rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
+  /** Deletes the backup directories queued for deletion; absent where no job keeps backups. Never rejects. */
+  removeBackups?(): Promise<void>;
   diagnostic: RuntimeDependencies["diagnostic"];
 }
 export interface JobScheduler {
@@ -152,6 +154,8 @@ export function createJobScheduler(
   const offChecks = new Map<string, number>();
   /** When each Target's kept checkouts were last offered back, Unix milliseconds. */
   const checkoutOffers = new Map<string, number>();
+  /** When queued backup directories were last offered for deletion, Unix milliseconds. */
+  let backupOffer = -Infinity;
   const inFlight = new Set<string>();
   const work = new Set<Promise<void>>();
   let stopped = false;
@@ -334,6 +338,16 @@ export function createJobScheduler(
       }
       for (const targetId of checkoutOffers.keys())
         if (!keeping.has(targetId)) checkoutOffers.delete(targetId);
+      // Backup directories queued for deletion are offered again until they are gone, by this rigd or the next.
+      if (
+        deps.removeBackups &&
+        state.backupRemovals?.length &&
+        !inFlight.has("backups") &&
+        now - backupOffer >= JOB_CHECKOUT_RETRY_MS
+      ) {
+        backupOffer = now;
+        dispatch("backups", "backup-remove", "", deps.removeBackups);
+      }
       for (const key of watermarks.keys())
         if (!planned.has(key)) watermarks.delete(key);
       const prunable = state.jobs?.some(

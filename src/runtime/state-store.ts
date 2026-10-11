@@ -185,9 +185,12 @@ export function readFixedTargetNames(parsed: unknown): void {
   }
 }
 /** State version 5 is version 6 before scheduled jobs: no plan has `jobs` and there are no job runs, so it is read as it
- * is. The next write saves version 6, which an older rigd refuses rather than keep jobs it would never run. */
+ * is. Version 6 is version 7 before backups (ADR 0017): no job has `backup` and there are no backups. The next write saves
+ * version 7, which an older rigd refuses rather than run backup jobs without their directory or keep jobs it would never
+ * run. */
 function readBeforeJobs(parsed: unknown): void {
-  if (loose(parsed) && parsed.version === 5) parsed.version = STATE_VERSION;
+  if (loose(parsed) && (parsed.version === 5 || parsed.version === 6))
+    parsed.version = STATE_VERSION;
 }
 /** One record of state version 4 under its new kind and name: its plans' names follow, and a Tool it published under its old
  * name keeps that file name as `publishedAs`. */

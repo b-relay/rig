@@ -197,11 +197,13 @@ export interface TargetLifecycle {
   ): Promise<void>;
   /** Starts one run of `job` of the recorded plan as `incarnation`: a freshly composed environment (its env files read
    * now), then its command under the Target's supervisor, with its output in the Target log under the job's name. Returns
-   * once the process started; never waits for it to end. Fails PROCESS_START (and the like) with nothing left running. */
+   * once the process started; never waits for it to end. Fails PROCESS_START (and the like) with nothing left running.
+   * `rigEnv` is set last, over the env files, as values only Rig decides (a backup job's $RIG_BACKUP_DIR). */
   startJob(
     target: TargetRecord,
     job: PlanJob,
     incarnation: string,
+    rigEnv?: Readonly<Record<string, string>>,
   ): Promise<void>;
   /** What runs for `job` of `target` now: its process while one runs, or how the last one ended when that was recorded. */
   observeJob(
@@ -286,8 +288,8 @@ export function withStops(
     down: (target, control) => lifecycle.down(target, control ?? stops),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
-    startJob: (target, job, incarnation) =>
-      lifecycle.startJob(target, job, incarnation),
+    startJob: (target, job, incarnation, rigEnv) =>
+      lifecycle.startJob(target, job, incarnation, rigEnv),
     observeJob: (target, job, signal) =>
       lifecycle.observeJob(target, job, signal),
     stopJob: (target, job, control) =>
@@ -626,9 +628,9 @@ export function createTargetLifecycle(
         outcome: result.outcome === "stopped" ? "stopped" : "unchanged",
       };
     },
-    async startJob(target, job, incarnation) {
+    async startJob(target, job, incarnation, rigEnv) {
       // Read before anything is spawned, so an unreadable env file leaves nothing running.
-      const env = await effects.environment(target, job);
+      const env = { ...(await effects.environment(target, job)), ...rigEnv };
       const result = await effects.supervisor(target).ensureRunning({
         key: jobProcessKey(target, job.name),
         componentName: job.name,

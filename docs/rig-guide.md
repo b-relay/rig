@@ -1970,12 +1970,115 @@ exit code or signal, duration and skipped count. Every ended run is one
 A job's output is in the Target logs under its name:
 `rig logs stable --service link-resolver`.
 
+### Backups
+
+A backup is a scheduled job with retention
+([ADR 0017](adr/0017-backups.md)). Add `backup:` to a job and every run,
+scheduled or `rig run`, writes into a fresh directory Rig gives it. Rig never
+needs to know what it backs up: there are no database presets, and the
+commands are yours.
+
+```yaml
+jobs:
+  db-backup:
+    schedule: "0 3 * * *"
+    timezone: UTC
+    command: pg_dump -Fc -h 127.0.0.1 -p ${services.db.port} -U melody melody -f "$RIG_BACKUP_DIR/melody.dump"
+    backup:
+      keep: 14
+      restore: pg_restore --clean --if-exists -h 127.0.0.1 -p ${services.db.port} -U melody -d melody "$RIG_BACKUP_DIR/melody.dump"
+```
+
+- **`$RIG_BACKUP_DIR`** is a new, empty directory for each run,
+  `<RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>/` (such as
+  `.../db-backup/20261011T030000Z/`), mode 0700. Write it as the shell
+  variable `$RIG_BACKUP_DIR` (or `$${RIG_BACKUP_DIR}`); `${...}` without the
+  extra `$` is a Rig reference. rigd sets it after the env files, so no file
+  can change it.
+- **A run that fails leaves nothing.** A non-zero exit, a timeout, a stop by
+  Rig (`rig down`, a Preview destroy) or a start that failed deletes the run's
+  directory. A run that exits 0 becomes a backup: its directory is made
+  read-only (directories 0500, files without write bits) and its size
+  recorded.
+- **`keep`** (1 to 1000) is how many successful backups of the job each
+  Target keeps. After each successful run only the newest `keep` stay, the
+  one that just finished always among them. A failed run never deletes a
+  backup, so a week of failures leaves the last good ones in place.
+- **Backups stay on this Mac**, outside every Target's data and checkout:
+  deploys, `rig down`/`rig up`, `rig restart` and rigd restarts keep them.
+  Destroying a Preview (or the Preview limit replacing one) deletes that
+  Preview's backups with it. `rig forget` keeps a Project's backups. Rig
+  copies nothing off the Mac; copy `<RIG_ROOT>/backups` elsewhere yourself
+  if you need that.
+- Rig deletes only what it recorded. A deletion that fails (a busy disk) is
+  retried every 30 seconds, by this rigd or the next. A backup's directory is
+  read-only, so to delete one by hand, `chmod -R u+w` it first; `rig backup
+list` then shows it as missing.
+
+**Making a backup now.** `rig run db-backup` makes one exactly as the schedule
+does (in the stable Target unless you name another), and the dashboard's Jobs
+tab has **Back up now**.
+
+**Listing them.** `rig backup list [job] [target]` shows every Target's
+backups, or one job's, or one Target's, newest first:
+
+```
+stable  db-backup  20261011T030000Z  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a
+stable  db-backup  20261010T030000Z  2026-10-10 03:00:39Z  13 MB  schedule  run 0a1b2c3d
+
+In /Users/you/.rig/backups/melody/<target>/<job>/<id>
+```
+
+`--json` gives each backup's `target`, `job`, `id`, `path`, `run` (the run
+that made it, as `rig activity` names it), `trigger`, `startedAt`,
+`finishedAt`, `bytes`, and `missing: true` when its directory is gone.
+`rig status` adds a line under each backup job,
+`backups 2 of 14 kept, 26 MB · latest 20261011T030000Z, 9h ago`, and
+`rig status --json` has it as the job's `backup` (`keep`, `restore`, `count`,
+`bytes`, `latest`).
+
+**Restoring one.** `rig backup restore <job> <backup-id|latest> [target]`
+runs the job's `restore` command once, in the stable Target unless you name
+another (`working`, `preview <branch>`):
+
+- It runs the same way `rig run` runs the job: from the Target's checkout, in
+  its `working_dir`, with its `environment`, env files and references, under
+  the job's name in `rig logs`. `$RIG_BACKUP_DIR` is the chosen backup, made
+  read-only again first. The read-only part is a file-mode change, so it stops
+  accidental writes (a restore that writes next to the dump fails), but a
+  command running as you could `chmod` it back.
+- It asks first, naming the backup and its size, unless you pass `--yes`.
+  Without a terminal to ask on it is refused with that hint. `latest` is
+  resolved before it asks, so what you confirm is what is restored.
+- It waits for the restore to end and exits 1 unless it succeeded
+  (`rig logs <target> --service <job>` has its output). Ctrl-C stops waiting;
+  the restore goes on, and `rig activity` shows how it ends.
+- **It does not stop Services.** The restore command must replace what it
+  restores itself, as `pg_restore --clean --if-exists` drops and recreates
+  each object. If your restore needs a Service stopped, stop it in the
+  command, or with `rig down` beforehand (a stopped Target runs no job, so
+  that means a restore that does not need the Target's Services).
+- It is a run of the job: refused with `JOB_RUNNING` while a run of the job
+  (or another restore) goes, and a scheduled time while it goes is skipped.
+  `rig down` stops it, and the job's `timeout` applies.
+- It is recorded in Activity as `restore` twice: `started` (naming the job and
+  backup) and then `succeeded`, `failed` or `stopped`.
+- A job without `restore` is refused with `BACKUP_NO_RESTORE`, a job without
+  `backup` with `BACKUP_NOT_CONFIGURED`, an id that is not there with
+  `BACKUP_UNKNOWN` (naming the ones there are), and a backup whose directory
+  was deleted with `BACKUP_MISSING`.
+
+The dashboard's Jobs tab, on a Target or the Project, lists each backup job's
+backups with their times and sizes, and has **Back up now** and a **Restore**
+per backup that asks you to type the job's name.
+
 ### Databases and other local dependencies
 
 A database is an ordinary Service: a `command`, a port, and its data under
 `${rig.data}` so each Target gets its own. `docs/examples/multi.rig.yaml` has a
 PostgreSQL Service (`db`) that initializes its cluster on first start and
-listens on loopback, and an API that reads its port through a reference.
+listens on loopback, and an API that reads its port through a reference. To
+back a database up on a schedule and restore it, see [Backups](#backups).
 
 ### Environment, builds, and startup
 

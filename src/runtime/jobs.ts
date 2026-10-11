@@ -3,6 +3,7 @@ import { recordActivity } from "../domain/activity";
 import { RigError, diagnosticErrorCode } from "../domain/errors";
 import { targetSelector } from "../domain/target-selector";
 import type {
+  BackupRecord,
   JobOutcome,
   JobRecord,
   JobRun,
@@ -12,6 +13,14 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { ProcessObservation } from "../providers/contracts";
+import {
+  backupStorage,
+  newBackupLocation,
+  queueRemoval,
+  recordBackupEnd,
+  settleBackupFiles,
+  type BackupDependencies,
+} from "./backups";
 import type { StopControl, TargetLifecycle } from "./lifecycle";
 
 /* Every function here that changes a run, or signals its process, is called by an Operation that holds the run's Target
@@ -20,12 +29,19 @@ import type { StopControl, TargetLifecycle } from "./lifecycle";
  * stop signal, and a checkout it kept in the same write as its end, so a rigd that stops at any step finds what is left. */
 
 /** What a job run needs from the runtime around it. */
-export interface JobRunDependencies {
+export interface JobRunDependencies extends BackupDependencies {
   store: Pick<StateStore, "read" | "update">;
   lifecycle: Pick<TargetLifecycle, "startJob" | "observeJob" | "stopJob">;
   /** ISO timestamp. */
   now(): string;
 }
+/** What recording a run's end needs: the state, the clock, and a backup job's directories. */
+type EndDependencies = Pick<
+  JobRunDependencies,
+  "store" | "now" | "backups" | "diagnostic" | "id"
+>;
+/** The variable a backup job's command, and a restore, find their backup directory in. */
+export const BACKUP_DIR_VARIABLE = "RIG_BACKUP_DIR";
 
 /** The record of `job` of the Target `targetId`, if any. */
 export function findJobRecord(
@@ -89,15 +105,18 @@ async function recordJobEnd(
   job: string,
   runId: string,
   observation: ProcessObservation,
-  deps: Pick<JobRunDependencies, "store" | "now">,
+  deps: EndDependencies,
 ): Promise<JobRun | undefined> {
   let ended: JobRun | undefined;
+  let backup: BackupRecord | undefined;
   await deps.store.update((state) => {
     const record = findJobRecord(state, target.id, job);
     if (record?.running?.id !== runId) return;
     ended = endedRun(record.running, observation, deps.now());
     delete record.running;
     record.last = ended;
+    // A backup run's directory becomes a backup, or is queued for deletion, in the same write as its end.
+    backup = recordBackupEnd(state, target, job, ended);
     recordActivity(state, jobActivity(state, target, job, ended));
     const current = state.targets.find((t) => t.id === target.id);
     const workspace = ended.workspace;
@@ -115,7 +134,11 @@ async function recordJobEnd(
         workspace,
       });
   });
-  return ended;
+  // Assigned in the write above, which the compiler cannot see.
+  const finished = ended as JobRun | undefined;
+  if (finished?.backup)
+    await settleBackupFiles(target, backup as BackupRecord | undefined, deps);
+  return finished;
 }
 
 /** How settling a run went: a process of it still runs, that cannot be told, the run ended and its end was recorded, or
@@ -126,7 +149,7 @@ export async function settleJobRun(
   target: TargetRecord,
   job: string,
   runId: string,
-  deps: Pick<JobRunDependencies, "store" | "now"> & {
+  deps: EndDependencies & {
     lifecycle: Pick<TargetLifecycle, "observeJob">;
   },
 ): Promise<JobSettlement> {
@@ -146,7 +169,7 @@ export async function stopJobRun(
   job: string,
   run: JobRun,
   cause: "stopped" | "timed-out",
-  deps: Pick<JobRunDependencies, "store" | "now"> & {
+  deps: EndDependencies & {
     lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
   },
   stops?: StopControl,
@@ -186,7 +209,7 @@ export async function stopJobRun(
  * attempted; the first failure is thrown once all were. */
 export async function stopJobRuns(
   target: TargetRecord,
-  deps: Pick<JobRunDependencies, "store" | "now"> & {
+  deps: EndDependencies & {
     lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
   },
   stops?: StopControl,
@@ -231,52 +254,92 @@ export interface JobRunRequest {
   trigger: JobRun["trigger"];
   /** The scheduled time a scheduled run is for (Unix milliseconds). */
   scheduledFor?: number;
+  /** For a restore (`trigger: "restore"`): the backup its `restore` command reads, sealed read-only by the caller. */
+  restore?: { id: string; path: string };
 }
 
-/** Starts a run of `job` on `target`, which the caller holds: a run still in progress refuses it with JOB_RUNNING (one whose
- * process is gone is settled first, a checkout it kept recorded with its end). The run is recorded before its process
- * starts, with the checkout it runs from, so a rigd that stops in between finds it and settles it and a deploy keeps that
- * checkout until it ends; a start that fails is recorded as start-failed and rethrown. Scheduled runs also record the time
- * they are for. */
+/** Starts a run of `job` on `target`, which the caller holds: a run still in progress (a restore included) refuses it with
+ * JOB_RUNNING (one whose process is gone is settled first, a checkout it kept recorded with its end). The run is recorded
+ * before its process starts, with the checkout it runs from, so a rigd that stops in between finds it and settles it and a
+ * deploy keeps that checkout until it ends; a start that fails is recorded as start-failed and rethrown. Scheduled runs
+ * also record the time they are for. A backup job's run (not a restore) records a fresh directory, then makes it, and
+ * hands it to the command as $RIG_BACKUP_DIR; a restore runs the job's `restore` command with $RIG_BACKUP_DIR set to the
+ * backup it reads. */
 export async function startJobRun(
   target: TargetRecord,
   job: PlanJob,
   request: JobRunRequest,
   deps: JobRunDependencies,
 ): Promise<JobRun> {
-  const recorded = findJobRecord(
-    await deps.store.read(),
-    target.id,
-    job.name,
-  )?.running;
+  const state = await deps.store.read();
+  const recorded = findJobRecord(state, target.id, job.name)?.running;
   if (recorded) {
     const settled = await settleJobRun(target, job.name, recorded.id, deps);
     if (settled === "running" || settled === "unknown")
       throw new RigError(
         "JOB_RUNNING",
-        `${job.name} is still running on ${target.name} (started ${recorded.startedAt}).`,
-        `Wait for it to finish (rig status shows it), or stop it with rig down. Runs of one job never overlap.`,
+        recorded.trigger === "restore"
+          ? `A restore of ${job.name} is still running on ${target.name} (started ${recorded.startedAt}).`
+          : `${job.name} is still running on ${target.name} (started ${recorded.startedAt}).`,
+        `Wait for it to finish (rig status shows it), or stop it with rig down. Runs of one job, restores included, never overlap.`,
         { job: job.name, run: recorded.id, startedAt: recorded.startedAt },
       );
   }
+  const startedAt = deps.now();
+  const restoreCommand = job.backup?.restore;
+  if (request.restore && restoreCommand === undefined)
+    throw noRestore(job.name);
+  const storage =
+    job.backup && !request.restore ? backupStorage(deps) : undefined;
+  const made =
+    storage && job.backup
+      ? {
+          ...(await newBackupLocation(
+            await deps.store.read(),
+            target,
+            job.name,
+            startedAt,
+            storage,
+          )),
+          keep: job.backup.keep,
+        }
+      : undefined;
   const run: JobRun = {
     id: request.id,
     trigger: request.trigger,
     ...(request.scheduledFor !== undefined
       ? { scheduledFor: new Date(request.scheduledFor).toISOString() }
       : {}),
-    startedAt: deps.now(),
+    startedAt,
     workspace: target.plan.workspacePath,
     ...(job.timeout !== undefined ? { timeout: job.timeout } : {}),
     ...(job.stopTimeout !== undefined ? { stopTimeout: job.stopTimeout } : {}),
+    ...(made ? { backup: made } : {}),
+    ...(request.restore
+      ? { restore: { id: request.restore.id, path: request.restore.path } }
+      : {}),
   };
   await deps.store.update((state) => {
     const record = ensureJobRecord(state, target.id, job.name);
     record.running = run;
     if (run.scheduledFor) record.lastScheduled = run.scheduledFor;
   });
+  /** Whether this run made its directory, which is then its own to delete. */
+  let created = false;
   try {
-    await deps.lifecycle.startJob(target, job, run.id);
+    if (made) {
+      await storage!.create(made.path);
+      created = true;
+    }
+    const directory = made?.path ?? request.restore?.path;
+    await deps.lifecycle.startJob(
+      target,
+      request.restore ? { ...job, command: restoreCommand! } : job,
+      run.id,
+      directory !== undefined
+        ? { [BACKUP_DIR_VARIABLE]: directory }
+        : undefined,
+    );
   } catch (error) {
     const failed: JobRun = {
       ...run,
@@ -291,13 +354,25 @@ export async function startJobRun(
         if (record?.running?.id !== run.id) return;
         delete record.running;
         record.last = failed;
+        // A directory the run made goes; one it found there is not Rig's, and stays.
+        if (made && created) queueRemoval(state, target, made.path);
         if (run.trigger === "schedule")
           recordActivity(state, jobActivity(state, target, job.name, failed));
       })
       .catch(() => {});
+    if (made && created) await settleBackupFiles(target, undefined, deps);
     throw error;
   }
   return run;
+}
+/** The refusal of a restore for a job without a `restore` command. */
+export function noRestore(job: string): RigError {
+  return new RigError(
+    "BACKUP_NO_RESTORE",
+    `${job} has no restore command, so Rig cannot restore its backups.`,
+    `Add jobs.${job}.backup.restore to rig.yaml (the command that puts $RIG_BACKUP_DIR back, such as pg_restore --clean ...), then plan the Target again: rig restart working, or deploy.`,
+    { job },
+  );
 }
 
 /** Records that the scheduled time `scheduledFor` (Unix milliseconds) of `job` was skipped because `running` was still
@@ -354,7 +429,7 @@ function jobActivity(
     projectId: target.projectId,
     project: projectName(state, target),
     target: target.name,
-    action: "job",
+    action: run.trigger === "restore" ? "restore" : "job",
     outcome:
       run.outcome === "succeeded"
         ? "succeeded"
@@ -388,21 +463,32 @@ export function describeRun(run: JobRun): string {
     ? `; skipped ${run.skipped} scheduled ${run.skipped === 1 ? "time" : "times"} while it ran`
     : "";
   const trigger = run.trigger === "manual" ? " (rig run)" : "";
-  switch (run.outcome) {
-    case "succeeded":
-      return `succeeded${took}${trigger}${skipped}`;
-    case "failed":
-      return `failed${took}${exit ? `: ${exit}` : ""}${trigger}${skipped}`;
-    case "timed-out":
-      return `timed out${took} and was stopped${trigger}${skipped}`;
-    case "stopped":
-      return `stopped by Rig${took} (rig down, a Preview destroy, or the Target turned off)${trigger}${skipped}`;
-    case "start-failed":
-      return `could not start: ${run.errorCode ?? "unknown error"}${trigger}`;
-    case "unknown":
-      return `ended${took} with no recorded exit: the Mac restarted, or its exit record was lost${trigger}${skipped}`;
-    default:
-      return `running since ${run.startedAt}${trigger}`;
+  // A restore says which backup it read; a backup run that succeeded, which backup it kept.
+  const subject = run.restore ? `restore from ${run.restore.id} ` : "";
+  const kept =
+    run.backup && run.outcome === "succeeded"
+      ? `; kept backup ${run.backup.id}`
+      : run.backup && run.outcome
+        ? "; its backup directory was deleted"
+        : "";
+  return `${subject}${outcomeText()}${kept}`;
+  function outcomeText(): string {
+    switch (run.outcome) {
+      case "succeeded":
+        return `succeeded${took}${trigger}${skipped}`;
+      case "failed":
+        return `failed${took}${exit ? `: ${exit}` : ""}${trigger}${skipped}`;
+      case "timed-out":
+        return `timed out${took} and was stopped${trigger}${skipped}`;
+      case "stopped":
+        return `stopped by Rig${took} (rig down, a Preview destroy, or the Target turned off)${trigger}${skipped}`;
+      case "start-failed":
+        return `could not start: ${run.errorCode ?? "unknown error"}${trigger}`;
+      case "unknown":
+        return `ended${took} with no recorded exit: the Mac restarted, or its exit record was lost${trigger}${skipped}`;
+      default:
+        return `running since ${run.startedAt}${trigger}`;
+    }
   }
 }
 /** "41s", "3m12s", "2h05m". */

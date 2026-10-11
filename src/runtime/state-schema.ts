@@ -137,6 +137,23 @@ const planJob = z.object({
     .describe(
       "Seconds a run may take to exit after SIGTERM before SIGKILL; absent means 10.",
     ),
+  backup: z
+    .object({
+      keep: z
+        .number()
+        .int()
+        .positive()
+        .describe("How many successful backups are kept."),
+      restore: text
+        .optional()
+        .describe(
+          "/bin/sh command rig backup restore runs, references resolved; absent: restore is refused.",
+        ),
+    })
+    .optional()
+    .describe(
+      "Present for a backup job: each run writes a fresh $RIG_BACKUP_DIR (ADR 0017).",
+    ),
 });
 export const targetPlanSchema = z.object({
   project: text,
@@ -452,12 +469,37 @@ const jobRun = z.object({
     "The run's identity: its process's incarnation, and the id of its Activity entries.",
   ),
   trigger: z
-    .enum(["schedule", "manual"])
-    .describe("Whether the schedule or rig run started it."),
+    .enum(["schedule", "manual", "restore"])
+    .describe(
+      "What started it: the schedule, rig run, or rig backup restore (a run of the job's restore command).",
+    ),
   scheduledFor: text
     .optional()
     .describe("The scheduled time a scheduled run is for (ISO 8601)."),
   startedAt: text,
+  backup: z
+    .object({
+      id: text.describe("The backup's id, its run's start in UTC."),
+      path: absolutePath.describe(
+        "The fresh directory the run writes, under RIG_ROOT/backups.",
+      ),
+      keep: z
+        .number()
+        .int()
+        .positive()
+        .describe("How many backups the job kept when the run started."),
+    })
+    .optional()
+    .describe(
+      "A backup job's run: the directory it writes ($RIG_BACKUP_DIR), recorded before it is made. Kept as a backup when the run succeeds, deleted otherwise.",
+    ),
+  restore: z
+    .object({
+      id: text.describe("The backup's id."),
+      path: absolutePath.describe("Its directory."),
+    })
+    .optional()
+    .describe("A restore run: the backup it reads ($RIG_BACKUP_DIR)."),
   workspace: absolutePath
     .optional()
     .describe(
@@ -559,12 +601,13 @@ const operation = z.object({
  * A new optional top-level key needs no bump: an older rigd validates without it and writes it back unchanged.
  * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
  * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it.
- * Version 6 added scheduled jobs to plans (`plan.jobs`): an older rigd would keep them but never run them. */
-export const STATE_VERSION = 6;
+ * Version 6 added scheduled jobs to plans (`plan.jobs`): an older rigd would keep them but never run them. Version 7 added
+ * backups (`backup` on a plan's job and on a run, ADR 0017): an older rigd would run a backup job without its directory. */
+export const STATE_VERSION = 7;
 /** The older state versions this rigd still reads. Version 4 named the working and stable Targets local and live, or what
- * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs and is
- * read unchanged. The next write saves version 6. */
-export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5];
+ * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs, and
+ * version 6 is version 7 without backups; both are read unchanged. The next write saves version 7. */
+export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6];
 /** The version whose Target names are normalized as they are read. */
 export const UNFIXED_NAMES_STATE_VERSION = 4;
 const deployment = z.object({
@@ -622,6 +665,48 @@ export const runtimeStateSchema = z
       .optional()
       .describe(
         "Checkouts job runs kept after a deploy, recorded with the run's end and given back once nothing uses them; a rigd that stops first finds them again.",
+      ),
+    backups: z
+      .array(
+        z.object({
+          target: text.describe("The Target's id."),
+          project: text.describe("The Project's id."),
+          job: text.describe("The backup job's name."),
+          id: text.describe(
+            "The backup's id: its run's start in UTC, such as 20261011T030000Z.",
+          ),
+          path: absolutePath.describe(
+            "Its read-only directory under RIG_ROOT/backups.",
+          ),
+          run: text.describe("The run that wrote it."),
+          trigger: z
+            .enum(["schedule", "manual"])
+            .describe("Whether the schedule or rig run started that run."),
+          startedAt: text,
+          finishedAt: text,
+          bytes: z
+            .number()
+            .int()
+            .nonnegative()
+            .optional()
+            .describe("Its total size, once it was sealed."),
+        }),
+      )
+      .optional()
+      .describe(
+        "Kept backups of backup jobs (ADR 0017): the successful runs' directories, the newest keep per Target and job.",
+      ),
+    backupRemovals: z
+      .array(
+        z.object({
+          target: text.describe("The Target's id."),
+          project: text.describe("The Project's id."),
+          path: absolutePath.describe("The backup directory to delete."),
+        }),
+      )
+      .optional()
+      .describe(
+        "Backup directories Rig decided to delete (a failed run's, or a backup past keep), recorded before they are deleted so a rigd that stops first deletes them.",
       ),
     startSeq: z
       .number()

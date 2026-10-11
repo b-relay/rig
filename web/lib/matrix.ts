@@ -175,7 +175,9 @@ export function matrixTile(
 export function jobTile(job: JobReport, now: number): Tile {
   const word =
     job.state === "running"
-      ? "running"
+      ? job.running?.trigger === "restore"
+        ? "restoring"
+        : "running"
       : job.removed
         ? "removed"
         : (job.last?.outcome ?? (job.last ? "unknown" : "never run"));

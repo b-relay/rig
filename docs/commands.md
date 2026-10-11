@@ -46,6 +46,16 @@ rig
 ├─ run <job> [target] [branch]      start a scheduled job now; target: "stable" (default), "working" or "preview"
 │    --project <name>   --deployment <name>   --json
 │
+├─ backup
+│  ├─ list [job] [target] [branch]  kept backups, newest first: time, size, the run that made them;
+│  │                                every Target's unless one is named
+│  │    --project <name>   --deployment <name>   --json
+│  └─ restore <job> <id|latest> [target] [branch]
+│                                   run the job's backup.restore once against a backup, then wait;
+│                                   target: "stable" (default), "working" or "preview"
+│       --project <name>   --deployment <name>   --json
+│       --yes                       restore without asking
+│
 ├─ logs [target] [branch]
 │    --project <name>   --deployment <name>
 │    --follow                       stream until interrupted, after the matching history
@@ -110,8 +120,8 @@ status` takes no Target.
   Production branch; `preview` refuses it.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
-- `--json` exists on `status`, `deploy`, `up`, `down`, `restart`, and `run`
-  only.
+- `--json` exists on `status`, `deploy`, `up`, `down`, `restart`, `run`,
+  `backup list` and `backup restore` only.
 - `run` starts one run of a job from `jobs` in `rig.yaml` and answers once it
   started; it never waits for the run to end. Without a Target it means
   `stable`, where jobs are scheduled by default; it runs the job in any Target
@@ -124,6 +134,17 @@ status` takes no Target.
   still stops the Services first, and `--destroy` changes nothing. `status` lists each
   Target's jobs with their last and next run, `activity` has one `job` entry
   per ended run, and `logs --service <job>` reads a job's output.
+- `backup list` and `backup restore` work on backup jobs (`backup:` under a
+  job, ADR 0017). `run` of a backup job makes a backup as the schedule does.
+  `backup restore` resolves `latest`, asks for confirmation unless `--yes`
+  (refused with `RESTORE_CONFIRMATION` without a terminal), starts the job's
+  `restore` command as a run of the job, and waits for it to end: it exits 1
+  with `RESTORE_FAILED` unless it succeeded, and Ctrl-C stops only the wait.
+  It is refused with `JOB_RUNNING` while a run or restore of the job goes,
+  `BACKUP_NO_RESTORE` for a job without `restore`, `BACKUP_NOT_CONFIGURED`
+  for a job without `backup`, `BACKUP_UNKNOWN` for an id that is not kept, and
+  `BACKUP_MISSING` for a backup whose directory was deleted. It never stops
+  Services.
 - `status` runs no health check for a Service with a `healthcheck`: it shows
   the result `rigd`'s ongoing checks cached, such as
   `web  healthy · checked 12s ago` or

@@ -3,7 +3,7 @@ import { targetJobs } from "@/lib/jobs";
 import { orderedTargets } from "@/lib/overview";
 import { targetHref } from "@/lib/target";
 import { project } from "@/server/project";
-import { projectStatus } from "@/server/status";
+import { projectBackups, projectStatus } from "@/server/status";
 import { Dot, Failure } from "@/components/bits";
 import { JobCards, JobsUnavailable } from "@/components/job-cards";
 
@@ -21,6 +21,8 @@ export default async function JobsPage({
     return jobs.length ? [{ target, jobs }] : [];
   });
   if (withJobs.length === 0) return <JobsUnavailable />;
+  // Backups are shown when rigd lists them; the jobs stand on their own when it cannot.
+  const backups = await projectBackups(found.name);
   const now = Date.now();
   return (
     <div className="flex flex-col gap-6">
@@ -39,6 +41,7 @@ export default async function JobsPage({
             project={found.name}
             target={target}
             jobs={jobs}
+            backups={backups.ok ? backups.value.backups : []}
             now={now}
           />
         </section>

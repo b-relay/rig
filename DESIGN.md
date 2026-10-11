@@ -146,6 +146,13 @@ down` stops it. Runs are recorded apart from Target records and appear in
 status, Activity and Target logs. See
 [ADR 0013](docs/adr/0013-scheduled-jobs.md).
 
+A backup job is a job with retention: each run writes a fresh directory under
+`<RIG_ROOT>/backups`, a failed run's is deleted, the newest `keep` successful
+ones are kept read-only, and `rig backup restore` runs the job's `restore`
+command as a run of the job. Deletions are queued in the state before they
+happen, behind a backup storage interface. See
+[ADR 0017](docs/adr/0017-backups.md).
+
 ## Config
 
 Project config owns:
@@ -157,6 +164,8 @@ Project config owns:
   builds, environment
 - scheduled jobs: commands, cron schedules and their time zones, timeouts, and
   which Targets run them ([ADR 0013](docs/adr/0013-scheduled-jobs.md))
+- backups: which jobs keep backups, how many, and the restore command
+  ([ADR 0017](docs/adr/0017-backups.md))
 - the hostname and the `proxy` routes, or the default route to the one Service
   with one port
 

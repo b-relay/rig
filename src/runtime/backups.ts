@@ -1,0 +1,358 @@
+import type { PlanJob } from "../config/types";
+import { RigError, diagnosticErrorCode } from "../domain/errors";
+import type {
+  BackupRecord,
+  JobRun,
+  RuntimeState,
+  StateStore,
+  TargetRecord,
+} from "../domain/runtime";
+import type { BackupReport } from "../daemon/protocol";
+import type { BackupSummaryReport } from "../domain/project-status";
+import type { BackupStorage, RuntimeDependencies } from "./contracts";
+
+/* Backups (ADR 0017): a run of a job with `backup:` writes a fresh directory; a successful one is kept, sealed read-only
+ * and counted against the job's `keep`; anything else is deleted. Every deletion is queued in the state (`backupRemovals`)
+ * in the write that decides it, then carried out, so a rigd that stops in between finds it and nothing Rig did not record
+ * is ever deleted. */
+
+/** A backup's id: the UTC second its run started, such as `20261011T030000Z`, and `-2`, `-3` for later runs that started in
+ * the same second. */
+export const BACKUP_ID = /^\d{8}T\d{6}Z(?:-[1-9]\d*)?$/;
+/** What `rig backup restore` takes instead of an id: the newest backup. */
+export const LATEST_BACKUP = "latest";
+
+/** What backup bookkeeping needs from the runtime. */
+export interface BackupDependencies {
+  store: Pick<StateStore, "read" | "update">;
+  /** Absent where no job keeps backups, as in most tests; a backup job then fails BACKUP_UNAVAILABLE. */
+  backups?: BackupStorage;
+  diagnostic?: RuntimeDependencies["diagnostic"];
+  id?(): string;
+}
+
+/** Pure: `20261011T030000Z` for the ISO instant `at`. */
+export function backupStamp(at: string): string {
+  return new Date(at)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z")
+    .replace(/[-:]/g, "");
+}
+/** Pure: the backups of `job` of the Target `targetId`, newest first. */
+export function jobBackups(
+  state: Pick<RuntimeState, "backups">,
+  targetId: string,
+  job: string,
+): BackupRecord[] {
+  return (state.backups ?? [])
+    .filter((backup) => backup.target === targetId && backup.job === job)
+    .sort(newestFirst);
+}
+function newestFirst(a: BackupRecord, b: BackupRecord): number {
+  return (
+    b.finishedAt.localeCompare(a.finishedAt) ||
+    b.startedAt.localeCompare(a.startedAt) ||
+    b.id.localeCompare(a.id, "en", { numeric: true })
+  );
+}
+/** Pure: which of `backups` (one job's, of one Target) leave so that only the newest `keep` stay, the backup `fresh`
+ * always among them, whatever its time says. */
+export function expiredBackups(
+  backups: readonly BackupRecord[],
+  keep: number,
+  fresh: string,
+): BackupRecord[] {
+  return backups
+    .filter((backup) => backup.id !== fresh)
+    .sort(newestFirst)
+    .slice(Math.max(0, keep - 1));
+}
+
+/** The directory a new run of `job` writes: named for `startedAt`, with the first suffix no record and no directory on disk
+ * has. The caller holds the Target, so no other run of the job picks one meanwhile. */
+export async function newBackupLocation(
+  state: Pick<RuntimeState, "backups" | "backupRemovals" | "jobs" | "projects">,
+  target: Pick<TargetRecord, "id" | "projectId" | "name">,
+  job: string,
+  startedAt: string,
+  storage: BackupStorage,
+): Promise<{ id: string; path: string }> {
+  const project =
+    state.projects.find((p) => p.id === target.projectId)?.name ??
+    target.projectId;
+  const scope = { project, target: target.name, job };
+  const recorded = new Set([
+    ...(state.backups ?? []).map((backup) => backup.path),
+    ...(state.backupRemovals ?? []).map((removal) => removal.path),
+    ...(state.jobs ?? []).flatMap((record) =>
+      [record.running?.backup?.path, record.last?.backup?.path].filter(
+        (path): path is string => path !== undefined,
+      ),
+    ),
+  ]);
+  const stamp = backupStamp(startedAt);
+  for (let n = 1; ; n++) {
+    const id = n === 1 ? stamp : `${stamp}-${n}`;
+    const path = storage.location(scope, id);
+    if (!recorded.has(path) && !(await storage.exists(path)))
+      return { id, path };
+  }
+}
+
+/** Records, inside the write that records the end of `run`, what becomes of the directory it wrote: a successful run's is
+ * a backup, and the job's backups past the `keep` the run started with (never this one) are queued for deletion; any other
+ * end queues the run's own directory for deletion and leaves every backup alone. Resolves the new backup, if one was kept.
+ * A run that wrote no backup changes nothing. */
+export function recordBackupEnd(
+  state: RuntimeState,
+  target: Pick<TargetRecord, "id" | "projectId">,
+  job: string,
+  run: JobRun,
+): BackupRecord | undefined {
+  const made = run.backup;
+  if (!made) return undefined;
+  if (run.outcome !== "succeeded") {
+    queueRemoval(state, target, made.path);
+    return undefined;
+  }
+  const backup: BackupRecord = {
+    target: target.id,
+    project: target.projectId,
+    job,
+    id: made.id,
+    path: made.path,
+    run: run.id,
+    trigger: run.trigger === "schedule" ? "schedule" : "manual",
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt ?? run.startedAt,
+  };
+  (state.backups ??= []).push(backup);
+  const expired = expiredBackups(
+    jobBackups(state, target.id, job),
+    made.keep,
+    made.id,
+  );
+  if (expired.length) {
+    state.backups = state.backups.filter((other) => !expired.includes(other));
+    for (const old of expired) queueRemoval(state, target, old.path);
+  }
+  return backup;
+}
+/** Queues every backup of the Target `targetId` for deletion, as a Preview destroy does in the write that forgets it. */
+export function queueTargetBackups(
+  state: RuntimeState,
+  targetId: string,
+): void {
+  const leaving = (state.backups ?? []).filter(
+    (backup) => backup.target === targetId,
+  );
+  if (!leaving.length) return;
+  state.backups = state.backups!.filter((backup) => backup.target !== targetId);
+  for (const backup of leaving)
+    queueRemoval(
+      state,
+      { id: backup.target, projectId: backup.project },
+      backup.path,
+    );
+}
+/** Queues `path` for deletion, written once. */
+export function queueRemoval(
+  state: RuntimeState,
+  target: Pick<TargetRecord, "id" | "projectId">,
+  path: string,
+): void {
+  if (state.backupRemovals?.some((removal) => removal.path === path)) return;
+  (state.backupRemovals ??= []).push({
+    target: target.id,
+    project: target.projectId,
+    path,
+  });
+}
+
+/** After the write that recorded a backup run's end: seals the new backup read-only and records its size, then deletes
+ * what the write queued. Never rejects: a failure is a diagnostic, and what was not deleted stays queued for the
+ * scheduler's next offer. */
+export async function settleBackupFiles(
+  target: Pick<TargetRecord, "id" | "name">,
+  fresh: BackupRecord | undefined,
+  deps: BackupDependencies,
+): Promise<void> {
+  if (!deps.backups) return;
+  if (fresh)
+    try {
+      await deps.backups.seal(fresh.path);
+      const bytes = await deps.backups.measure(fresh.path);
+      if (bytes !== undefined)
+        await deps.store.update((state) => {
+          const recorded = state.backups?.find(
+            (backup) => backup.path === fresh.path,
+          );
+          if (recorded) recorded.bytes = bytes;
+        });
+    } catch (error) {
+      await report(deps, target.name, "backup-seal", error, fresh.path);
+    }
+  await removeQueuedBackups(deps, target.id);
+}
+/** Deletes the queued directories (of the Target `targetId` only, when given) and forgets each one that is gone. One that
+ * cannot be deleted stays queued, and is a diagnostic. Never rejects. */
+export async function removeQueuedBackups(
+  deps: BackupDependencies,
+  targetId?: string,
+): Promise<void> {
+  if (!deps.backups) return;
+  let queued;
+  try {
+    queued = ((await deps.store.read()).backupRemovals ?? []).filter(
+      (removal) => targetId === undefined || removal.target === targetId,
+    );
+  } catch {
+    return;
+  }
+  const removed: string[] = [];
+  for (const removal of queued)
+    try {
+      await deps.backups.remove(removal.path);
+      removed.push(removal.path);
+    } catch (error) {
+      await report(deps, removal.target, "backup-remove", error, removal.path);
+    }
+  if (removed.length)
+    await deps.store
+      .update((state) => {
+        state.backupRemovals = state.backupRemovals?.filter(
+          (removal) => !removed.includes(removal.path),
+        );
+        if (!state.backupRemovals?.length) delete state.backupRemovals;
+      })
+      .catch(() => {});
+}
+async function report(
+  deps: BackupDependencies,
+  target: string,
+  action: string,
+  error: unknown,
+  path: string,
+): Promise<void> {
+  await deps
+    .diagnostic?.({
+      operationId: deps.id?.() ?? action,
+      action,
+      outcome: "failed",
+      target,
+      path,
+      errorCode: diagnosticErrorCode(error),
+    })
+    .catch(() => {});
+}
+
+/** The storage a backup job needs, or BACKUP_UNAVAILABLE where this runtime has none. */
+export function backupStorage(deps: BackupDependencies): BackupStorage {
+  if (deps.backups) return deps.backups;
+  throw new RigError(
+    "BACKUP_UNAVAILABLE",
+    "This rigd has no backup storage, so it cannot run a job that keeps backups.",
+    "Run the job under rigd, which keeps backups under RIG_ROOT/backups.",
+  );
+}
+
+/** Pure: the backup `which` names among `job`'s backups in the Target: `latest` for the newest, else its id. Fails
+ * BACKUP_UNKNOWN, naming the ones there are, or naming none when there are none. */
+export function selectBackup(
+  state: Pick<RuntimeState, "backups">,
+  target: Pick<TargetRecord, "id" | "name">,
+  job: string,
+  which: string,
+): BackupRecord {
+  const backups = jobBackups(state, target.id, job);
+  const found =
+    which === LATEST_BACKUP
+      ? backups[0]
+      : backups.find((backup) => backup.id === which);
+  if (found) return found;
+  throw new RigError(
+    "BACKUP_UNKNOWN",
+    backups.length
+      ? `${job} on ${target.name} has no backup ${which}.`
+      : `${job} on ${target.name} has no backups yet.`,
+    backups.length
+      ? `Pass latest or one of: ${backups
+          .slice(0, 5)
+          .map((backup) => backup.id)
+          .join(
+            ", ",
+          )}${backups.length > 5 ? ` (rig backup list ${job} shows all ${backups.length})` : ""}.`
+      : `A successful run of ${job} makes one: rig run ${job}.`,
+    {
+      job,
+      backup: which,
+      known: backups.map((backup) => backup.id),
+    },
+  );
+}
+
+/** Pure: what status says about `job`'s backups in the Target `targetId`: its keep, whether it can restore, how many there
+ * are, their total size and the newest; undefined for a job without `backup`. */
+export function backupSummary(
+  state: Pick<RuntimeState, "backups">,
+  targetId: string,
+  job: Pick<PlanJob, "name" | "backup">,
+): BackupSummaryReport | undefined {
+  if (!job.backup) return undefined;
+  const backups = jobBackups(state, targetId, job.name);
+  const latest = backups[0];
+  return {
+    keep: job.backup.keep,
+    restore: job.backup.restore !== undefined,
+    count: backups.length,
+    bytes: backups.reduce((sum, backup) => sum + (backup.bytes ?? 0), 0),
+    ...(latest
+      ? {
+          latest: {
+            id: latest.id,
+            finishedAt: latest.finishedAt,
+            ...(latest.bytes !== undefined ? { bytes: latest.bytes } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/** The kept backups of `targets` (one Project's), newest first, narrowed to the Target id `filter.target` and the job
+ * `filter.job` when given, as the `backups` read lists them; each is checked on disk, and one whose directory is gone is
+ * marked `missing`. */
+export async function backupReports(
+  state: Pick<RuntimeState, "backups">,
+  targets: readonly Pick<TargetRecord, "id" | "name">[],
+  filter: { target?: string; job?: string },
+  deps: Pick<BackupDependencies, "backups">,
+): Promise<BackupReport[]> {
+  const names = new Map(targets.map((target) => [target.id, target.name]));
+  const listed = (state.backups ?? [])
+    .filter(
+      (backup) =>
+        names.has(backup.target) &&
+        (filter.target === undefined || backup.target === filter.target) &&
+        (filter.job === undefined || backup.job === filter.job),
+    )
+    .sort(newestFirst);
+  return await Promise.all(
+    listed.map(async (backup): Promise<BackupReport> => {
+      const present = deps.backups
+        ? await deps.backups.exists(backup.path).catch(() => false)
+        : true;
+      return {
+        target: names.get(backup.target)!,
+        job: backup.job,
+        id: backup.id,
+        path: backup.path,
+        run: backup.run,
+        trigger: backup.trigger,
+        startedAt: backup.startedAt,
+        finishedAt: backup.finishedAt,
+        ...(backup.bytes !== undefined ? { bytes: backup.bytes } : {}),
+        ...(present ? {} : { missing: true as const }),
+      };
+    }),
+  );
+}

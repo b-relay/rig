@@ -98,7 +98,7 @@ const job = (
  * running until the test ends it. `restart` stands for a new rigd: a fresh scheduler, the same state and processes. */
 function world(target: TargetRecord, jobs: JobRecord[] = []) {
   const store = memoryStore({
-    version: 6,
+    version: 7,
     projects: [
       {
         id: "p1",

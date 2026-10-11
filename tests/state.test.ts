@@ -31,7 +31,7 @@ test("registration survives reopening and serialized concurrent updates preserve
     expect(
       JSON.parse(await readFile(join(root, "runtime", "state.json"), "utf8"))
         .version,
-    ).toBe(6);
+    ).toBe(7);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -260,11 +260,57 @@ test("keys this rigd does not know survive a read-modify-write round trip, so a 
     });
     const written = JSON.parse(await readFile(path, "utf8"));
     expect(written).toMatchObject({
-      version: 6,
+      version: 7,
       futureTopLevel: [1],
       projects: [{ futureProjectField: "kept" }],
       targets: [{ desired: "running", futureTargetField: { nested: true } }],
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("state version 6, written before backups, is read as it is and saved as version 7 with the backups recorded since", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-before-backups-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    await writeFile(path, JSON.stringify({ version: 6, ...inventory }));
+    const store = new FileStateStore(root);
+    expect((await store.read()).version).toBe(7);
+    await store.update((s) => {
+      s.backups = [
+        {
+          target: s.targets[0]!.id,
+          project: s.projects[0]!.id,
+          job: "db-backup",
+          id: "20261011T030000Z",
+          path: join(root, "backups", "p", "working", "db-backup", "x"),
+          run: "run-1",
+          trigger: "schedule",
+          startedAt: "2026-10-11T03:00:00.000Z",
+          finishedAt: "2026-10-11T03:00:09.000Z",
+          bytes: 12,
+        },
+      ];
+      s.backupRemovals = [
+        {
+          target: s.targets[0]!.id,
+          project: s.projects[0]!.id,
+          path: join(root, "backups", "p", "working", "db-backup", "y"),
+        },
+      ];
+    });
+    const written = JSON.parse(await readFile(path, "utf8"));
+    expect(written.version).toBe(7);
+    expect(written.backups).toHaveLength(1);
+    expect(written.backupRemovals).toHaveLength(1);
+    // A backup outside an absolute path is refused before anything is written.
+    await expect(
+      store.update((s) => {
+        s.backups![0]!.path = "relative/path";
+      }),
+    ).rejects.toThrow();
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -276,20 +322,20 @@ test("a state file written by a newer or an older rigd is refused unread with bo
     await mkdir(join(root, "runtime"));
     const path = join(root, "runtime", "state.json");
     const store = new FileStateStore(root);
-    await writeFile(path, JSON.stringify({ version: 7, ...inventory }));
+    await writeFile(path, JSON.stringify({ version: 8, ...inventory }));
     await expect(store.read()).rejects.toMatchObject({
       code: "STATE_VERSION",
-      hint: expect.stringMatching(/version 7.*version 6/s),
-      details: { path, version: 7, supported: 6 },
+      hint: expect.stringMatching(/version 8.*version 7/s),
+      details: { path, version: 8, supported: 7 },
     });
-    expect(await readFile(path, "utf8")).toContain('"version":7');
+    expect(await readFile(path, "utf8")).toContain('"version":8');
     for (const version of [1, 2, 3]) {
       const old = JSON.stringify({ version, ...inventory });
       await writeFile(path, old);
       await expect(store.read()).rejects.toMatchObject({
         code: "STATE_VERSION",
         message: expect.stringContaining("an older rigd"),
-        details: { path, version, supported: 6 },
+        details: { path, version, supported: 7 },
       });
       await expect(store.update(() => {})).rejects.toMatchObject({
         code: "STATE_VERSION",
@@ -502,7 +548,7 @@ test("state an older Rig wrote with operator alert records loads without them an
     const store = new FileStateStore(root);
     const read = await store.read();
     // Everything else is read as written.
-    expect(read as unknown).toEqual({ version: 6, ...recorded });
+    expect(read as unknown).toEqual({ version: 7, ...recorded });
     await store.update(() => {});
     expect(JSON.parse(await readFile(path, "utf8"))).not.toHaveProperty(
       "alerts",
@@ -560,7 +606,7 @@ const version4Project = {
   createdAt: "now",
 };
 
-test("state version 4 is read with the working and stable Targets named by their role, and the next write saves version 6", async () => {
+test("state version 4 is read with the working and stable Targets named by their role, and the next write saves version 7", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-fixed-names-"));
   try {
     await mkdir(join(root, "runtime"));
@@ -607,7 +653,7 @@ test("state version 4 is read with the working and stable Targets named by their
     );
     const store = new FileStateStore(root);
     const state = await store.read();
-    expect(state.version).toBe(6);
+    expect(state.version).toBe(7);
     const [w, s, v] = state.targets;
     for (const [target, role] of [
       [w!, "working"],
@@ -636,7 +682,7 @@ test("state version 4 is read with the working and stable Targets named by their
     expect(state.activity as unknown).toEqual(activity);
     await store.update(() => {});
     const saved = JSON.parse(await readFile(path, "utf8"));
-    expect(saved.version).toBe(6);
+    expect(saved.version).toBe(7);
     expect(
       saved.targets.map((t: { kind: string; name: string }) => [
         t.kind,

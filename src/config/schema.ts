@@ -339,13 +339,15 @@ const toolFields = {
 const tool = z.strictObject(toolFields);
 /** The longest a job may run before Rig stops it: one week. */
 const MAX_JOB_TIMEOUT_SECONDS = 7 * 86400;
+/** The most backups `backup.keep` may keep per Target and job. */
+const MAX_BACKUPS_KEPT = 1000;
 /** The Targets a job runs in when it names none. */
 export const DEFAULT_JOB_TARGETS: readonly (
   "working" | "stable" | "preview"
 )[] = ["stable"];
 const jobFields = {
   command: command.describe(
-    `Shell command run with /bin/sh -c in working_dir (default: the workspace root) at each scheduled time, and by rig run. It runs from the same checkout as the Target's Services: the working copy for the working Target, the deployed Commit for the stable Target and Previews; a run a deploy finds going finishes on the checkout it started in, and the next run uses the new one. It has the Target's references, as a Service does: \${services.<service>.port} reaches a Service of the same Target, \${services.<service>.data} shares a Service's persistent directory, and \${rig.data} is the job's own. Its output goes to the Target logs under the job's name (rig logs --service <job>). Explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("job")}`,
+    `Shell command run with /bin/sh -c in working_dir (default: the workspace root) at each scheduled time, and by rig run. It runs from the same checkout as the Target's Services: the working copy for the working Target, the deployed Commit for the stable Target and Previews; a run a deploy finds going finishes on the checkout it started in, and the next run uses the new one. It has the Target's references, as a Service does: \${services.<service>.port} reaches a Service of the same Target, \${services.<service>.data} shares a Service's persistent directory, and \${rig.data} is the job's own. In a backup job (see backup), $RIG_BACKUP_DIR is the fresh directory this run writes its backup into. Its output goes to the Target logs under the job's name (rig logs --service <job>). Explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${referencesIn("job")}`,
   ),
   schedule: text
     .superRefine((value, ctx) => {
@@ -396,6 +398,26 @@ const jobFields = {
     .optional()
     .describe(
       "Which Targets run the job on its schedule, by their fixed names working, stable and preview (preview means every Preview). Default: [stable] only, so the schedule runs it once, against the Production branch, and not again in the working copy and every Preview. targets decides scheduling only: rig run <job> <target> runs it now in any Target that is on and deployed, such as working to try it. A Target runs its jobs on schedule only while it is on in rig.yaml, deployed and meant to run (rig down stops its schedule and any run in progress).",
+    ),
+  backup: z
+    .strictObject({
+      keep: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_BACKUPS_KEPT)
+        .describe(
+          `How many successful backups of this job Rig keeps per Target, 1 to ${MAX_BACKUPS_KEPT}, such as 14. After each successful run only the newest keep stay, the one that just finished always among them; a failed run deletes nothing but its own directory.`,
+        ),
+      restore: command
+        .optional()
+        .describe(
+          `Shell command rig backup restore <job> <backup> runs once to put a backup back, such as pg_restore --clean --if-exists -d app "$RIG_BACKUP_DIR/app.dump". It runs as a run of this job: the same Target checkout, working_dir, environment, env_file and references as command, never beside a run of the job, and with $RIG_BACKUP_DIR set to the chosen backup, which is read-only. Rig does not stop the Target's Services around it, so the command must replace what it restores itself (pg_restore --clean, say). Default: none, and restore is refused. ${referencesIn("job")}`,
+        ),
+    })
+    .optional()
+    .describe(
+      'Makes this job a backup job (a scheduled job with retention): every run, scheduled or rig run, gets a fresh, empty directory <RIG_ROOT>/backups/<project>/<target>/<job>/<UTC time>/ (mode 0700) as $RIG_BACKUP_DIR, and command writes the backup into it, such as pg_dump -Fc -f "$RIG_BACKUP_DIR/app.dump". A run that fails, times out or is stopped has its directory deleted; a successful one is kept, made read-only, and shown by rig backup list, rig status and the dashboard. Rig never needs to know what it backs up. Backups stay on this Mac, outside the Target\'s data and checkout, so deploys and rig down/up keep them; destroying a Preview deletes its backups.',
     ),
 };
 const job = z.strictObject(jobFields);
@@ -545,6 +567,7 @@ type GraphSettings = {
         command?: string;
         environment?: Readonly<Record<string, string>>;
         env_file?: string | readonly string[];
+        backup?: { restore?: string };
       }
     >
   >;
@@ -591,7 +614,7 @@ export const projectConfigSchema = z
       .record(entryName, job)
       .optional()
       .describe(
-        "Scheduled jobs keyed by name: commands rigd runs at cron times, such as a nightly import, with the same command, environment, env_file and working_dir keys and references as a Service. By default a job runs in the stable Target only. A run never overlaps the one before it, appears in rig activity, writes to rig logs under the job's name, and rig status shows its last and next run; rig run <job> runs it now. A job cannot share its name with a Service or Tool.",
+        "Scheduled jobs keyed by name: commands rigd runs at cron times, such as a nightly import, with the same command, environment, env_file and working_dir keys and references as a Service. By default a job runs in the stable Target only. A run never overlaps the one before it, appears in rig activity, writes to rig logs under the job's name, and rig status shows its last and next run; rig run <job> runs it now. A job with backup: is a backup job: each run writes a fresh $RIG_BACKUP_DIR, the newest backup.keep are kept, and rig backup list and rig backup restore read them. A job cannot share its name with a Service or Tool.",
       ),
     proxy: proxy.optional(),
     targets: targets
@@ -961,6 +984,7 @@ function validateReferences(
   for (const [name, job] of Object.entries(settings.jobs ?? {})) {
     const own = ["jobs", name];
     fields.push([[...own, "command"], job.command]);
+    fields.push([[...own, "backup", "restore"], job.backup?.restore]);
     for (const [key, value] of Object.entries(job.environment ?? {}))
       fields.push([[...own, "environment", key], value]);
     for (const value of [job.env_file ?? []].flat())

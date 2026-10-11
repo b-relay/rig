@@ -10,7 +10,9 @@ export function returnPath(requested: string | null | undefined): string {
   try {
     const parsed = new URL(requested, base);
     if (parsed.origin !== base) return "/";
-    return parsed.pathname + parsed.search + parsed.hash;
+    const path = parsed.pathname + parsed.search + parsed.hash;
+    // Dot segments can collapse into a leading "//" ("/.//evil.example"), which a browser reads as another host.
+    return path.startsWith("//") ? "/" : path;
   } catch {
     return "/";
   }

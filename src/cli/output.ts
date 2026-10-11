@@ -14,6 +14,9 @@ export function renderResult(action: string, value: unknown): string {
     return `${word(report.project)}\n${word(report.path)}\n\n${JSON.stringify(report.config, null, 2)}\n`;
   if (action === "logs") return renderLogs(report, true);
   if (action === "activity") return renderActivity(report);
+  if (action === "proxy") return renderProxy(report);
+  if (action === "proxy-apply")
+    return "Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n";
   if (action === "daemon-status")
     return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
       report.version ? `Version    ${word(report.version)}\n` : ""
@@ -222,6 +225,49 @@ function deployedFrom(
   if (branch && commit) return `${branch}@${commit}`;
   if (branch || commit) return branch || commit;
   return target.kind === "working" ? "working copy" : "";
+}
+/** `rig proxy`: the job, then one line per served hostname with what it reaches: a Target's paths, or one of the owner's
+ * proxy.routes. */
+function renderProxy(report: Record<string, unknown>): string {
+  const caddy = object(report.caddy);
+  const ports = object(caddy.ports);
+  const lines = [
+    `Caddy      ${word(caddy.state)} on ports ${Number(ports.http)} and ${Number(ports.https)}, certificates from ${word(caddy.ca)}`,
+    ...(caddy.generation ? [`Generation ${word(caddy.generation)}`] : []),
+    "",
+  ];
+  const sites = rows(report.sites);
+  if (!sites.length) lines.push("No site is served.");
+  for (const site of sites) {
+    const owner =
+      site.source === "custom"
+        ? "proxy.routes"
+        : `${word(site.project)} ${word(site.target)}`;
+    const routes =
+      site.source === "custom"
+        ? `/ -> ${word(site.upstream)}`
+        : rows(site.routes)
+            .map(
+              (route) =>
+                `${word(route.prefix)} -> ${route.upstream === null ? "withheld (503)" : word(route.upstream)}`,
+            )
+            .join(", ");
+    lines.push(
+      `${word(site.hostname)}  ${owner}${routes ? `  ${routes}` : ""}${site.certificate ? `  [${word(site.certificate)}]` : ""}`,
+    );
+  }
+  // What is above is what Caddy serves; Host config it has not taken is shown apart, with why.
+  if (report.pending !== undefined) {
+    const pending = object(report.pending);
+    const fields = Array.isArray(pending.fields)
+      ? pending.fields.map(String)
+      : [];
+    lines.push(
+      "",
+      `Pending    proxy settings in config.yaml${fields.length ? ` (${fields.map(word).join(", ")})` : ""} are not served: ${word(pending.reason)}`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 function renderDoctor(report: Record<string, unknown>): string {
   const failures = rows(report.checks).filter((check) => check.ok !== true);

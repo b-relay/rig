@@ -122,6 +122,7 @@ export interface Replies {
   "initialization-info": InitializationInfo;
   "deployment-context": DeploymentContext;
   deployments: DeploymentsResult;
+  proxy: import("../../src/adapters/proxy-report").ProxyReport;
   "prepare-uninstall": { ready: true };
   "cancel-uninstall": { cancelled: true };
 }

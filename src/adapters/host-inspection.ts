@@ -5,9 +5,12 @@ import { ConfigError } from "../config/errors";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { inspectHostProxy, proxyCheck } from "./proxy-publication";
 import { readInstallationRecord } from "../daemon/installation";
+import { inspectManagedProxy } from "./proxy-inspection";
 /** Observe local prerequisites without running repairs, writing probes, or contacting remotes. */
 export async function inspectHost(root: string): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
+  // Rig runs its own copy of Caddy then, so the one on PATH does not matter.
+  let managed = false;
   try {
     const host = await readHostConfig(root);
     checks.push({
@@ -24,18 +27,40 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
         reason: "config-retired",
         hint: "Delete the alerts section from config.yaml under the Rig root; Rig no longer sends alerts.",
       });
-    checks.push(
-      await inspectHostProxy(root, host, process.env).then(
-        proxyCheck,
-        (error) => ({
-          name: "caddy-proxy",
-          ok: false,
-          message: `Rig's route file or the host Caddyfile could not be read: ${String((error as Error).message ?? error)}`,
-          reason: "proxy-unreadable",
-          hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.host_caddyfile.",
-        }),
-      ),
-    );
+    if (host.externalIgnored)
+      checks.push({
+        name: "host-config/providers-caddy",
+        ok: false,
+        message:
+          "The Host config has both a proxy section and providers.caddy; providers.caddy is ignored.",
+        reason: "config-retired",
+        hint: "Delete providers.caddy from config.yaml under the Rig root: the proxy section replaces it.",
+      });
+    if (host.proxyMode === "managed" && host.proxy) {
+      managed = true;
+      const installation = await readInstallationRecord(root).catch(
+        () => undefined,
+      );
+      checks.push(
+        ...(await inspectManagedProxy(
+          root,
+          host.proxy,
+          installation?.mode ?? (process.env.RIG_ROOT ? "process" : "launchd"),
+        )),
+      );
+    } else
+      checks.push(
+        await inspectHostProxy(root, host, process.env).then(
+          proxyCheck,
+          (error) => ({
+            name: "caddy-proxy",
+            ok: false,
+            message: `Rig's route file or the host Caddyfile could not be read: ${String((error as Error).message ?? error)}`,
+            reason: "proxy-unreadable",
+            hint: "Make the Caddyfiles readable by the rigd user, or set providers.caddy.host_caddyfile.",
+          }),
+        ),
+      );
   } catch (error) {
     checks.push({
       name: "host-config",
@@ -52,7 +77,7 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
     });
   }
   checks.push(...(await inspectDaemonExecutable(root)));
-  for (const name of ["bun", "git", "caddy"]) {
+  for (const name of managed ? ["bun", "git"] : ["bun", "git", "caddy"]) {
     const ok = Bun.which(name) !== null;
     checks.push(
       ok

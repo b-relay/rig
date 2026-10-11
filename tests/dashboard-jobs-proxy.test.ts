@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 import { canRunNow, runJobCommand, targetJobs } from "../web/lib/jobs";
 import { commandSchema } from "../src/daemon/protocol";
-import { customCaddyFile, proxyRoutes } from "../web/lib/proxy";
+import {
+  managedProxyRoutes,
+  ownRoutesNote,
+  pendingNote,
+  proxyRoutes,
+  siteUrl,
+} from "../web/lib/proxy";
 import type { TargetReport } from "../web/lib/types";
 
 const target = (fields: Partial<TargetReport> & Record<string, unknown> = {}) =>
@@ -149,6 +155,192 @@ test("every hostname and path on the Host leads to its Target's Service, by host
   });
 });
 
-test("the custom Caddy file waits for a Rig-owned Caddy", async () => {
-  expect(await customCaddyFile()).toMatchObject({ supported: false });
+test("with Rig's own Caddy, its proxy read names every hostname served, Targets' and the owner's own routes, and status adds each Service and state", () => {
+  const fromStatus = proxyRoutes([
+    {
+      project: { name: "shop", repoPath: "/s", targetCount: 1 },
+      status: {
+        ok: true,
+        value: {
+          project: "shop",
+          targets: [
+            target({
+              route: "shop.test",
+              routes: [
+                { prefix: "/", service: "web", port: 1 },
+                { prefix: "/api", service: "api", port: 2 },
+              ],
+            }),
+          ],
+        },
+      },
+    },
+  ]);
+  const report = {
+    caddy: {
+      state: "running" as const,
+      ports: { http: 80, https: 443 },
+      ca: "letsencrypt",
+      generation: "g001",
+    },
+    sites: [
+      {
+        hostname: "shop.test",
+        source: "target" as const,
+        project: "shop",
+        target: "stable",
+        routes: [
+          { prefix: "/api", upstream: null },
+          { prefix: "/", upstream: "127.0.0.1:1" },
+        ],
+      },
+      {
+        hostname: "code.test",
+        source: "custom" as const,
+        upstream: "127.0.0.1:8080",
+      },
+    ],
+  };
+  const routes = managedProxyRoutes(report, fromStatus);
+  expect(routes).toEqual([
+    {
+      host: "code.test",
+      url: "https://code.test/",
+      prefix: "/",
+      source: "custom",
+      upstream: "127.0.0.1:8080",
+      published: true,
+    },
+    expect.objectContaining({
+      host: "shop.test",
+      url: "https://shop.test/api",
+      prefix: "/api",
+      service: "api",
+      state: "running",
+      withheld: true,
+    }),
+    expect.objectContaining({
+      host: "shop.test",
+      prefix: "/",
+      service: "web",
+      upstream: "127.0.0.1:1",
+    }),
+  ]);
+  // The path Rig withdrew has no upstream, whatever status remembers.
+  expect(routes[1]).not.toHaveProperty("upstream");
+});
+
+test("dashboard links and matching use the address as Caddy does: case, an explicit scheme and port, and Caddy's HTTPS port", () => {
+  const ports = { http: 28080, https: 28443 };
+  expect(siteUrl("Code.Test", ports)).toBe("https://code.test:28443/");
+  expect(siteUrl("https://app.test:9443", ports, "/api")).toBe(
+    "https://app.test:9443/api",
+  );
+  expect(siteUrl("http://plain.test", ports)).toBe("http://plain.test:28080/");
+  expect(siteUrl("app.test", { http: 80, https: 443 })).toBe(
+    "https://app.test/",
+  );
+  const fromStatus = proxyRoutes([
+    {
+      project: { name: "shop", repoPath: "/s", targetCount: 1 },
+      status: {
+        ok: true,
+        value: {
+          project: "shop",
+          targets: [
+            target({
+              route: "shop.test",
+              routes: [{ prefix: "/", service: "web", port: 1 }],
+            }),
+          ],
+        },
+      },
+    },
+  ]);
+  const routes = managedProxyRoutes(
+    {
+      caddy: { state: "running", ports, ca: "internal" },
+      sites: [
+        {
+          hostname: "https://SHOP.test:9443",
+          source: "target",
+          project: "shop",
+          target: "stable",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:1" }],
+        },
+        { hostname: "own.test", source: "custom", upstream: "127.0.0.1:2" },
+      ],
+    },
+    fromStatus,
+  );
+  // An upper-case, explicit address still finds its Target's Service and state.
+  expect(routes).toEqual([
+    expect.objectContaining({
+      host: "own.test:28443",
+      url: "https://own.test:28443/",
+    }),
+    expect.objectContaining({
+      host: "shop.test:9443",
+      url: "https://shop.test:9443/",
+      service: "web",
+      state: "running",
+    }),
+  ]);
+});
+
+test("the owner's own routes are set in config.yaml, and need Rig's own Caddy", () => {
+  expect(
+    ownRoutesNote({
+      ok: true,
+      value: {
+        caddy: {
+          state: "running",
+          ports: { http: 80, https: 443 },
+          ca: "letsencrypt",
+        },
+        sites: [],
+      },
+    }),
+  ).toContain("proxy.routes in config.yaml");
+  expect(
+    ownRoutesNote({
+      ok: false,
+      failure: { code: "PROXY_UNMANAGED", message: "no" },
+    }),
+  ).toContain("With a proxy section in config.yaml");
+  expect(
+    ownRoutesNote({
+      ok: false,
+      failure: { code: "DAEMON_MISSING", message: "rigd is not reachable." },
+    }),
+  ).toContain("rigd is not reachable.");
+});
+
+test("Host config the dashboard's Caddy does not serve is shown apart, with why", () => {
+  const value = {
+    caddy: {
+      state: "running" as const,
+      ports: { http: 80, https: 443 },
+      ca: "letsencrypt",
+    },
+    sites: [],
+  };
+  expect(pendingNote({ ok: true, value })).toBeUndefined();
+  expect(
+    pendingNote({
+      ok: true,
+      value: {
+        ...value,
+        pending: { fields: ["routes", "tls"], reason: "Refused: a collision." },
+      },
+    }),
+  ).toBe(
+    "The proxy settings in config.yaml (routes, tls) are not served yet, so this page shows what Caddy last accepted. Refused: a collision.",
+  );
+  expect(
+    pendingNote({
+      ok: false,
+      failure: { code: "PROXY_UNMANAGED", message: "" },
+    }),
+  ).toBeUndefined();
 });

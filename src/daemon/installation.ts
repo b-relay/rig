@@ -6,9 +6,9 @@ import { RigError } from "../domain/errors";
 /** `<RIG_ROOT>/daemon/install.json`, written by `rigd install` and read by `rigd` itself at startup. */
 export const installationSchema = z.object({
   mode: z
-    .enum(["process", "launchd"])
+    .enum(["process", "launchd", "system"])
     .describe(
-      "How rigd was started: a detached process (under RIG_ROOT) or a launchd job.",
+      "How rigd was started: a detached process (under RIG_ROOT), a launchd job in the user's login, or a system job that runs as the user from boot.",
     ),
   command: z
     .array(z.string())
@@ -24,8 +24,16 @@ export const installationSchema = z.object({
     .describe(
       "The bun that Tools whose bin is a source file run with; absent when rigd install found none.",
     ),
+  proxy: z
+    .enum(["managed", "external"])
+    .optional()
+    .describe(
+      "How the installed rigd publishes routes: through Rig's own Caddy (managed) or a route file another Caddy imports (external, also when absent).",
+    ),
 });
 export type InstallationRecord = z.infer<typeof installationSchema>;
+/** How rigd runs: a detached process, a LaunchAgent in the user's login, or a system job that runs as the user from boot. */
+export type DaemonMode = InstallationRecord["mode"];
 
 export function installationPath(root: string): string {
   return join(root, "daemon", "install.json");

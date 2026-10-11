@@ -54,8 +54,12 @@ test("recovery clears proven incomplete preparation and permits retry without to
   await writeFile(join(f.root, "bin", "active"), "usable");
   await f.router.apply({
     key: "target",
-    hostname: "active.test",
-    routes: [{ prefix: "/", upstream: "localhost:1234" }],
+    sites: [
+      {
+        hostname: "active.test",
+        routes: [{ prefix: "/", upstream: "localhost:1234" }],
+      },
+    ],
   });
   const route = await f.router.checkpoint("target");
   await f.transactions().restore("target");

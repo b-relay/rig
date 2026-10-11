@@ -73,7 +73,7 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
 - `bun install`
 - `bun test` (full suite; `bun run test:parallel` runs the same files across
   workers)
-- `bun run test:fast` (all but the end-to-end and compiled-binary files)
+- `bun run test:fast` (all but the end-to-end, compiled-binary and live Caddy files)
 - `bun run typecheck`
 - `bun run build`
 - `bun run format:check`

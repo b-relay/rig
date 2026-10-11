@@ -76,6 +76,10 @@ export interface TargetEffects {
    * `withhold` adds Services to the ones the published route already withholds, `verified` releases them. */
   route(target: TargetRecord, change: RouteChange): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
+  /** Refuses the Target's route map as publishing it would (ROUTE_INVALID, ROUTE_CONFLICT), changing nothing. */
+  checkRoute?(target: TargetRecord): Promise<void>;
+  /** Lets go of what `checkRoute` reserved for the Target. */
+  releaseRoute?(target: TargetRecord): Promise<void>;
 }
 export type RouteChange =
   | { readonly withhold: ReadonlySet<string> }
@@ -161,6 +165,12 @@ export interface TargetLifecycle {
     journal: ActivationJournal,
     stops?: StopControl,
   ): Promise<{ outcome: "started" | "unchanged" }>;
+  /** Refuses the Target's route as publishing it would, changing nothing; a deploy asks before it stops the previous
+   * Deployment, so a route that cannot be published never takes a running one offline. Required, so a wrapper cannot drop
+   * it. */
+  checkRoute(target: TargetRecord): Promise<void>;
+  /** Lets go of the hostnames `checkRoute` reserved for the Target; required, so a wrapper cannot drop it. */
+  releaseRoute(target: TargetRecord): Promise<void>;
   /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
    * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
    * starts it again. */
@@ -259,6 +269,8 @@ export function withStops(
 ): TargetLifecycle {
   return {
     pruneCheckpoints: (live) => lifecycle.pruneCheckpoints(live),
+    checkRoute: (target) => lifecycle.checkRoute(target),
+    releaseRoute: (target) => lifecycle.releaseRoute(target),
     checkpoint: (target, previous) => lifecycle.checkpoint(target, previous),
     restoreEffects: (target) => lifecycle.restoreEffects(target),
     commitEffects: (target) => lifecycle.commitEffects(target),
@@ -303,6 +315,12 @@ export function createTargetLifecycle(
 ): TargetLifecycle {
   const lifecycle: TargetLifecycle = {
     pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
+    async checkRoute(target) {
+      await effects.checkRoute?.(target);
+    },
+    async releaseRoute(target) {
+      await effects.releaseRoute?.(target);
+    },
     async checkpoint(target, previous) {
       return await effects.checkpoint(target, previous);
     },

@@ -2,9 +2,14 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowRight, FileCode2, TriangleAlert } from "lucide-react";
 import type { ProjectEntry } from "@/lib/board-rows";
-import { customCaddyFile, proxyRoutes } from "@/lib/proxy";
+import {
+  managedProxyRoutes,
+  ownRoutesNote,
+  pendingNote,
+  proxyRoutes,
+} from "@/lib/proxy";
 import { projectHref, targetHref } from "@/lib/target";
-import { projectList, projectStatus } from "@/server/status";
+import { projectList, projectStatus, proxyReport } from "@/server/status";
 import {
   Empty,
   Failure,
@@ -27,8 +32,8 @@ import {
 export const metadata: Metadata = { title: "Proxy" };
 const HEAD =
   "h-8 px-4 text-[11px] font-medium tracking-wide text-muted-foreground uppercase";
-/** Every hostname and path Caddy serves for this Host, the Target and Service each reaches, and the
- * operator's own Caddy file once Rig runs its own Caddy. */
+/** Every hostname and path Caddy serves for this Host, the Target and Service each reaches, and, with
+ * Rig's own Caddy, the owner's own routes from proxy.routes, read-only. */
 export default async function ProxyPage() {
   const list = await projectList();
   if (!list.ok)
@@ -44,17 +49,22 @@ export default async function ProxyPage() {
       ...(project.missing ? {} : { status: await projectStatus(project.name) }),
     })),
   );
-  const routes = proxyRoutes(entries);
+  const proxy = await proxyReport();
+  // Rig's own Caddy reports what it serves; otherwise the Host's Caddy serves what status says.
+  const routes = proxy.ok
+    ? managedProxyRoutes(proxy.value, proxyRoutes(entries))
+    : proxyRoutes(entries);
   const hosts = new Set(routes.map((route) => route.host));
   const unpublished = routes.filter((route) => !route.published).length;
-  const custom = await customCaddyFile();
+  const ownRoutes = routes.filter((route) => route.source === "custom");
+  const pending = pendingNote(proxy);
   return (
     <>
       <PageHeader
         title="Proxy"
         description="Every hostname Caddy serves for this Mac, and the loopback Service each path reaches."
       />
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <Stat label="Hostnames" value={hosts.size} />
         <Stat label="Routes" value={routes.length} />
         <Stat
@@ -62,7 +72,20 @@ export default async function ProxyPage() {
           value={unpublished}
           tone={unpublished ? "warn" : undefined}
         />
+        {proxy.ok ? (
+          <Stat
+            label="Rig's Caddy"
+            value={proxy.value.caddy.state}
+            tone={proxy.value.caddy.state === "running" ? "good" : "bad"}
+          />
+        ) : null}
       </div>
+      {pending ? (
+        <p className="flex gap-2 text-sm text-warn">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span>{pending}</span>
+        </p>
+      ) : null}
       {unpublished ? (
         <p className="flex gap-2 text-sm text-warn">
           <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
@@ -94,7 +117,7 @@ export default async function ProxyPage() {
               <TableBody>
                 {routes.map((route) => (
                   <TableRow
-                    key={`${route.url}:${route.project}:${route.target}`}
+                    key={`${route.url}:${route.source}:${route.project}:${route.target}`}
                     className="border-rule/60"
                   >
                     <TableCell className="px-4 py-2">
@@ -114,28 +137,39 @@ export default async function ProxyPage() {
                           className="size-3.5 text-muted-foreground"
                           aria-hidden
                         />
-                        {route.service}
+                        {route.source === "custom" ? null : route.service}
                         {route.upstream ? (
                           <Mono className="break-normal text-muted-foreground">
                             {route.upstream}
                           </Mono>
                         ) : null}
+                        {route.withheld ? (
+                          <span className="text-xs text-warn">
+                            withheld (503)
+                          </span>
+                        ) : null}
                       </span>
                     </TableCell>
                     <TableCell className="px-4 py-2">
-                      <span className="inline-flex items-center gap-2">
-                        <KindTag kind={route.kind} />
-                        <Link href={projectHref(route.project)}>
-                          {route.project}
-                        </Link>
-                        /
-                        <Link href={targetHref(route.project, route.target)}>
-                          {route.target}
-                        </Link>
-                      </span>
+                      {route.project && route.target ? (
+                        <span className="inline-flex items-center gap-2">
+                          {route.kind ? <KindTag kind={route.kind} /> : null}
+                          <Link href={projectHref(route.project)}>
+                            {route.project}
+                          </Link>
+                          /
+                          <Link href={targetHref(route.project, route.target)}>
+                            {route.target}
+                          </Link>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          Your own route (proxy.routes)
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="px-4 py-2">
-                      <StatePill value={route.state} />
+                      {route.state ? <StatePill value={route.state} /> : null}
                     </TableCell>
                   </TableRow>
                 ))}
@@ -145,19 +179,18 @@ export default async function ProxyPage() {
         )}
       </Panel>
       <Panel
-        title="Custom Caddy config"
-        description="Directives you own, served beside Rig's generated routes."
+        title="Your own routes"
+        description="Hostnames outside any Project, each sent to a service on this Mac."
       >
-        {custom.supported ? (
-          <pre className="overflow-x-auto rounded-md bg-pane p-3 font-mono text-xs leading-5 text-on-pane">
-            {custom.file.raw}
-          </pre>
-        ) : (
-          <p className="flex items-start gap-3 text-sm text-muted-foreground">
-            <FileCode2 className="mt-0.5 size-5 shrink-0" aria-hidden />
-            {custom.reason}
-          </p>
-        )}
+        <p className="flex items-start gap-3 text-sm text-muted-foreground">
+          <FileCode2 className="mt-0.5 size-5 shrink-0" aria-hidden />
+          <span>
+            {proxy.ok
+              ? `${ownRoutes.length === 0 ? "None yet." : `${ownRoutes.length} served, listed above.`} `
+              : null}
+            {ownRoutesNote(proxy)}
+          </span>
+        </p>
       </Panel>
     </>
   );

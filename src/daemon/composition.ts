@@ -1,4 +1,5 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
+import { readProxySettings } from "../adapters/proxy-settings";
 import {
   HEALTH_MONITOR,
   JOB_SCHEDULER,
@@ -21,7 +22,7 @@ import { inspectHost } from "../adapters/host-inspection";
 import { inspectHostProxy } from "../adapters/proxy-publication";
 import { randomUUID } from "node:crypto";
 import { executionBaseline, inheritedEnvironment } from "./environment";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
   readHostConfig,
@@ -47,6 +48,17 @@ import { createProcessTiming } from "../providers/process-timing";
 import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
 import { createCaddyRouter } from "../providers/caddy-router";
+import { createCaddyAdmin } from "../providers/caddy-admin";
+import { createCaddyJob } from "../providers/caddy-job";
+import type { DaemonMode } from "./installation";
+import {
+  createManagedCaddy,
+  type ManagedCaddy,
+} from "../providers/managed-caddy";
+import { proxyPaths } from "../domain/managed-proxy";
+import { proxyReport } from "../adapters/proxy-report";
+import type { ProxyControl } from "../runtime/contracts";
+import { RigError } from "../domain/errors";
 import { runCommand } from "../providers/command-runner";
 import { createListenerInspection } from "../providers/listener-inspection";
 import { probeLocalPort } from "../providers/port-probe";
@@ -64,13 +76,14 @@ import {
 } from "../domain/log-retention";
 /** The Host session probe a daemon started in `mode` reads with. A detached process (`process`, under RIG_ROOT) outlives a
  * logout and login, and so do its children, so only a reboot is a Host restart for it: it reads only the boot. A launchd
- * job in the user's GUI login reads the login too. */
+ * job in the user's GUI login reads the login too. A system job (`daemon.start: boot`) runs from boot whether or not anyone
+ * logs in, so it too reads only the boot. */
 export function daemonHostSession(
-  mode: "process" | "launchd",
+  mode: DaemonMode,
   options: Parameters<typeof createHostSessionProbe>[0],
 ): HostSessionProbe {
   const probe = createHostSessionProbe(options);
-  return mode === "process" ? bootOnly(probe) : probe;
+  return mode === "launchd" ? probe : bootOnly(probe);
 }
 /** Composition root selects adapters. Runtime and command code see capability Interfaces only.
  * `toolBun` is the bun `rigd install` recorded for Tools whose bin is a source file; undefined when it found none. */
@@ -78,8 +91,9 @@ export async function composeDaemon(
   root: string,
   captureCommand: readonly string[],
   toolBun: string | undefined,
-  /** How rigd was started (its installation record): a launchd job in the user's GUI login, or a detached process. */
-  mode: "process" | "launchd" = "launchd",
+  /** How rigd was started (its installation record): a launchd job in the user's GUI login, a system job, or a detached
+   * process. */
+  mode: DaemonMode = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
   const host = await readHostConfig(root);
   const diagnostic = createFileDiagnosticLog({
@@ -117,6 +131,34 @@ export async function composeDaemon(
     ["child", child],
   ]);
   const environment = inheritedEnvironment(process.env);
+  // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
+  const managed =
+    host.proxyMode === "managed" ? composeManagedCaddy(root, mode) : undefined;
+  // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
+  const external = managed
+    ? undefined
+    : createCaddyRouter({
+        caddyfile:
+          host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
+        run: runCommand,
+        reload: host.providers.caddy.reload.mode === "command",
+        extraConfig: host.providers.caddy.extra_config,
+        hostCaddyfile: async () => {
+          const publication = await inspectHostProxy(root, host, environment);
+          return publication.state === "imported"
+            ? publication.hostCaddyfile
+            : undefined;
+        },
+        ...(host.providers.caddy.reload.command
+          ? {
+              reloadCommand: [
+                "/bin/sh",
+                "-c",
+                host.providers.caddy.reload.command,
+              ],
+            }
+          : {}),
+      });
   const effects = createTargetEffects({
     recordingTime: () => new Date().toISOString(),
     logRetention,
@@ -129,28 +171,7 @@ export async function composeDaemon(
       run: runCommand,
       bunExecutable: toolBun,
     }),
-    router: createCaddyRouter({
-      caddyfile:
-        host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
-      run: runCommand,
-      reload: host.providers.caddy.reload.mode === "command",
-      extraConfig: host.providers.caddy.extra_config,
-      hostCaddyfile: async () => {
-        const publication = await inspectHostProxy(root, host, environment);
-        return publication.state === "imported"
-          ? publication.hostCaddyfile
-          : undefined;
-      },
-      ...(host.providers.caddy.reload.command
-        ? {
-            reloadCommand: [
-              "/bin/sh",
-              "-c",
-              host.providers.caddy.reload.command,
-            ],
-          }
-        : {}),
-    }),
+    router: managed?.caddy.router ?? external!,
     environment: executionBaseline(process.env),
   });
   const store = new FileStateStore(root);
@@ -178,6 +199,7 @@ export async function composeDaemon(
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
+    ...(managed ? { proxy: managed.control } : {}),
     store,
     documents: createProjectDocuments(root, runCommand, environment, homedir()),
     sources: createDeploymentSources(
@@ -273,6 +295,20 @@ export async function composeDaemon(
     editor,
     env,
     async start() {
+      // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
+      // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
+      void (managed ? managed.caddy.republish() : external!.republish()).catch(
+        (error: unknown) =>
+          diagnostic.record({
+            event: "proxy.republish",
+            level: "error",
+            ...(error instanceof RigError ? { code: error.code } : {}),
+            ...(error instanceof RigError &&
+            typeof error.details?.evidence === "string"
+              ? { evidence: error.details.evidence }
+              : {}),
+          }),
+      );
       await runtime.reconcile();
       if (stopped) return;
       // Restart policy is applied here, never by a supervisor: every pass records exits and makes the attempts that are due.
@@ -314,6 +350,51 @@ export async function composeDaemon(
       await scheduler;
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
       await child.detach();
+    },
+  };
+}
+/** Rig's own Caddy as rigd drives it: publication through generations, and the job only observed and restarted, never
+ * installed; `rigd install` installs it. The proxy settings are read at every publication, so `rig proxy reload` applies an
+ * edit to them. */
+function composeManagedCaddy(
+  root: string,
+  mode: DaemonMode,
+): { caddy: ManagedCaddy; control: ProxyControl } {
+  const paths = proxyPaths(root);
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createCaddyJob({
+    root,
+    paths,
+    mode,
+    userHome: homedir(),
+    uid: process.getuid?.() ?? 501,
+    userName: userInfo().username,
+    admin,
+  });
+  const settings = () => readProxySettings(root);
+  const caddy = createManagedCaddy({
+    root,
+    settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  return {
+    caddy,
+    control: {
+      report: async (targets) =>
+        proxyReport({
+          root,
+          requested: await settings().catch((error: unknown) =>
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+          job,
+          admin,
+          targets,
+        }),
+      apply: async () => {
+        await caddy.republish();
+      },
     },
   };
 }

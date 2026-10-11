@@ -125,6 +125,8 @@ function fixture() {
       async release() {},
     },
     lifecycle: {
+      async checkRoute() {},
+      async releaseRoute() {},
       async startJob() {},
       async observeJob() {
         return { state: "stopped" as const };
@@ -230,6 +232,45 @@ test("init config name is authoritative; local up uses the actual repo and appli
     "started",
   ]);
 });
+test("rig deploy asks whether its route can be published before it stops the previous Deployment, through the runtime's own lifecycle", async () => {
+  const { runtime, state, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = {
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+    branch: "main",
+  } as const;
+  await runtime.command(deploy);
+  // A new Commit whose route the router refuses: a hostname another owner holds.
+  deps.sources.preflight = async () => ({ commit: "def", warnings: [] });
+  deps.sources.prepare = async (request) => ({
+    workspacePath: request.destination,
+    commit: "def",
+  });
+  deps.sources.resolve = async () => "def";
+  const calls: string[] = [];
+  const down = deps.lifecycle.down.bind(deps.lifecycle);
+  deps.lifecycle.down = async (target, stops) => {
+    calls.push(`down ${target.commit}`);
+    return await down(target, stops);
+  };
+  deps.lifecycle.checkRoute = async (target) => {
+    calls.push(`check ${target.commit}`);
+    throw new RigError(
+      "ROUTE_CONFLICT",
+      "The hostname is served by proxy.routes in Host config.",
+      "Choose a different hostname.",
+    );
+  };
+  await expect(runtime.command(deploy)).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+  });
+  // The check ran, and nothing stopped the running Deployment.
+  expect(calls).toEqual(["check def"]);
+  expect(state.targets[0]).toMatchObject({ commit: "abc" });
+});
+
 test("deployed source policy survives down/up and same commit is no-op", async () => {
   const { runtime, plans, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

@@ -14,7 +14,104 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     providers: { caddy: { extra_config: [], reload: { mode: "manual" } } },
     diagnostics: { retention_days: 14, level: "info" },
     logs: { max_bytes: 64 * 1024 * 1024, generations: 1 },
+    daemon: { start: "login" },
+    proxyMode: "external",
+    externalIgnored: false,
   });
+});
+
+test("a written proxy section makes Rig run its own Caddy, with every default resolved", () => {
+  const host = parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } });
+  expect(host.proxyMode).toBe("managed");
+  expect(host.externalIgnored).toBe(false);
+  expect(host.proxy).toEqual({
+    caddy: "/usr/local/bin/caddy",
+    ports: { http: 80, https: 443 },
+    tls: {
+      ca: "letsencrypt",
+      dns: "cloudflare",
+      certificates: "wildcard",
+      resolvers: ["1.1.1.1", "1.0.0.1"],
+    },
+    routes: {},
+  });
+  // providers.caddy written beside it is ignored, and said to be.
+  expect(
+    parseHostConfig({
+      proxy: { caddy: "/usr/local/bin/caddy" },
+      providers: { caddy: { extra_config: ["import cloudflare"] } },
+    }),
+  ).toMatchObject({ proxyMode: "managed", externalIgnored: true });
+  expect(parseHostConfig({ providers: { caddy: {} } }).proxyMode).toBe(
+    "external",
+  );
+});
+
+test("proxy refuses a relative Caddy, ports that cannot be served together, any site directive, and an unknown or templated CA", () => {
+  for (const proxy of [
+    { caddy: "caddy" },
+    { caddy: "/c", ports: { http: 80, https: 80 } },
+    { caddy: "/c", ports: { http: 80, https: 8443 } },
+    // No Caddy directives from config at all: site lines are gone.
+    { caddy: "/c", site: ["encode gzip"] },
+    { caddy: "/c", tls: { ca: "https://acme.test/{$NAME}" } },
+    { caddy: "/c", tls: { ca: "zerossl" } },
+    { caddy: "/c", tls: { ca: "http://acme.test/directory" } },
+    { caddy: "/c", tls: { resolvers: ["one.one.one.one"] } },
+    { caddy: "/c", tls: { dns: "route53" } },
+    { caddy: "/c", unknown: true },
+  ])
+    expect(() => parseHostConfig({ proxy })).toThrow();
+  expect(
+    parseHostConfig({
+      proxy: {
+        caddy: "/c",
+        ports: { http: 28080, https: 28443 },
+        tls: {
+          ca: "https://acme.test/directory",
+          email: "ops@example.com",
+          certificates: "hostname",
+        },
+      },
+    }).proxy,
+  ).toMatchObject({
+    ports: { http: 28080, https: 28443 },
+    tls: { ca: "https://acme.test/directory", certificates: "hostname" },
+  });
+});
+
+test("proxy.routes sends each lowercase hostname to a loopback port; anything else is refused", () => {
+  expect(
+    parseHostConfig({
+      proxy: {
+        caddy: "/c",
+        routes: {
+          "grafana.example.com": 3000,
+          "files.example.com": "127.0.0.1:8080",
+          "docs.example.com": "localhost:4000",
+        },
+      },
+    }).proxy?.routes,
+  ).toEqual({
+    "grafana.example.com": 3000,
+    "files.example.com": "127.0.0.1:8080",
+    "docs.example.com": "localhost:4000",
+  });
+  for (const routes of [
+    { "Grafana.example.com": 3000 },
+    { "https://grafana.example.com": 3000 },
+    { "grafana.example.com:8443": 3000 },
+    { "*.example.com": 3000 },
+    { "grafana.example.com/x": 3000 },
+    { "grafana.example.com": 0 },
+    { "grafana.example.com": 70000 },
+    { "grafana.example.com": "10.0.0.5:80" },
+    { "grafana.example.com": "0.0.0.0:3000" },
+    { "grafana.example.com": "127.0.0.1:99999" },
+    { "grafana.example.com": "http://127.0.0.1:3000" },
+    { "grafana.example.com": "127.0.0.1" },
+  ])
+    expect(() => parseHostConfig({ proxy: { caddy: "/c", routes } })).toThrow();
 });
 
 test("Target log retention takes a size of at least 1 MiB and 0 to 20 kept generations", () => {

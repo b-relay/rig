@@ -13,3 +13,6 @@ export const projectStatus = cache(
   (project: string): Promise<Outcome<ProjectStatusReport>> =>
     attempt(read({ action: "status", project })),
 );
+/** What Rig's own Caddy serves and the operator's custom file, read once per request; PROXY_UNMANAGED
+ * when the Host's Caddy serves Rig's routes instead. */
+export const proxyReport = cache(() => attempt(read({ action: "proxy" })));

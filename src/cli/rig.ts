@@ -235,6 +235,7 @@ export async function runRigCli(
     dependencies.output,
     execute,
     dependencies.now,
+    dependencies.local,
   );
   try {
     await command.parseAsync(args.length ? [...args] : ["--help"], {

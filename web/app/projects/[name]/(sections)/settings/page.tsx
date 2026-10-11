@@ -7,5 +7,9 @@ export default async function SettingsPage({
   params: Promise<{ name: string }>;
 }) {
   const found = await project(params);
-  return <SettingsForms project={found.name} repoPath={found.repoPath} />;
+  return (
+    <div className="flex max-w-3xl flex-col gap-4">
+      <SettingsForms project={found.name} repoPath={found.repoPath} />
+    </div>
+  );
 }

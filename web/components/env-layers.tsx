@@ -53,12 +53,12 @@ export function EnvLayers({
     </Link>
   );
   return (
-    <section className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-rule bg-sheet shadow-xs">
-      <header className="border-b border-rule px-4 py-2.5">
+    <section className="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-xs">
+      <header className="border-b px-4 py-2.5">
         <h2 className="text-sm font-semibold">{title}</h2>
       </header>
       {failure ? (
-        <div className="border-b border-rule p-3">
+        <div className="border-b p-3">
           <Failure failure={failure} />
         </div>
       ) : null}
@@ -67,7 +67,7 @@ export function EnvLayers({
           No operator env file assigns anything here.
         </p>
       ) : (
-        <ul className="divide-y divide-rule/70">
+        <ul className="divide-y">
           {keys.map((entry) => (
             <li
               key={entry.key}

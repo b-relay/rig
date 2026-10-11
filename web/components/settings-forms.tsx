@@ -87,6 +87,7 @@ export function SettingsForms({
       </Section>
       <Section
         title="Forget"
+        tone="danger"
         description="Removes the registration from this Host. The repository and its rig.yaml are not touched."
       >
         <div>

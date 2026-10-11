@@ -487,7 +487,7 @@ function IssueList({
   return (
     <div
       role="alert"
-      className="flex flex-col gap-2 rounded-lg border border-bad/40 bg-bad-fill px-4 py-3 text-sm"
+      className="flex flex-col gap-2 rounded-xl border border-bad/30 bg-bad-fill px-4 py-3 text-sm"
     >
       <p className="font-medium text-bad">
         rig.yaml would not be valid with these changes:
@@ -514,7 +514,7 @@ function IssueList({
 }
 function Source({ text }: { text: string }) {
   return (
-    <pre className="overflow-x-auto rounded-md bg-pane p-3 font-mono text-xs leading-5 whitespace-pre text-on-pane">
+    <pre className="overflow-x-auto rounded-xl border bg-card p-4 font-mono text-xs leading-5 whitespace-pre text-foreground shadow-xs">
       {text}
     </pre>
   );
@@ -772,7 +772,7 @@ function Records({
           {issue}
         </p>
       ))}
-      {entries.length === 0 ? <Empty>None.</Empty> : null}
+      {entries.length === 0 ? <Empty className="px-4 py-3">None.</Empty> : null}
       {entries.map(([key, value]) => (
         <div
           key={key}
@@ -950,7 +950,7 @@ function HealthcheckFields({ path }: { path: string[] }) {
   const disabled = getAt(draft.tree, [...path, "disable"]) === true;
   const retries = getAt(draft.tree, [...path, "retries"]);
   return (
-    <div className="grid gap-4 rounded-md border p-4">
+    <div className="grid gap-4 rounded-xl border bg-background/40 p-4">
       <div className="text-sm font-medium">Healthcheck</div>
       {Array.isArray(test) ? (
         <Field
@@ -1087,7 +1087,9 @@ function Entries({ kind }: { kind: keyof typeof ENTRY }) {
   return (
     <div className="flex flex-col gap-4">
       {help ? <p className="text-sm text-muted-foreground">{help}</p> : null}
-      {names.length === 0 ? <Empty>No {title}s yet.</Empty> : null}
+      {names.length === 0 ? (
+        <Empty className="px-4 py-3">No {title}s yet.</Empty>
+      ) : null}
       {names.map((name) => (
         <EntryCard
           key={name}
@@ -1133,7 +1135,7 @@ function EntryCard({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-4 border-t border-rule pt-4">
+    <div className="flex flex-col gap-4 border-t pt-4">
       <div className="flex items-center justify-between gap-2">
         <h3 className="font-mono text-sm font-semibold">{title}</h3>
         <Confirm
@@ -1313,7 +1315,7 @@ function PatchBuild({ path }: { path: string[] }) {
 }
 function Override({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <Collapsible className="rounded-md border">
+    <Collapsible className="rounded-xl border">
       <CollapsibleTrigger className="group flex w-full items-center gap-2 p-3 text-left text-sm font-medium">
         <ChevronRight className="size-4 transition-transform group-data-[state=open]:rotate-90" />
         {title} overrides

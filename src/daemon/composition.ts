@@ -38,6 +38,15 @@ import { createRuntime } from "../runtime/application";
 import { createTargetLifecycle } from "../runtime/lifecycle";
 import { createChildSupervisor } from "../providers/child-supervisor";
 import { timerObservationDeadline } from "../runtime/bounded-observations";
+/** The DNS providers `proxy.tls.dns` may name, each made from its token for one request (ADR 0018). */
+const DNS_PROVIDERS: Readonly<
+  Record<
+    string,
+    (token: string) => import("../providers/contracts").DnsProvider
+  >
+> = {
+  cloudflare: (token) => createCloudflareDns({ token }),
+};
 /** One read-only observation pass (status, doctor) may take this long before components report unknown. */
 const OBSERVATION_BUDGET_MS = 2000;
 import {
@@ -57,6 +66,10 @@ import {
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
 import { proxyReport } from "../adapters/proxy-report";
+import { createDnsControl } from "../adapters/dns-control";
+import { readDnsToken } from "../adapters/dns-token";
+import { createCloudflareDns } from "../providers/cloudflare-dns";
+import { createTailscaleAddress } from "../providers/tailscale-address";
 import type { ProxyControl } from "../runtime/contracts";
 import { RigError } from "../domain/errors";
 import { runCommand } from "../providers/command-runner";
@@ -201,6 +214,22 @@ export async function composeDaemon(
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
     ...(managed ? { proxy: managed.control } : {}),
+    // Host config and the token are read at every request, so DNS needs no restart after rig proxy token or an edit.
+    dns: createDnsControl({
+      settings: async () => (await readHostConfig(root)).proxy,
+      token: () => readDnsToken(root),
+      provider: (name, token) => {
+        const create = DNS_PROVIDERS[name];
+        if (!create)
+          throw new RigError(
+            "DNS_UNCONFIGURED",
+            `Rig has no DNS provider named ${name}.`,
+            `Set proxy.tls.dns to one of: ${Object.keys(DNS_PROVIDERS).join(", ")}.`,
+          );
+        return create(token);
+      },
+      address: createTailscaleAddress({ run: runCommand }),
+    }),
     store,
     documents: createProjectDocuments(root, runCommand, environment, homedir()),
     sources: createDeploymentSources(

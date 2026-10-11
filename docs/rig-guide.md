@@ -283,6 +283,83 @@ reload keeps the certificates it already has. Let's Encrypt allows only five
 certificates for the same set of names per week, so keep `<RIG_ROOT>/caddy/data`
 across reinstalls, as `rigd uninstall` does.
 
+### DNS records
+
+With Rig's own Caddy set up, Rig also manages your Cloudflare DNS records
+([ADR 0018](adr/0018-dns-records.md)), from `rig dns` and from the DNS section
+of the dashboard's Proxy page. It uses the token `rig proxy token` stored,
+which already has Zone:Zone:Read and Zone:DNS:Edit on your zone; there is no
+other credential. `rigd` reads the token for each request; the dashboard never
+sees it, and Rig never prints or logs it.
+
+```bash
+rig dns list                         # every zone the token sees, and where each hostname points
+rig dns list example.com             # one zone
+rig dns set app A 100.64.0.7         # create, or change the one A record of app.example.com
+rig dns set @ MX mail.example.com --priority 10   # TXT, MX and CAA add a record
+rig dns set _dmarc TXT "v=DMARC1; p=none" --replace   # change the one TXT record there instead
+rig dns set api.melody A 100.64.0.7 --zone example.com   # a dotted relative name needs --zone
+rig dns delete app A                 # several records of that name and type: add --content <content>
+```
+
+A one-label name such as `app` or `_dmarc` is relative to your zone when you
+have one, and `@` is the zone itself. A dotted name must end in one of your
+zones, or `rig dns` refuses it rather than guess; `--zone` makes any name
+relative to that zone. Rig manages A, AAAA, CNAME, TXT, MX and CAA records
+(CAA as `0 issue "letsencrypt.org"`), and lists other types read-only.
+
+`set` changes a record of that name and type with the same content in place.
+For A, AAAA and CNAME it otherwise replaces the one record there (`--add`
+adds another). TXT, MX and CAA records usually come several to a name, so
+`set` adds one unless `--replace` changes the one there. A record beside a
+CNAME, or a CNAME beside any record, is refused: DNS allows nothing beside a
+CNAME. Cloudflare may store TXT values quoted (`"v=spf1 -all"`), and Rig
+treats that and `v=spf1 -all` as one value. `--ttl` takes 60 to 86400 seconds
+(30 on Enterprise) or `auto`; `--proxied` (A, AAAA and CNAME) answers through
+Cloudflare's proxy, which cannot reach a Tailscale address, so leave it off
+for names this Mac serves. `set` and `delete` show the change and ask before
+writing; `--yes` skips the question, and without a terminal it is required.
+A delete always carries the record's name as its confirmation, and `rigd`
+checks it against the record just before deleting; the dashboard asks you to
+type it.
+Rig cannot clear a record's comment; change it, or clear it in Cloudflare.
+
+Every change carries the record as Rig read it. Cloudflare has no conditional
+write, so `rigd` reads the record again just before writing and refuses with
+`DNS_CHANGED` if it was changed or deleted since, or, for a new record, if one
+of that name and type appeared. Read again and retry. When Cloudflare's
+answer to a write is lost, Rig reads the record back and reports the write as
+made when it was. Every change is in `rig activity` with its record's type and
+name. A zone the token cannot read is named in the output, and the others are
+still listed.
+
+`rig dns list` and the dashboard also check every hostname Rig serves, each
+Target's and your `proxy.routes`: what the zone answers for it, following
+CNAMEs inside your zones, and whether that is this Mac. A name covered only by
+a wildcard such as `*.example.com` counts as pointing here when the wildcard
+does. A name delegated to other nameservers (NS records below your apex) is
+reported as unknown. A name that does not point here gets a fix: the
+dashboard's Point at this Mac button (it asks first when it changes a record
+that exists), or the `rig dns set` line `rig dns list` prints. It rewrites
+the name's one A record to this Mac's address, unproxied, or adds an A record,
+which then answers for the name instead of a wildcard.
+
+This Mac's address is the Tailscale IPv4 address (`tailscale ip -4`). Set it
+in Host config when Tailscale is not the way in, and narrow the zones Rig
+manages when the token sees more than you want here:
+
+```yaml
+proxy:
+  dns:
+    address: 100.64.0.7 # default: tailscale ip -4
+    zones: [example.com] # default: every zone the token can see
+```
+
+Both are read at every request, so an edit needs no reload; Caddy ignores
+them. Without a `proxy` section DNS commands fail with `DNS_UNCONFIGURED`;
+without a usable token, `DNS_TOKEN`; with a token Cloudflare refuses,
+`DNS_AUTH`. Each says what to set up, and so does the dashboard.
+
 ### Start at boot
 
 With `daemon.start: boot` in Host config, `rigd` and Rig's Caddy run as system

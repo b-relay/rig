@@ -16,6 +16,7 @@ import { admit, clientName, keyMatches, sessionCookie } from "./guard";
 import { editConfig, editEnv, read } from "./daemon";
 import { sitePolicy } from "./site";
 import { confirmedRestore } from "./restore";
+import { DNS_DELETE_ELSEWHERE, confirmedDnsDelete } from "./dns";
 
 /** Server Actions: the only way the browser changes anything. Each one decides the request
  * again, exactly as the proxy did, so a page is never the only thing between a POST and rigd. */
@@ -41,13 +42,16 @@ export async function runCommand(input: unknown): Promise<Outcome<unknown>> {
   if (denied) return refused(denied);
   const command = commandSchema.safeParse(input);
   if (!command.success) return refused(invalid("a command"));
-  // A restore replaces data: it goes only through runRestore, which checks the typed confirmation here on the server.
+  // A restore replaces data and a DNS delete takes a name offline: each goes only through its own action, which
+  // requires the typed confirmation.
   if (command.data.action === "restore")
     return refused({
       code: "RESTORE_CONFIRMATION",
       message: "A restore needs its typed confirmation.",
       hint: "Use Restore on the Jobs tab, which asks for the job's name.",
     });
+  if (command.data.action === "dns-delete")
+    return refused(DNS_DELETE_ELSEWHERE);
   return attempt(read(command.data));
 }
 /** Restores a backup, as `rig backup restore <job> <id> <target> --yes` does, only once what was typed names the job:
@@ -56,6 +60,15 @@ export async function runRestore(input: unknown): Promise<Outcome<unknown>> {
   const denied = await admission();
   if (denied) return refused(denied);
   const confirmed = confirmedRestore(input);
+  if (!confirmed.ok) return refused(confirmed.failure);
+  return attempt(read(confirmed.command));
+}
+/** Deletes a DNS record, as the Delete dialog asks, only with the record as the page read it and the name typed to
+ * confirm; rigd compares that name with the record it reads just before deleting. */
+export async function runDnsDelete(input: unknown): Promise<Outcome<unknown>> {
+  const denied = await admission();
+  if (denied) return refused(denied);
+  const confirmed = confirmedDnsDelete(input);
   if (!confirmed.ok) return refused(confirmed.failure);
   return attempt(read(confirmed.command));
 }

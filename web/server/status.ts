@@ -25,3 +25,6 @@ export const projectBackups = cache(
   (project: string): Promise<Outcome<BackupsResult>> =>
     attempt(read({ action: "backups", project })),
 );
+/** Every DNS record of the zones Rig manages and where each served hostname points (ADR 0018), read once per request.
+ * rigd reads the provider token; the page never sees it. DNS_UNCONFIGURED or DNS_TOKEN when it is not set up. */
+export const dnsReport = cache(() => attempt(read({ action: "dns" })));

@@ -11,6 +11,7 @@ export type OperationPhase =
   | "repointing"
   | "forgetting"
   | "editing config"
+  | "changing DNS"
   | "reconciling"
   | "supervising"
   | "preparing to uninstall";
@@ -78,6 +79,9 @@ const ACTION_PHASE: Record<string, OperationPhase> = {
   repoint: "repointing",
   forget: "forgetting",
   "prepare-uninstall": "preparing to uninstall",
+  "dns-create": "changing DNS",
+  "dns-update": "changing DNS",
+  "dns-delete": "changing DNS",
   reconcile: "reconciling",
   supervise: "supervising",
 };

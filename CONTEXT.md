@@ -995,6 +995,19 @@ _Avoid_: router Caddy, front Caddy (the two-Caddy setup it replaces)
 _Relationship_: A Target may serve more than one hostname; each is a site with
 its own route map, and a Target's sites are published and withdrawn together.
 
+### DNS records
+
+The owner's records at the DNS provider (Cloudflare), which `rig dns` and the
+Proxy page change through `rigd` with the token `rig proxy token` stored
+([ADR 0018](docs/adr/0018-dns-records.md)). Every write carries the record as
+it was read and is refused (`DNS_CHANGED`) once the record changed since.
+_Avoid_: DNS entries, zone file
+
+_Relationship_: The **hostname check** resolves every hostname Rig serves
+against those records, wildcards included, and says whether it points at
+this Mac's address (`proxy.dns.address`, else its Tailscale IPv4). Rig's
+Caddy never reads `proxy.dns`.
+
 ### Config generation
 
 One complete, self-contained configuration of Rig's Caddy: its main file, a

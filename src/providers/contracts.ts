@@ -1,3 +1,5 @@
+import type { DnsRecord, DnsRecordInput, DnsZone } from "../domain/dns-records";
+
 /** Providers own external effects; runtime chooses policy and supplies resolved inputs. */
 export interface ManagedProcess {
   readonly key: string;
@@ -107,4 +109,28 @@ export interface TargetLogEntry {
   /** health lines are readiness probe evidence written when the observation changes. */
   readonly stream: "stdout" | "stderr" | "health" | "unknown";
   readonly line: string;
+}
+/** A DNS provider's records API in Rig's own terms (ADR 0018): the zones its credentials can see and their records. Every
+ * failure is a RigError whose message, hint and details never hold the credentials. */
+export interface DnsProvider {
+  /** Every zone the credentials can see. */
+  zones(): Promise<DnsZone[]>;
+  /** Every record of `zone`, all pages read. */
+  records(zone: DnsZone): Promise<DnsRecord[]>;
+  /** One record as it is now, or undefined when it no longer exists. */
+  record(zone: DnsZone, id: string): Promise<DnsRecord | undefined>;
+  create(zone: DnsZone, record: DnsRecordInput): Promise<DnsRecord>;
+  /** The record as written, or undefined when it no longer exists. */
+  update(
+    zone: DnsZone,
+    id: string,
+    record: DnsRecordInput,
+  ): Promise<DnsRecord | undefined>;
+  /** False when the record no longer existed. */
+  delete(zone: DnsZone, id: string): Promise<boolean>;
+}
+/** The address other machines reach this Mac at, which "Point at this Mac" writes into an A record. */
+export interface HostAddress {
+  /** This Mac's IPv4 address, or undefined when it cannot be found. */
+  ipv4(): Promise<string | undefined>;
 }

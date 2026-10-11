@@ -13,6 +13,7 @@ const PHASE_WORDS: Record<string, string> = {
   repointing: "is being repointed",
   forgetting: "is being forgotten",
   "editing config": "is having its config edited",
+  "changing DNS": "is changing a DNS record",
   reconciling: "is being reconciled after rigd started",
   supervising: "is being checked for automatic restarts",
   "preparing to uninstall": "is preparing to uninstall",

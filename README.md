@@ -18,6 +18,7 @@ rig deploy
 rig deploy preview feature/login
 rig run nightly-import
 rig doctor
+rig dns list
 ```
 
 Commands discover the Project from the current workspace. Use `--project <name>`
@@ -86,7 +87,12 @@ its own, such as `domain: api.notes.example.com` under it; a Preview gets
 it on, so this file runs its checkout and deploys the stable Target but makes
 no Previews; `rig init` writes `working` and `preview` on and `stable` off. The
 healthcheck gates start and keeps
-checking the Service while it runs; `rig status` shows its last result. See the [guide](docs/rig-guide.md) for
+checking the Service while it runs; `rig status` shows its last result.
+
+With Rig's own Caddy, `rig dns` and the dashboard's Proxy page manage your
+Cloudflare DNS records with the token `rig proxy token` stored, and check
+that every hostname Rig serves points at this Mac
+([ADR 0018](docs/adr/0018-dns-records.md)). See the [guide](docs/rig-guide.md) for
 setup, deploys, configuration, diagnostics, and command behavior, and
 [docs/examples](docs/examples) for complete configs.
 

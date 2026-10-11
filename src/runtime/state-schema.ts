@@ -488,6 +488,12 @@ const jobRun = z.object({
         .int()
         .positive()
         .describe("How many backups the job kept when the run started."),
+      lost: z
+        .literal(true)
+        .optional()
+        .describe(
+          "The run exited 0 but left no directory there (it deleted or replaced it), so it kept no backup.",
+        ),
     })
     .optional()
     .describe(
@@ -682,8 +688,10 @@ export const runtimeStateSchema = z
           trigger: z
             .enum(["schedule", "manual"])
             .describe("Whether the schedule or rig run started that run."),
-          startedAt: text,
-          finishedAt: text,
+          startedAt: text.describe("When its run started (ISO 8601)."),
+          finishedAt: text.describe(
+            "When its run ended (ISO 8601); retention keeps the newest by it.",
+          ),
           bytes: z
             .number()
             .int()

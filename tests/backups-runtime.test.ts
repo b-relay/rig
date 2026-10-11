@@ -323,7 +323,7 @@ test("a deletion that fails stays queued and is carried out by a later pass", as
     expect.objectContaining({ path: first }),
   ]);
   expect(await exists(first)).toBe(true);
-  await f.runtime.removeBackups();
+  await f.runtime.tidyBackups();
   expect(await exists(first)).toBe(false);
   expect((await f.world.store.read()).backupRemovals).toBeUndefined();
 });
@@ -544,4 +544,72 @@ test("backup storage refuses any path outside RIG_ROOT/backups and never follows
   // Empty parents go with the last backup, up to the backup root itself.
   expect(await exists(join(f.world.root, "backups/melody"))).toBe(false);
   expect(await exists(join(f.world.root, "backups"))).toBe(true);
+});
+
+test("sealing leaves a hard-linked file writable, since the same file lives elsewhere", async () => {
+  const f = await fixture();
+  const live = join(f.world.root, "live.db");
+  await writeFile(live, "live data");
+  await f.run();
+  const path = (await f.running())!.backup!.path;
+  await Bun.$`ln ${live} ${join(path, "live.db")}`;
+  await writeFile(join(path, "own.dump"), "dump");
+  await f.finish(0);
+  expect((await mode(live)) & 0o200).toBe(0o200);
+  expect((await mode(join(path, "own.dump"))) & 0o222).toBe(0);
+});
+
+test("a run that exits 0 but removed its directory keeps no backup and evicts none", async () => {
+  const f = await fixture({ keep: 1 });
+  const kept = await f.backUp();
+  await f.run();
+  const run = (await f.running())!;
+  await rm(run.backup!.path, { recursive: true });
+  await f.finish(0);
+  expect((await f.backups()).map((b) => b.path)).toEqual([kept]);
+  const state = await f.world.store.read();
+  expect(state.jobs!.find((r) => r.job === "db-backup")!.last).toMatchObject({
+    outcome: "succeeded",
+    backup: { lost: true },
+  });
+  expect(state.activity.at(-1)!.message).toContain(
+    "it left no backup directory, so none was kept",
+  );
+});
+
+test("a backup a stopped rigd left unsealed is sealed and measured by the next tidy", async () => {
+  const f = await fixture();
+  const path = await f.backUp("abc");
+  // As a rigd that stopped between recording the end and sealing would leave it.
+  await Bun.$`chmod u+w ${path}`;
+  await f.world.store.update((state) => {
+    delete state.backups![0]!.bytes;
+  });
+  await f.runtime.tidyBackups();
+  expect(await mode(path)).toBe(0o500);
+  expect((await f.backups())[0]!.bytes).toBe(3);
+});
+
+test("forgetting a Project keeps its backups on disk, drops their records, and says where they are", async () => {
+  const f = await fixture();
+  const path = await f.backUp();
+  await f.runtime.command({
+    action: "down",
+    repoPath: f.world.repo,
+    target: "working",
+  });
+  const reply = (await f.runtime.command({
+    action: "forget",
+    repoPath: f.world.repo,
+    project: "melody",
+  })) as { warnings?: string[] };
+  expect(await exists(path)).toBe(true);
+  expect((await f.world.store.read()).backups).toEqual([]);
+  expect(reply.warnings).toEqual(
+    expect.arrayContaining([
+      expect.stringContaining(
+        `Its backups in ${join(f.world.root, "backups/melody")} were kept on disk`,
+      ),
+    ]),
+  );
 });

@@ -255,7 +255,7 @@ export async function composeDaemon(
     settle: runtime.settleJob,
     releaseCheckouts: runtime.releaseJobCheckouts,
     stopJobsIfOff: runtime.stopJobsIfOff,
-    removeBackups: runtime.removeBackups,
+    tidyBackups: runtime.tidyBackups,
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   const editor = createConfigEditor({

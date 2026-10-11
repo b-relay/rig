@@ -1999,7 +1999,10 @@ jobs:
   Rig (`rig down`, a Preview destroy) or a start that failed deletes the run's
   directory. A run that exits 0 becomes a backup: its directory is made
   read-only (directories 0500, files without write bits) and its size
-  recorded.
+  recorded. A file hard-linked into the backup (the same file as one
+  elsewhere, such as a live database) is left writable, and a symlink is
+  never followed, so sealing never changes anything outside the backup. A
+  run that exits 0 but deleted or replaced its directory keeps no backup.
 - **`keep`** (1 to 1000) is how many successful backups of the job each
   Target keeps. After each successful run only the newest `keep` stay, the
   one that just finished always among them. A failed run never deletes a
@@ -2007,8 +2010,11 @@ jobs:
 - **Backups stay on this Mac**, outside every Target's data and checkout:
   deploys, `rig down`/`rig up`, `rig restart` and rigd restarts keep them.
   Destroying a Preview (or the Preview limit replacing one) deletes that
-  Preview's backups with it. `rig forget` keeps a Project's backups. Rig
-  copies nothing off the Mac; copy `<RIG_ROOT>/backups` elsewhere yourself
+  Preview's backups with it. `rig forget` keeps a Project's backups on disk
+  and says where; Rig no longer lists them. A job removed from rig.yaml keeps
+  its backups too, still listed by `rig backup list`, though it can no longer
+  restore them; delete them by hand when you no longer want them. Rig copies
+  nothing off the Mac; copy `<RIG_ROOT>/backups` elsewhere yourself
   if you need that.
 - Rig deletes only what it recorded. A deletion that fails (a busy disk) is
   retried every 30 seconds, by this rigd or the next. A backup's directory is
@@ -2020,7 +2026,9 @@ does (in the stable Target unless you name another), and the dashboard's Jobs
 tab has **Back up now**.
 
 **Listing them.** `rig backup list [job] [target]` shows every Target's
-backups, or one job's, or one Target's, newest first:
+backups, one job's (`rig backup list db-backup`), one job's in one Target
+(`rig backup list db-backup stable`), or one Target's (`rig backup list
+stable`), newest first:
 
 ```
 stable  db-backup  20261011T030000Z  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a
@@ -2055,9 +2063,10 @@ another (`working`, `preview <branch>`):
   the restore goes on, and `rig activity` shows how it ends.
 - **It does not stop Services.** The restore command must replace what it
   restores itself, as `pg_restore --clean --if-exists` drops and recreates
-  each object. If your restore needs a Service stopped, stop it in the
-  command, or with `rig down` beforehand (a stopped Target runs no job, so
-  that means a restore that does not need the Target's Services).
+  each object. If your restore needs a Service quiet, the command must see to
+  that itself: a restore needs its Target running, since a Target stopped
+  with `rig down` runs no job (`JOB_UNAVAILABLE`). Whether Rig should stop
+  named Services around a restore is an open question (ADR 0017).
 - It is a run of the job: refused with `JOB_RUNNING` while a run of the job
   (or another restore) goes, and a scheduled time while it goes is skipped.
   `rig down` stops it, and the job's `timeout` applies.

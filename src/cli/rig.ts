@@ -297,12 +297,14 @@ async function restoreOutcome(
       `Restoring ${request.job} from ${terminalText(String(started.backup ?? request.backup))}; its output is in ${logs}.\n`,
     );
   const ended = await awaitRestore(operationId, dependencies);
-  if (!ended) {
-    dependencies.output.error(
-      `Stopped waiting; the restore goes on. rig activity ${operationId} shows how it ends.\n`,
+  // Interrupted: the wait ends, the restore goes on, and the exit (130) never reads as a restore that succeeded.
+  if (!ended)
+    throw new RigError(
+      "DETACHED",
+      "Stopped waiting; the restore goes on in the background.",
+      `rig activity ${operationId} shows how it ends.`,
+      { operationId, oneLine: true },
     );
-    return started;
-  }
   if (ended.outcome !== "succeeded")
     throw new RigError(
       "RESTORE_FAILED",

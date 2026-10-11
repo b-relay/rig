@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
@@ -72,16 +73,31 @@ export async function forgetProject(
       `Run rig down preview <branch> --destroy for each Preview, then rig forget ${project.name}.`,
       { previews: previews.map((t) => t.name) },
     );
+  // Its backups stay on disk, as its data does; their records go, since nothing could reach them by a forgotten Project.
+  const kept = new Set<string>();
   await deps.store.update((state) => {
     state.projects = state.projects.filter((p) => p.id !== project.id);
     state.targets = state.targets.filter((t) => t.projectId !== project.id);
+    for (const backup of state.backups ?? [])
+      if (backup.project === project.id)
+        kept.add(dirname(dirname(dirname(backup.path))));
+    if (kept.size)
+      state.backups = state.backups!.filter(
+        (backup) => backup.project !== project.id,
+      );
   });
-  return targets
-    .filter((t) => t.kind === "stable")
-    .map(
-      (t) =>
-        `Target ${t.name} was forgotten, but its workspace at ${t.plan.workspacePath} and data under ${t.plan.dataRoot} were not deleted.`,
-    );
+  return [
+    ...targets
+      .filter((t) => t.kind === "stable")
+      .map(
+        (t) =>
+          `Target ${t.name} was forgotten, but its workspace at ${t.plan.workspacePath} and data under ${t.plan.dataRoot} were not deleted.`,
+      ),
+    ...[...kept].map(
+      (directory) =>
+        `Its backups in ${directory} were kept on disk; Rig no longer lists them. They are read-only: chmod -R u+w before deleting them.`,
+    ),
+  ];
 }
 /** What a registration change left behind; `project` is the record as stored, never the argument mutated. */
 export interface RegistrationUpdate {

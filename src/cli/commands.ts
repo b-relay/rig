@@ -477,7 +477,7 @@ function addBackupCommands(
   backup
     .command("list")
     .description(
-      "List kept backups, newest first, with their job, Target, time, size and the run that made them: every Target's, or one job's, or one Target's.",
+      "List kept backups, newest first, with their job, Target, time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable).",
     )
     .argument("[job]", "Backup job name under jobs in rig.yaml")
     .argument(
@@ -490,11 +490,21 @@ function addBackupCommands(
     .option("--json", "Render the backups as JSON")
     .action(
       async (
-        job: string | undefined,
-        target: string | undefined,
-        branch: string | undefined,
+        first: string | undefined,
+        second: string | undefined,
+        third: string | undefined,
         options: ScopeOptions,
       ) => {
+        // A Target's name alone lists that Target's backups (rig backup list stable, rig backup list preview <branch>); a
+        // job named like a Target is listed with its Target too: rig backup list stable stable.
+        const targetFirst =
+          first !== undefined &&
+          ["working", "stable", PREVIEW_SELECTOR].includes(first) &&
+          (second === undefined || first === PREVIEW_SELECTOR) &&
+          third === undefined;
+        const [job, target, branch] = targetFirst
+          ? [undefined, first, second]
+          : [first, second, third];
         if (job !== undefined) assertJobName(job, "rig backup list nightly-db");
         // Without a Target every Target's backups are listed.
         const request =

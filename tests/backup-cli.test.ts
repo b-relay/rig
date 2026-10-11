@@ -173,6 +173,19 @@ test("rig backup list sends the backups read, every Target's unless one is named
     target: "preview",
     deployment: "feat-1a2b3c4d",
   });
+  // A Target's name alone lists that Target's backups; a job named like a Target is named with its Target.
+  for (const [args, expected] of [
+    [["stable"], { target: "stable" }],
+    [["preview", "feature/a"], { target: "preview", branch: "feature/a" }],
+    [["stable", "stable"], { job: "stable", target: "stable" }],
+  ] as const) {
+    const h = harness();
+    expect(await runRigCli(["backup", "list", ...args], h.deps)).toBe(0);
+    expect(h.requests).toEqual([
+      expect.objectContaining({ action: "backups", ...expected }),
+    ]);
+    if (!("job" in expected)) expect(h.requests[0]).not.toHaveProperty("job");
+  }
   const json = harness();
   expect(await runRigCli(["backup", "list", "--json"], json.deps)).toBe(0);
   expect(JSON.parse(json.out())).toEqual(BACKUPS);
@@ -250,6 +263,17 @@ test("rig backup restore is cancelled when the answer is no, refused without a t
   ).toBe(1);
   expect(failed.err()).toContain("failed in 5s: exit 1");
   expect(failed.err()).toContain("rig logs stable --service db-backup");
+  // A backup the list does not have is never restored unconfirmed: refused before anything is sent.
+  const unknown = harness();
+  expect(
+    await runRigCli(
+      ["backup", "restore", "db-backup", "20200101T000000Z"],
+      unknown.deps,
+    ),
+  ).toBe(1);
+  expect(unknown.requests.map((r) => r.action)).toEqual(["backups"]);
+  expect(unknown.err()).toContain("has no backup 20200101T000000Z");
+  expect(unknown.err()).toContain("20261011T030000Z");
   const bad = harness();
   expect(
     await runRigCli(["backup", "restore", "db-backup", "yesterday"], bad.deps),
@@ -265,7 +289,7 @@ test("a Ctrl-C while a restore runs stops the wait, not the restore", async () =
       ["backup", "restore", "db-backup", "latest", "--yes"],
       h.deps,
     ),
-  ).toBe(0);
+  ).toBe(130);
   expect(h.err()).toContain("Stopped waiting; the restore goes on");
   expect(h.err()).toContain("rig activity op-1");
 });

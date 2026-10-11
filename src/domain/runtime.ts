@@ -197,7 +197,13 @@ export interface JobRun {
   stopping?: { cause: "stopped" | "timed-out"; at: string };
   /** The fresh directory a backup job's run writes (`$RIG_BACKUP_DIR`), recorded before it is made, with the `keep` the
    * run started with. Absent for a job without `backup` and for a restore. */
-  backup?: { id: string; path: string; keep: number };
+  backup?: {
+    id: string;
+    path: string;
+    keep: number;
+    /** The run exited 0 but left no directory there (it deleted or replaced it), so it kept no backup. */
+    lost?: true;
+  };
   /** The backup a restore run reads (`$RIG_BACKUP_DIR`). */
   restore?: { id: string; path: string };
 }

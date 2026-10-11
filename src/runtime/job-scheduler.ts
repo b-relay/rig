@@ -14,6 +14,7 @@ import {
   recordScheduling,
   type SchedulingFact,
 } from "./jobs";
+import { backupWorkPending } from "./backups";
 import type { TargetLifecycle } from "./lifecycle";
 
 /** How often rigd looks for scheduled times that are due and runs that ended; a run starts at most this late. */
@@ -73,8 +74,9 @@ export interface JobSchedulerDependencies {
   releaseCheckouts(targetId: string): Promise<void>;
   /** Stops the Target's runs in progress when rig.yaml turns its role off. Never rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
-  /** Deletes the backup directories queued for deletion; absent where no job keeps backups. Never rejects. */
-  removeBackups?(): Promise<void>;
+  /** Seals backups left unsealed and deletes the backup directories queued for deletion; absent where no job keeps
+   * backups. Never rejects. */
+  tidyBackups?(): Promise<void>;
   diagnostic: RuntimeDependencies["diagnostic"];
 }
 export interface JobScheduler {
@@ -338,15 +340,15 @@ export function createJobScheduler(
       }
       for (const targetId of checkoutOffers.keys())
         if (!keeping.has(targetId)) checkoutOffers.delete(targetId);
-      // Backup directories queued for deletion are offered again until they are gone, by this rigd or the next.
+      // Backup directories queued for deletion, and backups left unsealed, are offered again until done, by this rigd or the next.
       if (
-        deps.removeBackups &&
-        state.backupRemovals?.length &&
+        deps.tidyBackups &&
+        backupWorkPending(state) &&
         !inFlight.has("backups") &&
         now - backupOffer >= JOB_CHECKOUT_RETRY_MS
       ) {
         backupOffer = now;
-        dispatch("backups", "backup-remove", "", deps.removeBackups);
+        dispatch("backups", "backup-tidy", "", deps.tidyBackups);
       }
       for (const key of watermarks.keys())
         if (!planned.has(key)) watermarks.delete(key);

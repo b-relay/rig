@@ -257,7 +257,7 @@ export const backupReportSchema = z
   .passthrough();
 export const backupsResultSchema = z
   .object({
-    project: z.string(),
+    project: z.string().describe("The Project the backups belong to."),
     backups: z
       .array(backupReportSchema)
       .describe(

@@ -121,8 +121,10 @@ export async function prepareInteractiveRequest(
   return request;
 }
 /** Resolves which backup a restore names (`latest` becomes the newest one's id, so what is restored is what was shown) and,
+
  * unless `yes`, asks before anything is replaced. Without a terminal to ask on it is refused, naming --yes. A backup the
- * read does not find is sent as named, for rigd to refuse with the backups there are. */
+ * read does not find is refused here, so nothing is ever restored unconfirmed; with --yes it is sent as named, for rigd to
+ * decide. */
 async function confirmRestore(
   request: RuntimeCommand,
   deps: Pick<CliDependencies, "signal" | "interaction" | "client" | "output">,
@@ -151,7 +153,22 @@ async function confirmRestore(
     request.backup === "latest"
       ? backups[0]
       : backups.find((backup) => backup.id === request.backup);
-  if (!chosen) return request;
+  // Nothing to show is nothing to confirm: refused here, unless --yes leaves the choice to rigd, which names the backups.
+  if (!chosen) {
+    if (yes) return request;
+    throw new RigError(
+      "BACKUP_UNKNOWN",
+      backups.length
+        ? `${terminalText(request.job ?? "")} has no backup ${terminalText(request.backup ?? "")} there.`
+        : `${terminalText(request.job ?? "")} has no backups there yet.`,
+      backups.length
+        ? `Pass latest or one of: ${backups
+            .slice(0, 5)
+            .map((backup) => terminalText(backup.id))
+            .join(", ")}.`
+        : `A successful run of the job makes one: rig run ${terminalText(request.job ?? "")}.`,
+    );
+  }
   const resolved = { ...request, backup: chosen.id };
   if (yes) return resolved;
   const question = `Restore ${terminalText(chosen.job)} on ${terminalText(chosen.target)} from backup ${terminalText(chosen.id)} (made ${terminalText(chosen.finishedAt)}${

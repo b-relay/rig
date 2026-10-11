@@ -101,7 +101,7 @@ export async function newBackupLocation(
 
 /** Records, inside the write that records the end of `run`, what becomes of the directory it wrote: a successful run's is
  * a backup, and the job's backups past the `keep` the run started with (never this one) are queued for deletion; any other
- * end queues the run's own directory for deletion and leaves every backup alone. Resolves the new backup, if one was kept.
+ * end, or a success that left no directory (`lost`), queues the run's own path for deletion and leaves every backup alone. Resolves the new backup, if one was kept.
  * A run that wrote no backup changes nothing. */
 export function recordBackupEnd(
   state: RuntimeState,
@@ -111,7 +111,7 @@ export function recordBackupEnd(
 ): BackupRecord | undefined {
   const made = run.backup;
   if (!made) return undefined;
-  if (run.outcome !== "succeeded") {
+  if (run.outcome !== "succeeded" || made.lost) {
     queueRemoval(state, target, made.path);
     return undefined;
   }
@@ -178,21 +178,55 @@ export async function settleBackupFiles(
   deps: BackupDependencies,
 ): Promise<void> {
   if (!deps.backups) return;
-  if (fresh)
-    try {
-      await deps.backups.seal(fresh.path);
-      const bytes = await deps.backups.measure(fresh.path);
-      if (bytes !== undefined)
-        await deps.store.update((state) => {
-          const recorded = state.backups?.find(
-            (backup) => backup.path === fresh.path,
-          );
-          if (recorded) recorded.bytes = bytes;
-        });
-    } catch (error) {
-      await report(deps, target.name, "backup-seal", error, fresh.path);
-    }
+  if (fresh) await sealBackup(fresh, target.name, deps);
   await removeQueuedBackups(deps, target.id);
+}
+/** Seals `backup` read-only and records its size. Never rejects: a failure is a diagnostic, and a backup whose size is not
+ * recorded is offered again by `tidyBackups`. */
+async function sealBackup(
+  backup: Pick<BackupRecord, "path">,
+  target: string,
+  deps: BackupDependencies,
+): Promise<void> {
+  if (!deps.backups) return;
+  try {
+    await deps.backups.seal(backup.path);
+    const bytes = await deps.backups.measure(backup.path);
+    if (bytes !== undefined)
+      await deps.store.update((state) => {
+        const recorded = state.backups?.find(
+          (other) => other.path === backup.path,
+        );
+        if (recorded) recorded.bytes = bytes;
+      });
+  } catch (error) {
+    await report(deps, target, "backup-seal", error, backup.path);
+  }
+}
+/** Whether the state holds backup work left to do: directories queued for deletion, or a backup a rigd that stopped right
+ * after its run never sealed and measured. */
+export function backupWorkPending(
+  state: Pick<RuntimeState, "backups" | "backupRemovals">,
+): boolean {
+  return Boolean(
+    state.backupRemovals?.length ||
+    state.backups?.some((backup) => backup.bytes === undefined),
+  );
+}
+/** The scheduler's offer: seals and measures every backup left without a size, then deletes every queued directory.
+ * Never rejects. */
+export async function tidyBackups(deps: BackupDependencies): Promise<void> {
+  if (!deps.backups) return;
+  let unsized: BackupRecord[] = [];
+  try {
+    unsized = ((await deps.store.read()).backups ?? []).filter(
+      (backup) => backup.bytes === undefined,
+    );
+  } catch {
+    return;
+  }
+  for (const backup of unsized) await sealBackup(backup, backup.target, deps);
+  await removeQueuedBackups(deps);
 }
 /** Deletes the queued directories (of the Target `targetId` only, when given) and forgets each one that is gone. One that
  * cannot be deleted stays queued, and is a diagnostic. Never rejects. */

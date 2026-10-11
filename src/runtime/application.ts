@@ -137,6 +137,7 @@ import {
   queueTargetBackups,
   removeQueuedBackups,
   selectBackup,
+  tidyBackups,
 } from "./backups";
 import {
   JOB_LATE_LIMIT_MS,
@@ -197,9 +198,10 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Gives back the checkouts job runs of the Target `targetId` kept after a deploy, once nothing uses them, under the
    * Target's lease; drops those of a Target that is gone. Never rejects. */
   releaseJobCheckouts(targetId: string): Promise<void>;
-  /** Deletes the backup directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview),
-   * forgetting each one deleted. Never rejects. */
-  removeBackups(): Promise<void>;
+  /** Seals and measures any backup a rigd that stopped right after its run left unsealed, then deletes the backup
+   * directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview), forgetting each one
+   * deleted. Never rejects. */
+  tidyBackups(): Promise<void>;
   /** Settles a run the scheduler judged ended or past its timeout, under its Target's lease: reads the run again and acts
    * only when the record still names it, stopping it (timed out) only while its own process runs. Never rejects. */
   settleJob(request: JobSettleRequest): Promise<void>;
@@ -1769,8 +1771,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     status,
     restartUnhealthy,
     runScheduledJob,
-    // Queued directories are no Target's to hold: nothing reads one once it left the inventory.
-    removeBackups: () => removeQueuedBackups(deps),
+    // No Target is held: nothing reads a queued directory once it left the inventory, and sealing a kept one is idempotent.
+    tidyBackups: () => tidyBackups(deps),
     async releaseJobCheckouts(targetId) {
       const state = await deps.store.read();
       if (state.targets.some((target) => target.id === targetId))

@@ -109,10 +109,24 @@ async function recordJobEnd(
 ): Promise<JobRun | undefined> {
   let ended: JobRun | undefined;
   let backup: BackupRecord | undefined;
+  // A backup run that exits 0 but left no real directory (it deleted $RIG_BACKUP_DIR, or replaced it with a symlink) keeps
+  // nothing. Looked at before the write, which cannot wait on the disk; the caller holds the Target, so the run is the same.
+  const made = findJobRecord(await deps.store.read(), target.id, job)?.running
+    ?.backup;
+  const lost =
+    made !== undefined &&
+    deps.backups !== undefined &&
+    !(await deps.backups.exists(made.path));
   await deps.store.update((state) => {
     const record = findJobRecord(state, target.id, job);
     if (record?.running?.id !== runId) return;
     ended = endedRun(record.running, observation, deps.now());
+    if (
+      lost &&
+      ended.backup?.path === made.path &&
+      ended.outcome === "succeeded"
+    )
+      ended.backup = { ...ended.backup, lost: true };
     delete record.running;
     record.last = ended;
     // A backup run's directory becomes a backup, or is queued for deletion, in the same write as its end.
@@ -465,8 +479,9 @@ export function describeRun(run: JobRun): string {
   const trigger = run.trigger === "manual" ? " (rig run)" : "";
   // A restore says which backup it read; a backup run that succeeded, which backup it kept.
   const subject = run.restore ? `restore from ${run.restore.id} ` : "";
-  const kept =
-    run.backup && run.outcome === "succeeded"
+  const kept = run.backup?.lost
+    ? "; it left no backup directory, so none was kept"
+    : run.backup && run.outcome === "succeeded"
       ? `; kept backup ${run.backup.id}`
       : run.backup && run.outcome
         ? "; its backup directory was deleted"

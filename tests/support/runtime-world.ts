@@ -59,6 +59,10 @@ export interface RuntimeWorldOptions {
   readonly router?: Router;
   /** Told about each start and stop as it begins, and each passed start check, as rigd tells its health monitor. */
   readonly lifecycleObserver?: LifecycleObserver;
+  /** Wraps the world's Target effects, so a test can act between two of their steps. */
+  readonly wrapEffects?: (
+    effects: ReturnType<typeof createTargetEffects>,
+  ) => ReturnType<typeof createTargetEffects>;
   /** Dependencies that replace or add to the world's own, given its root and state file. */
   readonly dependencies?: (world: {
     root: string;
@@ -73,7 +77,7 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
   const repo = join(root, "repo");
   await mkdir(repo);
   const clock = { ms: Date.parse(options.startsAt) };
-  const effects = createTargetEffects({
+  const created = createTargetEffects({
     ...(options.activation ?? localActivation()),
     recordingTime: () => new Date(clock.ms).toISOString(),
     root,
@@ -86,6 +90,7 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
     router: options.router ?? unreloadedCaddy(root),
     run: runCommand,
   });
+  const effects = options.wrapEffects?.(created) ?? created;
   const timing = options.timing ?? promptReadiness(options.readinessDeadlineMs);
   const store = new FileStateStore(root);
   let id = 0;

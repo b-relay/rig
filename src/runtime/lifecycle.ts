@@ -49,7 +49,12 @@ export interface TargetEffects {
   ): Promise<void>;
   retireArtifacts(target: TargetRecord): Promise<void>;
   supervisor(target: TargetRecord): Supervisor;
-  prepare(target: TargetRecord): Promise<void>;
+  /** Prepares the workspace: storage, and dependency installation once per workspace, which runs in `environment` when
+   * given (the Project scope, composed by the caller) and otherwise in one composed now. */
+  prepare(
+    target: TargetRecord,
+    environment?: Readonly<Record<string, string>>,
+  ): Promise<void>;
   /** One invocation's composed environment; without a Component, the Project scope the shared build and dependency
    * installation run in. */
   environment(
@@ -72,7 +77,18 @@ export interface TargetEffects {
   ): Promise<HealthCheck>;
   /** Runs one build command in the Target workspace within the unit's budget, in its Component's environment scope
    * (the Project scope for the shared unit). Fails BUILD_FAILED or BUILD_TIMEOUT; a build past its budget has been killed. */
-  build(unit: BuildUnit, target: TargetRecord): Promise<void>;
+  build(
+    unit: BuildUnit,
+    target: TargetRecord,
+    /** The environment `buildEnvironment` composed for this unit; one is composed now when absent. */
+    environment?: Readonly<Record<string, string>>,
+  ): Promise<void>;
+  /** The environment `unit`'s command runs in, composed now (its env files read now): its Component's scope, or the
+   * Project's for the shared unit, with the unit's guarded inputs checked. Absent: none is composed ahead of the build. */
+  buildEnvironment?(
+    unit: BuildUnit,
+    target: TargetRecord,
+  ): Promise<Record<string, string>>;
   /** Publishes a Tool's executable; never builds. */
   install(
     component: InstalledComponent,
@@ -157,7 +173,12 @@ export interface TargetLifecycle {
   prepare(
     target: TargetRecord,
     request: PreparationRequest,
-  ): Promise<{ built: string[] }>;
+  ): Promise<{
+    built: string[];
+    /** The keyed digest of the Project-scope environment dependency installation was given; absent when it could not be
+     * composed or digested. */
+    environment?: string;
+  }>;
   /** Starts the recorded plan and publishes its Tools; never builds. A deployed Target whose recorded preparation is not
    * complete is refused with PREPARATION_INCOMPLETE, or BUILD_UNKNOWN when a unit's outcome is unknown.
    * Every stopped Service is started, whatever its restart policy: this is the explicit start. Without a journal each start
@@ -397,17 +418,25 @@ export function createTargetLifecycle(
       }
     },
     async prepare(target, { select, journal }) {
-      await effects.prepare(target);
+      // Each environment is composed once and handed to the command it is for, so what is digested is what ran, even when
+      // an env file changes meanwhile. One that cannot be composed here is composed by the command itself, which fails as
+      // it always did; nothing is digested for it.
+      const install = await effects.environment(target).catch(() => undefined);
+      await effects.prepare(target, install);
+      const installed = install && (await digestOf(target, install));
       const units = await selectUnits(target, select, effects);
       for (const unit of units) {
+        const env = await effects
+          .buildEnvironment?.(unit, target)
+          .catch(() => undefined);
         // Best effort: a build never fails for its digest, and a unit recorded without one keeps no Service running.
-        const environment = await unitEnvironment(target, unit);
+        const environment = env && (await digestOf(target, env));
         await journal.started(
           unit,
           environment !== undefined ? { environment } : {},
         );
         try {
-          await effects.build(unit, target);
+          await effects.build(unit, target, env);
         } catch (error) {
           try {
             await journal.finished(unit, "failed");
@@ -428,7 +457,10 @@ export function createTargetLifecycle(
           );
         }
       }
-      return { built: units.map((unit) => unit.id) };
+      return {
+        built: units.map((unit) => unit.id),
+        ...(installed !== undefined ? { environment: installed } : {}),
+      };
     },
     async up(target, providedCheckpoint, journal, stops) {
       assertPrepared(target);
@@ -720,26 +752,14 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
-  /** The keyed digest of the environment `unit` runs in: its Component's scope, or the Project's for the shared unit. */
-  async function unitEnvironment(
+  /** The keyed digest of `env`, a composed environment of `target`; undefined when none can be taken. */
+  async function digestOf(
     target: TargetRecord,
-    unit: BuildUnit,
+    env: Readonly<Record<string, string>>,
   ): Promise<string | undefined> {
-    if (!effects.digestEnvironment) return undefined;
-    const component = target.plan.components.find(
-      (candidate) => candidate.name === unit.component,
-    );
-    try {
-      return await effects.digestEnvironment(
-        target,
-        await effects.environment(
-          target,
-          component?.kind === "persistent" ? undefined : component,
-        ),
-      );
-    } catch {
-      return undefined;
-    }
+    return await effects
+      .digestEnvironment?.(target, env)
+      .catch(() => undefined);
   }
   /** Stops `job`'s run in progress within its stop_timeout under `stops`, telling the observers as the stop begins and ends;
    * a job with nothing running is left alone, unannounced. */

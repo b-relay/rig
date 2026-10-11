@@ -53,7 +53,10 @@ function melody(services: Record<string, Record<string, unknown>> = {}) {
   });
 }
 
-async function fixture(config: ProjectConfig = melody()) {
+async function fixture(
+  config: ProjectConfig = melody(),
+  wrapEffects?: Parameters<typeof runtimeWorld>[0]["wrapEffects"],
+) {
   const processes = new Map<string, ProcessObservation>();
   /** Process keys whose observation cannot be made. */
   const unobservable = new Set<string>();
@@ -111,6 +114,7 @@ async function fixture(config: ProjectConfig = melody()) {
   const released: string[] = [];
   const world = await runtimeWorld({
     name: "keep",
+    ...(wrapEffects ? { wrapEffects } : {}),
     // api listens on its port at loopback, so its route can be published.
     activation: localActivation([4000]),
     config,
@@ -441,6 +445,45 @@ test("rig restart does not hide a changed build environment: a start carries the
   expect(
     await readFile(join(second.plan.workspacePath, "built.txt"), "utf8"),
   ).toBe("v2");
+});
+
+test("a build runs in the very environment its digest was taken of, even when an env file changes in between", async () => {
+  const config = parseProjectConfig({
+    name: "melody",
+    build: 'printf %s "$FLAVOR" > built.txt',
+    services: { app: { command: "node app.js", watch: [] } },
+    targets: { stable: true },
+  });
+  let projectFile = "";
+  let changeBetween = false;
+  // Right after the shared build's environment is composed (and before it runs), the env file says v2.
+  const f = await fixture(config, (effects) => ({
+    ...effects,
+    async buildEnvironment(unit, target) {
+      const env = await effects.buildEnvironment!(unit, target);
+      if (changeBetween && unit.id === "shared")
+        await writeFile(projectFile, "FLAVOR=v2\n");
+      return env;
+    },
+  }));
+  projectFile = join(f.world.root, "env", "melody", "all.env");
+  await mkdir(join(projectFile, ".."), { recursive: true });
+  await writeFile(projectFile, "FLAVOR=v1\n");
+  changeBetween = true;
+  await f.deploy();
+  const target = await f.stable();
+  // The build ran in the environment that was composed (v1), not in one read again after the edit.
+  expect(
+    await readFile(join(target.plan.workspacePath, "built.txt"), "utf8"),
+  ).toBe("v1");
+  // And what was recorded describes v1: composing v1 again gives the same digest, v2 another.
+  const recorded = target.preparation!.units.shared!.environment!;
+  expect(await f.world.deps.lifecycle.environmentDigest(target)).not.toBe(
+    recorded,
+  );
+  await writeFile(projectFile, "FLAVOR=v1\n");
+  expect(await f.world.deps.lifecycle.environmentDigest(target)).toBe(recorded);
+  expect(target.preparation!.environment).toBe(recorded);
 });
 
 test("a change to the Project environment the shared build runs in restarts a Service whose own environment masks it", async () => {

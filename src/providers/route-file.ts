@@ -39,7 +39,8 @@ export interface Router {
   checkpoint(key: string): Promise<RouteCheckpoint>;
   restore(saved: RouteCheckpoint, expected: RouteCheckpoint): Promise<void>;
   /** Refuses `route` as `apply` would (ROUTE_INVALID, ROUTE_CONFLICT) without changing anything, so a deploy learns before it
-   * stops the previous Deployment that its route cannot be published. */
+   * stops the previous Deployment that its route cannot be published. A route with no sites (a route-free plan) checks
+   * nothing; a router that reserves still reserves what the Target serves now. */
   check?(route: RouteRequest): Promise<void>;
   /** Lets go of the hostnames `check` reserved for `key`, once the deployment that asked is decided. */
   release?(key: string): Promise<void>;
@@ -282,6 +283,36 @@ export function canonicalRouteFile(text: string): {
   });
   const canonical = blocks.join("");
   return { text: canonical, dropped: canonical !== text };
+}
+/** The one invariant every publication keeps, checked where the route file (and, for Rig's Caddy, the generation) is
+ * written: a hostname belongs to exactly one owner, one Target's block or one `outside` entry such as an owner route in
+ * `proxy.routes`. `identity` says when two addresses are one site: the bare hostname for Rig's Caddy, which merges blocks
+ * across schemes and ports; `siteAddress` for an external Caddy. Refuses with ROUTE_CONFLICT naming both owners; whatever
+ * path wrote `text` (apply, restore, a recovery stop, a republish, a reload) cannot bypass it. */
+export function assertSingleOwners(
+  text: string,
+  identity: (address: string) => string,
+  outside?: { readonly sites: readonly string[]; readonly owner: string },
+): void {
+  const owners = new Map<string, { owner: string; address: string }>();
+  const claim = (address: string, owner: string) => {
+    const id = identity(address);
+    const held = owners.get(id);
+    if (held && held.owner !== owner)
+      throw new RigError(
+        "ROUTE_CONFLICT",
+        `The hostname ${address} would belong to two owners: ${held.owner} and ${owner}.`,
+        "Each hostname has one owner: take it off one of them, or choose a different hostname. Nothing changed.",
+        { hostname: address, owners: [held.owner, owner] },
+      );
+    owners.set(id, { owner, address });
+  };
+  for (const match of text.matchAll(
+    /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g,
+  ))
+    for (const site of parseOwnedSites(match[2]!))
+      claim(site.hostname, `the Target route ${match[1]!.slice(0, 12)}`);
+  for (const address of outside?.sites ?? []) claim(address, outside!.owner);
 }
 /** Every hostname the owned blocks of a route file serve. */
 export function routeFileHostnames(text: string): string[] {

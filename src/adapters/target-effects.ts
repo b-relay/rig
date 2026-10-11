@@ -694,8 +694,9 @@ export function createTargetEffects(
       );
     },
     async checkRoute(target) {
+      // Asked even for a route-free plan: the router reserves the hostnames the Target serves now, which a rollback restores.
       const sites = plannedSites(target.plan);
-      if (!sites.length || !options.router.check) return;
+      if (!options.router.check) return;
       await options.router.check({
         key: target.id,
         sites: sites.map((site) => ({

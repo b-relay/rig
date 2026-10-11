@@ -41,6 +41,7 @@ import {
   editRouteFile,
   ownedBlock,
   parseOwnedSites,
+  assertSingleOwners,
   canonicalRouteFile,
   routeFileHostnames,
   withheldPaths,
@@ -86,6 +87,7 @@ type PublicationKind = "route" | "settings";
  * routes go on with the last accepted settings. */
 const SETTINGS_REFUSALS = new Set([
   "PROXY_CONFIG_INVALID",
+  "ROUTE_CONFLICT",
   "PROXY_PATH",
   "PROXY_TOKEN",
 ]);
@@ -307,24 +309,29 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     routes = canonicalRouteFile(routes).text;
     const rigHosts = routeFileHostnames(routes);
     const customRoutes = hostRoutes(settings);
-    // One name is one site to a client, whatever scheme or port either side writes it with: Caddy would merge the two blocks
-    // and one would take over the other's requests. A hostname a deploy has checked and is about to publish counts too.
-    const rigOwned = new Map<string, string>([
-      ...[...reservations.values()]
-        .flat()
-        .map((host): [string, string] => [
-          host,
-          `${host}, which a deploy is about to publish`,
-        ]),
-      ...rigHosts.map((host): [string, string] => [bareHostname(host), host]),
-    ]);
-    const taken = customRoutes.find((route) => rigOwned.has(route.hostname));
-    if (taken)
+    // The invariant, at the one point every publication passes (apply, restore, a recovery stop, a republish, a reload): a
+    // hostname has one owner, a Target's block or a proxy.routes entry. One name is one site to a client, whatever scheme or
+    // port it is written with, and Caddy would merge two blocks for it, so they are compared bare.
+    assertSingleOwners(routes, bareHostname, {
+      sites: customRoutes.map((route) => route.hostname),
+      owner: "proxy.routes in Host config",
+    });
+    // Reservations protect deploys in flight, on top of the invariant: an owner route may not claim what one is about to
+    // publish or restore.
+    const reserved = customRoutes.find((route) =>
+      [...reservations.values()].some((hosts) =>
+        hosts.includes(route.hostname),
+      ),
+    );
+    if (reserved)
       throw new RigError(
-        "PROXY_CONFIG_INVALID",
-        `proxy.routes in Host config names ${taken.hostname}, which a Target serves (${rigOwned.get(taken.hostname)}).`,
-        `Remove ${taken.hostname} from proxy.routes in config.yaml and run rig proxy reload, or take the hostname off the Target. Nothing changed.`,
-        { hostname: taken.hostname },
+        "ROUTE_CONFLICT",
+        `proxy.routes in Host config names ${reserved.hostname}, which a deploy is about to publish.`,
+        `Wait for the deploy to finish, then remove ${reserved.hostname} from proxy.routes or take it off the Target. Nothing changed.`,
+        {
+          hostname: reserved.hostname,
+          owners: ["a deploy in progress", "proxy.routes in Host config"],
+        },
       );
     const secret = await token(settings);
     const executable = await binary();
@@ -679,7 +686,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       check: (route) =>
         queued(async () => {
           const { routes } = await canonicalRoutes();
-          await edited(routes, route.key, route);
+          // A route-free candidate has nothing to check, but still reserves what a rollback would restore.
+          if (route.sites.length) await edited(routes, route.key, route);
           const serving = parseOwnedSites(ownedBlock(routes, route.key) ?? "");
           reservations.set(route.key, [
             ...new Set(

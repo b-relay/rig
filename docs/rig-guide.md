@@ -223,7 +223,7 @@ Each hostname is lowercase, with no scheme, port, path or wildcard, and Rig
 serves it with a certificate like its own and nothing but a reverse proxy to
 the upstream. `rig proxy reload` applies an edit, and rigd applies the current
 Host config when it starts. A hostname a Target serves is refused
-(`PROXY_CONFIG_INVALID`) and changes nothing that is served; a Target or Preview
+(`ROUTE_CONFLICT`) and changes nothing that is served; a Target or Preview
 asking for one of your hostnames is refused as `ROUTE_CONFLICT`. Rig reads no
 Caddyfile of yours: `proxy/custom.caddy` and `proxy/custom-global.caddy` from
 earlier builds are ignored, and doctor names one left on disk.
@@ -248,6 +248,11 @@ the reason. A Host config that no longer validates fails the reload with
 route can be published before it stops the previous Deployment, and holds its
 hostnames until the deploy is decided, so neither another deploy nor a
 `rig proxy reload` can take them meanwhile.
+
+Every hostname has exactly one owner, a Target or one `proxy.routes` entry.
+Any publication that would give one two owners (a deploy, a rollback, a
+recovery stop, a reload, rigd's start) is refused with `ROUTE_CONFLICT`,
+naming both, and nothing changes.
 
 Rig's own Caddy publishes only what Rig renders from the route file's blocks.
 Text it did not write there, such as an external router's `extra_config`, is

@@ -12,9 +12,11 @@ import { dirname } from "node:path";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
 import {
+  assertSingleOwners,
   editRouteFile,
   ownedBlock,
   rerenderOwnedBlocks,
+  siteAddress,
   withheldPaths,
   type RouteCheckpoint,
   type RouteRequest,
@@ -75,6 +77,8 @@ export function createCaddyRouter(options: {
   }
   /** Validates `after`, writes it in place of `before` and reloads Caddy, putting `before` back when Caddy refuses it. */
   async function commit(before: string, after: string): Promise<void> {
+    // The invariant at the one point every change writes the route file: a hostname has one owner, as Caddy addresses sites.
+    assertSingleOwners(after, siteAddress);
     // Write through a symlinked Caddyfile so the file Caddy reads changes and the link survives.
     const file = await realpath(options.caddyfile).catch(
       () => options.caddyfile,
@@ -213,6 +217,7 @@ export function createCaddyRouter(options: {
     remove: (key) => serialized(key),
     async check(route) {
       await pending.catch(() => {});
+      if (!route.sites.length) return;
       editRouteFile({
         before: await readRoutes(),
         key: route.key,

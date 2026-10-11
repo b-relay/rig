@@ -287,10 +287,8 @@ test("one hostname is never both a Target's and the owner's, whatever scheme, po
   const served = await v.current();
   v.setSettings({ routes: { "app.example.test": 3005 } });
   await expect(v.caddy.republish()).rejects.toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
-    message: expect.stringContaining(
-      "proxy.routes in Host config names app.example.test, which a Target serves (https://app.example.test:28443)",
-    ),
+    code: "ROUTE_CONFLICT",
+    message: expect.stringContaining("would belong to two owners"),
   });
   expect(await v.current()).toBe(served);
   expect(await v.generations()).toEqual([served!]);
@@ -306,8 +304,10 @@ test("Host config Rig refuses is recorded as pending and never blocks a route ch
   });
   const error = await w.caddy.republish().catch((caught) => caught);
   expect(error).toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
-    message: expect.stringContaining("names app.example.test"),
+    code: "ROUTE_CONFLICT",
+    message: expect.stringContaining(
+      "app.example.test would belong to two owners",
+    ),
     hint: expect.stringContaining("last accepted"),
     details: { pending: true },
   });
@@ -315,8 +315,10 @@ test("Host config Rig refuses is recorded as pending and never blocks a route ch
   expect(
     JSON.parse(await w.file("caddy", "settings-rejected.json")),
   ).toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
-    reason: expect.stringContaining("names app.example.test"),
+    code: "ROUTE_CONFLICT",
+    reason: expect.stringContaining(
+      "app.example.test would belong to two owners",
+    ),
   });
   // Another Project's route still publishes, with the settings Caddy accepted: the refused route is not in it.
   await w.caddy.router.apply({
@@ -536,14 +538,14 @@ test("a hostname a deploy checked is reserved until the deploy lets go: Host con
   // rig proxy reload adds a route for it mid-deploy.
   w.setSettings({ routes: { "new.example.test": 3005 } });
   await expect(w.caddy.republish()).rejects.toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
+    code: "ROUTE_CONFLICT",
     message: expect.stringContaining("which a deploy is about to publish"),
   });
   // The deploy publishes its route; the hostname is the Target's from then on.
   await w.caddy.router.apply(b);
   expect(w.servedRoutes()).toContain("new.example.test");
   await expect(w.caddy.republish()).rejects.toMatchObject({
-    message: expect.stringContaining("which a Target serves"),
+    message: expect.stringContaining("would belong to two owners"),
   });
   // A route change during the deploy does not end the reservation; the deploy's release does.
   await w.caddy.router.check!({
@@ -672,4 +674,82 @@ test("two deploys cannot reserve one hostname: the second is refused at its chec
   // Once the first deploy is decided and lets go, the hostname is free again.
   await w.caddy.router.release!("a");
   await w.caddy.router.check!(route("b"));
+});
+
+test("one owner per hostname, at the write point: every publication path refuses a route file or Host config that gives a hostname two owners", async () => {
+  const w = await world();
+  const site = (key: string, hostname: string) => ({
+    key,
+    sites: [
+      { hostname, routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }] },
+    ],
+  });
+  await w.caddy.router.apply(site("a", "one.example.test"));
+  await w.caddy.router.apply(site("b", "two.example.test"));
+  const served = await w.current();
+  // However it came about (a bug, a crash, a hand edit), b's block now claims a's hostname as well.
+  const routesFile = join(w.root, "proxy", "Caddyfile");
+  await writeFile(
+    routesFile,
+    (await w.routes()).replace("two.example.test {", "one.example.test {"),
+  );
+  const duplicate = await w.routes();
+  const refused = { code: "ROUTE_CONFLICT" };
+  const paths: [string, () => Promise<unknown>][] = [
+    ["apply", () => w.caddy.router.apply(site("c", "three.example.test"))],
+    ["remove of another route", () => w.caddy.router.remove("c")],
+    [
+      "restore (a rollback or a recovery stop)",
+      async () => {
+        const saved = await w.caddy.router.checkpoint("c");
+        await w.caddy.router.restore({ key: "c", value: null }, saved);
+      },
+    ],
+    ["republish (rigd's start, rig proxy reload)", () => w.caddy.republish()],
+  ];
+  for (const [name, publish] of paths) {
+    await writeFile(routesFile, duplicate);
+    const error = await publish().then(
+      () => undefined,
+      (caught) => caught,
+    );
+    expect({ name, error }).toMatchObject({ name, error: refused });
+    expect(await w.current()).toBe(served);
+  }
+  // Removing one of the two owners is the way out, and it publishes.
+  await writeFile(routesFile, duplicate);
+  await w.caddy.router.remove("b");
+  expect(w.servedRoutes()).toContain("one.example.test");
+  // A reload whose proxy.routes claims a Target's hostname is refused the same way.
+  w.setSettings({ routes: { "one.example.test": 3005 } });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    details: {
+      hostname: "one.example.test",
+      owners: [
+        expect.stringContaining("Target route"),
+        "proxy.routes in Host config",
+      ],
+    },
+  });
+});
+
+test("a restoration cannot take a hostname another Target has committed since: it is refused, not published twice", async () => {
+  const w = await world();
+  const site = (key: string, hostname: string, upstream: string) => ({
+    key,
+    sites: [{ hostname, routes: [{ prefix: "/", upstream }] }],
+  });
+  await w.caddy.router.apply(site("a", "old.example.test", "127.0.0.1:3001"));
+  const saved = await w.caddy.router.checkpoint("a");
+  // A moves to another hostname; its rollback is delayed.
+  await w.caddy.router.apply(site("a", "new.example.test", "127.0.0.1:3001"));
+  // B commits A's old hostname and lets go of its reservation.
+  await w.caddy.router.apply(site("b", "old.example.test", "127.0.0.1:4001"));
+  // A's recovery now restores its old block: refused, so old.example.test keeps one owner and one upstream.
+  await expect(
+    w.caddy.router.restore(saved, await w.caddy.router.checkpoint("a")),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  expect(w.servedRoutes().match(/old\.example\.test \{/g)).toHaveLength(1);
+  expect(w.servedRoutes()).toContain("127.0.0.1:4001");
 });

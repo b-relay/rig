@@ -789,3 +789,43 @@ test("republishing gives every owned block the current extra directives, so a ro
   await router.republish();
   expect(commands).toHaveLength(2);
 });
+
+test("the external router keeps one owner per site at its write point: a restoration or any change that would publish a hostname twice is refused", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-external-owners-"));
+  try {
+    const caddyfile = join(root, "Caddyfile");
+    const router = createCaddyRouter({
+      caddyfile,
+      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    });
+    const site = (key: string, hostname: string, upstream: string) => ({
+      key,
+      sites: [{ hostname, routes: [{ prefix: "/", upstream }] }],
+    });
+    await router.apply(site("a", "old.test", "127.0.0.1:3001"));
+    const saved = await router.checkpoint("a");
+    await router.apply(site("a", "new.test", "127.0.0.1:3001"));
+    await router.apply(site("b", "old.test", "127.0.0.1:4001"));
+    // Main's external router restored this block beside B's, two owners for old.test.
+    await expect(
+      router.restore(saved, await router.checkpoint("a")),
+    ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+    expect(
+      (await readFile(caddyfile, "utf8")).match(/^old\.test \{/gm),
+    ).toHaveLength(1);
+    // A file that already holds two owners refuses any change that keeps them, and accepts removing one.
+    await writeFile(
+      caddyfile,
+      (await readFile(caddyfile, "utf8")).replace("new.test {", "old.test {"),
+    );
+    await expect(
+      router.apply(site("c", "c.test", "127.0.0.1:5001")),
+    ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+    await router.remove("a");
+    expect(
+      (await readFile(caddyfile, "utf8")).match(/^old\.test \{/gm),
+    ).toHaveLength(1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

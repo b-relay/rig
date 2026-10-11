@@ -177,8 +177,8 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
     routes: { ...accepted.routes, "app.example.test": upstream.port! },
   };
   await expect(caddy.republish()).rejects.toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
-    message: expect.stringContaining("which a Target serves"),
+    code: "ROUTE_CONFLICT",
+    message: expect.stringContaining("would belong to two owners"),
   });
   await caddy.router.apply(route(`127.0.0.1:${upstream.port}`));
   const pending = await proxyReport({
@@ -190,8 +190,8 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
   });
   expect(pending.pending).toMatchObject({
     fields: ["routes"],
-    code: "PROXY_CONFIG_INVALID",
-    reason: expect.stringContaining("which a Target serves"),
+    code: "ROUTE_CONFLICT",
+    reason: expect.stringContaining("would belong to two owners"),
   });
   // What is served is still described from the accepted generation.
   expect(pending.caddy.ports).toEqual(accepted.ports);

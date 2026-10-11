@@ -834,7 +834,7 @@ test("Host config Rig refused never takes an unrelated Project offline: B deploy
   await f.lifecycle.up(f.previous);
   caddy.setSettings({ tls: { ca: "internal" }, routes: { "a.test": 3005 } });
   await expect(caddy.caddy.republish()).rejects.toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
+    code: "ROUTE_CONFLICT",
   });
   // Deploying B stops its previous Deployment and publishes its routes with the settings Caddy accepted.
   const deployed = await activateDeployment(
@@ -898,7 +898,7 @@ test("a deploy's reservation is released however it ends: activated, prepared wi
     if (ending === "activated")
       // Served by the Target now: refused as the Target's, not as a deploy's reservation.
       await expect(caddy.caddy.republish()).rejects.toMatchObject({
-        message: expect.stringContaining("which a Target serves (new.test)"),
+        message: expect.stringContaining("new.test would belong to two owners"),
       });
     // Nothing holds it: the owner's route is accepted.
     else expect(await caddy.caddy.republish()).toEqual({ published: true });
@@ -964,10 +964,55 @@ test("a reload cannot claim the previous Deployment's hostname while a failed de
     ),
   ).rejects.toMatchObject({ code: "HEALTH_FAILED" });
   expect(claimed).toMatchObject({
-    code: "PROXY_CONFIG_INVALID",
+    code: "ROUTE_CONFLICT",
     message: expect.stringContaining("which a deploy is about to publish"),
   });
   // Rolled back, not blocked: the previous plan runs and Caddy serves its hostname.
   expect(f.state.targets[0]).toMatchObject({ commit: "old" });
+  expect(caddy.servedRoutes()).toContain("old.test");
+});
+
+test("a route-free deploy still reserves the hostname it would restore: a reload cannot claim it before a failed commit rolls back", async () => {
+  const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+  roots.push(caddy.root);
+  const f = await fixture({ router: caddy.caddy.router });
+  await f.lifecycle.up(f.previous);
+  f.previous.desired = "running";
+  // The candidate serves no hostname: its route is removed.
+  delete f.candidate.plan.domain;
+  const update = f.deps.store.update.bind(f.deps.store);
+  let claimed: unknown;
+  f.deps.store.update = async (change) => {
+    // The first inventory write after the candidate's route removal is published: the previous hostname is no longer in
+    // the route file, so only the deploy's reservation protects it.
+    if (claimed === undefined && !(await caddy.routes()).includes("old.test")) {
+      // Before the inventory commit fails, the owner reloads a route claiming the previous hostname.
+      caddy.setSettings({
+        tls: { ca: "internal" },
+        routes: { "old.test": 3005 },
+      });
+      claimed = await caddy.caddy.republish().catch((caught) => caught);
+      throw new Error("inventory commit failure");
+    }
+    await update(change);
+  };
+  await expect(
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
+  ).rejects.toThrow("inventory commit failure");
+  expect(claimed).toMatchObject({
+    code: "ROUTE_CONFLICT",
+    message: expect.stringContaining("which a deploy is about to publish"),
+  });
+  // Rolled back: the previous Service runs and Caddy serves its hostname again.
+  expect(f.state.targets[0]).toMatchObject({
+    commit: "old",
+    desired: "running",
+  });
+  expect(f.running.size).toBe(1);
   expect(caddy.servedRoutes()).toContain("old.test");
 });

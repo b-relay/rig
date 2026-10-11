@@ -5,6 +5,7 @@ import {
   logFilter,
   logText,
   matchesSearch,
+  preferredLogTarget,
 } from "../web/lib/logs";
 import { logTargets } from "../web/server/logs";
 
@@ -73,4 +74,12 @@ test("the log viewer lists Targets in page order with their components", () => {
     { name: "working", kind: "working", components: ["setup"] },
     { name: "stable", kind: "stable", components: ["web", "setup"] },
   ]);
+});
+
+test("the Logs tab opens on the first Target that has run, else the first", () => {
+  const working = { name: "working", state: "configured" as const };
+  const stable = { name: "stable", state: "running" as const };
+  expect(preferredLogTarget([working, stable])).toBe(stable);
+  expect(preferredLogTarget([working])).toBe(working);
+  expect(preferredLogTarget([])).toBeUndefined();
 });

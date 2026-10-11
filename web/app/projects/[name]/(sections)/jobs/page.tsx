@@ -1,11 +1,13 @@
+import Link from "next/link";
 import { targetJobs } from "@/lib/jobs";
 import { orderedTargets } from "@/lib/overview";
+import { targetHref } from "@/lib/target";
 import { project } from "@/server/project";
 import { projectStatus } from "@/server/status";
-import { Failure, Panel } from "@/components/bits";
-import { JobsTable, JobsUnavailable } from "@/components/jobs-table";
+import { Dot, Failure } from "@/components/bits";
+import { JobCards, JobsUnavailable } from "@/components/job-cards";
 
-/** Every Target's scheduled jobs and backups, one panel per Target that has any. */
+/** Every Target's scheduled jobs and backups, grouped under each Target that has any. */
 export default async function JobsPage({
   params,
 }: {
@@ -18,24 +20,28 @@ export default async function JobsPage({
     const jobs = targetJobs(target);
     return jobs.length ? [{ target, jobs }] : [];
   });
-  if (withJobs.length === 0)
-    return (
-      <Panel flush>
-        <JobsUnavailable />
-      </Panel>
-    );
+  if (withJobs.length === 0) return <JobsUnavailable />;
   const now = Date.now();
   return (
-    <div className="grid gap-4">
+    <div className="flex flex-col gap-6">
       {withJobs.map(({ target, jobs }) => (
-        <Panel key={target.name} title={target.name} flush>
-          <JobsTable
+        <section key={target.name} className="flex flex-col gap-3">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Dot value={target.state} />
+            <Link
+              href={targetHref(found.name, target.name)}
+              className="text-foreground no-underline hover:underline"
+            >
+              {target.name}
+            </Link>
+          </h2>
+          <JobCards
             project={found.name}
             target={target}
             jobs={jobs}
             now={now}
           />
-        </Panel>
+        </section>
       ))}
     </div>
   );

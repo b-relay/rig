@@ -10,16 +10,24 @@ import { parseTheme, THEME_COOKIE } from "@/lib/theme";
 import { SIGNING_IN_HEADER } from "@/server/signing-in";
 import { site } from "@/server/site";
 
-const archivo = localFont({
-  src: "../../node_modules/@fontsource-variable/archivo/files/archivo-latin-standard-normal.woff2",
-  variable: "--font-archivo",
+/* Fonts ship with the site (next/font/local over the fontsource files), so no page asks another
+   server for CSS or type at runtime. Inter sets the page, Space Grotesk the Project monograms,
+   JetBrains Mono the code, logs and ports. */
+const inter = localFont({
+  src: "../../node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2",
+  variable: "--font-inter",
   weight: "100 900",
   display: "swap",
-  declarations: [{ prop: "font-stretch", value: "62% 125%" }],
 });
-const martian = localFont({
-  src: "../../node_modules/@fontsource-variable/martian-mono/files/martian-mono-latin-wght-normal.woff2",
-  variable: "--font-martian",
+const spaceGrotesk = localFont({
+  src: "../../node_modules/@fontsource-variable/space-grotesk/files/space-grotesk-latin-wght-normal.woff2",
+  variable: "--font-space-grotesk",
+  weight: "300 700",
+  display: "swap",
+});
+const jetbrains = localFont({
+  src: "../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2",
+  variable: "--font-jetbrains",
   weight: "100 800",
   display: "swap",
 });
@@ -29,8 +37,8 @@ export const metadata: Metadata = {
 };
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f4f4f1" },
-    { media: "(prefers-color-scheme: dark)", color: "#121312" },
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b1012" },
   ],
   width: "device-width",
   initialScale: 1,
@@ -51,24 +59,24 @@ export default async function RootLayout({
     <html
       lang="en"
       data-theme={theme}
-      className={`${archivo.variable} ${martian.variable}`}
+      className={`${inter.variable} ${spaceGrotesk.variable} ${jetbrains.variable}`}
     >
-      <body className="min-h-dvh pb-16 sm:pb-0">
+      <body className="min-h-dvh pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0">
         {signingIn ? (
           <>
             <TopBar bare theme={theme} />
-            <main className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-6 sm:px-6">
+            <main className="mx-auto flex w-full max-w-md flex-col gap-8 px-4 py-10 sm:py-16">
               {children}
             </main>
           </>
         ) : (
-          <div className="lg:grid lg:grid-cols-[15.5rem_minmax(0,1fr)]">
-            <aside className="sticky top-0 hidden h-dvh border-r border-rule bg-sheet lg:block">
+          <div className="lg:grid lg:grid-cols-[16rem_minmax(0,1fr)]">
+            <aside className="sticky top-0 hidden h-dvh border-r border-sidebar-border bg-sidebar lg:block">
               <Sidebar sandbox={sandbox} />
             </aside>
             <div className="flex min-w-0 flex-col">
               <TopBar theme={theme} menu={<Sidebar sandbox={sandbox} />} />
-              <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+              <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 pt-5 pb-8 sm:px-6 sm:pt-6 lg:px-8">
                 {children}
               </main>
             </div>

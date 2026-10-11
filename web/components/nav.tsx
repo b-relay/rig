@@ -13,7 +13,7 @@ export function BottomTabs() {
   return (
     <nav
       aria-label="Sections"
-      className="fixed inset-x-0 bottom-0 z-20 flex justify-around border-t border-rule bg-sheet pb-[env(safe-area-inset-bottom)] sm:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 flex justify-around border-t bg-background/90 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-md sm:hidden"
     >
       {SECTIONS.map(({ href, label, icon: Icon, ...rest }) => {
         const current = isCurrent(pathname, href, "exact" in rest);
@@ -23,11 +23,18 @@ export function BottomTabs() {
             href={href}
             aria-current={current ? "page" : undefined}
             className={cn(
-              "flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] text-muted-foreground no-underline",
-              current && "text-foreground",
+              "group flex flex-1 flex-col items-center gap-1 pt-2 pb-1.5 text-[11px] text-muted-foreground no-underline",
+              current && "font-medium text-foreground",
             )}
           >
-            <Icon className="size-5" aria-hidden />
+            <span
+              className={cn(
+                "flex h-7 w-12 items-center justify-center rounded-lg transition-colors",
+                current && "bg-muted",
+              )}
+            >
+              <Icon className="size-[18px]" aria-hidden />
+            </span>
             {label}
           </Link>
         );

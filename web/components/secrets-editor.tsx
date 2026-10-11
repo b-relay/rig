@@ -128,8 +128,8 @@ export function SecretsEditor({
   };
   const newKeyValid = ENV_KEY.test(adding.key) && !keys.includes(adding.key);
   return (
-    <section className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-rule bg-sheet shadow-xs">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-rule px-4 py-3">
+    <section className="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-xs">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
             <KeyRound className="size-4 text-muted-foreground" aria-hidden />
@@ -152,7 +152,7 @@ export function SecretsEditor({
         ) : null}
       </header>
       {locked ? (
-        <div className="border-b border-rule p-4">
+        <div className="border-b p-4">
           <Notice tone="warn" title="This file cannot be edited here">
             {file.problem} Fix that line in an editor; the dashboard does not
             rewrite a file it cannot read.
@@ -160,7 +160,7 @@ export function SecretsEditor({
         </div>
       ) : null}
       {saved ? (
-        <div className="border-b border-rule p-4">
+        <div className="border-b p-4">
           <Notice tone="good" title="Saved">
             <p>
               {saved.keys.join(", ")} {saved.keys.length === 1 ? "was" : "were"}{" "}
@@ -176,11 +176,11 @@ export function SecretsEditor({
         </div>
       ) : null}
       {failure ? (
-        <div className="border-b border-rule p-4">
+        <div className="border-b p-4">
           <Failure failure={failure} />
         </div>
       ) : null}
-      <ul className="divide-y divide-rule/70">
+      <ul className="divide-y">
         {keys.length === 0 ? (
           <li className="px-4 py-6 text-sm text-muted-foreground">
             No variables yet. Add the first one below.
@@ -378,7 +378,7 @@ export function SecretsEditor({
       </ul>
       {locked ? null : (
         <form
-          className="flex flex-wrap items-center gap-2 border-t border-rule bg-muted/40 px-4 py-3"
+          className="flex flex-wrap items-center gap-2 border-t bg-muted/40 px-4 py-3"
           onSubmit={(event) => {
             event.preventDefault();
             if (!newKeyValid) return;
@@ -440,7 +440,7 @@ export function SecretsEditor({
         </form>
       )}
       {changes.length ? (
-        <footer className="flex flex-wrap items-center gap-2 border-t border-rule px-4 py-3">
+        <footer className="flex flex-wrap items-center gap-2 border-t px-4 py-3">
           <span className="text-sm">
             {changes.length} unsaved{" "}
             {changes.length === 1 ? "change" : "changes"}

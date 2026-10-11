@@ -5,6 +5,13 @@ export type LogEntry = LogsResult["entries"][number];
 export interface LogTarget extends Pick<TargetReport, "name" | "kind"> {
   components: readonly string[];
 }
+/** Pure: the Target a Project's Logs tab opens on when the address names none: the first, in page
+ * order, that has run (a working copy never started has no log yet), else the first. */
+export function preferredLogTarget<T extends Pick<TargetReport, "state">>(
+  ordered: readonly T[],
+): T | undefined {
+  return ordered.find((target) => target.state !== "configured") ?? ordered[0];
+}
 /** What the log viewer asks rigd to narrow a read to; empty means every line. */
 export interface LogQuery {
   /** Component names; none means all. */

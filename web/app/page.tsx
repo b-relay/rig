@@ -1,25 +1,19 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { LayoutGrid, Plus, Rows3 } from "lucide-react";
-import type { ProjectEntry } from "@/lib/board-rows";
-import { overviewSummary } from "@/lib/overview";
+import { FolderPlus, Plus } from "lucide-react";
+import { projectMatrix } from "@/lib/matrix";
+import { overviewSummary, type ProjectEntry } from "@/lib/overview";
 import type { ListResult } from "@/lib/types";
 import { projectList, projectStatus } from "@/server/status";
-import { Board } from "@/components/board";
-import { Empty, Failure, PageHeader, Skeleton, Stat } from "@/components/bits";
-import { ProjectCard } from "@/components/project-card";
+import { Empty, Failure, PageHeader } from "@/components/bits";
+import { MatrixLoading, ProjectMatrix } from "@/components/project-matrix";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-type View = "cards" | "table";
-/** The root page: every Project and Target this Mac runs, as cards with quick actions, or as the
- * one dense table (`?view=table`). */
-export default async function OverviewPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ view?: string }>;
-}) {
-  const view: View = (await searchParams).view === "table" ? "table" : "cards";
+type Project = ListResult["projects"][number];
+/** The root page: one matrix per Project on this Mac, its Targets across the top and its Services
+ * down the side. Each matrix streams in as its Project's status arrives. */
+export default async function OverviewPage() {
   const list = await projectList();
   const projects = list.ok ? list.value.projects : [];
   return (
@@ -27,105 +21,79 @@ export default async function OverviewPage({
       <PageHeader
         title="Overview"
         description={
-          list.ok
-            ? `Every Project on this Mac, with its working copy, stable Target and Previews.`
-            : "rigd did not answer."
+          list.ok ? (
+            <Suspense fallback="Every Project on this Mac.">
+              <Summary projects={projects} />
+            </Suspense>
+          ) : (
+            "rigd did not answer."
+          )
         }
         actions={
-          <>
-            <ViewSwitch view={view} />
-            <Button asChild size="sm">
-              <Link href="/projects/new" className="no-underline">
-                <Plus /> Add Project
-              </Link>
-            </Button>
-          </>
+          <Button asChild size="sm">
+            <Link
+              href="/projects/new"
+              className="no-underline"
+              aria-label="Add Project"
+            >
+              <Plus /> <span className="hidden sm:inline">Add Project</span>
+            </Link>
+          </Button>
         }
       />
       {!list.ok ? <Failure failure={list.failure} /> : null}
       {list.ok && projects.length === 0 ? (
-        <Empty>
-          No Project is registered yet.{" "}
+        <Empty icon={FolderPlus} title="No Project yet">
           <Link href="/projects/new">Add one</Link>, or run{" "}
           <code>rig init</code> in a repository.
         </Empty>
       ) : null}
-      {projects.length > 0 && view === "table" ? (
-        <Board projects={projects} />
-      ) : null}
-      {projects.length > 0 && view === "cards" ? (
-        <Suspense fallback={<CardsLoading count={projects.length} />}>
-          <Cards projects={projects} />
-        </Suspense>
-      ) : null}
-    </>
-  );
-}
-async function Cards({ projects }: { projects: ListResult["projects"] }) {
-  const entries: ProjectEntry[] = await Promise.all(
-    projects.map(async (project) => ({
-      project,
-      ...(project.missing ? {} : { status: await projectStatus(project.name) }),
-    })),
-  );
-  const summary = overviewSummary(entries);
-  return (
-    <>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-        <Stat label="Projects" value={summary.projects} />
-        <Stat label="Targets" value={summary.targets} />
-        <Stat
-          label="Running"
-          value={summary.live}
-          tone={summary.live ? "good" : undefined}
-        />
-        <Stat
-          label="Need attention"
-          value={summary.attention}
-          tone={summary.attention ? "warn" : undefined}
-        />
-      </div>
-      <div className="grid gap-4">
-        {entries.map((entry) => (
-          <ProjectCard key={entry.project.name} {...entry} />
+      <div className="flex flex-col gap-8 sm:gap-10">
+        {projects.map((project) => (
+          <Suspense
+            key={project.name}
+            fallback={<MatrixLoading project={project.name} />}
+          >
+            <Matrix project={project} />
+          </Suspense>
         ))}
       </div>
     </>
   );
 }
-function CardsLoading({ count }: { count: number }) {
+async function entry(project: Project): Promise<ProjectEntry> {
+  return project.missing
+    ? { project }
+    : { project, status: await projectStatus(project.name) };
+}
+async function Matrix({ project }: { project: Project }) {
   return (
-    <div className="grid gap-4">
-      {Array.from({ length: Math.min(count, 4) }, (_, index) => (
-        <div
-          key={index}
-          className="rounded-lg border border-rule bg-sheet p-4 shadow-xs"
-        >
-          <Skeleton lines={3} />
-        </div>
-      ))}
-    </div>
+    <ProjectMatrix
+      matrix={projectMatrix(await entry(project))}
+      now={Date.now()}
+    />
   );
 }
-function ViewSwitch({ view }: { view: View }) {
-  const item = (value: View, label: string, Icon: typeof Rows3) => (
-    <Link
-      href={value === "cards" ? "/" : "/?view=table"}
-      aria-current={view === value ? "page" : undefined}
-      title={`${label} view`}
-      className={cn(
-        "inline-flex h-7 items-center gap-1.5 rounded px-2 text-xs text-muted-foreground no-underline hover:text-foreground",
-        view === value && "bg-sheet text-foreground shadow-xs",
-      )}
-    >
-      <Icon className="size-3.5" aria-hidden />
-      {label}
-    </Link>
+/** The Host in one line: how many Projects and Targets, how many run, and how many need a look. */
+async function Summary({ projects }: { projects: readonly Project[] }) {
+  const summary = overviewSummary(await Promise.all(projects.map(entry)));
+  const part = (count: number, word: string, dot?: string) => (
+    <span className="inline-flex items-center gap-1.5">
+      {dot ? (
+        <span aria-hidden className={cn("size-1.5 rounded-full", dot)} />
+      ) : null}
+      <span className="font-medium text-foreground tabular-nums">{count}</span>
+      {word}
+    </span>
   );
   return (
-    <div className="inline-flex items-center gap-0.5 rounded-md border border-rule bg-muted p-0.5">
-      {item("cards", "Cards", LayoutGrid)}
-      {item("table", "Table", Rows3)}
-    </div>
+    <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
+      {part(summary.projects, summary.projects === 1 ? "Project" : "Projects")}
+      {part(summary.targets, summary.targets === 1 ? "Target" : "Targets")}
+      {part(summary.live, "running", summary.live ? "bg-good" : undefined)}
+      {summary.attention
+        ? part(summary.attention, "need attention", "bg-warn")
+        : null}
+    </span>
   );
 }

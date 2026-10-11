@@ -95,7 +95,6 @@
     "src/cli/output.test.ts": 11,
     "tests/daemon-environment.test.ts": 10,
     "tests/process-environment.test.ts": 8,
-    "tests/board-rows.test.ts": 5,
     "tests/dashboard-client.test.ts": 5,
     "tests/pulse.test.ts": 2,
     "tests/version.test.ts": 2

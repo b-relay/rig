@@ -28,7 +28,7 @@ export function ThemeSwitch({
       title={`${label}; click to switch`}
       aria-label={`${label}; click to switch`}
       className={cn(
-        "inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground",
+        "inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground",
         className,
       )}
       onClick={() => {

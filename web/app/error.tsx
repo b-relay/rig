@@ -1,6 +1,9 @@
 "use client";
 
+import { TriangleAlert } from "lucide-react";
+import { CARD } from "@/components/bits";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 /** A page that could not render; the message is what the server let through. */
 export default function PageError({
@@ -11,14 +14,26 @@ export default function PageError({
   reset(): void;
 }) {
   return (
-    <div className="flex flex-col gap-3 py-10">
-      <h1 className="title text-2xl">This page did not render</h1>
-      <p className="text-sm">{error.message}</p>
+    <section
+      className={cn(
+        CARD,
+        "mx-auto mt-6 flex w-full max-w-lg flex-col items-start gap-4 p-6",
+      )}
+    >
+      <span className="flex size-10 items-center justify-center rounded-xl bg-bad-fill text-bad">
+        <TriangleAlert className="size-5" aria-hidden />
+      </span>
       <div>
-        <Button variant="outline" onClick={reset}>
-          Try again
-        </Button>
+        <h1 className="text-lg font-semibold tracking-tight">
+          This page did not render
+        </h1>
+        <p className="mt-1 text-sm break-words text-muted-foreground">
+          {error.message}
+        </p>
       </div>
-    </div>
+      <Button variant="outline" size="sm" onClick={reset}>
+        Try again
+      </Button>
+    </section>
   );
 }

@@ -1,14 +1,41 @@
 import type { ReactNode } from "react";
-import { CircleAlert, CircleCheck, Info, TriangleAlert } from "lucide-react";
+import {
+  CircleAlert,
+  CircleCheck,
+  GitBranch,
+  Info,
+  TriangleAlert,
+} from "lucide-react";
+import { HEALTH_WORD, healthOf, type Health } from "@/lib/health";
 import type { Failure as FailureShape } from "@/lib/outcome";
-import { toneOf } from "@/lib/present";
-import type { OperationResult } from "@/lib/types";
-import { shortCommit } from "@/lib/present";
+import { shortCommit, toneOf } from "@/lib/present";
+import type { OperationResult, TargetReport } from "@/lib/types";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
-/** Presentation pieces without state, usable from server and client components alike. */
+/** Presentation pieces without state, usable from server and client components alike. Every page
+ * is built from the same few: a card (`CARD`), a state dot, a tinted tile, and quiet type. */
+
+/** The one surface: a rounded card with a hairline border and the faintest shadow. */
+export const CARD = "rounded-xl border bg-card text-card-foreground shadow-xs";
+/** A small heading over a group, as the sidebar and the matrix corner name theirs. */
+export const EYEBROW =
+  "text-[11px] font-medium tracking-wider text-idle uppercase";
+/** Each health as a dot. */
+export const HEALTH_DOT: Record<Health, string> = {
+  green: "bg-good",
+  orange: "bg-warn",
+  red: "bg-bad",
+  gray: "bg-idle",
+};
+/** Each health as a tinted tile and the text on it. */
+export const HEALTH_TILE: Record<Health, string> = {
+  green: "bg-good-fill text-good",
+  orange: "bg-warn-fill text-warn",
+  red: "bg-bad-fill text-bad",
+  gray: "bg-muted text-idle",
+};
 
 /** A refusal or transport failure, with rigd's code and hint when it gave them. */
 export function Failure({ failure }: { failure: FailureShape | undefined }) {
@@ -24,6 +51,7 @@ export function Failure({ failure }: { failure: FailureShape | undefined }) {
           <p>
             <a
               href={`/activity?operation=${encodeURIComponent(failure.operationId)}`}
+              className="text-current underline"
             >
               Operation{" "}
               <span className="font-mono text-xs">{failure.operationId}</span>
@@ -51,8 +79,10 @@ export function Notice({
   return (
     <Alert
       className={cn(
-        tone === "warn" && "border-warn/60 bg-warn-fill [&>svg]:text-warn",
-        tone === "good" && "border-good/60 bg-good-fill [&>svg]:text-good",
+        tone === "warn" &&
+          "border-warn/30 bg-warn-fill text-warn [&>svg]:text-warn *:data-[slot=alert-description]:text-warn",
+        tone === "good" &&
+          "border-good/30 bg-good-fill text-good [&>svg]:text-good *:data-[slot=alert-description]:text-good",
         className,
       )}
     >
@@ -62,14 +92,75 @@ export function Notice({
     </Alert>
   );
 }
-const DOT = {
-  good: "bg-good",
-  warn: "bg-warn",
-  bad: "bg-bad",
-  busy: "bg-busy busy-dot",
-  idle: "bg-muted-ink",
-};
-/** A lifecycle or outcome word with its colour dot. */
+/** A quiet line about something wrong, for the foot of a card or above a page's content. */
+export function Warning({
+  tone = "warn",
+  children,
+  className,
+}: {
+  tone?: "warn" | "bad";
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <p
+      className={cn(
+        "flex gap-2 text-xs leading-5",
+        tone === "bad" ? "text-bad" : "text-warn",
+        className,
+      )}
+    >
+      <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0">{children}</span>
+    </p>
+  );
+}
+/** A small dot standing for a state, with the word for screen readers and in the tooltip. A Target
+ * that has never run is an empty ring. */
+export function Dot({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const health = healthOf(value);
+  return (
+    <span
+      role="img"
+      aria-label={value}
+      title={value}
+      className={cn(
+        "inline-block size-2 shrink-0 rounded-full",
+        value === "configured" ? "border border-idle" : HEALTH_DOT[health],
+        toneOf(value) === "busy" && "busy-dot",
+        className,
+      )}
+    />
+  );
+}
+/** A health of its own (not a state word) as a dot, for a Project or a group. */
+export function HealthDot({
+  health,
+  className,
+}: {
+  health: Health;
+  className?: string;
+}) {
+  return (
+    <span
+      role="img"
+      aria-label={HEALTH_WORD[health]}
+      title={HEALTH_WORD[health]}
+      className={cn(
+        "inline-block size-2 shrink-0 rounded-full",
+        HEALTH_DOT[health],
+        className,
+      )}
+    />
+  );
+}
+/** A lifecycle or outcome word with its dot. */
 export function State({
   value,
   className,
@@ -84,22 +175,12 @@ export function State({
         className,
       )}
     >
-      <span
-        aria-hidden
-        className={cn("size-2 shrink-0 rounded-full", DOT[toneOf(value)])}
-      />
+      <Dot value={value} className="size-1.5" />
       {value}
     </span>
   );
 }
-const PILL = {
-  good: "bg-good-fill text-good",
-  warn: "bg-warn-fill text-warn",
-  bad: "bg-bad-fill text-bad",
-  busy: "bg-link/10 text-link",
-  idle: "bg-muted text-muted-foreground ring-1 ring-inset ring-rule",
-};
-/** A lifecycle or outcome word as a tinted pill, for headers and cards where it must stand out. */
+/** A lifecycle or outcome word as a small tinted tile, for headers and cards where it must stand out. */
 export function StatePill({
   value,
   className,
@@ -107,53 +188,28 @@ export function StatePill({
   value: string;
   className?: string;
 }) {
-  const tone = toneOf(value);
+  const health = healthOf(value);
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center gap-1.5 rounded-full px-2 text-xs font-medium whitespace-nowrap",
-        PILL[tone],
+        "inline-flex h-5 items-center gap-1.5 rounded-md px-1.5 text-xs font-medium whitespace-nowrap",
+        HEALTH_TILE[health],
         className,
       )}
     >
       <span
         aria-hidden
         className={cn(
-          "size-1.5 shrink-0 rounded-full bg-current",
-          tone === "busy" && "busy-dot",
+          "size-1.5 shrink-0 rounded-full",
+          HEALTH_DOT[health],
+          toneOf(value) === "busy" && "busy-dot",
         )}
       />
       {value}
     </span>
   );
 }
-/** A small coloured dot standing for a state, with the word for screen readers. */
-export function Dot({
-  value,
-  className,
-}: {
-  value: string;
-  className?: string;
-}) {
-  return (
-    <span
-      className={cn(
-        "inline-block size-2 shrink-0 rounded-full",
-        DOT[toneOf(value)],
-        className,
-      )}
-      title={value}
-    >
-      <span className="sr-only">{value}</span>
-    </span>
-  );
-}
-const KIND_CLASS = {
-  working: "text-muted-foreground ring-rule",
-  stable: "text-ink ring-ink/30",
-  preview: "text-link ring-link/30",
-};
-/** The Target role, as a quiet outlined tag. */
+/** The Target role, as a quiet tag. */
 export function KindTag({
   kind,
   className,
@@ -164,12 +220,42 @@ export function KindTag({
   return (
     <span
       className={cn(
-        "inline-flex h-5 items-center rounded px-1.5 text-[11px] font-medium tracking-wide uppercase ring-1 ring-inset",
-        KIND_CLASS[kind],
+        "inline-flex h-5 items-center rounded-md border px-1.5 text-[11px] font-medium text-muted-foreground",
         className,
       )}
     >
       {kind}
+    </span>
+  );
+}
+/** Where a Target's code comes from: `branch @ commit`, or the working copy. */
+export function Revision({
+  target,
+  className,
+}: {
+  target: Pick<TargetReport, "kind" | "branch" | "commit">;
+  className?: string;
+}) {
+  const sha = shortCommit(target.commit)?.slice(0, 7);
+  return (
+    <span
+      className={cn(
+        "inline-flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground",
+        className,
+      )}
+      title={[target.branch, target.commit].filter(Boolean).join(" @ ")}
+    >
+      <GitBranch className="size-3.5 shrink-0" aria-hidden />
+      {target.kind === "working" && !target.branch ? (
+        <span className="truncate">working copy</span>
+      ) : !target.branch && !sha ? (
+        <span className="truncate">not deployed</span>
+      ) : (
+        <span className="truncate font-mono">
+          {target.branch ?? "no branch"}
+          {sha ? <span className="text-foreground"> @ {sha}</span> : null}
+        </span>
+      )}
     </span>
   );
 }
@@ -229,7 +315,7 @@ export function Facts({
   );
   if (shown.length === 0) return null;
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
+    <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
       {shown.map(([label, value], index) => (
         <div key={index} className="contents">
           <dt className="text-muted-foreground">{label}</dt>
@@ -257,8 +343,33 @@ export function Mono({
     </span>
   );
 }
-export function Empty({ children }: { children: ReactNode }) {
-  return <p className="text-sm text-muted-foreground">{children}</p>;
+/** Nothing to show yet: a dashed outline, as the matrix marks a combination that does not exist,
+ * with an optional icon and a way forward. */
+export function Empty({
+  children,
+  icon: Icon,
+  title,
+  className,
+}: {
+  children: ReactNode;
+  icon?: typeof Info;
+  title?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-start gap-2 rounded-xl border border-dashed px-5 py-6 text-sm text-muted-foreground",
+        className,
+      )}
+    >
+      {Icon ? <Icon className="size-5" aria-hidden /> : null}
+      {title ? (
+        <h2 className="text-sm font-semibold text-foreground">{title}</h2>
+      ) : null}
+      <div className="max-w-2xl leading-relaxed">{children}</div>
+    </div>
+  );
 }
 /** The top of a page: its title, a line about it, and the page's own actions on the right. */
 export function PageHeader({
@@ -266,23 +377,31 @@ export function PageHeader({
   description,
   actions,
   eyebrow,
+  icon,
 }: {
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   /** A small line above the title, such as the Project a Target belongs to. */
   eyebrow?: ReactNode;
+  /** A mark before the title, such as a Project's icon. */
+  icon?: ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-      <div className="flex min-w-0 flex-col gap-1">
-        {eyebrow ? (
-          <div className="text-xs text-muted-foreground">{eyebrow}</div>
-        ) : null}
-        <h1 className="title text-2xl leading-tight">{title}</h1>
-        {description ? (
-          <div className="text-sm text-muted-foreground">{description}</div>
-        ) : null}
+      <div className="flex min-w-0 items-center gap-3.5">
+        {icon}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          {eyebrow ? (
+            <div className="text-xs text-muted-foreground">{eyebrow}</div>
+          ) : null}
+          <h1 className="text-xl leading-tight font-semibold tracking-tight sm:text-2xl">
+            {title}
+          </h1>
+          {description ? (
+            <div className="text-sm text-muted-foreground">{description}</div>
+          ) : null}
+        </div>
       </div>
       {actions ? (
         <div className="flex flex-wrap items-center gap-2">{actions}</div>
@@ -290,7 +409,7 @@ export function PageHeader({
     </div>
   );
 }
-/** A bordered surface for one group of content, with an optional titled header. */
+/** A card for one group of content, with an optional titled header. */
 export function Panel({
   title,
   description,
@@ -304,22 +423,21 @@ export function Panel({
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
-  /** The content reaches the panel's edges, as a table does. */
+  /** The content reaches the card's edges, as a list does. */
   flush?: boolean;
 }) {
   return (
     <section
-      className={cn(
-        "flex min-w-0 flex-col overflow-hidden rounded-lg border border-rule bg-sheet shadow-xs",
-        className,
-      )}
+      className={cn("flex min-w-0 flex-col overflow-hidden", CARD, className)}
     >
       {title ? (
-        <header className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b border-rule px-4 py-2.5">
+        <header className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 px-4 pt-3.5 pb-3">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold">{title}</h2>
             {description ? (
-              <p className="text-xs text-muted-foreground">{description}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {description}
+              </p>
             ) : null}
           </div>
           {actions ? (
@@ -327,11 +445,19 @@ export function Panel({
           ) : null}
         </header>
       ) : null}
-      <div className={flush ? undefined : "p-4"}>{children}</div>
+      <div
+        className={cn(
+          flush ? undefined : "p-4",
+          title && !flush && "pt-0",
+          title && flush && "border-t",
+        )}
+      >
+        {children}
+      </div>
     </section>
   );
 }
-/** One number with its label, for a page's summary row. */
+/** One number with its label, as a small card in a page's summary row. */
 export function Stat({
   label,
   value,
@@ -342,42 +468,67 @@ export function Stat({
   tone?: "good" | "bad" | "warn";
 }) {
   return (
-    <div className="flex flex-col gap-0.5 rounded-lg border border-rule bg-sheet px-4 py-3 shadow-xs">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "text-2xl font-semibold tabular-nums",
-          tone === "good" && "text-good",
-          tone === "bad" && "text-bad",
-          tone === "warn" && "text-warn",
-        )}
-      >
+    <div className={cn("flex flex-col gap-1 px-4 py-3", CARD)}>
+      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {tone ? (
+          <span
+            aria-hidden
+            className={cn(
+              "size-1.5 rounded-full",
+              tone === "good" && "bg-good",
+              tone === "bad" && "bg-bad",
+              tone === "warn" && "bg-warn",
+            )}
+          />
+        ) : null}
+        {label}
+      </span>
+      <span className="text-xl font-semibold tracking-tight tabular-nums">
         {value}
       </span>
     </div>
   );
 }
-/** A section of a page: a ruled heading and its content, no card around it. */
+/** A section of a page: a small heading and its content in a card. */
 export function Section({
   title,
   description,
   actions,
   children,
   className,
+  tone,
 }: {
   title: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** `danger` marks a section whose action cannot be undone. */
+  tone?: "danger";
 }) {
   return (
-    <section className={cn("flex flex-col gap-4", className)}>
-      <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b border-rule pb-2">
+    <section
+      className={cn(
+        "flex flex-col gap-4 p-4 sm:p-5",
+        CARD,
+        tone === "danger" && "border-bad/30",
+        className,
+      )}
+    >
+      <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-2">
         <div className="min-w-0">
-          <h2 className="title text-lg">{title}</h2>
+          <h2
+            className={cn(
+              "text-sm font-semibold",
+              tone === "danger" && "text-bad",
+            )}
+          >
+            {title}
+          </h2>
           {description ? (
-            <p className="text-sm text-muted-foreground">{description}</p>
+            <p className="mt-0.5 max-w-2xl text-sm text-muted-foreground">
+              {description}
+            </p>
           ) : null}
         </div>
         {actions ? <div className="flex flex-wrap gap-2">{actions}</div> : null}
@@ -404,7 +555,7 @@ export function Skeleton({
         <div
           key={index}
           className={cn(
-            "h-4 animate-pulse rounded bg-rule/60",
+            "h-4 animate-pulse rounded-md bg-muted",
             index % 2 ? "w-1/2" : "w-3/4",
           )}
         />
@@ -428,6 +579,7 @@ export function OperationNotice({
         {result.commit ? `, ${shortCommit(result.commit)}` : ""}{" "}
         <a
           href={`/activity?operation=${encodeURIComponent(result.operationId)}`}
+          className="text-current underline"
         >
           operation
         </a>

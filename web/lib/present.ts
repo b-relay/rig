@@ -11,6 +11,13 @@ const TONES: Record<string, Tone> = {
   installed: "good",
   succeeded: "good",
   updated: "good",
+  deployed: "good",
+  registered: "good",
+  started: "good",
+  restarted: "good",
+  renamed: "good",
+  repointed: "good",
+  applied: "good",
   starting: "busy",
   stopping: "busy",
   configured: "idle",
@@ -20,6 +27,9 @@ const TONES: Record<string, Tone> = {
   cancelled: "warn",
   unhealthy: "bad",
   failed: "bad",
+  "timed-out": "bad",
+  "start-failed": "bad",
+  rejected: "bad",
   missing: "bad",
 };
 export const toneOf = (word: string): Tone => TONES[word] ?? "idle";

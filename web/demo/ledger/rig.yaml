@@ -16,6 +16,14 @@ services:
     environment:
       API_URL: http://127.0.0.1:${services.api.port}
 
+# A nightly job, so the dashboard's Jobs rows and tab have something to show.
+jobs:
+  close-books:
+    command: bun close.ts
+    schedule: "0 2 * * *"
+    environment:
+      API_URL: http://127.0.0.1:${services.api.port}
+
 # The seed deploys the stable Target, so it is on.
 targets:
   working: true

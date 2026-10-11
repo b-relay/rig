@@ -5,12 +5,13 @@ import { attempt } from "@/lib/outcome";
 import type { Theme } from "@/lib/theme";
 import type { DaemonHealth, QueueResult } from "@/lib/types";
 import { LiveRefresh } from "./live-refresh";
+import { Brand } from "./shell/brand";
 import { MobileMenu } from "./shell/mobile-menu";
 import { ThemeSwitch } from "./theme-switch";
 import { cn } from "@/lib/utils";
 
 /** The bar above every page: the menu on narrow screens, what rigd is doing right now, the live
- * refresh and the theme switch. `bare` keeps the wordmark alone, for a browser that has not signed
+ * refresh and the theme switch. `bare` keeps the mark alone, for a browser that has not signed
  * in and must learn nothing about this Mac. */
 export function TopBar({
   bare = false,
@@ -23,21 +24,14 @@ export function TopBar({
   theme: Theme | undefined;
 }) {
   return (
-    <header className="sticky top-0 z-20 border-b border-rule bg-background/85 backdrop-blur-sm">
+    <header className="sticky top-0 z-20 border-b bg-background/80 backdrop-blur-md">
       <div className="flex h-12 items-center gap-2 px-4 sm:px-6 lg:px-8">
         {bare ? (
-          <Link href="/" className="wordmark text-lg text-ink no-underline">
-            RIG
-          </Link>
+          <Brand />
         ) : (
           <>
             <MobileMenu>{menu}</MobileMenu>
-            <Link
-              href="/"
-              className="wordmark text-lg text-ink no-underline lg:hidden"
-            >
-              RIG
-            </Link>
+            <Brand className="lg:hidden" />
             <div className="ml-auto flex items-center gap-1">
               <Suspense fallback={<DaemonMark state="probing" />}>
                 <DaemonStatus />
@@ -85,7 +79,7 @@ function DaemonMark({
   return (
     <Link
       href="/rigd"
-      className="flex h-8 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground no-underline hover:bg-muted hover:text-foreground"
+      className="flex h-8 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground no-underline hover:bg-muted hover:text-foreground"
       title={detail ?? (state === "down" ? "rigd is not reachable" : "rigd")}
     >
       <span
@@ -95,7 +89,7 @@ function DaemonMark({
           state === "up" && "bg-good",
           state === "busy" && "busy-dot bg-busy",
           state === "down" && "bg-bad",
-          state === "probing" && "bg-muted-ink",
+          state === "probing" && "bg-idle",
         )}
       />
       <span className="hidden md:inline">

@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
+  CircleAlert,
+  CircleCheck,
   Ellipsis,
   Logs,
   Play,
@@ -55,8 +57,9 @@ const ICON = {
 };
 type Shown = Pick<TargetReport, "name" | "kind" | "route" | "branch" | "state">;
 /** Start, Restart, Stop, Deploy latest and, for a Preview, Destroy. `menu` puts them all behind one
- * button, for a dense table; `buttons` shows the ones the Target's state calls for as icon buttons
- * with the rest in a menu, for cards and headers. An action that would cut this very page off,
+ * button; `card` adds a Start button beside it while the Target is not running, for the matrix's
+ * Target cards; `buttons` shows the ones the Target's state calls for as buttons with the rest in a
+ * menu, for headers. An action that would cut this very page off,
  * deploy, or destroy data is confirmed first; the outcome shows beside the controls, or beneath
  * them when `stacked`. */
 export function TargetActions({
@@ -68,7 +71,7 @@ export function TargetActions({
 }: {
   project: string;
   target: Shown;
-  layout?: "menu" | "buttons";
+  layout?: "menu" | "card" | "buttons";
   stacked?: boolean;
   /** Icon buttons without their words, for a narrow card. */
   compact?: boolean;
@@ -117,7 +120,7 @@ export function TargetActions({
           disabled={act.busy}
           aria-label={`Actions for ${target.name}`}
         >
-          {act.busy && layout === "menu" ? (
+          {act.busy && layout !== "buttons" ? (
             <span
               aria-hidden
               className="busy-dot size-2 rounded-full bg-busy"
@@ -139,7 +142,10 @@ export function TargetActions({
             );
           })}
         <DropdownMenuItem asChild>
-          <Link href={`${targetHref(project, target.name)}/logs`}>
+          <Link
+            href={`${targetHref(project, target.name)}/logs`}
+            className="text-popover-foreground no-underline"
+          >
             <Logs /> Logs
           </Link>
         </DropdownMenuItem>
@@ -165,8 +171,26 @@ export function TargetActions({
           : "flex items-center justify-end gap-1"
       }
     >
-      {stacked ? null : <Outcome act={act} />}
+      {stacked ? null : layout === "card" ? (
+        <OutcomeMark act={act} target={target.name} />
+      ) : (
+        <Outcome act={act} />
+      )}
       <div className="flex items-center gap-1">
+        {layout === "card" && verbs.primary.includes("up") ? (
+          <Button
+            variant="outline"
+            size="xs"
+            disabled={act.busy}
+            onClick={() => choose("up")}
+            title={`Start ${target.name}`}
+            className="h-7 px-2"
+          >
+            <Play className="size-3" />
+            {/* The word only where the card (a size container) has room beside the name. */}
+            <span className="sr-only @[13.5rem]:not-sr-only">Start</span>
+          </Button>
+        ) : null}
         {layout === "buttons"
           ? verbs.primary.map((verb) => {
               const Icon = ICON[verb];
@@ -257,7 +281,60 @@ export function TargetActions({
     </div>
   );
 }
-/** The last outcome in a few words, sized for a table cell; the Operation link tells the rest. */
+/** The last outcome as one small mark, for a card with no room for words; the tooltip and the
+ * Operation link tell the rest. */
+function OutcomeMark({
+  act,
+  target,
+}: {
+  act: Run<OperationResult>;
+  target: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const failure = act.failure;
+  const result = act.result;
+  if (!failure && !result) return null;
+  const text = failure
+    ? `${failure.code}: ${failure.message}${failure.hint ? ` ${failure.hint}` : ""}`
+    : `${result?.outcome}${result?.warnings?.length ? `. ${result.warnings.join(" ")}` : ""}`;
+  // A tooltip alone never reaches a phone, so a tap opens the whole outcome.
+  return (
+    <>
+      <button
+        type="button"
+        title={text}
+        aria-label={`Last action on ${target}: ${text}`}
+        onClick={() => setOpen(true)}
+        className={cn(
+          "inline-flex size-7 items-center justify-center rounded-md hover:bg-muted",
+          failure ? "text-bad" : "text-good",
+        )}
+      >
+        {failure ? (
+          <CircleAlert className="size-4" aria-hidden />
+        ) : (
+          <CircleCheck className="size-4" aria-hidden />
+        )}
+      </button>
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Last action on {target}</AlertDialogTitle>
+            <AlertDialogDescription className="sr-only">
+              {text}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Failure failure={failure} />
+          <OperationNotice result={result} />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  );
+}
+/** The last outcome in a few words; the Operation link tells the rest. */
 function Outcome({ act }: { act: Run<OperationResult> }) {
   if (act.failure)
     return (

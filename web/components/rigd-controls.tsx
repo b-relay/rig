@@ -10,6 +10,7 @@ export function RigdControls() {
   return (
     <Section
       title="Uninstall readiness"
+      tone="danger"
       description={
         <>
           Preparing makes rigd refuse lifecycle and deploy commands so{" "}

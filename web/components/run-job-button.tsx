@@ -1,13 +1,13 @@
 "use client";
 
-import { Play } from "lucide-react";
+import { Archive, Play } from "lucide-react";
 import { canRunNow, runJobCommand, type JobView } from "@/lib/jobs";
 import type { TargetReport } from "@/lib/types";
 import { Failure } from "./bits";
 import { useRun } from "./operations";
 import { Button } from "@/components/ui/button";
 
-/** Starts one run of a job now, as `rig run <job> <target>` does. rigd refuses it while a run of the job goes; the
+/** Starts one run of a job now, as `rig run <job> <target>` does; for a backup job, Back up now makes a backup. rigd refuses it while a run of the job goes; the
  * refusal, like any failure, shows beneath the button, and the page refreshes to show the run. */
 export function RunJobButton({
   project,
@@ -32,11 +32,21 @@ export function RunJobButton({
             ? "This job is no longer in rig.yaml; its last run finishes on its own"
             : job.state === "running"
               ? `${job.name} is running; runs never overlap`
-              : `Run ${job.name} now in ${target.name}`
+              : job.backup
+                ? `Back up ${job.name} now in ${target.name}: a fresh backup, kept if the run succeeds`
+                : `Run ${job.name} now in ${target.name}`
         }
         onClick={() => void act.run(runJobCommand(project, target, job.name))}
       >
-        <Play className="size-3.5" /> Run now
+        {job.backup ? (
+          <>
+            <Archive className="size-3.5" /> Back up now
+          </>
+        ) : (
+          <>
+            <Play className="size-3.5" /> Run now
+          </>
+        )}
       </Button>
       {act.result && !act.failure ? (
         <span className="text-xs text-muted-foreground">started</span>

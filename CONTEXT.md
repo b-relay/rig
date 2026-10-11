@@ -354,6 +354,29 @@ turning the Target's role off, and the job's `timeout` stop it. `rig run <job>`
 starts a run now. Each ended run is one Activity entry; status shows the last
 and next run, and `rig logs --service <job>` its output.
 
+### Backup
+
+The directory one successful run of a backup job wrote: a job with `backup:`
+in `rig.yaml` ([ADR 0017](docs/adr/0017-backups.md)). Each run gets a fresh,
+empty `$RIG_BACKUP_DIR` under `<RIG_ROOT>/backups/<project>/<target>/<job>/`,
+named for its UTC start and a number that only grows (an id never issued twice); a run that fails has
+it deleted, and a successful one is kept.
+_Avoid_: snapshot, dump (what a backup holds is the job's business), preset
+
+_Relationship_: A backup job is a Job with retention: after each successful
+run only the newest `keep` backups of that job in that Target stay, the new one
+always among them; a failed run deletes none. Rig never knows what it backs
+up.
+
+_Relationship_: A **restore** (`rig backup restore`) is a run of the job that
+runs its `restore` command once against one backup, from the Target's
+checkout with the job's environment, never beside another run of the job. It
+asks first, is recorded in Activity, and does not stop Services: the restore
+command replaces what it restores itself.
+
+_Relationship_: Backups belong to the Mac, not to a Deployment: deploys and
+`rig down`/`rig up` keep them; destroying a Preview deletes its backups.
+
 ### Tool
 
 A named executable a Project makes available for invocation, rather than a
@@ -915,13 +938,13 @@ replacing, or destroying Previews mutates runtime state.
 
 The machine-owned record `rigd` keeps at `<RIG_ROOT>/runtime/state.json`:
 registered Projects, Targets with their Deployment records and port
-selections, job runs, and the Activity log. Only `rigd` writes it, one durable
+selections, job runs, backups, and the Activity log. Only `rigd` writes it, one durable
 replace at a time with the previous generation kept beside it. A file written
 by a newer state version, or by a version older than 4, is refused unread.
 Version 4, written before Target names were fixed, is read with the working
 and stable Targets taking their role's name and a Preview holding a reserved
-name renamed; version 5, written before scheduled jobs, is read as it is. The
-next write saves version 6. CLI and future UI views are derived
+name renamed; version 5, written before scheduled jobs, and version 6, written
+before backups, are read as they are. The next write saves version 7. CLI and future UI views are derived
 from it through `rigd`, so they agree. Daemon administration activity is
 journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 

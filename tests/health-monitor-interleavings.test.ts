@@ -82,7 +82,7 @@ function world(
     healthcheck: { interval: 5, timeout: 5, retries: 1, onFailure: "restart" },
   };
   const state = {
-    version: 6,
+    version: 7,
     projects: [
       {
         id: "p1",

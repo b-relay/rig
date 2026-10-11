@@ -67,6 +67,7 @@ import { bootOnly, type HostSessionProbe } from "../domain/host-session";
 import { createProjectDocuments } from "../adapters/project-documents";
 import { createDeploymentSources } from "../adapters/deployment-sources";
 import { createRuntimeFiles } from "../adapters/runtime-files";
+import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import type { Supervisor } from "../providers/contracts";
@@ -221,6 +222,7 @@ export async function composeDaemon(
       deadline: timerObservationDeadline,
     },
     files: createRuntimeFiles(),
+    backups: createBackupStorage(root),
     // The boot and GUI login rigd's first pass compares with the last recorded, to start Stable Targets after a restart.
     hostSession: daemonHostSession(mode, { run: runCommand, uid }),
     now: () => new Date().toISOString(),
@@ -253,6 +255,7 @@ export async function composeDaemon(
     settle: runtime.settleJob,
     releaseCheckouts: runtime.releaseJobCheckouts,
     stopJobsIfOff: runtime.stopJobsIfOff,
+    tidyBackups: runtime.tidyBackups,
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   const editor = createConfigEditor({

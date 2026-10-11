@@ -138,8 +138,20 @@ const componentReportSchema = z
 const jobRunReportSchema = z
   .object({
     trigger: z
-      .enum(["schedule", "manual"])
-      .describe("Whether the schedule or rig run started it."),
+      .enum(["schedule", "manual", "restore"])
+      .describe(
+        "What started it: the schedule, rig run, or rig backup restore (a run of the job's restore command).",
+      ),
+    backup: z
+      .string()
+      .optional()
+      .describe(
+        "A backup job's run: the id of the backup it writes, kept if it succeeds.",
+      ),
+    restore: z
+      .string()
+      .optional()
+      .describe("A restore: the id of the backup it reads."),
     scheduledFor: z
       .string()
       .optional()
@@ -190,6 +202,33 @@ const jobRunReportSchema = z
       ),
   })
   .passthrough();
+const backupSummarySchema = z
+  .object({
+    keep: z
+      .number()
+      .int()
+      .describe("How many successful backups the job keeps."),
+    restore: z
+      .boolean()
+      .describe(
+        "Whether the job has a restore command, so rig backup restore can put a backup back.",
+      ),
+    count: z.number().int().describe("How many backups are kept now."),
+    bytes: z
+      .number()
+      .int()
+      .describe("Their total size in bytes, of those whose size is recorded."),
+    latest: z
+      .object({
+        id: z.string().describe("Its id, its run's start in UTC."),
+        finishedAt: z.string().describe("When its run ended (ISO 8601)."),
+        bytes: z.number().int().optional().describe("Its size in bytes."),
+      })
+      .passthrough()
+      .optional()
+      .describe("The newest backup; absent when there is none yet."),
+  })
+  .passthrough();
 const jobReportSchema = z
   .object({
     name: z.string().describe("The job's name under jobs in rig.yaml."),
@@ -233,6 +272,11 @@ const jobReportSchema = z
     running: jobRunReportSchema.optional().describe("The run in progress."),
     last: jobRunReportSchema.optional().describe("The latest run that ended."),
     reason: z.string().optional().describe("Why it is not scheduled."),
+    backup: backupSummarySchema
+      .optional()
+      .describe(
+        "For a backup job (backup: in rig.yaml): its kept backups in this Target. Absent for any other job.",
+      ),
   })
   .passthrough();
 const targetReportSchema = z
@@ -350,6 +394,7 @@ export const projectStatusSchema = z
 export type ComponentReport = z.infer<typeof componentReportSchema>;
 export type JobReport = z.infer<typeof jobReportSchema>;
 export type JobRunReport = z.infer<typeof jobRunReportSchema>;
+export type BackupSummaryReport = z.infer<typeof backupSummarySchema>;
 export type TargetReport = z.infer<typeof targetReportSchema>;
 export type ProjectStatusReport = z.infer<typeof projectStatusSchema>;
 export interface StatusSelection {

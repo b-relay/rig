@@ -236,6 +236,7 @@ test("the editor schema documents every job setting", () => {
     "environment",
     "env_file",
     "targets",
+    "backup",
   ]);
   for (const [name, setting] of Object.entries(job.properties))
     expect([
@@ -246,4 +247,66 @@ test("the editor schema documents every job setting", () => {
   expect(job.properties.timezone.description).toContain("spring change");
   expect(job.properties.targets.description).toContain("Default: [stable]");
   expect(job.required).toEqual(["command", "schedule"]);
+  // backup: documents each of its own settings too.
+  const backup = job.properties.backup;
+  expect(Object.keys(backup.properties)).toEqual(["keep", "restore"]);
+  expect(backup.required).toEqual(["keep"]);
+  expect(backup.description).toContain("\$RIG_BACKUP_DIR");
+  expect(backup.properties.keep.description).toContain("newest keep");
+  expect(backup.properties.restore.description).toContain("does not stop");
+});
+
+test("a backup job is planned with its keep and its restore command, resolved with the job's references", () => {
+  const config = melody({
+    "db-backup": {
+      command:
+        'pg_dump -p ${services.postgres.port} -f "$RIG_BACKUP_DIR/melody.dump"',
+      schedule: "0 3 * * *",
+      backup: {
+        keep: 14,
+        restore:
+          'pg_restore --clean -p ${services.postgres.port} "$RIG_BACKUP_DIR/melody.dump"',
+      },
+    },
+    "files-backup": {
+      command: "tar -cf $RIG_BACKUP_DIR/files.tar ${services.api.data}",
+      schedule: "0 4 * * *",
+      backup: { keep: 3 },
+    },
+    plain: { command: "echo plain", schedule: "0 5 * * *" },
+  });
+  const jobs = plan(config).jobs!;
+  expect(jobs.find((job) => job.name === "db-backup")).toMatchObject({
+    command: 'pg_dump -p 5432 -f "$RIG_BACKUP_DIR/melody.dump"',
+    backup: {
+      keep: 14,
+      restore: 'pg_restore --clean -p 5432 "$RIG_BACKUP_DIR/melody.dump"',
+    },
+  });
+  expect(jobs.find((job) => job.name === "files-backup")!.backup).toEqual({
+    keep: 3,
+  });
+  expect(jobs.find((job) => job.name === "plain")!.backup).toBeUndefined();
+});
+
+test("a backup's settings are validated: keep is required and bounded, and restore is a localhost command with known references", () => {
+  const job = (backup: unknown) =>
+    melody({ b: { command: "dump", schedule: "0 3 * * *", backup } });
+  expect(refusal(job({ keep: 1 }))).toBeUndefined();
+  expect(refusal(job({ keep: 1000 }))).toBeUndefined();
+  for (const backup of [
+    {},
+    { keep: 0 },
+    { keep: 1001 },
+    { keep: 2.5 },
+    { keep: "14" },
+    { keep: 3, restore: "" },
+    { keep: 3, restore: "serve --host 0.0.0.0" },
+    { keep: 3, restore: "restore -p ${services.nope.port}" },
+    { keep: 3, preset: "postgres" },
+  ])
+    expect([backup, refusal(job(backup))]).toEqual([
+      backup,
+      expect.any(String),
+    ]);
 });

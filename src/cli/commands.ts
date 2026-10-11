@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError, Option } from "commander";
 import { resolve } from "node:path";
 import {
+  backupSelector,
   logComponentName,
   previewName,
   projectName,
@@ -15,7 +16,8 @@ import { addLogsCommand } from "./logs-command";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
-  options?: { json?: boolean; follow?: boolean },
+  /** `yes` answers a confirmation the command would ask for (rig backup restore). */
+  options?: { json?: boolean; follow?: boolean; yes?: boolean },
 ) => Promise<void>;
 interface ScopeOptions {
   project?: string;
@@ -85,6 +87,7 @@ export function createRigCommand(
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
   addRunCommand(command, cwd, execute);
+  addBackupCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
   addLogsCommand(command, {
     execute,
@@ -460,6 +463,123 @@ function addRunCommand(
       },
     );
 }
+/** `rig backup`: a backup job's kept backups, and putting one back (ADR 0017). */
+function addBackupCommands(
+  command: Command,
+  cwd: string,
+  execute: ExecuteCommand,
+): void {
+  const backup = command
+    .command("backup")
+    .description(
+      "List the backups Rig keeps for backup jobs (jobs with backup: in rig.yaml), and restore one.",
+    );
+  backup
+    .command("list")
+    .description(
+      "List kept backups, newest first, with their job, Target, time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable).",
+    )
+    .argument("[job]", "Backup job name under jobs in rig.yaml")
+    .argument(
+      "[target]",
+      "working, stable, or preview with a Branch (default: every Target)",
+    )
+    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .option("--project <name>", "Registered Project identity")
+    .option("--deployment <name>", "Explicit Preview name")
+    .option("--json", "Render the backups as JSON")
+    .action(
+      async (
+        first: string | undefined,
+        second: string | undefined,
+        third: string | undefined,
+        options: ScopeOptions,
+      ) => {
+        // A Target's name alone lists that Target's backups (rig backup list stable, rig backup list preview <branch>); a
+        // job named like a Target is listed with its Target too: rig backup list stable stable.
+        const targetFirst =
+          first !== undefined &&
+          ["working", "stable", PREVIEW_SELECTOR].includes(first) &&
+          (second === undefined || first === PREVIEW_SELECTOR) &&
+          third === undefined;
+        const [job, target, branch] = targetFirst
+          ? [undefined, first, second]
+          : [first, second, third];
+        if (job !== undefined) assertJobName(job, "rig backup list nightly-db");
+        // Without a Target every Target's backups are listed.
+        const request =
+          target === undefined && !branch && !options.deployment
+            ? {
+                action: "backups" as const,
+                repoPath: cwd,
+                ...projectScope(options),
+              }
+            : targetRequest("backups", target, branch, cwd, options);
+        await execute(
+          { ...request, ...(job !== undefined ? { job } : {}) },
+          { json: options.json },
+        );
+      },
+    );
+  backup
+    .command("restore")
+    .description(
+      "Put a backup back: runs the job's backup.restore command once, as a run of the job (same checkout, environment and env files), with $RIG_BACKUP_DIR set to the backup. In the stable Target unless you name working or a preview. Asks first unless --yes, then waits for it to end. Refused while the job or another restore of it runs. Rig does not stop the Target's Services: the restore command replaces what it restores itself (pg_restore --clean, say).",
+    )
+    .argument("<job>", "Backup job name under jobs in rig.yaml", nonEmpty)
+    .argument(
+      "<backup>",
+      "Backup id from rig backup list, such as 20261011T030000Z-17, or latest",
+      nonEmpty,
+    )
+    .argument(
+      "[target]",
+      "stable (the default), working, or preview with a Branch",
+    )
+    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .option("--project <name>", "Registered Project identity")
+    .option("--deployment <name>", "Explicit Preview name")
+    .option("--yes", "Restore without asking for confirmation")
+    .option("--json", "Render the final result as JSON")
+    .action(
+      async (
+        job: string,
+        id: string,
+        target: string | undefined,
+        branch: string | undefined,
+        options: ScopeOptions & { yes?: boolean },
+      ) => {
+        assertJobName(job, "rig backup restore nightly-db latest");
+        if (!backupSelector.safeParse(id).success)
+          throw new RigError(
+            "USAGE",
+            `'${terminalText(id)}' is not a backup id.`,
+            "Pass latest, or an id from rig backup list, such as 20261011T030000Z-17.",
+          );
+        // A restore is a run of the job, so it means the stable Target unless another is named, as rig run does.
+        const request = targetRequest(
+          "restore",
+          target ?? (options.deployment ? undefined : "stable"),
+          branch,
+          cwd,
+          options,
+        );
+        await execute(
+          { ...request, job, backup: id },
+          { json: options.json, yes: options.yes === true },
+        );
+      },
+    );
+}
+/** Refuses what cannot be a job name before a request exists. */
+function assertJobName(job: string, example: string): void {
+  if (!logComponentName.safeParse(job).success)
+    throw new RigError(
+      "USAGE",
+      `'${terminalText(job)}' is not a job name.`,
+      `Pass a name from jobs in rig.yaml, such as ${example}.`,
+    );
+}
 interface InitOptions extends ScopeOptions {
   path?: string;
   productionBranch?: string;
@@ -587,7 +707,7 @@ function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
   };
 }
 function targetRequest(
-  action: "up" | "down" | "restart" | "logs" | "run",
+  action: "up" | "down" | "restart" | "logs" | "run" | "backups" | "restore",
   target: string | undefined,
   branch: string | undefined,
   cwd: string,

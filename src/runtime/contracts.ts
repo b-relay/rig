@@ -119,6 +119,29 @@ export interface RuntimeFiles {
     filter?: LogFilter,
   ): Promise<{ entries: TargetLogEntry[]; cursor: string }>;
 }
+/** Whose backups a directory holds: names, as the backup directory tree is laid out. */
+export interface BackupScope {
+  project: string;
+  target: string;
+  job: string;
+}
+/** Where backups live on the Mac (ADR 0017). Every path must be one `location` gave; anything outside the backup root fails
+ * BACKUP_PATH untouched, and so does any path below a symlinked or non-directory component between the root and it.
+ * Nothing inside a backup is opened or followed, and no mode is changed after a directory is made. */
+export interface BackupStorage {
+  /** Pure: the directory of the backup `id` of `scope`; not created. */
+  location(scope: BackupScope, id: string): string;
+  /** Creates `path` fresh and empty, mode 0700, with its parents; fails BACKUP_DIRECTORY when it exists or cannot be made,
+   * BACKUP_PATH when a directory on the way is a symlink. */
+  create(path: string): Promise<void>;
+  /** Whether `path` is a real directory now, reached through real directories only. */
+  exists(path: string): Promise<boolean>;
+  /** Total bytes under `path`, every entry by its own lstat size; undefined when it is gone or not reachable safely. */
+  measure(path: string): Promise<number | undefined>;
+  /** Deletes `path` without following any symlink, and its empty parents up to the backup root: `removed`, also when it was
+   * already gone; `skipped`, touching nothing, when a directory on the way is a symlink. Fails BACKUP_REMOVE. */
+  remove(path: string): Promise<"removed" | "skipped">;
+}
 /** Bounded evidence of a background channel that is failing inside the daemon. */
 export interface RuntimeNotice {
   channel: string;
@@ -156,6 +179,9 @@ export interface RuntimeDependencies {
   /** Schedules that budget's expiry; the timer in production, scripted in tests. */
   observationDeadline: ObservationDeadline;
   files: RuntimeFiles;
+  /** Backup directories under RIG_ROOT/backups. Absent where no job keeps backups, as in tests that run none; a backup job
+   * then fails BACKUP_UNAVAILABLE. */
+  backups?: BackupStorage;
   /** The running Operation's port claims. Present while an Operation plans, so ports it chose but has
    * not recorded yet are never handed to an Operation running beside it; absent, planning sees only
    * the recorded Targets. */

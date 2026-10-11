@@ -1,5 +1,11 @@
 import type { JobReport, JobRunReport } from "../domain/project-status";
-import type { JobRecord, JobRun, TargetRecord } from "../domain/runtime";
+import type {
+  BackupRecord,
+  JobRecord,
+  JobRun,
+  TargetRecord,
+} from "../domain/runtime";
+import { backupSummary } from "./backups";
 import { targetSelector } from "../domain/target-selector";
 import { describeRun, findJobRecord } from "./jobs";
 import {
@@ -19,6 +25,8 @@ export function jobReports(
   now: number,
   clock: Pick<JobClock, "timeZone">,
   on: boolean | undefined,
+  /** The kept backups rigd recorded; absent, backup jobs show none. */
+  backups: readonly BackupRecord[] = [],
 ): JobReport[] | undefined {
   const jobs = target.plan.jobs ?? [];
   const reason =
@@ -37,6 +45,7 @@ export function jobReports(
         ? `jobs.${job.name}.targets does not name ${target.kind}, so only rig run runs it here.`
         : undefined);
     const next = why ? undefined : nextJobRun(job, now, clock);
+    const backup = backupSummary({ backups: [...backups] }, target.id, job);
     return {
       name: job.name,
       schedule: job.schedule,
@@ -50,6 +59,7 @@ export function jobReports(
       ...(record?.running ? { running: runReport(record.running) } : {}),
       ...(record?.last ? { last: runReport(record.last) } : {}),
       ...(why ? { reason: why } : {}),
+      ...(backup ? { backup } : {}),
     };
   });
   for (const record of records ?? [])
@@ -76,6 +86,8 @@ export function jobReports(
 function runReport(run: JobRun): JobRunReport {
   return {
     trigger: run.trigger,
+    ...(run.backup ? { backup: run.backup.id } : {}),
+    ...(run.restore ? { restore: run.restore.id } : {}),
     ...(run.scheduledFor ? { scheduledFor: run.scheduledFor } : {}),
     startedAt: run.startedAt,
     ...(run.finishedAt

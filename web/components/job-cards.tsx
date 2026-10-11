@@ -6,6 +6,9 @@ import { ago, when } from "@/lib/present";
 import type { TargetReport } from "@/lib/types";
 import { CARD, Empty, HEALTH_DOT, HEALTH_TILE, Mono } from "./bits";
 import { RunJobButton } from "./run-job-button";
+import { BackupList } from "./backup-list";
+import { RestoreBackupButton } from "./restore-backup-button";
+import { backupsOf, type BackupView } from "@/lib/backups";
 import { cn } from "@/lib/utils";
 
 /** One Target's scheduled jobs and backups, each as a card: its schedule, how its last run went as a
@@ -14,11 +17,14 @@ export function JobCards({
   project,
   target,
   jobs,
+  backups = [],
   now,
 }: {
   project: string;
   target: Pick<TargetReport, "kind" | "name">;
   jobs: readonly JobView[];
+  /** The Project's kept backups, as the backups read lists them; a backup job shows its own in this Target. */
+  backups?: readonly BackupView[];
   now: number;
 }) {
   return (
@@ -96,6 +102,21 @@ export function JobCards({
                 (job.reason ?? "Not scheduled.")
               )}
             </p>
+            {job.backup ? (
+              <BackupList
+                summary={job.backup}
+                backups={backupsOf(backups, target, job.name)}
+                now={now}
+                action={(backup) => (
+                  <RestoreBackupButton
+                    project={project}
+                    target={target}
+                    job={job}
+                    backup={backup}
+                  />
+                )}
+              />
+            ) : null}
           </li>
         );
       })}
@@ -107,8 +128,9 @@ export function JobsUnavailable() {
   return (
     <Empty icon={CalendarClock} title="No scheduled jobs">
       Jobs and backups are declared under <code>jobs:</code> in rig.yaml, each
-      with a cron schedule, and run with <code>rig run</code> or Run now here. A
-      Target shows its jobs once its plan has them: after{" "}
+      with a cron schedule, and run with <code>rig run</code> or Run now here; a
+      job with <code>backup:</code> keeps each successful run's output as a
+      backup. A Target shows its jobs once its plan has them: after{" "}
       <code>rig restart working</code> for the working Target, or the next
       deploy for the stable Target and Previews.
     </Empty>

@@ -8,6 +8,10 @@ export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
 /** A component name `rig logs --service` or `rig run` may send: the shape every Service, Tool and job name has. Like config, it sets no
  * length limit of its own; the control plane's request size bounds it. */
 export const logComponentName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
+/** A backup id, its run's start in UTC and its number in the job's backup sequence (`20261011T030000Z-17`), or `latest`. */
+export const backupSelector = z
+  .string()
+  .regex(/^(?:latest|\d{8}T\d{6}Z-[1-9]\d{0,15})$/);
 /** rig resolves paths against the caller's directory before sending; rigd never resolves against its own. */
 export const absolutePath = z.string().min(1).refine(isAbsolute, {
   message: "must be an absolute path",
@@ -39,6 +43,8 @@ export const commandSchema = z
       "run",
       "proxy",
       "proxy-apply",
+      "backups",
+      "restore",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
@@ -87,6 +93,8 @@ export const commandSchema = z
       .optional(),
     /** The job `run` starts: a name under jobs in rig.yaml that the selected Target's plan runs. */
     job: logComponentName.optional(),
+    /** The backup `restore` puts back: its id, or `latest`; rig resolves `latest` before it asks for confirmation. */
+    backup: backupSelector.optional(),
     /** An Operation id (or unambiguous prefix) that activity narrows to; the id a failed command prints. */
     operation: z.string().min(1).optional(),
     after: z.string().optional(),
@@ -108,6 +116,7 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "queue",
   "deployments",
   "proxy",
+  "backups",
 ] as const);
 /** Replies to the reads whose collections rig renders. A missing or malformed
  * collection is a protocol failure, never an empty page; unknown top-level keys
@@ -212,6 +221,50 @@ export const queueResultSchema = z
   })
   .passthrough();
 export type QueueResult = z.infer<typeof queueResultSchema>;
+/** One kept backup as `rig backup list` and the dashboard show it. */
+export const backupReportSchema = z
+  .object({
+    target: z.string().describe("The Target's name."),
+    job: z.string().describe("The backup job's name."),
+    id: z
+      .string()
+      .describe(
+        "The backup's id: its run's start in UTC and its number in the job's backup sequence, such as 20261011T030000Z-17; never issued twice.",
+      ),
+    path: z.string().describe("Its directory under RIG_ROOT/backups."),
+    run: z
+      .string()
+      .describe("The run that wrote it, as rig activity names it."),
+    trigger: z
+      .enum(["schedule", "manual"])
+      .describe("Whether the schedule or rig run started that run."),
+    startedAt: z.string().describe("When its run started (ISO 8601)."),
+    finishedAt: z.string().describe("When its run ended (ISO 8601)."),
+    bytes: z
+      .number()
+      .int()
+      .optional()
+      .describe("Its size in bytes; absent until it was measured."),
+    missing: z
+      .literal(true)
+      .optional()
+      .describe(
+        "Its directory is gone (deleted by hand), so it cannot be restored.",
+      ),
+  })
+  .passthrough();
+export const backupsResultSchema = z
+  .object({
+    project: z.string().describe("The Project the backups belong to."),
+    backups: z
+      .array(backupReportSchema)
+      .describe(
+        "Newest first. A command that names a job or Target lists only its backups.",
+      ),
+  })
+  .passthrough();
+export type BackupReport = z.infer<typeof backupReportSchema>;
+export type BackupsResult = z.infer<typeof backupsResultSchema>;
 export type ListResult = z.infer<typeof listResultSchema>;
 export type LogsResult = z.infer<typeof logsResultSchema>;
 export type ActivityResult = z.infer<typeof activityResultSchema>;
@@ -219,6 +272,7 @@ export const readResultSchemas = {
   list: listResultSchema,
   logs: logsResultSchema,
   activity: activityResultSchema,
+  backups: backupsResultSchema,
 } as const;
 export interface DaemonAddress {
   port: number;

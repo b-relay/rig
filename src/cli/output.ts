@@ -3,6 +3,7 @@ import {
   type JobReport,
   type ProjectStatusReport,
 } from "../domain/project-status";
+import { formatBytes } from "../domain/bytes";
 import { killingText } from "./stop-display";
 import { terminalText } from "./terminal-text";
 /** Human presenters consume the same domain report returned by structured commands. */
@@ -15,6 +16,7 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "logs") return renderLogs(report, true);
   if (action === "activity") return renderActivity(report);
   if (action === "proxy") return renderProxy(report);
+  if (action === "backups") return renderBackups(report);
   if (action === "proxy-apply")
     return "Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n";
   if (action === "daemon-status")
@@ -36,6 +38,18 @@ export function renderResult(action: string, value: unknown): string {
   if (!outcome) return `${subject}: operation returned no final outcome.\n`;
   if (action === "run")
     return `${[subject, word(report.job)].filter(Boolean).join(" ")} ${outcome}\n`;
+  if (action === "restore") {
+    const ended = object(report.ended);
+    return `${[subject, word(report.job)].filter(Boolean).join(" ")} ${
+      outcome === "restored"
+        ? `restored from ${word(report.backup)}${
+            typeof ended.message === "string"
+              ? ` (${word(ended.message).replace(/^[^:]*: (?:restore from \S+ )?/, "")})`
+              : ""
+          }`
+        : `restore from ${word(report.backup)} ${outcome}`
+    }\n`;
+  }
   const path =
     action === "init" && report.path ? `\nConfig: ${word(report.path)}` : "";
   const revision =
@@ -63,6 +77,32 @@ export function renderResult(action: string, value: unknown): string {
     )
     .join("");
   return `${retired}${subject} ${outcome}${upgrade}${revision}${path}\n${warnings}`;
+}
+/** `rig backup list`: one line per backup, newest first, `stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB
+ * schedule  run 1a2b3c4d`, then where they are. */
+function renderBackups(report: Record<string, unknown>): string {
+  const backups = rows(report.backups);
+  if (!backups.length)
+    return "No backups. A job with backup: in rig.yaml keeps one per successful run (rig run <job> makes one now).\n";
+  const lines = backups.map((backup) =>
+    [
+      word(backup.target),
+      word(backup.job),
+      word(backup.id),
+      word(backup.finishedAt)
+        .replace("T", " ")
+        .replace(/\.\d+Z$/, "Z"),
+      typeof backup.bytes === "number" ? formatBytes(backup.bytes) : "?",
+      word(backup.trigger) === "schedule" ? "schedule" : "rig run",
+      `run ${word(backup.run).slice(0, 8)}`,
+      backup.missing === true ? "MISSING (directory deleted)" : "",
+    ]
+      .filter(Boolean)
+      .join("  "),
+  );
+  const first = word(backups[0]!.path);
+  const root = first.replace(/\/[^/]+\/[^/]+\/[^/]+$/, "");
+  return `${lines.join("\n")}\n${root ? `\nIn ${root}/<target>/<job>/<id>\n` : ""}`;
 }
 function renderProjects(report: Record<string, unknown>): string {
   const projects = rows(report.projects);
@@ -141,6 +181,7 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
       lines.push(
         `    ${[word(job.name), jobSummary(job, now)].filter(Boolean).join("  ")}`,
       );
+      if (job.backup) lines.push(`      ${backupLine(job.backup, now)}`);
       if (job.reason) lines.push(`      ${word(job.reason)}`);
       if (
         job.last?.outcome &&
@@ -187,6 +228,21 @@ function jobSummary(job: JobReport, now: Date): string {
     parts.push(
       `next ${clock(job.nextRunAt, zone)} (in ${until(job.nextRunAt, now)})`,
     );
+  return parts.join(" · ");
+}
+/** A backup job's backups on one line: `backups 3 of 14 kept, 41 MB · latest 20261011T030000Z-17, 9h ago`. */
+function backupLine(
+  backup: NonNullable<JobReport["backup"]>,
+  now: Date,
+): string {
+  const parts = [
+    `backups ${backup.count} of ${backup.keep} kept, ${formatBytes(backup.bytes)}`,
+  ];
+  if (backup.latest)
+    parts.push(
+      `latest ${word(backup.latest.id)}, ${ago(backup.latest.finishedAt, now)} ago`,
+    );
+  if (!backup.restore) parts.push("no restore command");
   return parts.join(" · ");
 }
 /** `Sat 18:17 CDT`: a time as the job's zone reads it, or as given when it cannot be read. */

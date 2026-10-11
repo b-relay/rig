@@ -79,12 +79,13 @@ const abandoned = () =>
   cancelled(
     "rigd keeps running whatever it was asked; run rig activity to see it.",
   );
-/** A list, logs, or activity reply must carry its collection, and a logs reply must name the Project asked for; other actions pass through as received. */
+/** A list, logs, activity or backups reply must carry its collection, and a logs reply must name the Project asked for; other actions pass through as received. */
 function validated(command: RuntimeCommand, result: unknown): unknown {
   if (
     command.action !== "list" &&
     command.action !== "logs" &&
-    command.action !== "activity"
+    command.action !== "activity" &&
+    command.action !== "backups"
   )
     return result;
   const report = readResultSchemas[command.action].safeParse(result);

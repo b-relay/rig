@@ -5,6 +5,8 @@ import type { DoctorReport } from "../../src/runtime/doctor";
 
 export type {
   ActivityResult,
+  BackupReport,
+  BackupsResult,
   DaemonHealth,
   ListResult,
   LogsResult,
@@ -122,6 +124,7 @@ export interface Replies {
   "initialization-info": InitializationInfo;
   "deployment-context": DeploymentContext;
   deployments: DeploymentsResult;
+  backups: import("../../src/daemon/protocol").BackupsResult;
   proxy: import("../../src/adapters/proxy-report").ProxyReport;
   "prepare-uninstall": { ready: true };
   "cancel-uninstall": { cancelled: true };

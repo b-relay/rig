@@ -4,7 +4,12 @@ import type {
 } from "../domain/project-status";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { ServiceStopView } from "../domain/operation-progress";
-import type { JobRecord, ProjectRecord, TargetRecord } from "../domain/runtime";
+import type {
+  BackupRecord,
+  JobRecord,
+  ProjectRecord,
+  TargetRecord,
+} from "../domain/runtime";
 import { hostTimeZone } from "../domain/cron";
 import { jobReports } from "./job-status";
 import { asRigError } from "../domain/errors";
@@ -62,6 +67,8 @@ export async function projectStatus(
     now?(): string;
     /** What rigd recorded about job runs; absent, jobs show no runs. */
     jobRecords?: readonly JobRecord[];
+    /** The kept backups rigd recorded; absent, backup jobs show none. */
+    backupRecords?: readonly BackupRecord[];
     documents: Pick<RuntimeDependencies["documents"], "read">;
     /** Whether the daemon is executing this operation right now. */
     inProgress(operationId: string): boolean;
@@ -139,6 +146,7 @@ export async function projectStatus(
       now,
       { timeZone: deps.timeZone ?? hostTimeZone },
       document ? targetOn(document.config, target.kind) : undefined,
+      deps.backupRecords,
     );
     if (report && jobs) report.jobs = jobs;
   }

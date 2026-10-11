@@ -29,7 +29,7 @@ const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
 function fixture() {
   const deadline = controlledDeadline();
   const state: RuntimeState = {
-    version: 6,
+    version: 7,
     projects: [],
     targets: [],
     activity: [],

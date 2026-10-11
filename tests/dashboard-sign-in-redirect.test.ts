@@ -41,3 +41,18 @@ test("a browser without a session is still sent to sign in", () => {
     "https://rig.example.test/sign-in?next=%2Fprojects%2Fpantry",
   );
 });
+
+test("no crafted next leaves the site: tabs, newlines, backslashes and protocol-relative paths land on the board", () => {
+  for (const next of [
+    "%2F%09%2Fevil.example",
+    "%2F%0A%2Fevil.example",
+    "%2F%5Cevil.example",
+    "%5C%5Cevil.example",
+    "%2F%2Fevil.example",
+    "https%3A%2F%2Fevil.example",
+    "%2F%2F%09evil.example",
+  ])
+    expect(visit(`/sign-in?next=${next}`).headers.get("location")).toBe(
+      "https://rig.example.test/",
+    );
+});

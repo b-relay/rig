@@ -47,14 +47,19 @@ export function decide(
 ): NextResponse {
   if (admission.admitted) {
     // A browser that is already signed in has nothing to do on the sign-in page: send it on to where it was going.
-    if (request.method === "GET" && request.nextUrl.pathname === "/sign-in")
+    if (request.method === "GET" && request.nextUrl.pathname === "/sign-in") {
+      const onward = new URL(
+        returnPath(request.nextUrl.searchParams.get("next")),
+        request.url,
+      );
+      // returnPath keeps it on this site; checked again so no parser difference can send a visitor elsewhere.
       return NextResponse.redirect(
-        new URL(
-          returnPath(request.nextUrl.searchParams.get("next")),
-          request.url,
-        ),
+        onward.origin === request.nextUrl.origin
+          ? onward
+          : new URL("/", request.url),
         303,
       );
+    }
     return NextResponse.next({ request: { headers: requestHeaders } });
   }
   if (admission.code === "KEY_REQUIRED") {

@@ -1,5 +1,5 @@
 import type { Outcome } from "./outcome";
-import { targetWarnings, toneOf, type Tone } from "./present";
+import { targetWarnings, toneOf } from "./present";
 import type { ListResult, ProjectStatusReport, TargetReport } from "./types";
 
 /** One registered Project and what rigd said about it; the status is absent while still on its way. */
@@ -13,24 +13,6 @@ export const KIND_RANK: Record<TargetReport["kind"], number> = {
   stable: 1,
   preview: 2,
 };
-
-/** How bad a tone is, so a group of Targets can be summed up by its worst member. */
-const SEVERITY: Record<Tone, number> = {
-  bad: 4,
-  warn: 3,
-  busy: 2,
-  good: 1,
-  idle: 0,
-};
-/** Pure: the most urgent tone among `states`; idle when there are none. */
-export function worstTone(states: readonly string[]): Tone {
-  return states
-    .map(toneOf)
-    .reduce<Tone>(
-      (worst, tone) => (SEVERITY[tone] > SEVERITY[worst] ? tone : worst),
-      "idle",
-    );
-}
 /** Pure: whether a Target needs someone to look at it: a failing state, or a warning such as an unpublished route. */
 export const needsAttention = (target: TargetReport): boolean =>
   ["bad", "warn"].includes(toneOf(target.state)) ||

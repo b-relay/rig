@@ -3,7 +3,6 @@ import {
   needsAttention,
   orderedTargets,
   overviewSummary,
-  worstTone,
 } from "../web/lib/overview";
 import { targetVerbs } from "../web/lib/target-verbs";
 import { componentPorts, exitText, routeLines } from "../web/lib/target-detail";
@@ -20,13 +19,6 @@ const target = (fields: Partial<TargetReport>): TargetReport => ({
 });
 
 describe("overview", () => {
-  test("a group of states is summed up by its most urgent one", () => {
-    expect(worstTone([])).toBe("idle");
-    expect(worstTone(["stopped", "running"])).toBe("good");
-    expect(worstTone(["running", "starting"])).toBe("busy");
-    expect(worstTone(["healthy", "degraded", "running"])).toBe("warn");
-    expect(worstTone(["unknown", "failed"])).toBe("bad");
-  });
   test("a Target needs attention when its state fails or it carries a warning", () => {
     expect(needsAttention(target({ state: "healthy" }))).toBe(false);
     expect(needsAttention(target({ state: "stopped" }))).toBe(false);

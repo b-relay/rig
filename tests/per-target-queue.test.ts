@@ -196,6 +196,9 @@ async function fixture(host: Record<string, unknown> = {}) {
       async changed() {
         return true;
       },
+      async unmatched() {
+        return [];
+      },
     },
     lifecycle: {
       async checkRoute() {},

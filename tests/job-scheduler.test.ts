@@ -23,6 +23,7 @@ import {
   stopJobRun,
 } from "../src/runtime/jobs";
 import { logComponents } from "../src/runtime/log-services";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 const ZONE = "America/Chicago";
 const at = (iso: string) => Date.parse(iso);
@@ -98,7 +99,7 @@ const job = (
  * running until the test ends it. `restart` stands for a new rigd: a fresh scheduler, the same state and processes. */
 function world(target: TargetRecord, jobs: JobRecord[] = []) {
   const store = memoryStore({
-    version: 7,
+    version: STATE_VERSION,
     projects: [
       {
         id: "p1",

@@ -6,6 +6,7 @@ import {
   type TargetEffects,
 } from "../src/runtime/lifecycle";
 import { loopbackListeners } from "./support/activation-doubles";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 /** The runtime's side of the health monitor's epoch rule: every lifecycle transition is reported as it happens. */
 
@@ -61,7 +62,7 @@ const target = (): TargetRecord => ({
 
 test("every state write that is a lifecycle transition is reported as it is applied, and no other write is", async () => {
   let state = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [target(), { ...target(), id: "t2", name: "feature" }],
     activity: [],

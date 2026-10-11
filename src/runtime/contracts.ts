@@ -97,6 +97,14 @@ export interface DeploymentSources {
     to: string;
     paths?: readonly string[];
   }): Promise<boolean>;
+  /** The entries of `paths` (pathspecs as for `changed`) that match no tracked file at the Commit `commit` in `repository`,
+   * in their order: a mistyped `watch` entry that would let a deploy keep a stale Service. Rejects GIT_DIFF when it cannot
+   * tell. */
+  unmatched(request: {
+    repository: string;
+    commit: string;
+    paths: readonly string[];
+  }): Promise<string[]>;
 }
 export interface RuntimeFiles {
   /** Delete only a canonical Preview root after verified retirement. Validates all

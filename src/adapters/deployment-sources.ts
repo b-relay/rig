@@ -4,6 +4,8 @@ import type { DeploymentSources } from "../runtime/contracts";
 import { preflightDeployment } from "../git/preflight";
 import { RigError } from "../domain/errors";
 import { isGitCommit } from "../domain/git";
+/** How long one comparison or listing of Commits may take; one that takes longer cannot tell, and the deploy restarts. */
+const COMPARE_TIMEOUT_MS = 30_000;
 /** A comparison of two Commits that could not be made; a deploy restarts the Service it was for. */
 function diffFailure(message: string): RigError {
   return new RigError(
@@ -62,12 +64,51 @@ export function createDeploymentSources(
           ...(paths ?? []).map((path) => `:(glob)${path}`),
         ],
         cwd: repository,
+        timeoutMs: COMPARE_TIMEOUT_MS,
       });
       if (result.exitCode === 0) return false;
       if (result.exitCode === 1) return true;
       throw diffFailure(
         "Git could not compare the two Commits; one may no longer be in the repository.",
       );
+    },
+    async unmatched({ repository, commit, paths }) {
+      if (!isGitCommit(commit))
+        throw diffFailure("The Commit to list is not a full Commit id.");
+      if (!paths.length) return [];
+      const listing = () =>
+        diffFailure(
+          "Git could not list the Commit's files; it may no longer be in the repository.",
+        );
+      // ls-tree takes no pathspec magic, so each entry is compared with the empty tree instead: a difference is a match.
+      const empty = await run({
+        command: ["git", "hash-object", "-t", "tree", "/dev/null"],
+        cwd: repository,
+        timeoutMs: COMPARE_TIMEOUT_MS,
+      });
+      const emptyTree = empty.stdout.trim();
+      if (empty.exitCode !== 0 || !isGitCommit(emptyTree)) throw listing();
+      const missing: string[] = [];
+      for (const path of paths) {
+        const result = await run({
+          command: [
+            "git",
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            emptyTree,
+            commit,
+            "--",
+            `:(glob)${path}`,
+          ],
+          cwd: repository,
+          timeoutMs: COMPARE_TIMEOUT_MS,
+        });
+        if (result.exitCode === 0) missing.push(path);
+        else if (result.exitCode !== 1) throw listing();
+      }
+      return missing;
     },
     async currentBranch(repository) {
       const result = await run({

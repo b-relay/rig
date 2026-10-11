@@ -25,6 +25,7 @@ import type { Supervisor } from "../src/providers/contracts";
 import { RigError, diagnosticCauses } from "../src/domain/errors";
 import { unreloadedCaddy } from "./support/router-doubles";
 import { managedCaddyWorld } from "./support/managed-caddy-double";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -125,7 +126,7 @@ async function fixture(options: { router?: Router } = {}) {
   candidate.plan.workspacePath = join(root, "new");
   candidate.plan.domain = "new.test";
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [previous],
     activity: [],

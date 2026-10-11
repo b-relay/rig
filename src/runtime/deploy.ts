@@ -2,6 +2,9 @@ import { activationJournal, intendStopped } from "./supervision";
 import type { ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import { boundedObservations } from "./bounded-observations";
+import { within } from "../domain/paths";
+import { holdCheckout } from "./jobs";
+import { ownedRevision } from "./revisions";
 import {
   decideKept,
   recordedRun,
@@ -88,6 +91,11 @@ async function activate(
     deploymentIncomplete: previous ? previous.deploymentIncomplete : true,
     stage: "pending",
   };
+  // The previous runs come along, so the stored Target keeps naming the processes that run in earlier checkouts from its
+  // first write on, and a sweep that runs while the candidate builds never gives such a checkout back. They describe
+  // another Deployment until the candidate adopts or replaces them (`currentRun` ignores them).
+  if (previous?.services)
+    candidate.services = { ...previous.services, ...candidate.services };
   const checkpoint = await deps.lifecycle.checkpoint(candidate, previous);
   let commitDecided = false,
     transitioned = false;
@@ -141,8 +149,42 @@ async function activate(
     await checkpoint.commit();
     const completed: TargetRecord = { ...committing };
     delete completed.recovery;
-    await persistTarget(completed, deps.store);
-    return { target: completed, decision };
+    // The previous runs the candidate carried and neither adopted nor replaced describe processes that are gone.
+    if (completed.services)
+      completed.services = Object.fromEntries(
+        Object.entries(completed.services).filter(
+          ([, run]) => run.deployment === completed.plan.workspacePath,
+        ),
+      );
+    // A kept Service that ended meanwhile was started again from the candidate's checkout: it was not kept after all.
+    const stillKept = decision.kept.filter(
+      (service) =>
+        completed.services?.[service]?.incarnation === kept.get(service),
+    );
+    const outcome: KeepDecision = {
+      ...decision,
+      kept: stillKept,
+      restarted: [
+        ...decision.restarted,
+        ...decision.kept
+          .filter((service) => !stillKept.includes(service))
+          .map((service) => ({ service, reason: "not-running" as const })),
+      ],
+    };
+    // The checkouts kept Services run in are recorded as held in the same write, so a rigd that stops right after it
+    // still finds them to give back.
+    await deps.store.update((state) => {
+      const index = state.targets.findIndex((t) => t.id === completed.id);
+      if (index === -1) state.targets.push(completed);
+      else state.targets[index] = completed;
+      for (const workspace of heldBy(completed, stillKept))
+        holdCheckout(state, {
+          target: completed.id,
+          project: completed.projectId,
+          workspace,
+        });
+    });
+    return { target: completed, decision: outcome };
   } catch (error) {
     if (commitDecided)
       throw new RigError(
@@ -159,8 +201,13 @@ async function activate(
       // Only what the candidate started stops: a kept Service still running the process it was kept with is never
       // stopped by a failed deploy, and the previous plan's start below finds it running.
       if (transitioned) {
+        // A kept Service whose start check failed in the candidate's start is restarted from the previous plan, like the
+        // Services the candidate started; one that ended meanwhile was started by the candidate.
+        // Its dependents go with it, so no Service left running depends on one that restarts.
+        const touched = dependentsOf(candidate, failedService(error));
         const untouched = [...kept].flatMap(([service, incarnation]) =>
-          candidate.services?.[service]?.incarnation === incarnation
+          candidate.services?.[service]?.incarnation === incarnation &&
+          !touched.has(service)
             ? [service]
             : [],
         );
@@ -320,6 +367,73 @@ async function watchedChange(
         ...(component.watch ? { paths: component.watch } : {}),
       }),
     };
+  } catch {
+    return undefined;
+  }
+}
+/** A warning for each `watch` entry of `target`'s plan that matches no tracked file at its Commit: a mistyped path would let
+ * a later deploy keep the Service running on a file that changed. Best effort: what cannot be listed says nothing. */
+export async function watchWarnings(
+  target: Pick<TargetRecord, "plan" | "commit">,
+  repository: string,
+  deps: Pick<RuntimeDependencies, "sources">,
+): Promise<string[]> {
+  const commit = target.commit;
+  if (!commit) return [];
+  const warnings: string[] = [];
+  for (const component of target.plan.components) {
+    if (component.kind !== "managed" || !component.watch?.length) continue;
+    const missing = await deps.sources
+      .unmatched({ repository, commit, paths: component.watch })
+      .catch(() => []);
+    for (const path of missing)
+      warnings.push(
+        `services.${component.name}.watch entry '${path}' matches no tracked file at ${commit.slice(0, 7)}, so a change there would never restart ${component.name}. Check its spelling and case in rig.yaml.`,
+      );
+  }
+  return warnings;
+}
+/** The earlier checkouts the kept Services of `target` run in, which the Target holds while they run. */
+function heldBy(target: TargetRecord, kept: readonly string[]): string[] {
+  const owned = ownedRevision(target) !== undefined;
+  return [
+    ...new Set(
+      kept.flatMap((service) => {
+        const checkout = target.services?.[service]?.source?.checkout;
+        return owned &&
+          checkout !== undefined &&
+          checkout !== target.plan.workspacePath &&
+          target.sourceRoot !== undefined &&
+          within(target.sourceRoot, checkout)
+          ? [checkout]
+          : [];
+      }),
+    ),
+  ];
+}
+/** `service` and every Service of `target`'s plan that depends on it, transitively; empty without a Service. */
+function dependentsOf(
+  target: TargetRecord,
+  service: string | undefined,
+): Set<string> {
+  const found = new Set<string>(service !== undefined ? [service] : []);
+  if (!found.size) return found;
+  // Plans list Services in dependency order, so one pass reaches every dependent.
+  for (const component of target.plan.components)
+    if (
+      component.kind === "managed" &&
+      component.dependsOn.some((name) => found.has(name))
+    )
+      found.add(component.name);
+  return found;
+}
+/** The Service a failed start check names, if any. A thrown value may be anything, even a Proxy that throws when it is
+ * inspected: that names none. */
+function failedService(error: unknown): string | undefined {
+  try {
+    const component =
+      error instanceof RigError ? error.details.component : undefined;
+    return typeof component === "string" ? component : undefined;
   } catch {
     return undefined;
   }

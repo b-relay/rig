@@ -23,13 +23,14 @@ import {
   parseHostConfig,
   resolveTargetPlan as resolvePlanWithHost,
 } from "../src/config";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
   resolvePlanWithHost(input, RESOLVE_HOST);
 function fixture() {
   const deadline = controlledDeadline();
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [],
     activity: [],
@@ -125,6 +126,9 @@ function fixture() {
       async release() {},
       async changed() {
         return true;
+      },
+      async unmatched() {
+        return [];
       },
     },
     lifecycle: {

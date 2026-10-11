@@ -86,18 +86,6 @@ export async function releaseRevisions(
   deps: RevisionDependencies,
 ): Promise<RevisionRelease[]> {
   const state = await deps.store.read();
-  const planned = new Set(
-    state.targets.flatMap((record) => [
-      record.plan.workspacePath,
-      ...(record.recovery ? [record.recovery.plan.workspacePath] : []),
-    ]),
-  );
-  // A job run keeps the checkout it started in until it ends, so a deploy never removes it from under the run.
-  const running = new Set(
-    (state.jobs ?? []).flatMap((record) =>
-      record.running?.workspace ? [record.running.workspace] : [],
-    ),
-  );
   const results: RevisionRelease[] = [];
   for (const record of records) {
     const workspacePath = ownedRevision(record);
@@ -106,15 +94,9 @@ export async function releaseRevisions(
       results.some((result) => result.workspacePath === workspacePath)
     )
       continue;
-    if (planned.has(workspacePath)) {
-      results.push({ workspacePath, outcome: "planned" });
-      continue;
-    }
-    if (
-      running.has(workspacePath) ||
-      (await runInByService(state, workspacePath, deps))
-    ) {
-      results.push({ workspacePath, outcome: "held" });
+    const standing = await revisionStanding(workspacePath, state, deps);
+    if (standing !== "free") {
+      results.push({ workspacePath, outcome: standing });
       continue;
     }
     try {
@@ -132,6 +114,34 @@ export async function releaseRevisions(
   return results;
 }
 
+/** How the checkout `workspacePath` stands in `state` now: a plan's or recovery plan's checkout, still run in by a job run in
+ * progress or a Service process (held), or free to give back. Reads and observes only, so it needs no Target's lease. */
+export async function revisionStanding(
+  workspacePath: string,
+  state: Pick<RuntimeState, "targets" | "jobs">,
+  deps: Pick<
+    RevisionDependencies,
+    "observations" | "observationBudgetMs" | "observationDeadline"
+  >,
+): Promise<"planned" | "held" | "free"> {
+  if (
+    state.targets.some(
+      (record) =>
+        record.plan.workspacePath === workspacePath ||
+        record.recovery?.plan.workspacePath === workspacePath,
+    )
+  )
+    return "planned";
+  // A job run keeps the checkout it started in until it ends, so a deploy never removes it from under the run.
+  if (
+    (state.jobs ?? []).some(
+      (record) => record.running?.workspace === workspacePath,
+    ) ||
+    (await runInByService(state, workspacePath, deps))
+  )
+    return "held";
+  return "free";
+}
 /** Whether a Service process may still run in `checkout`: a run whose source names it, whose process is observed running
  * under the run's incarnation (or one that names none), or cannot be observed. */
 async function runInByService(

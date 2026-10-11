@@ -7,6 +7,7 @@ import {
   type HealthMonitor,
   type HealthRestartRequest,
 } from "../src/runtime/health-monitor";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 /** The interleaving harness for the health monitor's epoch rule (src/runtime/health-monitor.ts). One stable Target runs
  * `web`, checked every 5 s with retries 1 and on_failure: restart, under a fake clock. Every await the monitor makes on
@@ -82,7 +83,7 @@ function world(
     healthcheck: { interval: 5, timeout: 5, retries: 1, onFailure: "restart" },
   };
   const state = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [
       {
         id: "p1",

@@ -50,10 +50,14 @@ async function loadKey(path: string): Promise<Buffer> {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST")
       throw keyFailure(path, error);
   }
-  try {
-    return parseKey(await readFile(path, "utf8"), path);
-  } catch (error) {
-    throw keyFailure(path, error);
+  // Another operation may have created it a moment ago and still be writing it: read again briefly before refusing it.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return parseKey(await readFile(path, "utf8"), path);
+    } catch (error) {
+      if (attempt >= 20) throw keyFailure(path, error);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
   }
 }
 function parseKey(text: string, path: string): Buffer {

@@ -271,4 +271,18 @@ test("a watch comparison asks the local repository which tracked files changed b
   await expect(changed(undefined, first, "main")).rejects.toMatchObject({
     code: "GIT_DIFF",
   });
+  // A watch entry that matches no tracked file, such as a typo or the wrong case, is named.
+  expect(
+    await sources.unmatched({
+      repository,
+      commit: second,
+      paths: [
+        "scripts/rig-postgres.sh",
+        "scripts/rig-postgress.sh",
+        "Scripts/rig-postgres.sh",
+        "apps",
+        "scripts/**/*.sh",
+      ],
+    }),
+  ).toEqual(["scripts/rig-postgress.sh", "Scripts/rig-postgres.sh"]);
 });

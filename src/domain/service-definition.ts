@@ -31,9 +31,10 @@ export function canonicalJson(value: unknown): string {
  * its plan records for it (command, working_dir, environment with references resolved, env file paths, ports,
  * depends_on, healthcheck, stop_timeout, restart), its own build unit and the Project's shared build. `watch` is not part
  * of it: it says what a deploy compares, and changing it changes nothing about the process. Two plans that give a Service
- * equal definitions start equal processes from their own checkouts. */
+ * equal definitions start equal processes from their own checkouts. The process supervisor counts too. */
 export function serviceDefinition(
-  plan: Pick<TargetPlan, "workspacePath" | "builds">,
+  plan: Pick<TargetPlan, "workspacePath" | "builds"> &
+    Partial<Pick<TargetPlan, "providers">>,
   component: ManagedComponent,
 ): string {
   const { watch: _watch, ...service } = component;
@@ -43,7 +44,14 @@ export function serviceDefinition(
   );
   return createHash("sha256")
     .update(
-      withoutCheckout(canonicalJson({ service, builds }), plan.workspacePath),
+      withoutCheckout(
+        canonicalJson({
+          service,
+          builds,
+          supervisor: plan.providers?.processSupervisor ?? null,
+        }),
+        plan.workspacePath,
+      ),
     )
     .digest("hex");
 }

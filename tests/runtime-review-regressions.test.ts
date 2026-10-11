@@ -19,6 +19,7 @@ import {
 } from "../src/config";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
   resolvePlanWithHost(input, RESOLVE_HOST);
@@ -29,7 +30,7 @@ afterEach(async () => {
 });
 function fixture() {
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [],
     activity: [],

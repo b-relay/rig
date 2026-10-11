@@ -168,6 +168,9 @@ async function world(
         async changed() {
           return true;
         },
+        async unmatched() {
+          return [];
+        },
       },
       hostSession: (() => {
         const probe = {

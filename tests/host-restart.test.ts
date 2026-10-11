@@ -108,6 +108,9 @@ async function fixture() {
         async changed() {
           return true;
         },
+        async unmatched() {
+          return [];
+        },
       },
       hostSession: {
         async current() {

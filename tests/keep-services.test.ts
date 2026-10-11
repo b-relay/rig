@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { releaseUnreferencedRevisions } from "../src/runtime/revisions";
 import { parseProjectConfig } from "../src/config";
 import type { ProjectConfig } from "../src/config/types";
@@ -12,6 +13,7 @@ import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { ServiceRun, TargetRecord } from "../src/domain/runtime";
 import { serviceDefinition } from "../src/domain/service-definition";
 import { runtimeWorld } from "./support/runtime-world";
+import { localActivation } from "./support/activation-doubles";
 
 /** ADR 0016 through the real runtime, lifecycle and state file, over a scripted supervisor and scripted deployment sources:
  * what a start records, which Services a deploy keeps running, and when a checkout a kept process runs in is given back. */
@@ -37,6 +39,9 @@ function melody(services: Record<string, Record<string, unknown>> = {}) {
       api: {
         command: "node api.js",
         depends_on: ["db", "search"],
+        // Its own hostname (ADR 0015), routed to its one port.
+        ports: { http: 4000 },
+        domain: "api.melody.test",
         ...services.api,
       },
       web: { command: "node web.js", depends_on: ["api"], ...services.web },
@@ -52,7 +57,11 @@ async function fixture(config: ProjectConfig = melody()) {
   /** Services the health monitor reports unhealthy. */
   const unhealthy = new Set<string>();
   /** Called before a running process is stopped. */
-  const hooks: { beforeStop?: () => Promise<void> } = {};
+  const hooks: {
+    beforeStop?: (key: string) => Promise<void>;
+    /** Awaited before each observation of a process. */
+    beforeObserve?: (key: string) => Promise<void>;
+  } = {};
   /** Services whose next spawn fails, once. */
   const failStarts = new Set<string>();
   let pid = 5000;
@@ -60,6 +69,7 @@ async function fixture(config: ProjectConfig = melody()) {
   const events: string[] = [];
   const supervisor: Supervisor = {
     async observe(key) {
+      await hooks.beforeObserve?.(key);
       if (unobservable.has(key))
         return { state: "unknown", reason: "lease unreadable" };
       return processes.get(key) ?? { state: "stopped" };
@@ -79,7 +89,7 @@ async function fixture(config: ProjectConfig = melody()) {
     },
     async stop(key) {
       const running = processes.get(key)?.state === "running";
-      if (running) await hooks.beforeStop?.();
+      if (running) await hooks.beforeStop?.(key);
       if (running) events.push(`stop ${key.split(":").at(-1)}`);
       processes.set(key, { state: "stopped" });
       return { outcome: running ? "stopped" : "unchanged" };
@@ -92,10 +102,14 @@ async function fixture(config: ProjectConfig = melody()) {
     head: "c1",
     /** Whether `paths` (undefined: the whole tree) changed between two Commits. */
     changed: (_from: string, _to: string, _paths?: readonly string[]) => true,
+    /** The tracked files a `watch` entry may name. */
+    tracked: ["scripts/rig-postgres.sh"],
   };
   const released: string[] = [];
   const world = await runtimeWorld({
     name: "keep",
+    // api listens on its port at loopback, so its route can be published.
+    activation: localActivation([4000]),
     config,
     supervisor: () => supervisor,
     startsAt: "2026-10-11T09:00:00.000Z",
@@ -131,6 +145,9 @@ async function fixture(config: ProjectConfig = melody()) {
         }) {
           if (request.paths?.length === 0) return false;
           return git.changed(request.from, request.to, request.paths);
+        },
+        async unmatched(request: { paths: readonly string[] }) {
+          return request.paths.filter((path) => !git.tracked.includes(path));
         },
       } as unknown as RuntimeDependencies["sources"],
     }),
@@ -293,6 +310,16 @@ test("a deploy whose Commit changed nothing a Service uses keeps every Service r
   });
   expect(f.events).toEqual([]);
   expect(await f.pids()).toEqual(before);
+  // A kept Service keeps its own hostname: the route map is republished from the new plan.
+  const status = await f.runtime.status({ repoPath: f.world.repo });
+  expect(
+    status.targets
+      .find((t) => t.name === "stable")!
+      .components.find((c) => c.name === "api"),
+  ).toMatchObject({
+    hostnames: ["api.melody.test"],
+    commit: "c1",
+  });
   const second = await f.stable();
   expect(second.plan.workspacePath).not.toBe(first.plan.workspacePath);
   // Each run now belongs to the new Deployment, and still says where its process runs.
@@ -555,4 +582,159 @@ test("Melody's watch settings: a web-only change keeps db and search; a change t
   expect(
     Object.fromEntries(stable.components.map((c) => [c.name, c.commit])),
   ).toEqual({ db: "c3", search: "c1", api: "c3", web: "c3" });
+});
+
+/** Deploys c1, then c2 with db's settings changed, so search is kept running in c1's checkout, which is held. */
+async function keptInFirst(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.deploy();
+  const first = await f.stable();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "db", { stop_timeout: "60s" });
+  expect(await f.deploy()).toMatchObject({ kept: ["search"] });
+  return first.plan.workspacePath;
+}
+
+test("while a later deploy builds, the checkout a kept Service runs in stays held, even for the sweep of a rigd that restarted meanwhile", async () => {
+  const f = await fixture();
+  const held = await keptInFirst(f);
+  f.git.head = "c3";
+  edit(f.config, "db", { stop_timeout: "30s" });
+  const lifecycle = f.world.deps.lifecycle;
+  const prepare = lifecycle.prepare.bind(lifecycle);
+  let swept = false;
+  lifecycle.prepare = async (target, request) => {
+    // Another rigd over the same state sweeps while this candidate builds, as one started after a crash would.
+    await f.world.open().releaseHeldCheckouts(target.id);
+    swept = true;
+    return await prepare(target, request);
+  };
+  expect(await f.deploy()).toMatchObject({ kept: ["search"] });
+  expect(swept).toBe(true);
+  expect(f.released).not.toContain(held);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([
+    expect.objectContaining({ workspace: held }),
+  ]);
+  // The carried runs of the previous Deployment are gone from the completed record: only current runs remain.
+  const target = await f.stable();
+  for (const run of Object.values(target.services!))
+    expect(run.deployment).toBe(target.plan.workspacePath);
+});
+
+test("the checkout a kept Service runs in is recorded as held in the same write that completes the deploy", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const first = await f.stable();
+  const store = f.world.deps.store;
+  const update = store.update.bind(store);
+  const writes: Awaited<ReturnType<typeof store.read>>[] = [];
+  store.update = async (change) => {
+    await update(change);
+    writes.push(await store.read());
+  };
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "web", { command: "node web2.js" });
+  await f.deploy();
+  const completing = writes.find((state) => {
+    const target = state.targets.find((t) => t.id === first.id);
+    return target?.commit === "c2" && !target.recovery;
+  })!;
+  expect(completing.heldCheckouts).toEqual([
+    {
+      target: first.id,
+      project: first.projectId,
+      workspace: first.plan.workspacePath,
+    },
+  ]);
+});
+
+test("the sweep observes a held checkout without its Target's lease, and takes it only when something can be given back", async () => {
+  const f = await fixture();
+  const held = await keptInFirst(f);
+  const target = await f.stable();
+  const views: unknown[] = [];
+  f.hooks.beforeObserve = async () => {
+    views.push(
+      ...(
+        (await f.runtime.command({ action: "queue" })) as {
+          operations: unknown[];
+        }
+      ).operations,
+    );
+  };
+  await f.runtime.releaseHeldCheckouts(target.id);
+  f.hooks.beforeObserve = undefined;
+  // While search runs there, the sweep only looked: no Operation held the Target, so status never showed it stopping.
+  expect(views).toEqual([]);
+  expect(f.runtime.targetBusy(target)).toBe(false);
+  expect(f.released).not.toContain(held);
+  f.processes.set(`${target.id}:search`, { state: "stopped" });
+  await f.runtime.releaseHeldCheckouts(target.id);
+  expect(f.released).toContain(held);
+});
+
+test("a kept Service that ended between the decision and the start is started from the new checkout and not reported as kept", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const target = await f.stable();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "db", { stop_timeout: "60s" });
+  f.hooks.beforeStop = async () => {
+    f.processes.set(`${target.id}:search`, { state: "stopped" });
+  };
+  expect(await f.deploy()).toMatchObject({
+    kept: [],
+    restarted: expect.arrayContaining([
+      { service: "search", reason: "not-running" },
+    ]),
+  });
+  const after = await f.stable();
+  expect(after.services!.search!.source!.checkout).toBe(
+    after.plan.workspacePath,
+  );
+  expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);
+});
+
+test("a kept Service whose start check fails during the deploy is restarted, with its dependents, by the rollback", async () => {
+  const flag = join(
+    tmpdir(),
+    `rig-keep-unhealthy-${process.pid}-${Date.now()}`,
+  );
+  const f = await fixture(
+    melody({
+      db: { healthcheck: { test: `test ! -e '${flag}'`, start_period: "1s" } },
+    }),
+  );
+  await f.deploy();
+  const before = await f.pids();
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "web", { command: "node web2.js" });
+  await writeFile(flag, "");
+  f.hooks.beforeStop = async (key) => {
+    if (key.endsWith(":db")) await rm(flag, { force: true });
+  };
+  try {
+    await expect(f.deploy()).rejects.toMatchObject({ code: "HEALTH_FAILED" });
+  } finally {
+    await rm(flag, { force: true });
+  }
+  const after = await f.pids();
+  expect(after.search).toBe(before.search);
+  for (const service of ["db", "api", "web"])
+    expect(after[service]).not.toBe(before[service]);
+  expect((await f.stable()).commit).toBe("c1");
+});
+
+test("a deploy warns about a watch entry that matches no tracked file at its Commit", async () => {
+  const f = await fixture(
+    melody({ db: { watch: ["scripts/rig-postgress.sh"] } }),
+  );
+  expect(await f.deploy()).toMatchObject({
+    warnings: [
+      "services.db.watch entry 'scripts/rig-postgress.sh' matches no tracked file at c1, so a change there would never restart db. Check its spelling and case in rig.yaml.",
+    ],
+  });
 });

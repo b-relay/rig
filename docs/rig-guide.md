@@ -726,7 +726,9 @@ that Service (a crash or health restart, `rig restart`, `rig up` after
 checkout is removed within about 30 seconds of the last process leaving it.
 `rig restart` restarts every Service and gives the earlier checkout back at
 once. A failed deploy stops only what it started, so a kept Service is never
-stopped by it. The deploy line names what it kept, for example
+stopped by it, unless its own start check failed during the deploy: then the
+rollback starts it again from the previous plan, with its dependents. The
+deploy line names what it kept, for example
 `melody stable deployed main@470a510 (was 83496f8), kept db, search`; the JSON
 result has `kept` and `restarted` (each with its reason), the deploy history
 records `kept`, and `rig status` shows `kept from <sha>` beside a Service that
@@ -1473,7 +1475,9 @@ down`, `rig restart`, a deploy that replaces or rolls back the Target, a
   matches within one directory and `**` across directories. Absolute paths,
   `~`, `..`, references and a leading `:` are refused. Leave it out to compare
   the whole checkout; `[]` says the Service reads nothing from the checkout. A
-  role patch may set it.
+  role patch may set it. Entries are case-sensitive, and a deploy warns about
+  an entry that matches no tracked file at its Commit, since a mistyped path
+  would let a later deploy keep the Service running on a file that changed.
 
 A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative

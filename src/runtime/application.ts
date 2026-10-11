@@ -104,12 +104,14 @@ import { projectStatus } from "./project-status";
 import {
   assertDeploymentRecovered,
   deployCandidate,
+  watchWarnings,
   stopForRecovery,
 } from "./deploy";
 import {
   ownedRevision,
   releaseRevisions,
   releaseUnreferencedRevisions,
+  revisionStanding,
 } from "./revisions";
 import {
   HOST_SCOPE,
@@ -1164,6 +1166,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const warnings = [
           ...preflight.warnings,
           ...(command.noUp ? [preparedWarning(target, wasRunning)] : []),
+          ...(await watchWarnings(target, project.repoPath, deps)),
           ...(await releaseUnreferencedRevisions(revisions, deps)).map(
             (retained) => retained.warning,
           ),
@@ -1756,6 +1759,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     targetId: string,
     action: string,
     work: (target: TargetRecord, lifecycle: TargetLifecycle) => Promise<void>,
+    /** What status shows it doing while it holds the Target. */
+    phase: OperationPhase = "stopping",
   ): Promise<void> => {
     if (draining) return;
     const recorded = (await deps.store.read()).targets.find(
@@ -1770,7 +1775,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         operationId,
         action,
         target: recorded.name,
-        phase: "stopping",
+        phase,
         startedAt: deps.now(),
       },
     };
@@ -1814,10 +1819,32 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     tidyBackups: () => tidyBackups(deps),
     async releaseHeldCheckouts(targetId) {
       const state = await deps.store.read();
-      if (state.targets.some((target) => target.id === targetId))
-        return await onTarget(targetId, "held-checkout", (target) =>
-          releaseHeldCheckouts(target, deps),
+      const recorded = state.targets.find((target) => target.id === targetId);
+      if (recorded) {
+        // An Operation on the Target may be starting or stopping its Services: the next offer looks again.
+        if (targetBusy(recorded)) return;
+        // Observed without the Target's lease, as the scheduler observes job runs: only a checkout nothing runs in any
+        // more, or that is a plan's again, is worth taking the lease for, so a Service that keeps running in one costs
+        // its Target nothing.
+        let due = false;
+        for (const held of state.heldCheckouts ?? [])
+          if (
+            held.target === targetId &&
+            (await revisionStanding(held.workspace, state, deps).catch(
+              () => "held" as const,
+            )) !== "held"
+          ) {
+            due = true;
+            break;
+          }
+        if (!due) return;
+        return await onTarget(
+          targetId,
+          "held-checkout",
+          (target) => releaseHeldCheckouts(target, deps),
+          "supervising",
         );
+      }
       // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop. Only
       // what was given back is forgotten; a failure stays for the scheduler's next offer.
       await forgetReleasedCheckouts(
@@ -1859,14 +1886,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         await releaseHeldCheckouts(held, deps);
       });
     },
-    targetBusy: (target) =>
-      locks.busy(targetScope(target.projectId, target), (id) => {
-        const entry = operations.get(id);
-        return (
-          entry?.view.action === "supervise" &&
-          entry.view.phase === initialPhase("supervise")
-        );
-      }),
+    targetBusy,
     async drain() {
       draining = true;
       // A stop in progress may wait an hour; shutdown leaves it to the Service and the next daemon.
@@ -1916,6 +1936,20 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     reconcile: () => pass("reconcile"),
     supervise: () => pass("supervise"),
   };
+  /** Whether an Operation that may start or stop a Service holds or waits for `target`. Neither a supervision pass that only
+   * observes nor the sweep of held checkouts does. */
+  function targetBusy(
+    target: Pick<TargetRecord, "projectId" | "kind" | "name">,
+  ): boolean {
+    return locks.busy(targetScope(target.projectId, target), (id) => {
+      const entry = operations.get(id);
+      return (
+        (entry?.view.action === "supervise" &&
+          entry.view.phase === initialPhase("supervise")) ||
+        entry?.view.action === "held-checkout"
+      );
+    });
+  }
   /** One pass over the recorded Targets. Both passes supervise the Targets meant to run; only `reconcile`, the daemon's first
    * pass, also re-stops the Targets meant to be stopped and reclaims orphaned checkpoints. Each Target is worked on under its
    * own lease, side by side with the others. `supervise` skips a Target another Operation holds: that Operation owns it now

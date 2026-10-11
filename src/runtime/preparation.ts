@@ -72,5 +72,5 @@ export async function prepareTarget(
   // The Project scope dependency installation ran in, as handed to it; a workspace installs once, at its first preparation.
   if (fresh && prepared.environment !== undefined)
     preparation.environment = prepared.environment;
-  return prepared;
+  return { built: prepared.built };
 }

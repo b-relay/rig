@@ -71,7 +71,7 @@ export async function hostDoctor(
 async function inspectRuntimeHost(
   deps: Pick<
     RuntimeDependencies,
-    "inspectHost" | "inspectProxy" | "store" | "notices"
+    "inspectHost" | "inspectProxy" | "routeFileInRoot" | "store" | "notices"
   >,
 ) {
   const checks = await deps.inspectHost();
@@ -108,9 +108,11 @@ async function inspectRuntimeHost(
 /** A failing `route-owners` check when the route file holds blocks whose Target no state record names: such a block holds its
  * hostnames from every new owner (ROUTE_CONFLICT) until it is withdrawn. Undefined when there is none, or when the route
  * file or the state cannot be read (other checks report that). The route file is read before the state, and every Target
- * is recorded before its route is published, so a deploy in progress is never reported. */
+ * is recorded before its route is published, so a deploy in progress is never reported. Doctor takes no lock, so a
+ * `rig forget` running between the two reads (its routes read before it withdrew them, its records after it dropped
+ * them) can be reported once; accepted, since the next doctor no longer sees it and doctor changes nothing. */
 async function orphanedRoutesCheck(
-  deps: Pick<RuntimeDependencies, "inspectProxy" | "store">,
+  deps: Pick<RuntimeDependencies, "inspectProxy" | "store" | "routeFileInRoot">,
 ): Promise<DoctorCheck | undefined> {
   let publication, state;
   try {
@@ -131,15 +133,18 @@ async function orphanedRoutesCheck(
       ? block.hostnames
       : [`(route ${block.token.slice(0, 12)})`],
   );
+  const inRoot = (await deps.routeFileInRoot?.().catch(() => false)) ?? true;
+  const summary = `${publication.proxyFile} holds ${orphaned.length === 1 ? "a route" : `${orphaned.length} routes`} whose Target no longer exists, for ${hostnames.join(", ")}. No Target can publish ${hostnames.length === 1 ? "that hostname" : "those hostnames"} until ${orphaned.length === 1 ? "it is" : "they are"} withdrawn.`;
   return {
     name: "route-owners",
     ok: false,
-    message: `${publication.proxyFile} holds ${orphaned.length === 1 ? "a route" : `${orphaned.length} routes`} whose Target no longer exists, for ${hostnames.join(", ")}. No Target can publish ${hostnames.length === 1 ? "that hostname" : "those hostnames"} until ${orphaned.length === 1 ? "it is" : "they are"} withdrawn.`,
+    message: inRoot
+      ? summary
+      : `${summary} The file lies outside the Rig root, so another Rig root may own ${orphaned.length === 1 ? "it" : "them"}: Rig withdraws ${orphaned.length === 1 ? "it" : "them"} only when asked.`,
     reason: "route-orphaned",
-    hint:
-      publication.state === "managed"
-        ? "Run rig proxy reload to withdraw them now. rigd also withdraws them when it starts and before a deploy, up or restart publishes a route."
-        : "rigd withdraws them when it starts and before a deploy, up or restart publishes a route: run the deploy or up that needs the hostname again.",
+    hint: inRoot
+      ? "Run rig proxy reload to withdraw them now. rigd also withdraws them when it starts and before a deploy, up or restart publishes a route."
+      : `If no other Rig root writes routes to ${publication.proxyFile}, run rig proxy reload to withdraw them.`,
   };
 }
 export async function doctor(

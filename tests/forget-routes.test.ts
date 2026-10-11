@@ -1,5 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { routeFileInRoot } from "../src/adapters/proxy-publication";
+import type { RigError } from "../src/domain/errors";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loopbackListeners } from "./support/activation-doubles";
@@ -54,18 +63,27 @@ async function proxyWorld(mode: Mode) {
         world.control.state = "running";
       },
       served: () => world.servedRoutes(),
+      managed: world,
+      failNextReloads(_count: number) {
+        throw new Error("only the external router counts reloads");
+      },
     };
   }
   const root = await mkdtemp(join(tmpdir(), "rig-external-"));
   roots.push(root);
   const routeFile = join(root, "proxy", "Caddyfile");
   let failReloads = false;
+  let failing = 0;
   const router = createCaddyRouter({
     caddyfile: routeFile,
-    run: async ({ command }) =>
-      failReloads && command.includes("reload")
-        ? { exitCode: 1, stdout: "", stderr: "connection refused" }
-        : { exitCode: 0, stdout: "", stderr: "" },
+    run: async ({ command }) => {
+      if (!command.includes("reload"))
+        return { exitCode: 0, stdout: "", stderr: "" };
+      // A failed reload is followed by the rollback's own reload, which succeeds.
+      if (failReloads || failing-- > 0)
+        return { exitCode: 1, stdout: "", stderr: "connection refused" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
   });
   return {
     root,
@@ -77,6 +95,11 @@ async function proxyWorld(mode: Mode) {
       failReloads = true;
     },
     served: () => readFile(routeFile, "utf8").catch(() => ""),
+    managed: undefined,
+    /** Makes the external Caddy refuse the next `count` reloads. */
+    failNextReloads(count: number) {
+      failing = count;
+    },
   };
 }
 
@@ -142,6 +165,19 @@ async function rigWorld(mode: Mode) {
   const deps: RuntimeDependencies = {
     reconcileGate: "open",
     root: proxy.root,
+    // rig proxy reload publishes Host config's proxy section through Rig's own Caddy.
+    ...(proxy.managed
+      ? {
+          proxy: {
+            apply: async () => {
+              await proxy.managed!.caddy.republish();
+            },
+            report: async () => {
+              throw new Error("unused");
+            },
+          },
+        }
+      : {}),
     async readAdminActivity() {
       return [];
     },
@@ -372,7 +408,7 @@ for (const mode of modes) {
         ok: false,
         message: expect.stringContaining("for ledger.test, dev.ledger.test."),
         hint: expect.stringContaining(
-          mode === "managed" ? "rig proxy reload" : "rigd withdraws them",
+          "Run rig proxy reload to withdraw them now",
         ),
       }),
     );
@@ -411,31 +447,54 @@ for (const mode of modes) {
     expect(await w.routes()).toContain("dev.ledger.test {");
   });
 
-  test(`${mode}: rig proxy reload withdraws orphans (Rig's own Caddy only)`, async () => {
+  test(`${mode}: rig proxy reload withdraws orphans first, so proxy.routes may name an orphan's hostname`, async () => {
     const w = await rigWorld(mode);
     await w.deployedThenStopped();
     w.forgetLeavingRoutes();
-    if (mode === "external") {
-      await expect(
-        w.runtime.command({ action: "proxy-apply" }),
-      ).rejects.toMatchObject({ code: "PROXY_UNMANAGED" });
+    if (!w.managed) {
+      // Without Rig's own Caddy there is no proxy section to apply: the reload only withdraws.
+      expect(await w.runtime.command({ action: "proxy-apply" })).toMatchObject({
+        outcome: "withdrawn",
+        withdrawn: ["ledger.test", "dev.ledger.test"],
+      });
+      expect(await w.routes()).not.toContain("# rig begin");
       return;
     }
-    let applied = 0;
-    w.deps.proxy = {
-      async apply() {
-        applied++;
-      },
-      async report() {
-        throw new Error("unused");
-      },
-    };
+    // The owner now routes the orphan's hostname to a service of their own. Published before the sweep, this Host
+    // config would be refused as a second owner of ledger.test.
+    w.managed.setSettings({
+      tls: { ca: "internal" },
+      routes: { "ledger.test": 3005 },
+    });
     expect(await w.runtime.command({ action: "proxy-apply" })).toMatchObject({
       outcome: "applied",
       withdrawn: ["ledger.test", "dev.ledger.test"],
     });
-    expect(applied).toBe(1);
     expect(await w.routes()).not.toContain("# rig begin");
+    expect(JSON.stringify(w.managed.control.loaded)).toContain(
+      "127.0.0.1:3005",
+    );
+  });
+
+  test(`${mode}: when the sweep before a deploy fails, the deploy's ROUTE_CONFLICT names the gone Target's route, why it is still there, and the way out`, async () => {
+    const w = await rigWorld(mode);
+    await w.deployedThenStopped();
+    w.forgetLeavingRoutes();
+    // Caddy refuses the reload that would withdraw the orphans (it still answers, so the deploy's rollback is confirmed).
+    if (w.managed) w.managed.failures.reload = "reload refused";
+    else w.breakProxy();
+    const refused = (await w
+      .reRegisterAndDeploy()
+      .catch((error: unknown) => error)) as RigError;
+    expect(refused).toMatchObject({
+      code: "ROUTE_CONFLICT",
+      message: expect.stringContaining(
+        "ledger.test is held by a route whose Target no longer exists, and Rig could not withdraw it: Caddy could not reload",
+      ),
+      hint: "No Target serves it any more: run rig doctor (route-owners) and rig proxy reload, then retry.",
+      details: expect.objectContaining({ withdrawal: "ROUTE_RELOAD" }),
+    });
+    expect(refused.causes.recoveryCause).toBeDefined();
   });
 
   test(`${mode}: withdrawing orphans never touches a route whose Target is recorded, and reads the owners after every change queued before it`, async () => {
@@ -574,4 +633,120 @@ test("an orphaned route in a route file written by hand is named by its hostname
   expect(
     report.checks.find((check) => check.name === "route-owners")?.message,
   ).toContain("orphan.test");
+});
+
+test("a route file outside the Rig root, which another root may share, is never swept on rigd's own: doctor says so and only rig proxy reload withdraws", async () => {
+  const w = await rigWorld("external");
+  await w.deployedThenStopped();
+  w.forgetLeavingRoutes();
+  // As composition decides for a providers.caddy.caddyfile outside RIG_ROOT, such as a sandbox naming the real root's.
+  w.deps.routeFileInRoot = async () => false;
+  const before = await w.routes();
+  expect(await w.runtime.withdrawOrphanedRoutes()).toEqual([]);
+  expect(await w.routes()).toBe(before);
+  // A deploy sweeps nothing either: it is refused, naming the way out.
+  await expect(w.reRegisterAndDeploy()).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    message: "ledger.test is held by a route whose Target no longer exists.",
+    hint: expect.stringContaining("rig proxy reload"),
+  });
+  expect(await w.routes()).toBe(before);
+  const report = (await w.runtime.command({ action: "doctor" })) as {
+    checks: { name: string; message: string; hint?: string }[];
+  };
+  expect(
+    report.checks.find((check) => check.name === "route-owners"),
+  ).toMatchObject({
+    message: expect.stringContaining("another Rig root may own them"),
+    hint: `If no other Rig root writes routes to ${w.routeFile}, run rig proxy reload to withdraw them.`,
+  });
+  // The explicit reload withdraws them, and the deploy then publishes.
+  expect(await w.runtime.command({ action: "proxy-apply" })).toMatchObject({
+    outcome: "withdrawn",
+    withdrawn: ["ledger.test", "dev.ledger.test"],
+  });
+  expect(
+    await w.runtime.command({
+      action: "deploy",
+      project: "ledger",
+      target: "stable",
+    }),
+  ).toMatchObject({ outcome: "deployed" });
+});
+
+test("whether the route file lies inside the Rig root is decided by its real path", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-root-"));
+  const elsewhere = await mkdtemp(join(tmpdir(), "rig-elsewhere-"));
+  roots.push(root, elsewhere);
+  const host = (
+    caddyfile?: string,
+    proxyMode: "managed" | "external" = "external",
+  ) =>
+    ({
+      proxyMode,
+      providers: { caddy: caddyfile ? { caddyfile } : {} },
+    }) as Parameters<typeof routeFileInRoot>[1];
+  expect(await routeFileInRoot(root, host())).toBe(true);
+  expect(
+    await routeFileInRoot(root, host(join(root, "routes", "Caddyfile"))),
+  ).toBe(true);
+  expect(await routeFileInRoot(root, host(join(elsewhere, "Caddyfile")))).toBe(
+    false,
+  );
+  // A route file under the root that is a link to another root's file is that other file.
+  await mkdir(join(root, "proxy"), { recursive: true });
+  await writeFile(join(elsewhere, "Caddyfile"), "");
+  await symlink(join(elsewhere, "Caddyfile"), join(root, "proxy", "Caddyfile"));
+  expect(await routeFileInRoot(root, host())).toBe(false);
+  // Rig's own Caddy's route file is always its own.
+  expect(await routeFileInRoot(root, host(undefined, "managed"))).toBe(true);
+});
+
+test("when forget cannot write its state and only some routes come back, FORGET_ROLLBACK names only those that did not", async () => {
+  const w = await rigWorld("external");
+  await w.deployedThenStopped();
+  const update = w.deps.store.update.bind(w.deps.store);
+  w.deps.store.update = async (change) => {
+    const probe = structuredClone(w.state);
+    await change(probe);
+    if (probe.projects.length === 0) {
+      // The first route published again fails; the second comes back.
+      w.failNextReloads(1);
+      throw new Error("state write failed");
+    }
+    await update(change);
+  };
+  const refused = (await w.runtime
+    .command({ action: "forget", project: "ledger" })
+    .catch((error: unknown) => error)) as RigError;
+  expect(refused).toMatchObject({ code: "FORGET_ROLLBACK" });
+  const routes = await w.routes();
+  const both = ["ledger.test", "dev.ledger.test"];
+  const back = both.filter((hostname) =>
+    routes.split("\n").includes(`${hostname} {`),
+  );
+  expect(back).toHaveLength(1);
+  const missing = both.filter((hostname) => !back.includes(hostname));
+  expect(refused.details.hostnames).toEqual(missing);
+  expect(refused.message).toBe(
+    `Project 'ledger' is still registered, but the routes for ${missing[0]} were withdrawn and could not be published again.`,
+  );
+  expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
+});
+
+test("a withdrawal that fails with no RigError still refuses the forget as one that changed nothing", async () => {
+  const w = await rigWorld("external");
+  await w.deployedThenStopped();
+  w.deps.lifecycle.withdrawRoutes = async () => {
+    throw new TypeError("unexpected");
+  };
+  await expect(
+    w.runtime.command({ action: "forget", project: "ledger" }),
+  ).rejects.toMatchObject({
+    code: "ROUTE_WITHDRAW",
+    message:
+      "Project 'ledger' was not forgotten: its routes could not be withdrawn.",
+    hint: expect.stringContaining("then run rig forget ledger again"),
+  });
+  expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
 });

@@ -101,11 +101,17 @@ export async function forgetProject(
     try {
       await withdrawal.restore();
     } catch (recovery) {
+      // Only the routes the restore could not publish again are named; the others serve as they did.
+      const unpublished =
+        recovery instanceof RigError &&
+        Array.isArray(recovery.details.hostnames)
+          ? recovery.details.hostnames.map(String)
+          : [...withdrawal.hostnames];
       throw new RigError(
         "FORGET_ROLLBACK",
-        `Project '${project.name}' is still registered, but its routes (${withdrawal.hostnames.join(", ")}) were withdrawn and could not be published again.`,
+        `Project '${project.name}' is still registered, but the routes for ${unpublished.join(", ")} were withdrawn and could not be published again.`,
         `Its Targets are stopped, so nothing was served through them; rig up or rig deploy of a Target publishes its route again. Run rig forget ${project.name} to retry.`,
-        { hostnames: [...withdrawal.hostnames] },
+        { hostnames: unpublished },
         failureCauses(error, recovery),
       );
     }
@@ -125,9 +131,17 @@ export async function forgetProject(
   ];
 }
 /** The refusal of a forget whose routes could not be withdrawn: the provider's failure, with its code and details kept, said
- * as a forget that changed nothing and can be run again. */
-function notForgotten(project: ProjectRecord, error: unknown): unknown {
-  if (!(error instanceof RigError)) return error;
+ * as a forget that changed nothing and can be run again. A failure that is no RigError becomes ROUTE_WITHDRAW, keeping
+ * only its category. */
+function notForgotten(project: ProjectRecord, error: unknown): RigError {
+  if (!(error instanceof RigError))
+    return new RigError(
+      "ROUTE_WITHDRAW",
+      `Project '${project.name}' was not forgotten: its routes could not be withdrawn.`,
+      `Its registration and routes are unchanged. Run rig doctor and read the diagnostic log, then run rig forget ${project.name} again.`,
+      {},
+      failureCauses(error),
+    );
   return new RigError(
     error.code,
     `Project '${project.name}' was not forgotten: its routes could not be withdrawn. ${error.message}`,

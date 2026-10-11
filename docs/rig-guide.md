@@ -259,10 +259,15 @@ it out of `proxy.routes` and run `rig proxy reload`.
 A route whose Target no longer exists (one a `rig forget` from before this was
 fixed left behind, or one whose Target record was lost) owns nothing Rig can
 reach, so Rig withdraws it: when rigd starts, before a deploy, `up` or
-`restart` of a Target with a route publishes it, and on `rig proxy reload`.
+`restart` of a Target with a route publishes it, and on `rig proxy reload`
+(first, so `proxy.routes` may take over its hostname in the same reload).
 Only a route no recorded Target owns is withdrawn, and never two owners are
 published. Until then `rig doctor` names it (`route-owners`) with its
-hostnames.
+hostnames, and a deploy that meets it is refused with `ROUTE_CONFLICT` saying
+so. With an external Caddy whose route file (`providers.caddy.caddyfile`) lies
+outside `RIG_ROOT`, another Rig root may own the blocks there, so Rig
+withdraws them only when you run `rig proxy reload`, which then does nothing
+else.
 
 Rig's own Caddy publishes only what Rig renders from the route file's blocks.
 Text it did not write there, such as an external router's `extra_config`, is

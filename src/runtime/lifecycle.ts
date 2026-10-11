@@ -117,8 +117,9 @@ export interface TargetEffects {
 export interface RouteWithdrawal {
   /** Every hostname the withdrawn routes served, in the order the Targets were given. */
   readonly hostnames: readonly string[];
-  /** Publishes the withdrawn routes again as they were, confirmed in the proxy. Fails ROUTE_CHANGED when one changed since
-   * it was withdrawn, and as publishing fails otherwise. */
+  /** Publishes the withdrawn routes again as they were, confirmed in the proxy. A route that changed since it was withdrawn
+   * (ROUTE_CHANGED) or cannot be published fails it; every route is still tried, and the failure (ROUTE_RESTORE from a
+   * lifecycle) names in `details.hostnames` those not published again. */
   restore(): Promise<void>;
 }
 export type RouteChange =
@@ -392,9 +393,26 @@ export function createTargetLifecycle(
     async withdrawRoutes(targets) {
       const withdrawn: RouteWithdrawal[] = [];
       /** Publishes again, in the order they were withdrawn, every route this call took out; each is its own block, so
-       * the order only keeps the route file as it was. */
+       * the order only keeps the route file as it was. Every route is tried; ROUTE_RESTORE names the hostnames of those
+       * that could not be published again. */
       const restore = async () => {
-        for (const withdrawal of withdrawn) await withdrawal.restore();
+        const failed: string[] = [];
+        let first: unknown;
+        for (const withdrawal of withdrawn)
+          try {
+            await withdrawal.restore();
+          } catch (error) {
+            first ??= error;
+            failed.push(...withdrawal.hostnames);
+          }
+        if (failed.length)
+          throw new RigError(
+            "ROUTE_RESTORE",
+            `The routes for ${failed.join(", ")} could not be published again.`,
+            "Their Targets are stopped; rig up or rig deploy of each publishes its route again. Run rig doctor before retrying.",
+            { hostnames: failed },
+            failureCauses(first),
+          );
       };
       try {
         for (const target of targets) {
@@ -407,9 +425,15 @@ export function createTargetLifecycle(
         } catch (recovery) {
           throw new RigError(
             "WITHDRAW_ROLLBACK",
-            "A route could not be withdrawn, and the routes withdrawn before it could not be published again.",
+            "A route could not be withdrawn, and some withdrawn before it could not be published again.",
             "Their Targets are stopped; rig up or rig deploy of each publishes its route again. Run rig doctor before retrying.",
-            {},
+            {
+              hostnames:
+                recovery instanceof RigError &&
+                Array.isArray(recovery.details.hostnames)
+                  ? recovery.details.hostnames
+                  : [],
+            },
             failureCauses(error, recovery),
           );
         }

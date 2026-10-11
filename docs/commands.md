@@ -73,8 +73,9 @@ rig
 │
 ├─ proxy                            Rig's own Caddy: its job and every served hostname, proxy.routes included
 │    --json
-│  ├─ reload                        apply Host config's proxy section (proxy.routes, ports, certificates) as it is now,
-│  │                                and withdraw routes whose Target no longer exists
+│  ├─ reload                        withdraw routes whose Target no longer exists, then apply Host config's proxy
+│  │                                section (proxy.routes, ports, certificates) as it is now; without Rig's own
+│  │                                Caddy it only withdraws
 │  ├─ verify                        TLS handshake per served hostname; exits 1 when any is not ready
 │  │   --port <port>                default: proxy.ports.https
 │  │   --wait <seconds>             keep checking failing hostnames this long
@@ -176,7 +177,9 @@ status` takes no Target.
   code (`PROXY_UNREACHABLE`, `ROUTE_RELOAD`, …) and changes nothing; run it
   again once the hint's fix is done. A route whose Target no longer exists is
   withdrawn when rigd starts, before a `deploy`, `up` or `restart` publishes a
-  route, and by `rig proxy reload`; `doctor` names one as `route-owners`.
+  route, and by `rig proxy reload`; `doctor` names one as `route-owners`. When
+  `providers.caddy.caddyfile` puts the route file outside `RIG_ROOT`, where
+  another root may write too, only `rig proxy reload` withdraws them.
 - `logs --service` takes a Service, Tool or job name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the
   Target's names. `--since` and `--until` are inclusive, and leave out lines

@@ -1,5 +1,5 @@
 import { RigError } from "../domain/errors";
-import { routeOwnerToken } from "../domain/proxy-publication";
+import { ownedRouteBlocks, routeOwnerToken } from "../domain/proxy-publication";
 import { bareHostname } from "../domain/managed-proxy";
 import { checkCaddyValue } from "../domain/caddy-value";
 
@@ -101,13 +101,23 @@ export function editRouteFile(input: {
   const taken = route?.sites.find((site) =>
     hostnamePresent(without, site.hostname),
   );
-  if (taken)
+  if (taken) {
+    // The Target block that holds it, when one does, so a caller holding Target state can tell one whose Target is gone.
+    const holder = ownedRouteBlocks(without).find((block) =>
+      block.hostnames.some(
+        (hostname) => siteAddress(hostname) === siteAddress(taken.hostname),
+      ),
+    );
     throw new RigError(
       "ROUTE_CONFLICT",
       "This hostname is already owned by another route.",
       "Choose a different hostname or explicitly migrate its existing owner.",
-      { hostname: taken.hostname },
+      {
+        hostname: taken.hostname,
+        ...(holder ? { routeTokens: [holder.token] } : {}),
+      },
     );
+  }
   // By bare hostname: Caddy merges two blocks for one name written with different schemes or ports, so a port does not set
   // them apart.
   const reserved = route?.sites.find((site) =>
@@ -303,8 +313,11 @@ export function assertSingleOwners(
   identity: (address: string) => string,
   outside?: { readonly sites: readonly string[]; readonly owner: string },
 ): void {
-  const owners = new Map<string, { owner: string; address: string }>();
-  const claim = (address: string, owner: string) => {
+  const owners = new Map<
+    string,
+    { owner: string; address: string; token?: string }
+  >();
+  const claim = (address: string, owner: string, token?: string) => {
     const id = identity(address);
     const held = owners.get(id);
     if (held && held.owner !== owner)
@@ -312,15 +325,27 @@ export function assertSingleOwners(
         "ROUTE_CONFLICT",
         `The hostname ${address} would belong to two owners: ${held.owner} and ${owner}.`,
         "Each hostname has one owner. Remove one: rig down or rig destroy the Target that should not serve it, or take it out of proxy.routes in config.yaml and run rig proxy reload. Nothing changed.",
-        { hostname: address, owners: [held.owner, owner] },
+        {
+          hostname: address,
+          owners: [held.owner, owner],
+          // The Target blocks involved, by their markers' token, so a caller holding Target state can tell one whose
+          // Target no longer exists.
+          routeTokens: [held.token, token].filter(
+            (value): value is string => value !== undefined,
+          ),
+        },
       );
-    owners.set(id, { owner, address });
+    owners.set(id, { owner, address, ...(token ? { token } : {}) });
   };
   for (const match of text.matchAll(
     /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g,
   ))
     for (const site of parseOwnedSites(match[2]!))
-      claim(site.hostname, `the Target route ${match[1]!.slice(0, 12)}`);
+      claim(
+        site.hostname,
+        `the Target route ${match[1]!.slice(0, 12)}`,
+        match[1]!,
+      );
   for (const address of outside?.sites ?? []) claim(address, outside!.owner);
 }
 /** Every hostname the owned blocks of a route file serve. */

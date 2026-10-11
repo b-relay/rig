@@ -20,6 +20,10 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "dns") return renderDns(report);
   if (["dns-create", "dns-update", "dns-delete"].includes(action))
     return `${capitalized(word(report.summary)) || "DNS record changed"}.\n`;
+  if (action === "proxy-apply" && report.outcome === "withdrawn")
+    return Array.isArray(report.withdrawn) && report.withdrawn.length
+      ? `Withdrew routes no recorded Target owned: ${report.withdrawn.map(word).join(", ")}.\n`
+      : "No route without a recorded Target to withdraw. Rig does not run its own Caddy on this Host, so there is no proxy section to apply.\n";
   if (action === "proxy-apply")
     return `Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n${
       Array.isArray(report.withdrawn) && report.withdrawn.length

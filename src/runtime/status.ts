@@ -151,10 +151,12 @@ export async function observeTargets(
               ? monitoredHealth(target, component, health)
               : undefined;
           const reason = [said, cached?.reason].filter(Boolean).join(" ");
+          const commit = runningCommit(target, component.name, observed);
           return {
             ...base,
             port: component.port,
             pid: observed.pid,
+            ...(commit ? { commit } : {}),
             state: cached
               ? cached.state
               : component.health || component.healthcheck
@@ -218,6 +220,19 @@ function targetHostnames(
 ): Pick<TargetReport, "hostnames"> {
   const hostnames = plannedSites(target.plan).map((site) => site.hostname);
   return hostnames.length ? { hostnames } : {};
+}
+/** Pure: the Commit the running process of `service` was started from, while it is the process its run names; a Service a
+ * deploy kept runs from an earlier Commit than its Target's (ADR 0016). */
+export function runningCommit(
+  target: Pick<TargetRecord, "services" | "plan">,
+  service: string,
+  observed: Pick<ProcessObservation, "incarnation">,
+): string | undefined {
+  const run = currentRun(target, service);
+  return run?.incarnation !== undefined &&
+    observed.incarnation === run.incarnation
+    ? run.source?.commit
+    : undefined;
 }
 /** Pure: the automatic restart attempts still inside the Service's restart budget windows, after a known and after an
  * unknown exit together; nothing when there are none or rigd never ran the Service. Attempts age out of the windows, so the

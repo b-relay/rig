@@ -8,6 +8,7 @@ import type {
 import type { ProcessObservation } from "../src/providers/contracts";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import { superviseTarget } from "../src/runtime/supervision";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 const target = {
   id: "t",
   projectId: "p",
@@ -30,7 +31,7 @@ const target = {
 /** One supervision pass over the recorded Target with a scripted observation; the `no` policy keeps the lifecycle out of it. */
 function fixture() {
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [
       {
         id: "p",

@@ -42,7 +42,11 @@ export default async function TargetOverviewPage({
           </span>
         </h2>
         {report.components.length ? (
-          <ServiceCards components={report.components} now={new Date()} />
+          <ServiceCards
+            components={report.components}
+            target={report}
+            now={new Date()}
+          />
         ) : (
           <Empty icon={Boxes}>This Target has no Services or Tools.</Empty>
         )}

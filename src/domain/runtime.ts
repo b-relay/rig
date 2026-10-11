@@ -18,6 +18,9 @@ export interface BuildOutcome {
   /** Digest of the unit's public policy: command, public env, env-file paths and workspace; never env-file values. */
   policy: string;
   commit?: string;
+  /** Keyed digest of the environment the unit's command ran in (ADR 0016), as it was when it ran; never a value. Absent
+   * when it could not be computed, or the unit ran before Rig recorded it. */
+  environment?: string;
   startedAt: string;
   finishedAt?: string;
 }
@@ -26,6 +29,9 @@ export interface Preparation {
   /** The workspace the outcomes belong to; a new revision starts a fresh scope. */
   deployment: string;
   units: Record<string, BuildOutcome>;
+  /** Keyed digest of the Project-scope environment the workspace's dependency installation ran in, as it was when this
+   * preparation began (ADR 0016); never a value. Absent when it could not be computed, or before Rig recorded it. */
+  environment?: string;
 }
 
 /** How the latest process of a Service ended, as far as Rig knows. `unknown` is a finding, not a gap: the process is gone and
@@ -51,10 +57,31 @@ export type ServiceOutcome =
   /** `hostRestart` says the process is gone because the Host restarted or the user logged out, as rigd detected at its
    * next start; nothing starts such a Service of the Working copy or a Preview again before an explicit start. */
   | { kind: "unknown"; hostRestart?: HostRestart; at: string };
+/** Where the process a run names was started, and from what (ADR 0016): what a deploy compares to decide whether it may
+ * keep the process running. Never holds an environment value. */
+export interface ServiceSource {
+  /** The checkout the process runs in: its plan's workspacePath when it was started. */
+  checkout: string;
+  /** The Commit that checkout was materialized from; absent for the working Target. */
+  commit?: string;
+  /** Digest of the Service's definition, the checkout path replaced by a placeholder (`serviceDefinition`). */
+  definition: string;
+  /** Keyed digest (HMAC-SHA256) of the environment the process was started with, the checkout path normalized; absent
+   * when it could not be computed, and such a run is never kept. */
+  environment?: string;
+  /** Digest of the environments its checkout was prepared in, as recorded when it was prepared (`preparedBuild`): the
+   * dependency installation's, the shared build's and the Service's own build's. A restart never changes it, since it
+   * rebuilds nothing. Absent when they were not all recorded, and the run is then never kept. */
+  build?: string;
+}
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
 export interface ServiceRun {
-  /** The workspace the Service was started from; a record of another Deployment describes nothing. */
+  /** The Deployment (its workspace) the run belongs to: the one that started the process, or the one that adopted it when a
+   * deploy kept it running (`source` then says where it runs). A record of another Deployment describes nothing. */
   deployment: string;
+  /** Where and from what the process was started; absent on a run started before Rig recorded it, which a deploy never
+   * keeps. */
+  source?: ServiceSource;
   /** `stopped` once an operator stopped the Target; no exit is retried under it. */
   intent: "running" | "stopped";
   /** The latest process Rig started; exit evidence that names another one is not evidence about this Service. */
@@ -160,6 +187,9 @@ export interface DeploymentRecord {
   /** The Commit the Target ran before, when it had one. */
   previousCommit?: string;
   outcome: "deployed" | "unchanged" | "failed";
+  /** The Services a successful deploy kept running from an earlier checkout instead of restarting (ADR 0016); absent when
+   * it restarted every Service. */
+  kept?: string[];
   startedAt: string;
   finishedAt: string;
   /** The failure's error code; never a value from the environment. */
@@ -262,9 +292,10 @@ export interface JobRecord {
    * runs within the late limit, before any time was acted on. */
   watchedFrom?: string;
 }
-/** A checkout a job run kept after a deploy, to give back once nothing uses it. Recorded with the run's end, in the same
- * write, so a rigd that stops before giving it back finds it again. */
-export interface JobCheckout {
+/** A superseded checkout something may still run in, to give back once nothing does (ADR 0013, ADR 0016): one a job run
+ * kept after a deploy, recorded in the same write as the run's end, or one a Service a deploy kept runs in, recorded by
+ * that deploy. A rigd that stops before giving it back finds it again. */
+export interface HeldCheckout {
   /** The Target's id. */
   target: string;
   /** The Project's id, for a Target removed meanwhile. */
@@ -274,7 +305,7 @@ export interface JobCheckout {
 }
 
 export interface RuntimeState {
-  version: 7;
+  version: 8;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];
@@ -282,8 +313,8 @@ export interface RuntimeState {
   deployments?: DeploymentRecord[];
   /** Job runs per Target and job; absent until a job first ran or was scheduled. */
   jobs?: JobRecord[];
-  /** Checkouts job runs kept after a deploy, waiting to be given back. */
-  jobCheckouts?: JobCheckout[];
+  /** Superseded checkouts a job run or a kept Service may still run in, waiting to be given back. */
+  heldCheckouts?: HeldCheckout[];
   /** Kept backups of backup jobs, per Target and job (ADR 0017). */
   backups?: BackupRecord[];
   /** Backup directories waiting to be deleted. */

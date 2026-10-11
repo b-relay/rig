@@ -24,6 +24,7 @@ import {
   resolveTargetPlan,
   type ProjectConfig,
 } from "../src/config";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 /** One stop the supervisor was asked for, held until the test lets the Service exit (or kill it). */
 interface HeldStop {
@@ -49,7 +50,7 @@ function world(
 ) {
   let clock = Date.parse("2026-09-27T04:00:00.000Z");
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [],
     activity: [],
@@ -253,6 +254,12 @@ function world(
         return "main";
       },
       async release() {},
+      async changed() {
+        return true;
+      },
+      async unmatched() {
+        return [];
+      },
     },
     lifecycle: createTargetLifecycle(effects, {
       schedule(delayMs, fire) {

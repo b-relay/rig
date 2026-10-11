@@ -59,6 +59,7 @@ import { RigError, failureCauses } from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
+import { createEnvironmentDigest } from "./environment-digest";
 import { appendTargetLog } from "../providers/target-log";
 import type { LogRetention } from "../domain/log-retention";
 export interface TargetAdapterOptions {
@@ -416,9 +417,26 @@ export function createTargetEffects(
       );
     }
   };
+  const digest = createEnvironmentDigest(options.root);
+  /** The Component whose scope `unit` builds in: none for the shared unit (or a store's); BUILD_SCOPE for a unit that names
+   * a Component the plan lacks. */
+  const unitComponent = (unit: BuildUnit, target: TargetRecord) => {
+    const component = target.plan.components.find(
+      (candidate) => candidate.name === unit.component,
+    );
+    if (unit.component !== undefined && !component)
+      throw new RigError(
+        "BUILD_SCOPE",
+        `Build unit ${unit.id} names no Component of this plan.`,
+        "Deploy again so the plan and its build units are recorded together.",
+        { unit: unit.id },
+      );
+    return component?.kind === "persistent" ? undefined : component;
+  };
   return {
     supervisor,
     environment,
+    digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
     checkpoint: (target, previous) =>
@@ -450,7 +468,7 @@ export function createTargetEffects(
       retireComponents(target, installedComponents(target)),
     retireSuperseded: (previous, candidate) =>
       retireComponents(previous, superseded(previous, candidate)),
-    async prepare(target) {
+    async prepare(target, composed) {
       await mkdir(target.logRoot, { recursive: true, mode: 0o700 });
       for (const component of target.plan.preparedComponents) {
         const directory =
@@ -533,7 +551,7 @@ export function createTargetEffects(
         const result = await runTarget(
           command.join(" "),
           target,
-          await environment(target),
+          composed ? { ...composed } : await environment(target),
           timeoutSeconds,
         );
         if (result.timedOut)
@@ -552,29 +570,29 @@ export function createTargetEffects(
       }
       await writeFile(marker, "prepared\n", { mode: 0o600 });
     },
-    async build(unit, target) {
-      const component = target.plan.components.find(
-        (candidate) => candidate.name === unit.component,
-      );
-      if (unit.component !== undefined && !component)
-        throw new RigError(
-          "BUILD_SCOPE",
-          `Build unit ${unit.id} names no Component of this plan.`,
-          "Deploy again so the plan and its build units are recorded together.",
-          { unit: unit.id },
-        );
+    buildEnvironment: async (unit, target) =>
+      await environment(
+        target,
+        unitComponent(unit, target),
+        unit.commandInputs,
+      ),
+    async build(unit, target, composed) {
+      const component = unitComponent(unit, target);
       const name = unit.component ?? "setup";
       const result = await runTarget(
         unit.command,
         target,
-        await environment(
-          target,
-          component?.kind === "persistent" ? undefined : component,
-          unit.commandInputs,
-        ),
+        composed
+          ? { ...composed }
+          : await environment(target, component, unit.commandInputs),
         unit.timeout,
         name,
-        await runDirectory(target, component),
+        await runDirectory(
+          target,
+          target.plan.components.find(
+            (candidate) => candidate.name === unit.component,
+          ),
+        ),
       );
       const label =
         unit.component === undefined ? "shared" : `${unit.component}`;

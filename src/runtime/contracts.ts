@@ -139,6 +139,24 @@ export interface DeploymentSources {
     productionBranch: string;
   }): Promise<{ commit: string; warnings: string[] }>;
   currentBranch(repository: string): Promise<string>;
+  /** Whether any tracked file `paths` match changed between the Commits `from` and `to` in `repository`, read from the local
+   * repository only, never fetched (ADR 0016). `paths` are pathspecs relative to the repository root (paths, directories,
+   * or globs with `*` and `**`); absent means the whole tree, and an empty list matches nothing, so nothing changed.
+   * Rejects GIT_DIFF when it cannot tell, as for a Commit that was garbage-collected; a caller counts that as changed. */
+  changed(request: {
+    repository: string;
+    from: string;
+    to: string;
+    paths?: readonly string[];
+  }): Promise<boolean>;
+  /** The entries of `paths` (pathspecs as for `changed`) that match no tracked file at the Commit `commit` in `repository`,
+   * in their order: a mistyped `watch` entry that would let a deploy keep a stale Service. Rejects GIT_DIFF when it cannot
+   * tell. */
+  unmatched(request: {
+    repository: string;
+    commit: string;
+    paths: readonly string[];
+  }): Promise<string[]>;
 }
 export interface RuntimeFiles {
   /** Delete only a canonical Preview root after verified retirement. Validates all

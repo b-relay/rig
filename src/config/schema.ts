@@ -231,6 +231,21 @@ const workingDir = text
   .describe(
     "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root.",
   );
+/** One `watch` entry: a path, directory or glob inside the workspace, written relative to its root. Git's own pathspec
+ * magic (a leading ':') is refused too, since Rig gives every entry its glob meaning. */
+const watchPath = text
+  .refine(
+    (value) => insideWorkspace(value) && !value.startsWith(":"),
+    "must be a path or glob inside the workspace, relative to its root, such as scripts/rig-postgres.sh: no absolute path, ~, '..', reference or leading ':'",
+  )
+  .describe(
+    "A tracked file, a directory (everything under it) or a glob, relative to the workspace root as env_file paths are: * matches within one directory and ** across directories.",
+  );
+const watch = z
+  .array(watchPath)
+  .describe(
+    "Which checkout files a deploy compares to decide whether this Service restarts; it is not live sync, and nothing watches files while the Service runs. A deploy of a new Commit keeps a running Service running when its settings, environment (env file contents included) and builds are unchanged and none of these files changed since the Commit its process started from; otherwise it restarts it, and every Service that depends on it. Leave it out to compare the whole checkout, so any change restarts the Service; [] when the Service reads nothing from the checkout, such as a database binary installed elsewhere.",
+  );
 /** A local URL or a command that addresses only 127.0.0.1 or localhost, judged with every reference standing in as a port. */
 const localCheck = (value: string) =>
   localhostHealth(value.replace(/\$\{[^}]+\}/g, "1234"));
@@ -328,6 +343,7 @@ const serviceFields = {
   restart: restart.optional(),
   environment: env("service").optional(),
   env_file: envFile("service").optional(),
+  watch: watch.optional(),
 };
 const toolFields = {
   build: build.optional(),

@@ -51,7 +51,7 @@ export class FileStateStore implements StateStore {
       parsed = JSON.parse(raw);
       this.assertSupportedVersion(parsed);
       readFixedTargetNames(parsed);
-      readBeforeJobs(parsed);
+      readEarlierVersions(parsed);
       schema.parse(parsed);
     } catch (error) {
       if (error instanceof RigError) throw error;
@@ -184,13 +184,24 @@ export function readFixedTargetNames(parsed: unknown): void {
     }
   }
 }
-/** State version 5 is version 6 before scheduled jobs: no plan has `jobs` and there are no job runs, so it is read as it
- * is. Version 6 is version 7 before backups (ADR 0017): no job has `backup` and there are no backups. The next write saves
- * version 7, which an older rigd refuses rather than run backup jobs without their directory or keep jobs it would never
- * run. */
-function readBeforeJobs(parsed: unknown): void {
-  if (loose(parsed) && (parsed.version === 5 || parsed.version === 6))
-    parsed.version = STATE_VERSION;
+/** Every earlier version this rigd reads besides version 4 (see `MIGRATED_STATE_VERSIONS`) is the current one with less in
+ * it, and is read as it is: version 5 has no jobs, version 6 no backups (ADR 0017), and versions before ADR 0016 record no
+ * run's `source`, so the first deploy keeps no Service running, and call the checkouts job runs kept `jobCheckouts`, read
+ * as `heldCheckouts`. The next write saves the current version, which an older rigd refuses rather than release a
+ * checkout a kept process runs in. Moving STATE_VERSION on means only adding the old number to MIGRATED_STATE_VERSIONS. */
+function readEarlierVersions(parsed: unknown): void {
+  if (
+    !loose(parsed) ||
+    typeof parsed.version !== "number" ||
+    parsed.version === UNFIXED_NAMES_STATE_VERSION ||
+    !MIGRATED_STATE_VERSIONS.includes(parsed.version)
+  )
+    return;
+  parsed.version = STATE_VERSION;
+  if (!Object.hasOwn(parsed, "jobCheckouts")) return;
+  if (parsed.heldCheckouts === undefined)
+    parsed.heldCheckouts = parsed.jobCheckouts;
+  delete parsed.jobCheckouts;
 }
 /** One record of state version 4 under its new kind and name: its plans' names follow, and a Tool it published under its old
  * name keeps that file name as `publishedAs`. */

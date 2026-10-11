@@ -18,6 +18,7 @@ import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { Supervisor } from "../src/providers/contracts";
 import { unreloadedCaddy } from "./support/router-doubles";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -136,7 +137,7 @@ async function fixture() {
   candidate.plan.workspacePath = join(root, "new");
   candidate.plan.domain = "new.test";
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [],
     activity: [],

@@ -133,9 +133,11 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
 list, written in the same update as the deploy's Activity record and under the
 same Operation id): the Target and its role, the Branch and Commit deployed (or
 set out to deploy, for a failure), the Commit it replaced, the outcome
-(`deployed`, `unchanged` or `failed`), when the deploy began its work and when
-it ended, and a failure's error code. The `deployments` read answers a
-Project's history with each deploy's duration.
+(`deployed`, `unchanged` or `failed`), the Services a successful deploy kept
+running (`kept`, ADR 0016), when the deploy began its work and when it ended,
+and a failure's error code. The `deployments` read answers a Project's history
+with each deploy's duration, and the history page shows `kept db, search` under
+a deploy that kept any.
 
 ## Secrets
 
@@ -173,7 +175,9 @@ icon with a health dot, and its name. Its Targets run across the top as cards
 (state dot, name, actions, `branch @ commit`, hostname), in working, stable,
 Preview order; its Services, stores, Tools and then jobs run down the side; and
 each row has a tinted tile on each Target with its state and port, or, for a
-job, how its last run ended and when it runs next. A row a Target does not have
+job, how its last run ended and when it runs next. A Service a deploy kept
+running from an earlier Commit than its Target's carries a pin beside its port,
+and its tooltip (and its card on the Target page) says `kept from <sha>`. A row a Target does not have
 is a dashed outline. A Target `rig.yaml` turns on is shown (as configured)
 before it first runs, so the working Target is started from its own card; an
 off Target is shown only while it is still recorded. A missing directory or a

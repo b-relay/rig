@@ -267,6 +267,15 @@
               }
             ],
             "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+          },
+          "watch": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "description": "A tracked file, a directory (everything under it) or a glob, relative to the workspace root as env_file paths are: * matches within one directory and ** across directories."
+            },
+            "description": "Which checkout files a deploy compares to decide whether this Service restarts; it is not live sync, and nothing watches files while the Service runs. A deploy of a new Commit keeps a running Service running when its settings, environment (env file contents included) and builds are unchanged and none of these files changed since the Commit its process started from; otherwise it restarts it, and every Service that depends on it. Leave it out to compare the whole checkout, so any change restarts the Service; [] when the Service reads nothing from the checkout, such as a database binary installed elsewhere."
           }
         },
         "required": [
@@ -718,6 +727,15 @@
                           }
                         ],
                         "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                      },
+                      "watch": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "A tracked file, a directory (everything under it) or a glob, relative to the workspace root as env_file paths are: * matches within one directory and ** across directories."
+                        },
+                        "description": "Which checkout files a deploy compares to decide whether this Service restarts; it is not live sync, and nothing watches files while the Service runs. A deploy of a new Commit keeps a running Service running when its settings, environment (env file contents included) and builds are unchanged and none of these files changed since the Commit its process started from; otherwise it restarts it, and every Service that depends on it. Leave it out to compare the whole checkout, so any change restarts the Service; [] when the Service reads nothing from the checkout, such as a database binary installed elsewhere."
                       }
                     },
                     "additionalProperties": false
@@ -1038,6 +1056,15 @@
                           }
                         ],
                         "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                      },
+                      "watch": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "A tracked file, a directory (everything under it) or a glob, relative to the workspace root as env_file paths are: * matches within one directory and ** across directories."
+                        },
+                        "description": "Which checkout files a deploy compares to decide whether this Service restarts; it is not live sync, and nothing watches files while the Service runs. A deploy of a new Commit keeps a running Service running when its settings, environment (env file contents included) and builds are unchanged and none of these files changed since the Commit its process started from; otherwise it restarts it, and every Service that depends on it. Leave it out to compare the whole checkout, so any change restarts the Service; [] when the Service reads nothing from the checkout, such as a database binary installed elsewhere."
                       }
                     },
                     "additionalProperties": false
@@ -1358,6 +1385,15 @@
                           }
                         ],
                         "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                      },
+                      "watch": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "A tracked file, a directory (everything under it) or a glob, relative to the workspace root as env_file paths are: * matches within one directory and ** across directories."
+                        },
+                        "description": "Which checkout files a deploy compares to decide whether this Service restarts; it is not live sync, and nothing watches files while the Service runs. A deploy of a new Commit keeps a running Service running when its settings, environment (env file contents included) and builds are unchanged and none of these files changed since the Commit its process started from; otherwise it restarts it, and every Service that depends on it. Leave it out to compare the whole checkout, so any change restarts the Service; [] when the Service reads nothing from the checkout, such as a database binary installed elsewhere."
                       }
                     },
                     "additionalProperties": false

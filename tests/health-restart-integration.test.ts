@@ -165,6 +165,12 @@ async function world(
           return "main";
         },
         async release() {},
+        async changed() {
+          return true;
+        },
+        async unmatched() {
+          return [];
+        },
       },
       hostSession: (() => {
         const probe = {

@@ -442,13 +442,13 @@ test("a checkout a run kept is recorded with its end and given back, by the next
   ).toMatchObject({
     outcome: "succeeded",
   });
-  expect(state.jobCheckouts).toEqual([
+  expect(state.heldCheckouts).toEqual([
     { target: f.target.id, project: f.target.projectId, workspace: old },
   ]);
   expect(f.released).toEqual([]);
-  await f.world.open().releaseJobCheckouts(f.target.id);
+  await f.world.open().releaseHeldCheckouts(f.target.id);
   expect(f.released).toEqual([old]);
-  expect((await f.world.store.read()).jobCheckouts).toEqual([]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([]);
 });
 
 test("a run settled by the next start keeps its checkout recorded even when that start fails", async () => {
@@ -477,11 +477,11 @@ test("a run settled by the next start keeps its checkout recorded even when that
   ).toMatchObject({
     outcome: "start-failed",
   });
-  expect(state.jobCheckouts).toEqual([
+  expect(state.heldCheckouts).toEqual([
     { target: f.target.id, project: f.target.projectId, workspace: old },
   ]);
   f.failReleases.count = 0;
-  await f.world.open().releaseJobCheckouts(f.target.id);
+  await f.world.open().releaseHeldCheckouts(f.target.id);
   expect(f.released).toEqual([old]);
 });
 
@@ -629,18 +629,18 @@ test("a Preview whose storage is not Rig's to delete keeps its job run going", a
 test("a removed Target's kept checkouts are forgotten only once given back", async () => {
   const f = await fixture();
   await f.world.store.update((state) => {
-    state.jobCheckouts = [
+    state.heldCheckouts = [
       { target: "gone", project: "p", workspace: "/rig/revisions/r1" },
       { target: "gone", project: "p", workspace: "/rig/revisions/r2" },
     ];
   });
   f.failReleases.count = 1;
-  await f.runtime.releaseJobCheckouts("gone");
+  await f.runtime.releaseHeldCheckouts("gone");
   expect(f.released).toEqual(["/rig/revisions/r2"]);
-  expect((await f.world.store.read()).jobCheckouts).toEqual([
+  expect((await f.world.store.read()).heldCheckouts).toEqual([
     { target: "gone", project: "p", workspace: "/rig/revisions/r1" },
   ]);
-  await f.runtime.releaseJobCheckouts("gone");
+  await f.runtime.releaseHeldCheckouts("gone");
   expect(f.released).toEqual(["/rig/revisions/r2", "/rig/revisions/r1"]);
-  expect((await f.world.store.read()).jobCheckouts).toEqual([]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([]);
 });

@@ -28,6 +28,7 @@ import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { CommandRunner } from "../src/providers/contracts";
 import { runCommand } from "../src/providers/command-runner";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -58,7 +59,7 @@ async function fixture() {
   const repo = join(root, "repo");
   await mkdir(repo);
   const state: RuntimeState = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [],
     activity: [],

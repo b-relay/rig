@@ -8,6 +8,7 @@ import {
   CircleX,
   GitBranch,
   History,
+  Pin,
   RotateCcw,
 } from "lucide-react";
 import {
@@ -138,6 +139,17 @@ export function DeploymentList({
                       </span>
                     ) : null}
                   </span>
+                  {row.kept?.length ? (
+                    <span
+                      className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+                      title="Kept running from the checkout they started in, because nothing they use changed."
+                    >
+                      <Pin className="size-3.5 shrink-0" aria-hidden />
+                      <span className="truncate">
+                        kept {row.kept.join(", ")}
+                      </span>
+                    </span>
+                  ) : null}
                   {row.message ? (
                     <span className="text-xs text-bad">{row.message}</span>
                   ) : null}

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createGitSourceStore } from "../src/providers/git-source-store";
+import { createDeploymentSources } from "../src/adapters/deployment-sources";
 import { runCommand } from "../src/providers/command-runner";
 const roots: string[] = [];
 const gitExecutable = existsSync(
@@ -207,4 +208,146 @@ test("releasing a revision removes its worktree from the source mirror, and a re
   expect(await readFile(join(repository, "app.txt"), "utf8")).toBe(
     "committed content",
   );
+});
+
+test("a watch comparison asks the local repository which tracked files changed between two Commits, with paths, directories and globs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-changed-"));
+  roots.push(root);
+  const repository = join(root, "developer");
+  await mkdir(join(repository, "scripts", "sub"), { recursive: true });
+  await mkdir(join(repository, "apps", "web"), { recursive: true });
+  const git = async (...args: string[]) => {
+    const result = await gitRun({ command: ["git", ...args], cwd: repository });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.trim();
+  };
+  const commit = async () => {
+    await git("add", ".");
+    await git(
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=rig@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "change",
+    );
+    return await git("rev-parse", "HEAD");
+  };
+  await git("init", "-b", "main");
+  await writeFile(join(repository, "scripts", "rig-postgres.sh"), "postgres");
+  await writeFile(join(repository, "scripts", "sub", "tune.sh"), "tune");
+  await writeFile(join(repository, "apps", "web", "page.ts"), "page");
+  const first = await commit();
+  await writeFile(join(repository, "scripts", "sub", "tune.sh"), "tuned");
+  const second = await commit();
+  // An empty commit: a different Commit with the same tree.
+  const third = await commit();
+  const sources = createDeploymentSources(
+    createGitSourceStore({ root: join(root, "sources"), run: gitRun }),
+    gitRun,
+  );
+  const changed = (paths?: string[], from = first, to = second) =>
+    sources.changed({ repository, from, to, ...(paths ? { paths } : {}) });
+  expect(await changed()).toBe(true);
+  expect(await changed(["scripts"])).toBe(true);
+  expect(await changed(["scripts/**"])).toBe(true);
+  expect(await changed(["scripts/**/*.sh"])).toBe(true);
+  // `*` stays within one directory.
+  expect(await changed(["scripts/*.sh"])).toBe(false);
+  expect(await changed(["scripts/rig-postgres.sh"])).toBe(false);
+  expect(await changed(["apps", "scripts/rig-postgres.sh"])).toBe(false);
+  expect(await changed(["no/such/file"])).toBe(false);
+  // An empty list watches nothing, and the same tree is no change at all.
+  expect(await changed([])).toBe(false);
+  expect(await changed(undefined, second, third)).toBe(false);
+  // A Commit the repository does not have cannot be compared.
+  await expect(changed(undefined, first, "f".repeat(40))).rejects.toMatchObject(
+    { code: "GIT_DIFF" },
+  );
+  await expect(changed(undefined, first, "main")).rejects.toMatchObject({
+    code: "GIT_DIFF",
+  });
+  // A watch entry that matches no tracked file, such as a typo or the wrong case, is named.
+  expect(
+    await sources.unmatched({
+      repository,
+      commit: second,
+      paths: [
+        "scripts/rig-postgres.sh",
+        "scripts/rig-postgress.sh",
+        "Scripts/rig-postgres.sh",
+        "apps",
+        "scripts/**/*.sh",
+      ],
+    }),
+  ).toEqual(["scripts/rig-postgress.sh", "Scripts/rig-postgres.sh"]);
+});
+
+test("a watch comparison sees a submodule moved to another Commit, whatever the repository's diff config hides", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-submodule-"));
+  roots.push(root);
+  const repository = join(root, "developer");
+  await mkdir(repository);
+  const git = async (...args: string[]) => {
+    const result = await gitRun({ command: ["git", ...args], cwd: repository });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.trim();
+  };
+  const commit = async () => {
+    await git(
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=rig@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "change",
+    );
+    return await git("rev-parse", "HEAD");
+  };
+  await git("init", "-b", "main");
+  // The settings a user may have that would hide or reshape a difference.
+  await git("config", "diff.ignoreSubmodules", "all");
+  await git("config", "diff.relative", "true");
+  await git("config", "diff.noprefix", "true");
+  await git("config", "core.quotepath", "true");
+  // A submodule is a gitlink: a path that records another repository's Commit.
+  const pin = async (sha: string) => {
+    await git(
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sha},vendor/search-engine`,
+    );
+    return await commit();
+  };
+  const first = await pin("1".repeat(40));
+  const second = await pin("2".repeat(40));
+  const sources = createDeploymentSources(
+    createGitSourceStore({ root: join(root, "sources"), run: gitRun }),
+    gitRun,
+  );
+  for (const paths of [undefined, ["vendor/search-engine"], ["vendor"]])
+    expect(
+      await sources.changed({
+        repository,
+        from: first,
+        to: second,
+        ...(paths ? { paths } : {}),
+      }),
+    ).toBe(true);
+  expect(
+    await sources.unmatched({
+      repository,
+      commit: second,
+      paths: ["vendor/search-engine", "vendor/other"],
+    }),
+  ).toEqual(["vendor/other"]);
 });

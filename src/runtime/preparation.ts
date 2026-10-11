@@ -37,9 +37,11 @@ export async function prepareTarget(
   select: PreparationRequest["select"],
   deps: Pick<RuntimeDependencies, "lifecycle" | "store" | "now">,
 ): Promise<{ built: string[] }> {
-  if (target.preparation?.deployment !== target.plan.workspacePath)
-    target.preparation = { deployment: target.plan.workspacePath, units: {} };
-  const units = target.preparation.units;
+  const fresh = target.preparation?.deployment !== target.plan.workspacePath;
+  const preparation = (target.preparation = fresh
+    ? { deployment: target.plan.workspacePath, units: {} }
+    : target.preparation!);
+  const units = preparation.units;
   const save = async (unit: BuildUnit, outcome: BuildOutcome) => {
     const before = units[unit.id];
     units[unit.id] = outcome;
@@ -53,15 +55,22 @@ export async function prepareTarget(
     }
   };
   const journal: BuildJournal = {
-    started: (unit) =>
+    started: (unit, evidence) =>
       save(unit, {
         state: "started",
         policy: unitPolicy(unit, target.plan),
         ...(target.commit ? { commit: target.commit } : {}),
+        ...(evidence?.environment !== undefined
+          ? { environment: evidence.environment }
+          : {}),
         startedAt: deps.now(),
       }),
     finished: (unit, state) =>
       save(unit, { ...units[unit.id]!, state, finishedAt: deps.now() }),
   };
-  return await deps.lifecycle.prepare(target, { select, journal });
+  const prepared = await deps.lifecycle.prepare(target, { select, journal });
+  // The Project scope dependency installation ran in, as handed to it; a workspace installs once, at its first preparation.
+  if (fresh && prepared.environment !== undefined)
+    preparation.environment = prepared.environment;
+  return { built: prepared.built };
 }

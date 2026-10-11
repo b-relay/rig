@@ -11,6 +11,7 @@ import {
 } from "../src/domain/deployments";
 import type { DeploymentRecord, RuntimeState } from "../src/domain/runtime";
 import type { DeploymentReport } from "../web/lib/types";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 const deploy = (
   id: string,
@@ -92,7 +93,7 @@ test("durations read in the two largest units that say something", () => {
 
 test("rigd keeps a bounded history and reports one Project's deploys without its internal id", () => {
   const state = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [],
     targets: [],
     activity: [],

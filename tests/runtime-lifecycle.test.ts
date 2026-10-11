@@ -487,7 +487,7 @@ test("port contention after selection fails startup and preserves an already run
     supervisor: () => supervisor,
     async prepare() {},
     async environment(_target, component) {
-      return component.env;
+      return component?.env ?? {};
     },
     async health(component) {
       try {

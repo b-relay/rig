@@ -63,6 +63,11 @@ export function renderResult(action: string, value: unknown): string {
             : ""
         }`
       : "";
+  // ADR 0016: the Services the deploy left running from the checkout they were started in.
+  const kept =
+    action === "deploy" && Array.isArray(report.kept) && report.kept.length
+      ? `, kept ${report.kept.map(word).join(", ")}`
+      : "";
   const warnings = [
     ...(Array.isArray(report.warnings)
       ? report.warnings.map((value) => `Warning: ${word(value)}\n`)
@@ -79,7 +84,7 @@ export function renderResult(action: string, value: unknown): string {
         `${word(report.project)} ${word(entry.target)} retired${entry.branch ? ` ${word(entry.branch)}` : ""} (${word(entry.reason)})\n`,
     )
     .join("");
-  return `${retired}${subject} ${outcome}${upgrade}${revision}${path}\n${warnings}`;
+  return `${retired}${subject} ${outcome}${upgrade}${revision}${kept}${path}\n${warnings}`;
 }
 /** `rig backup list`: one line per backup, newest first, `stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB
  * schedule  run 1a2b3c4d`, then where they are. */
@@ -166,7 +171,7 @@ export function renderStatus(report: ProjectStatusReport, now: Date): string {
           ? `stopping · ${killingText(component.killAt, now, "minutes", false)}`
           : word(healthSummary(component, now)) || word(component.state);
       lines.push(
-        `  ${[word(component.name), state, port, route].filter(Boolean).join("  ")}`,
+        `  ${[word(component.name), state, port, route, keptFrom(target, component)].filter(Boolean).join("  ")}`,
       );
       if (["failed", "unhealthy", "missing"].includes(component.state))
         failures.push(
@@ -280,6 +285,19 @@ function ago(at: unknown, now: Date): string {
 function until(at: unknown, now: Date): string {
   const instant = typeof at === "string" ? Date.parse(at) : Number.NaN;
   return Number.isFinite(instant) ? span(instant - now.getTime()) : "?";
+}
+/** `kept from 1a2b3c4` for a Service a deploy kept running from an earlier Commit than its Target's (ADR 0016). */
+function keptFrom(
+  target: Pick<ProjectStatusReport["targets"][number], "commit">,
+  component: Pick<
+    ProjectStatusReport["targets"][number]["components"][number],
+    "commit"
+  >,
+): string {
+  const commit = word(component.commit);
+  return commit && target.commit && commit !== target.commit
+    ? `kept from ${commit.slice(0, 7)}`
+    : "";
 }
 /** A deployed Target shows the Branch and Commit it serves; the Working copy shows neither. */
 function deployedFrom(

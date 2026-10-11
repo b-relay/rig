@@ -349,7 +349,8 @@ was down) is not caught up and not recorded. Daylight saving time: a skipped
 wall time runs once at the change, a repeated one once, the first time.
 
 _Relationship_: A deploy never stops a run; it finishes on the checkout it
-started in, which Rig keeps until then. `rig down`, a Preview destroy,
+started in, which Rig keeps until then, as it keeps the checkout a Kept Service
+runs in. `rig down`, a Preview destroy,
 turning the Target's role off, and the job's `timeout` stop it. `rig run <job>`
 starts a run now. Each ended run is one Activity entry; status shows the last
 and next run, and `rig logs --service <job>` its output.
@@ -863,9 +864,17 @@ _Relationship_: Deploy `--no-up` materializes the Deployment without starting
 the Target and is a normal user-facing option for stable Targets and Previews.
 
 _Relationship_: If deploy changes a Target to a new Commit, the Target moves
-to that new materialized Deployment immediately. With `--no-up`, any old
-running process for that Target is stopped rather than left running on
-the previous Commit.
+to that new materialized Deployment immediately. Kept Services belong to the
+new Deployment while their processes run from an earlier checkout. With
+`--no-up`, any old running process for that Target is stopped rather than left
+running on the previous Commit.
+
+_Relationship_: A deploy restarts only the Services it changed
+([ADR 0016](docs/adr/0016-keep-unchanged-services.md)): a Service whose
+definition, composed environment and `watch`ed files are unchanged, that runs
+the process Rig recorded and is not unhealthy, and that depends on nothing
+restarted, is a Kept Service. Restarts spread to dependents. `--no-up` and
+`--force` keep nothing.
 
 _Relationship_: When a deploy explicitly targets a stable Target and the
 Production branch resolves to a new Commit, Rig replaces the existing
@@ -909,8 +918,25 @@ argument, or the current Branch when omitted.
 _Relationship_: Deploy never deploys the working Target.
 
 _Relationship_: Successful deploy output is one line,
-`<project> <target> deployed <branch>@<sha> (was <sha>)`, plus any warnings and
-a line per retired Preview.
+`<project> <target> deployed <branch>@<sha> (was <sha>)`, ending with
+`, kept <services>` when it kept any, plus any warnings and a line per retired
+Preview.
+
+### Kept Service
+
+A Service a deploy left running instead of restarting, because nothing it uses
+changed ([ADR 0016](docs/adr/0016-keep-unchanged-services.md)). The new
+Deployment adopts its run; its process keeps running in the checkout it was
+started in, which Rig holds until no process runs there.
+_Avoid_: skipped Service, unchanged Service
+
+_Relationship_: `watch` (a Service setting) names the checkout files a deploy
+compares; without it the whole checkout counts. It decides what a deploy
+restarts and is not live sync.
+
+_Relationship_: Every later start of a Kept Service (a crash or health restart,
+`rig restart`, `rig up` after `rig down`, a Host restart) starts it from the
+Target's current checkout. `rig status` shows `kept from <sha>` beside it.
 
 _Relationship_: With `--no-up`, a warning gives the exact `rig up ...` command
 for starting the materialized Target later.
@@ -943,8 +969,10 @@ replace at a time with the previous generation kept beside it. A file written
 by a newer state version, or by a version older than 4, is refused unread.
 Version 4, written before Target names were fixed, is read with the working
 and stable Targets taking their role's name and a Preview holding a reserved
-name renamed; version 5, written before scheduled jobs, and version 6, written
-before backups, are read as they are. The next write saves version 7. CLI and future UI views are derived
+name renamed; version 5, written before scheduled jobs, version 6, written
+before backups, and version 7, written before Kept Services, are read as they
+are, the checkouts job runs kept (`jobCheckouts`) as held checkouts. The next
+write saves version 8. CLI and future UI views are derived
 from it through `rigd`, so they agree. Daemon administration activity is
 journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 

@@ -193,6 +193,12 @@ async function fixture(host: Record<string, unknown> = {}) {
         return "main";
       },
       async release() {},
+      async changed() {
+        return true;
+      },
+      async unmatched() {
+        return [];
+      },
     },
     lifecycle: {
       async checkRoute() {},
@@ -231,6 +237,9 @@ async function fixture(host: Record<string, unknown> = {}) {
         const incarnation = await journal.starting(service);
         processes.set(key(target, service), { state: "running", incarnation });
         return { outcome: "started" };
+      },
+      async environmentDigest() {
+        return "environment";
       },
       async stop() {
         return { outcome: "stopped" as const };

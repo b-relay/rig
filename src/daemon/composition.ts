@@ -282,7 +282,7 @@ export async function composeDaemon(
     busy: runtime.targetBusy,
     start: runtime.runScheduledJob,
     settle: runtime.settleJob,
-    releaseCheckouts: runtime.releaseJobCheckouts,
+    releaseCheckouts: runtime.releaseHeldCheckouts,
     stopJobsIfOff: runtime.stopJobsIfOff,
     tidyBackups: runtime.tidyBackups,
     diagnostic: recordingDiagnostic(diagnostic, notices),

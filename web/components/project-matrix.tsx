@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CalendarClock, TriangleAlert } from "lucide-react";
+import { CalendarClock, Pin, TriangleAlert } from "lucide-react";
 import { HEALTH_WORD } from "@/lib/health";
 import {
   matrixTile,
@@ -341,8 +341,14 @@ function Cell({
         />
         <span className="truncate">{tile.word}</span>
       </span>
-      {tile.detail ? (
-        <span className="shrink-0 font-mono text-[11px] tabular-nums">
+      {tile.detail || tile.kept ? (
+        <span className="flex shrink-0 items-center gap-1 font-mono text-[11px] tabular-nums">
+          {tile.kept ? (
+            <>
+              <Pin className="size-3" aria-hidden />
+              <span className="sr-only">kept from {tile.kept}</span>
+            </>
+          ) : null}
           {tile.detail}
         </span>
       ) : null}

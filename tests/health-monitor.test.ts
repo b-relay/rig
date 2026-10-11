@@ -9,6 +9,7 @@ import {
   type HealthRestartRequest,
   type HealthRestartResult,
 } from "../src/runtime/health-monitor";
+import { STATE_VERSION } from "../src/runtime/state-schema";
 
 /** One stable Target with Services under a fake clock: the monitor runs a pass every second of fake time, every check
  * answers as `answer` says, and each restart starts a new process. */
@@ -74,7 +75,7 @@ function fixture(
     ),
   } as unknown as TargetRecord;
   const state = {
-    version: 7,
+    version: STATE_VERSION,
     projects: [
       {
         id: "p1",

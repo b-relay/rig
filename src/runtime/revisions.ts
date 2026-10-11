@@ -152,17 +152,20 @@ async function runInByService(
     "observations" | "observationBudgetMs" | "observationDeadline"
   >,
 ): Promise<boolean> {
+  // Every recorded run counts, whatever any plan says now: one a pending deploy carried for a Service its new plan drops
+  // (or turns into a Tool or a job) still names a process that may run in this checkout until it is seen gone.
   const runs = state.targets.flatMap((target) =>
-    Object.entries(target.services ?? {}).flatMap(([service, run]) => {
-      const component = target.plan.components.find(
-        (candidate): candidate is ManagedComponent =>
-          candidate.kind === "managed" && candidate.name === service,
-      );
-      // A Service its plan no longer has was stopped by the deploy that dropped it; no record of it is kept.
-      return run.source?.checkout === checkout && component
-        ? [{ target, component, incarnation: run.incarnation }]
-        : [];
-    }),
+    Object.entries(target.services ?? {}).flatMap(([service, run]) =>
+      run.source?.checkout === checkout
+        ? [
+            {
+              target,
+              component: recordedService(target, service),
+              incarnation: run.incarnation,
+            },
+          ]
+        : [],
+    ),
   );
   if (!runs.length) return false;
   const observed = await boundedObservations(
@@ -184,4 +187,27 @@ async function runInByService(
         process.incarnation === runs[index]!.incarnation)
     );
   });
+}
+/** The Service `service` as `target` records it: in its plan, else in the plan a pending deploy may restore (the one its
+ * run came from), else by name alone, which is all a process is observed by (its key `<target id>:<service>`). */
+function recordedService(
+  target: TargetRecord,
+  service: string,
+): ManagedComponent {
+  const managed = (plan: TargetRecord["plan"] | undefined) =>
+    plan?.components.find(
+      (candidate): candidate is ManagedComponent =>
+        candidate.kind === "managed" && candidate.name === service,
+    );
+  return (
+    managed(target.plan) ??
+    managed(target.recovery?.plan) ?? {
+      name: service,
+      kind: "managed",
+      command: "",
+      env: {},
+      dependsOn: [],
+      readyTimeout: 0,
+    }
+  );
 }

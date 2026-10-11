@@ -206,6 +206,7 @@ test("every start records where its process runs: the checkout, its Commit, the 
       db as Parameters<typeof serviceDefinition>[1],
     ),
     environment: expect.stringMatching(/^[0-9a-f]{64}$/),
+    project: expect.stringMatching(/^[0-9a-f]{64}$/),
   });
   // The digest is what a start would record now, so an unchanged environment compares equal.
   expect(await f.world.deps.lifecycle.environmentDigest(target, "db")).toBe(
@@ -390,6 +391,47 @@ test("a changed definition restarts that Service and every dependent, in depende
   expect(target.services!.search!.source!.checkout).not.toBe(
     target.plan.workspacePath,
   );
+});
+
+test("a change to the Project environment the shared build runs in restarts a Service whose own environment masks it", async () => {
+  const config = parseProjectConfig({
+    name: "melody",
+    environment: { FLAVOR: "v1" },
+    build: 'printf %s "$FLAVOR" > built.txt',
+    services: {
+      app: {
+        command: "node app.js",
+        environment: { FLAVOR: "runtime" },
+        watch: ["src"],
+      },
+    },
+    targets: { stable: true },
+  });
+  const f = await fixture(config);
+  f.git.tracked = ["src"];
+  await f.deploy();
+  const first = await f.stable();
+  expect(
+    await readFile(join(first.plan.workspacePath, "built.txt"), "utf8"),
+  ).toBe("v1");
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  config.environment = { FLAVOR: "v2" };
+  // app's own environment and the shared build's command are unchanged, but what the build wrote is not.
+  expect(await f.deploy()).toMatchObject({
+    kept: [],
+    restarted: [{ service: "app", reason: "definition" }],
+  });
+  const second = await f.stable();
+  expect(
+    await readFile(join(second.plan.workspacePath, "built.txt"), "utf8"),
+  ).toBe("v2");
+  expect(second.services!.app!.source!.checkout).toBe(
+    second.plan.workspacePath,
+  );
+  // An unchanged Project environment keeps it.
+  f.git.head = "c3";
+  expect(await f.deploy()).toMatchObject({ kept: ["app"] });
 });
 
 test("an env file whose contents changed restarts the Service that loads it, though nothing else changed", async () => {
@@ -594,6 +636,49 @@ async function keptInFirst(f: Awaited<ReturnType<typeof fixture>>) {
   expect(await f.deploy()).toMatchObject({ kept: ["search"] });
   return first.plan.workspacePath;
 }
+
+for (const [change, apply] of [
+  [
+    "drops it",
+    (config: ProjectConfig) => {
+      delete config.services!.search;
+    },
+  ],
+  [
+    "turns it into a job",
+    (config: ProjectConfig) => {
+      delete config.services!.search;
+      (config as { jobs?: Record<string, unknown> }).jobs = {
+        search: { command: "reindex", schedule: "0 3 * * *" },
+      };
+    },
+  ],
+] as const)
+  test(`while a deploy whose plan ${change} builds, the checkout the kept Service still runs in stays held, even for another rigd's sweep`, async () => {
+    const f = await fixture();
+    const held = await keptInFirst(f);
+    const target = await f.stable();
+    f.git.head = "c3";
+    edit(f.config, "api", { depends_on: ["db"] });
+    apply(f.config);
+    const lifecycle = f.world.deps.lifecycle;
+    const prepare = lifecycle.prepare.bind(lifecycle);
+    lifecycle.prepare = async (candidate, request) => {
+      // The candidate has no Service named search, yet search's process still runs in the first checkout.
+      await f.world.open().releaseHeldCheckouts(candidate.id);
+      expect(f.released).not.toContain(held);
+      return await prepare(candidate, request);
+    };
+    await f.deploy();
+    lifecycle.prepare = prepare;
+    // The deploy stopped search, so the next sweep gives its checkout back.
+    expect(f.processes.get(`${target.id}:search`)?.state).toBe("stopped");
+    await f.runtime.releaseHeldCheckouts(target.id);
+    expect(f.released).toContain(held);
+    expect((await f.world.store.read()).heldCheckouts).not.toContainEqual(
+      expect.objectContaining({ workspace: held }),
+    );
+  });
 
 test("while a later deploy builds, the checkout a kept Service runs in stays held, even for the sweep of a rigd that restarted meanwhile", async () => {
   const f = await fixture();

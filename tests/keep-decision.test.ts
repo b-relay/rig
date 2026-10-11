@@ -82,6 +82,7 @@ function previous(
               component as ManagedComponent,
             ),
             environment: `env-${component.name}`,
+            project: "project-env",
           },
           ...overrides[component.name],
         } satisfies ServiceRun,
@@ -113,6 +114,7 @@ const decide = (input: Partial<KeepInput> = {}) =>
     previous: previous(),
     candidate: { plan: plan(NEW) },
     keep: true,
+    project: "project-env",
     facts: facts(),
     ...input,
   });
@@ -209,6 +211,21 @@ describe("decideKept", () => {
     const built = plan(NEW);
     built.builds = [{ id: "shared", command: "pnpm install", timeout: 600 }];
     expect(decide({ candidate: { plan: built } }).kept).toEqual([]);
+    // So is the Project-scope environment that build ran in, even when a Service's own environment masks it.
+    expect(decide({ project: "project-env-changed" }).restarted).toEqual(
+      ["db", "search", "api", "web"].map((service) => ({
+        service,
+        reason: "definition",
+      })),
+    );
+    const { project: _project, ...unknown } = {
+      previous: previous(),
+      candidate: { plan: plan(NEW) },
+      keep: true,
+      facts: facts(),
+      project: "project-env",
+    };
+    expect(decideKept(unknown).kept).toEqual([]);
   });
 
   test("a process that is not the recorded one, or cannot be observed, restarts", () => {
@@ -275,6 +292,7 @@ test("servicesToObserve names only the Services the records leave open", () => {
       previous: unrecorded,
       candidate: { plan: plan(NEW, { db: { command: "postgres" } }) },
       keep: true,
+      project: "project-env",
     }),
   ).toEqual(["api", "web"]);
   expect(
@@ -282,6 +300,7 @@ test("servicesToObserve names only the Services the records leave open", () => {
       previous: previous(),
       candidate: { plan: plan(NEW) },
       keep: false,
+      project: "project-env",
     }),
   ).toEqual([]);
 });

@@ -286,3 +286,68 @@ test("a watch comparison asks the local repository which tracked files changed b
     }),
   ).toEqual(["scripts/rig-postgress.sh", "Scripts/rig-postgres.sh"]);
 });
+
+test("a watch comparison sees a submodule moved to another Commit, whatever the repository's diff config hides", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-submodule-"));
+  roots.push(root);
+  const repository = join(root, "developer");
+  await mkdir(repository);
+  const git = async (...args: string[]) => {
+    const result = await gitRun({ command: ["git", ...args], cwd: repository });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.trim();
+  };
+  const commit = async () => {
+    await git(
+      "-c",
+      "user.name=Rig Test",
+      "-c",
+      "user.email=rig@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "change",
+    );
+    return await git("rev-parse", "HEAD");
+  };
+  await git("init", "-b", "main");
+  // The settings a user may have that would hide or reshape a difference.
+  await git("config", "diff.ignoreSubmodules", "all");
+  await git("config", "diff.relative", "true");
+  await git("config", "diff.noprefix", "true");
+  await git("config", "core.quotepath", "true");
+  // A submodule is a gitlink: a path that records another repository's Commit.
+  const pin = async (sha: string) => {
+    await git(
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sha},vendor/search-engine`,
+    );
+    return await commit();
+  };
+  const first = await pin("1".repeat(40));
+  const second = await pin("2".repeat(40));
+  const sources = createDeploymentSources(
+    createGitSourceStore({ root: join(root, "sources"), run: gitRun }),
+    gitRun,
+  );
+  for (const paths of [undefined, ["vendor/search-engine"], ["vendor"]])
+    expect(
+      await sources.changed({
+        repository,
+        from: first,
+        to: second,
+        ...(paths ? { paths } : {}),
+      }),
+    ).toBe(true);
+  expect(
+    await sources.unmatched({
+      repository,
+      commit: second,
+      paths: ["vendor/search-engine", "vendor/other"],
+    }),
+  ).toEqual(["vendor/other"]);
+});

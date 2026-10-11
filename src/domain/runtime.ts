@@ -63,6 +63,10 @@ export interface ServiceSource {
   /** Keyed digest (HMAC-SHA256) of the environment the process was started with, the checkout path normalized; absent
    * when it could not be computed, and such a run is never kept. */
   environment?: string;
+  /** Keyed digest of the Project-scope environment (the Project's `environment` and env files) the shared build and
+   * dependency installation of its checkout ran in, normalized the same way; absent when it could not be computed, and
+   * the run is then never kept. */
+  project?: string;
 }
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
 export interface ServiceRun {

@@ -50,9 +50,11 @@ export interface TargetEffects {
   retireArtifacts(target: TargetRecord): Promise<void>;
   supervisor(target: TargetRecord): Supervisor;
   prepare(target: TargetRecord): Promise<void>;
+  /** One invocation's composed environment; without a Component, the Project scope the shared build and dependency
+   * installation run in. */
   environment(
     target: TargetRecord,
-    component: ManagedComponent | InstalledComponent | PlanJob,
+    component?: ManagedComponent | InstalledComponent | PlanJob,
   ): Promise<Record<string, string>>;
   /** The keyed digest of a composed environment `env` of `target`, its checkout path normalized (ADR 0016): equal for two
    * environments that differ only in the checkout they name, and never reversible to a value. Absent: no digest is
@@ -108,6 +110,9 @@ export interface ActivationJournal {
 export interface StartEvidence {
   /** The keyed digest of the environment the process is started with; absent when it could not be computed. */
   environment?: string;
+  /** The keyed digest of the Project-scope environment the plan's shared build and dependency installation ran in;
+   * absent when it could not be computed. */
+  project?: string;
 }
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
@@ -186,7 +191,7 @@ export interface TargetLifecycle {
   /** The keyed digest of the environment `service` of `target` would start with now (its env files read now), as a start
    * records it, the checkout path normalized. Fails as composing that environment fails (an unreadable env file, say), or
    * ENV_DIGEST when no digest can be taken. A deploy compares it with the running process's. */
-  environmentDigest(target: TargetRecord, service: string): Promise<string>;
+  environmentDigest(target: TargetRecord, service?: string): Promise<string>;
   /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
    * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
    * starts it again. */
@@ -630,13 +635,14 @@ export function createTargetLifecycle(
       }
     },
     async environmentDigest(target, service) {
-      const component = managedComponent(target, service);
+      const component =
+        service === undefined ? undefined : managedComponent(target, service);
       if (!effects.digestEnvironment)
         throw new RigError(
           "ENV_DIGEST",
           "This rigd cannot take a digest of a Service's environment.",
           "Run rig restart for the Target to start every Service again.",
-          { service },
+          service === undefined ? {} : { service },
         );
       return await effects.digestEnvironment(
         target,
@@ -781,12 +787,20 @@ export function createTargetLifecycle(
     const environment = await effects
       .digestEnvironment?.(target, env)
       .catch(() => undefined);
+    // The Project scope the plan's shared build ran in: a change there may change what the checkout holds, whatever this
+    // Service's own environment masks.
+    const project = effects.digestEnvironment
+      ? await effects
+          .environment(target)
+          .then((scope) => effects.digestEnvironment!(target, scope))
+          .catch(() => undefined)
+      : undefined;
     observer?.changing(target, component.name);
     const incarnation = journal
-      ? await journal.starting(
-          component.name,
-          environment !== undefined ? { environment } : {},
-        )
+      ? await journal.starting(component.name, {
+          ...(environment !== undefined ? { environment } : {}),
+          ...(project !== undefined ? { project } : {}),
+        })
       : randomUUID();
     const kill = stops.kill?.(target);
     const result = await supervisor.ensureRunning(

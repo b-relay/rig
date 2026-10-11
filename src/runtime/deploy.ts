@@ -149,11 +149,20 @@ async function activate(
     await checkpoint.commit();
     const completed: TargetRecord = { ...committing };
     delete completed.recovery;
-    // The previous runs the candidate carried and neither adopted nor replaced describe processes that are gone.
+    // The previous runs the candidate carried and neither adopted nor replaced describe processes this deploy stopped
+    // (every Service of the previous plan it did not keep). A run of any other Service is kept: nothing here confirmed its
+    // process gone, so it still holds the checkout it names until a sweep sees it gone.
+    const stopped = new Set(
+      (previous?.plan.components ?? []).flatMap((component) =>
+        component.kind === "managed" ? [component.name] : [],
+      ),
+    );
     if (completed.services)
       completed.services = Object.fromEntries(
         Object.entries(completed.services).filter(
-          ([, run]) => run.deployment === completed.plan.workspacePath,
+          ([service, run]) =>
+            run.deployment === completed.plan.workspacePath ||
+            !stopped.has(service),
         ),
       );
     // A kept Service that ended meanwhile was started again from the candidate's checkout: it was not kept after all.
@@ -291,10 +300,15 @@ async function decideKeeping(
   intent: DeploymentIntent,
   deps: RuntimeDependencies,
 ): Promise<KeepDecision> {
+  const keep = intent.activation === "start" && !intent.force;
+  const project = keep
+    ? await deps.lifecycle.environmentDigest(candidate).catch(() => undefined)
+    : undefined;
   const input = {
     previous,
     candidate,
-    keep: intent.activation === "start" && !intent.force,
+    keep,
+    ...(project !== undefined ? { project } : {}),
   };
   const facts = new Map<string, KeepFacts>();
   for (const service of servicesToObserve(input))

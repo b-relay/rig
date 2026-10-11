@@ -698,7 +698,10 @@ running Service running when all of these hold, and otherwise restarts it:
    `command`, `working_dir`, `environment` (with references resolved, so the
    Project's `environment`, ports and `${rig.url}` count), `env_file` paths,
    `ports`, `depends_on`, `healthcheck`, `stop_timeout`, `restart`, its own
-   `build` and the Project's shared `build`. Only the checkout path may differ.
+   `build` and the Project's shared `build`, together with the Project-scope
+   environment that build and dependency installation run in (compared as a
+   keyed digest, so a changed Project variable restarts a Service even when its
+   own `environment` overrides it). Only the checkout path may differ.
 2. Its composed environment is unchanged, env file contents included. Rig
    compares a keyed digest (HMAC-SHA256 under a random key in
    `<RIG_ROOT>/auth/environment-digest.key`) and never stores a value. A

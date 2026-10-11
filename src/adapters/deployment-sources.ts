@@ -4,6 +4,14 @@ import type { DeploymentSources } from "../runtime/contracts";
 import { preflightDeployment } from "../git/preflight";
 import { RigError } from "../domain/errors";
 import { isGitCommit } from "../domain/git";
+/** What a comparison of two trees always says, whatever the user's git config: no textconv filter, every submodule Commit
+ * change (diff.ignoreSubmodules may hide them), and paths from the repository root (diff.relative). With --quiet only the
+ * exit status is read, so settings that change how output looks (core.quotepath, diff.noprefix) cannot matter. */
+const DIFF_OPTIONS = [
+  "--no-textconv",
+  "--ignore-submodules=none",
+  "--no-relative",
+] as const;
 /** How long one comparison or listing of Commits may take; one that takes longer cannot tell, and the deploy restarts. */
 const COMPARE_TIMEOUT_MS = 30_000;
 /** A comparison of two Commits that could not be made; a deploy restarts the Service it was for. */
@@ -57,7 +65,7 @@ export function createDeploymentSources(
           "diff",
           "--quiet",
           "--no-ext-diff",
-          "--no-textconv",
+          ...DIFF_OPTIONS,
           from,
           to,
           "--",
@@ -96,7 +104,7 @@ export function createDeploymentSources(
             "diff",
             "--quiet",
             "--no-ext-diff",
-            "--no-textconv",
+            ...DIFF_OPTIONS,
             emptyTree,
             commit,
             "--",

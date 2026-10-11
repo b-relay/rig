@@ -63,6 +63,10 @@ export interface KeepInput {
   keep: boolean;
   /** By Service name; only the Services `servicesToObserve` names need any. */
   facts: ReadonlyMap<string, KeepFacts>;
+  /** The keyed digest of the Project-scope environment the candidate's shared build and dependency installation ran in;
+   * absent when it could not be computed. Part of every Service's definition: a change there may change what the
+   * checkout holds even when a Service's own environment masks it. */
+  project?: string;
 }
 
 /** Pure: what the deploy from `previous` to `candidate` does with each Service. Each Service of the new plan is judged on
@@ -129,7 +133,11 @@ function settledReason(
   if (!run || input.previous.deploymentIncomplete) return "unrecorded";
   if (input.previous.desired !== "running" || run.intent !== "running")
     return "not-running";
-  if (serviceDefinition(input.candidate.plan, after) !== run.source.definition)
+  if (
+    serviceDefinition(input.candidate.plan, after) !== run.source.definition ||
+    input.project === undefined ||
+    run.source.project !== input.project
+  )
     return "definition";
   return undefined;
 }

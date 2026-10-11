@@ -285,6 +285,11 @@ const services = z
             .describe(
               "Keyed digest (HMAC-SHA256, key under <RIG_ROOT>/auth) of the environment the process was started with, env files included, the checkout path normalized; never a value. Absent when it could not be computed, and the run is then never kept.",
             ),
+          project: text
+            .optional()
+            .describe(
+              "Keyed digest of the Project-scope environment (the Project's environment and env files) its checkout's shared build and dependency installation ran in, normalized the same way; never a value. Absent when it could not be computed, and the run is then never kept.",
+            ),
         })
         .optional()
         .describe(

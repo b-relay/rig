@@ -354,6 +354,7 @@ function startSource(
     ...(evidence?.environment !== undefined
       ? { environment: evidence.environment }
       : {}),
+    ...(evidence?.project !== undefined ? { project: evidence.project } : {}),
   };
 }
 /** `fresh` with what a start that is not explicit carries over from `current`: both budgets' spent attempts, and the

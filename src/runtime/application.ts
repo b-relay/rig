@@ -24,7 +24,7 @@ import {
   type RuntimeCommand,
 } from "../daemon/protocol";
 import type {
-  JobCheckout,
+  HeldCheckout,
   OperationRecord,
   ProjectRecord,
   RuntimeState,
@@ -104,10 +104,13 @@ import { projectStatus } from "./project-status";
 import {
   activateDeployment,
   assertDeploymentRecovered,
-  ownedRevision,
-  releaseUnreferencedRevisions,
   stopForRecovery,
 } from "./deploy";
+import {
+  ownedRevision,
+  releaseRevisions,
+  releaseUnreferencedRevisions,
+} from "./revisions";
 import {
   HOST_SCOPE,
   configScope,
@@ -196,9 +199,9 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Restarts one Service the health monitor found unhealthy, as an Operation on its Target: it waits for the Target like
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
   restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
-  /** Gives back the checkouts job runs of the Target `targetId` kept after a deploy, once nothing uses them, under the
-   * Target's lease; drops those of a Target that is gone. Never rejects. */
-  releaseJobCheckouts(targetId: string): Promise<void>;
+  /** Gives back the checkouts of the Target `targetId` that job runs or kept Services held after a deploy, once nothing
+   * runs in them, under the Target's lease; drops those of a Target that is gone. Never rejects. */
+  releaseHeldCheckouts(targetId: string): Promise<void>;
   /** Measures any backup a rigd that stopped right after its run left without a size, then deletes the backup
    * directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview), forgetting each one
    * deleted. Never rejects. */
@@ -997,7 +1000,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           { id: operationId, trigger: "manual" },
           deps,
         );
-        await releaseJobCheckouts(target, deps);
+        await releaseHeldCheckouts(target, deps);
         return await finish("started", {
           job: job.name,
           startedAt: run.startedAt,
@@ -1059,7 +1062,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           },
           deps,
         );
-        await releaseJobCheckouts(target, deps);
+        await releaseHeldCheckouts(target, deps);
         return await finish("started", {
           job: job.name,
           backup: backup.id,
@@ -1255,7 +1258,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         }
         outcome = (await stopKeepingKills(target)).outcome;
         if (stoppedJobs) outcome = "stopped";
-        await releaseJobCheckouts(target, deps);
+        await releaseHeldCheckouts(target, deps);
         if (jobFailure !== undefined) throw jobFailure;
         recordStopKills(target, operations.get(operationId)!.view);
       } else {
@@ -1317,6 +1320,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       target.updatedAt = deps.now();
       await persistTarget(target, deps.store);
+      // A restart started every Service from the current checkout, so the earlier one a kept Service ran in can go now.
+      if (command.action === "restart")
+        await releaseHeldCheckouts(target, deps).catch(() => {});
       return await finish(outcome, warnings.length ? { warnings } : {});
     } catch (error) {
       // Selecting again is not an outcome: nothing was changed and the command is not over.
@@ -1694,7 +1700,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             },
             deps,
           );
-          await releaseJobCheckouts(target, deps);
+          await releaseHeldCheckouts(target, deps);
           return "started";
         } catch (error) {
           if (!(error instanceof RigError) || error.code !== "JOB_RUNNING")
@@ -1791,16 +1797,16 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     runScheduledJob,
     // No Target is held: nothing reads a queued directory once it left the inventory, and measuring a kept one only reads it.
     tidyBackups: () => tidyBackups(deps),
-    async releaseJobCheckouts(targetId) {
+    async releaseHeldCheckouts(targetId) {
       const state = await deps.store.read();
       if (state.targets.some((target) => target.id === targetId))
-        return await onTarget(targetId, "job-checkout", (target) =>
-          releaseJobCheckouts(target, deps),
+        return await onTarget(targetId, "held-checkout", (target) =>
+          releaseHeldCheckouts(target, deps),
         );
       // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop. Only
       // what was given back is forgotten; a failure stays for the scheduler's next offer.
       await forgetReleasedCheckouts(
-        (state.jobCheckouts ?? []).filter((kept) => kept.target === targetId),
+        (state.heldCheckouts ?? []).filter((kept) => kept.target === targetId),
         deps,
       ).catch(() => {});
     },
@@ -1816,7 +1822,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (pastTimeout(run, Date.parse(deps.now())))
           await stopJobRun(target, request.job, run, "timed-out", held);
         else await settleJobRun(target, request.job, run.id, held);
-        await releaseJobCheckouts(target, deps);
+        await releaseHeldCheckouts(target, deps);
       }),
     async stopJobsIfOff(targetId) {
       const state = await deps.store.read();
@@ -1835,7 +1841,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (!again.document || targetOn(again.document.config, held.kind))
           return;
         await stopJobRuns(held, { ...deps, lifecycle });
-        await releaseJobCheckouts(held, deps);
+        await releaseHeldCheckouts(held, deps);
       });
     },
     targetBusy: (target) =>
@@ -2193,7 +2199,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         let jobFailure: unknown;
         try {
           await stopJobRuns(target, { ...deps, lifecycle });
-          await releaseJobCheckouts(target, deps);
+          await releaseHeldCheckouts(target, deps);
         } catch (error) {
           if (isStopDetached(error)) throw error;
           jobFailure = error;
@@ -2488,7 +2494,7 @@ async function destroyPreview(
   // Checkouts job runs kept went with the Preview root too; their registrations are dropped, and a record is forgotten only
   // once that worked, so a failure is offered again by the scheduler.
   await forgetReleasedCheckouts(
-    ((await deps.store.read()).jobCheckouts ?? []).filter(
+    ((await deps.store.read()).heldCheckouts ?? []).filter(
       (kept) => kept.target === target.id,
     ),
     deps,
@@ -2497,10 +2503,10 @@ async function destroyPreview(
 /** Drops the mirror registration of each checkout in `kept`, whose Target is gone, and forgets the records of those it
  * dropped; one that fails stays recorded. */
 async function forgetReleasedCheckouts(
-  kept: readonly JobCheckout[],
+  kept: readonly HeldCheckout[],
   deps: Pick<RuntimeDependencies, "sources" | "store">,
 ): Promise<void> {
-  const released: JobCheckout[] = [];
+  const released: HeldCheckout[] = [];
   for (const checkout of kept)
     try {
       await deps.sources.release({
@@ -2513,7 +2519,7 @@ async function forgetReleasedCheckouts(
     }
   if (!released.length) return;
   await deps.store.update((state) => {
-    state.jobCheckouts = state.jobCheckouts?.filter(
+    state.heldCheckouts = state.heldCheckouts?.filter(
       (other) =>
         !released.some(
           (done) =>
@@ -2522,18 +2528,19 @@ async function forgetReleasedCheckouts(
     );
   });
 }
-/** Gives back the checkouts job runs of `target` kept after a deploy (recorded with each run's end), once nothing uses
- * them, and forgets each one given back or no longer owned. The caller holds the Target. One that cannot be removed stays
- * recorded for the next offer, and is a diagnostic, never an Operation's failure. */
-async function releaseJobCheckouts(
+/** Gives back the checkouts held for `target` (one a job run kept, recorded with the run's end, or one a kept Service ran
+ * in, recorded by its deploy) once no job run or Service process runs in them, and forgets each one given back or that
+ * is a plan's checkout again. One still run in stays recorded for the next offer. The caller holds the Target. One that
+ * cannot be removed stays recorded too, and is a diagnostic, never an Operation's failure. */
+async function releaseHeldCheckouts(
   target: TargetRecord,
   deps: RuntimeDependencies,
 ): Promise<void> {
-  const kept = ((await deps.store.read()).jobCheckouts ?? []).filter(
+  const held = ((await deps.store.read()).heldCheckouts ?? []).filter(
     (checkout) => checkout.target === target.id,
   );
-  for (const checkout of kept) {
-    const retained = await releaseUnreferencedRevisions(
+  for (const checkout of held) {
+    const [result] = await releaseRevisions(
       [
         {
           ...target,
@@ -2542,21 +2549,25 @@ async function releaseJobCheckouts(
       ],
       deps,
     );
-    for (const failure of retained)
+    if (result?.outcome === "failed")
       await deps
         .diagnostic({
           operationId: deps.id(),
-          action: "job-checkout",
+          action: "held-checkout",
           outcome: "revision-retained",
           target: target.name,
-          path: failure.workspacePath,
-          ...failure.causes,
+          path: result.workspacePath,
+          ...result.causes,
         })
         .catch(() => {});
-    // Given back, or in use again (by a run, or as the Target's own checkout), which a later run end records anew.
-    if (!retained.length)
+    // Given back, or a plan's own checkout again (which the deploy that supersedes it gives back), or nothing Rig owns.
+    if (
+      result === undefined ||
+      result.outcome === "released" ||
+      result.outcome === "planned"
+    )
       await deps.store.update((state) => {
-        state.jobCheckouts = state.jobCheckouts?.filter(
+        state.heldCheckouts = state.heldCheckouts?.filter(
           (other) =>
             other.target !== checkout.target ||
             other.workspace !== checkout.workspace,

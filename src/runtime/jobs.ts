@@ -4,6 +4,7 @@ import { RigError, diagnosticErrorCode } from "../domain/errors";
 import { targetSelector } from "../domain/target-selector";
 import type {
   BackupRecord,
+  HeldCheckout,
   JobOutcome,
   JobRecord,
   JobRun,
@@ -137,12 +138,9 @@ async function recordJobEnd(
     if (
       workspace !== undefined &&
       workspace !== current?.plan.workspacePath &&
-      workspace !== current?.recovery?.plan.workspacePath &&
-      !state.jobCheckouts?.some(
-        (kept) => kept.target === target.id && kept.workspace === workspace,
-      )
+      workspace !== current?.recovery?.plan.workspacePath
     )
-      (state.jobCheckouts ??= []).push({
+      holdCheckout(state, {
         target: target.id,
         project: target.projectId,
         workspace,
@@ -153,6 +151,20 @@ async function recordJobEnd(
   if (finished?.backup)
     await settleBackupFiles(target, backup as BackupRecord | undefined, deps);
   return finished;
+}
+/** Records `checkout` among the held checkouts to give back, once. */
+export function holdCheckout(
+  state: RuntimeState,
+  checkout: HeldCheckout,
+): void {
+  if (
+    !state.heldCheckouts?.some(
+      (held) =>
+        held.target === checkout.target &&
+        held.workspace === checkout.workspace,
+    )
+  )
+    (state.heldCheckouts ??= []).push(checkout);
 }
 
 /** How settling a run went: a process of it still runs, that cannot be told, the run ended and its end was recorded, or

@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { releaseUnreferencedRevisions } from "../src/runtime/revisions";
 import { parseProjectConfig } from "../src/config";
 import type { ProjectConfig } from "../src/config/types";
 import type {
@@ -45,11 +47,15 @@ function melody(services: Record<string, Record<string, unknown>> = {}) {
 
 async function fixture(config: ProjectConfig = melody()) {
   const processes = new Map<string, ProcessObservation>();
+  /** Process keys whose observation cannot be made. */
+  const unobservable = new Set<string>();
   let pid = 5000;
   /** Every spawn and stop, by Service name, in order. */
   const events: string[] = [];
   const supervisor: Supervisor = {
     async observe(key) {
+      if (unobservable.has(key))
+        return { state: "unknown", reason: "lease unreadable" };
       return processes.get(key) ?? { state: "stopped" };
     },
     async ensureRunning(request) {
@@ -141,6 +147,7 @@ async function fixture(config: ProjectConfig = melody()) {
     world,
     runtime,
     processes,
+    unobservable,
     events,
     git,
     released,
@@ -179,4 +186,65 @@ test("every start records where its process runs: the checkout, its Commit, the 
     checkout: f.world.repo,
   });
   expect(working.services!.web!.source).not.toHaveProperty("commit");
+});
+
+/** Makes db's run say its process runs in `old`, an earlier checkout of the stable Target, as a kept Service's run does. */
+async function runIn(f: Awaited<ReturnType<typeof fixture>>, old: string) {
+  const target = await f.stable();
+  await f.world.store.update((state) => {
+    const saved = state.targets.find((t) => t.id === target.id)!;
+    saved.services!.db!.source = {
+      ...saved.services!.db!.source!,
+      checkout: old,
+    };
+  });
+  return { ...target, plan: { ...target.plan, workspacePath: old } };
+}
+
+test("a superseded checkout a Service process still runs in is held, not removed, and given back once the process is gone", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const target = await f.stable();
+  const old = join(target.sourceRoot!, "earlier");
+  await mkdir(old, { recursive: true });
+  const earlier = await runIn(f, old);
+  expect(await releaseUnreferencedRevisions([earlier], f.world.deps)).toEqual(
+    [],
+  );
+  expect(f.released).toEqual([]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([
+    { target: target.id, project: target.projectId, workspace: old },
+  ]);
+  // The sweep offers it back while db runs: it stays held, and recorded.
+  await f.runtime.releaseHeldCheckouts(target.id);
+  expect(f.released).toEqual([]);
+  // A process that cannot be observed may still run there: still held.
+  f.unobservable.add(`${target.id}:db`);
+  await f.runtime.releaseHeldCheckouts(target.id);
+  expect(f.released).toEqual([]);
+  expect((await f.world.store.read()).heldCheckouts).toHaveLength(1);
+  // Once db's process is gone (a crash, a stop, or a restart from the current checkout), the sweep gives it back.
+  f.unobservable.clear();
+  f.processes.set(`${target.id}:db`, { state: "stopped" });
+  await f.runtime.releaseHeldCheckouts(target.id);
+  expect(f.released).toEqual([old]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([]);
+});
+
+test("a process under the Service's key with another incarnation does not hold the checkout its old run named", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const target = await f.stable();
+  const old = join(target.sourceRoot!, "earlier");
+  const earlier = await runIn(f, old);
+  f.processes.set(`${target.id}:db`, {
+    state: "running",
+    pid: 1,
+    incarnation: "a later start",
+  });
+  expect(await releaseUnreferencedRevisions([earlier], f.world.deps)).toEqual(
+    [],
+  );
+  expect(f.released).toEqual([old]);
+  expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);
 });

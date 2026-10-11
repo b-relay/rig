@@ -196,12 +196,12 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       },
       async releaseCheckouts(targetId) {
         if (!releasing) return;
-        const kept = (await store.read()).jobCheckouts ?? [];
+        const kept = (await store.read()).heldCheckouts ?? [];
         released.push(
           ...kept.filter((k) => k.target === targetId).map((k) => k.workspace),
         );
         await store.update((state) => {
-          state.jobCheckouts = state.jobCheckouts?.filter(
+          state.heldCheckouts = state.heldCheckouts?.filter(
             (k) => k.target !== targetId,
           );
         });
@@ -541,7 +541,7 @@ test("a run a deploy left on its earlier checkout ends there, even when the new 
   w.end("removed", 0);
   await w.pass("2026-10-10T12:31:00Z");
   // The checkout is recorded with the run's end, in the same write, and offered back by the next pass.
-  expect(w.store.state.jobCheckouts).toEqual([
+  expect(w.store.state.heldCheckouts).toEqual([
     {
       target: "t1",
       project: "p1",
@@ -551,7 +551,7 @@ test("a run a deploy left on its earlier checkout ends there, even when the new 
   expect(w.record("removed")!.last).toMatchObject({ outcome: "succeeded" });
   await w.pass("2026-10-10T12:31:01Z");
   expect(w.released).toEqual(["/rig/targets/p1/t1/revisions/r1"]);
-  expect(w.store.state.jobCheckouts).toEqual([]);
+  expect(w.store.state.heldCheckouts).toEqual([]);
   // Its record goes once it ended, since no plan runs the job any more.
   expect(w.record("removed")).toBeUndefined();
   expect(w.store.state.activity.at(-1)).toMatchObject({
@@ -562,7 +562,7 @@ test("a run a deploy left on its earlier checkout ends there, even when the new 
 
 test("a kept checkout that could not be given back is offered again, by this rigd and by the next", async () => {
   const w = world(stableTarget([job("tick", "0 0 1 1 *")]));
-  w.store.state.jobCheckouts = [
+  w.store.state.heldCheckouts = [
     {
       target: "t1",
       project: "p1",
@@ -580,7 +580,7 @@ test("a kept checkout that could not be given back is offered again, by this rig
   expect(w.released).toEqual(["/rig/targets/p1/t1/revisions/r1"]);
   // Without a restart, an offer that did not take is repeated after the retry interval.
   const again = world(stableTarget([job("tick", "0 0 1 1 *")]));
-  again.store.state.jobCheckouts = [
+  again.store.state.heldCheckouts = [
     {
       target: "t1",
       project: "p1",

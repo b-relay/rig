@@ -692,7 +692,7 @@ export const runtimeStateSchema = z
       .describe(
         "Scheduled job runs per Target and job: the run in progress and the latest one that ended. Only rigd's job runner writes them, so no Target write replaces them.",
       ),
-    jobCheckouts: z
+    heldCheckouts: z
       .array(
         z.object({
           target: text.describe("The Target's id."),
@@ -702,7 +702,7 @@ export const runtimeStateSchema = z
       )
       .optional()
       .describe(
-        "Checkouts job runs kept after a deploy, recorded with the run's end and given back once nothing uses them; a rigd that stops first finds them again.",
+        "Superseded checkouts something may still run in: one a job run kept after a deploy, recorded with the run's end, or one a Service a deploy kept running runs in, recorded by that deploy. Each is offered back every 30 seconds and given back once no job run or Service process runs in it; a rigd that stops first finds them again. State version 6 called them jobCheckouts.",
       ),
     backups: z
       .array(

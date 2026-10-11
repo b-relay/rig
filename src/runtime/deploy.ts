@@ -1,13 +1,6 @@
 import { activationJournal, intendStopped } from "./supervision";
 import type { TargetRecord } from "../domain/runtime";
-import {
-  RigError,
-  failureCauses,
-  failureReason,
-  retainFailureCauses,
-  type FailureCauses,
-} from "../domain/errors";
-import { within } from "../domain/paths";
+import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 import { isStopDetached } from "../domain/stop-budget";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
@@ -221,51 +214,4 @@ export async function stopForRecovery(
   await deps.lifecycle.restoreEffects(target);
   await persistTarget(previous, deps.store);
   return previous;
-}
-
-/** The checkout a deployed Target owns under its revisions directory; the working Target has none. */
-export function ownedRevision(record: TargetRecord): string | undefined {
-  return record.sourceRoot &&
-    within(record.sourceRoot, record.plan.workspacePath)
-    ? record.plan.workspacePath
-    : undefined;
-}
-/** A revision that stayed on disk after a deployment decision, with the reason for the user and the diagnostic log. */
-export interface RetainedRevision {
-  readonly workspacePath: string;
-  readonly warning: string;
-  readonly causes: FailureCauses;
-}
-/** Give back the revisions among `records` that no inventory record and no job run in progress uses any more, once the
- * deployment outcome is saved. Each failure is reported, never thrown: the outcome stands and the checkout stays. */
-export async function releaseUnreferencedRevisions(
-  records: readonly TargetRecord[],
-  deps: Pick<RuntimeDependencies, "sources" | "store">,
-): Promise<RetainedRevision[]> {
-  const state = await deps.store.read();
-  // A job run keeps the checkout it started in until it ends, so a deploy never removes it from under the run.
-  const referenced = new Set([
-    ...state.targets.flatMap((record) => [
-      record.plan.workspacePath,
-      ...(record.recovery ? [record.recovery.plan.workspacePath] : []),
-    ]),
-    ...(state.jobs ?? []).flatMap((record) =>
-      record.running?.workspace ? [record.running.workspace] : [],
-    ),
-  ]);
-  const retained: RetainedRevision[] = [];
-  for (const record of records) {
-    const workspacePath = ownedRevision(record);
-    if (!workspacePath || referenced.has(workspacePath)) continue;
-    try {
-      await deps.sources.release({ project: record.projectId, workspacePath });
-    } catch (error) {
-      retained.push({
-        workspacePath,
-        warning: `Revision ${workspacePath} was not removed: ${failureReason(error)} Delete it by hand to reclaim disk.`,
-        causes: failureCauses(error),
-      });
-    }
-  }
-  return retained;
 }

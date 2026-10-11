@@ -186,8 +186,9 @@ export function readFixedTargetNames(parsed: unknown): void {
 }
 /** Every earlier version this rigd reads besides version 4 (see `MIGRATED_STATE_VERSIONS`) is the current one with less in
  * it, and is read as it is: version 5 has no jobs, version 6 no backups (ADR 0017), and versions before ADR 0016 record no
- * run's `source`, so the first deploy keeps no Service running. The next write saves the current version, which an older
- * rigd refuses rather than release a checkout a kept process runs in. */
+ * run's `source`, so the first deploy keeps no Service running, and call the checkouts job runs kept `jobCheckouts`, read
+ * as `heldCheckouts`. The next write saves the current version, which an older rigd refuses rather than release a
+ * checkout a kept process runs in. Moving STATE_VERSION on means only adding the old number to MIGRATED_STATE_VERSIONS. */
 function readEarlierVersions(parsed: unknown): void {
   if (
     !loose(parsed) ||
@@ -197,6 +198,10 @@ function readEarlierVersions(parsed: unknown): void {
   )
     return;
   parsed.version = STATE_VERSION;
+  if (!Object.hasOwn(parsed, "jobCheckouts")) return;
+  if (parsed.heldCheckouts === undefined)
+    parsed.heldCheckouts = parsed.jobCheckouts;
+  delete parsed.jobCheckouts;
 }
 /** One record of state version 4 under its new kind and name: its plans' names follow, and a Tool it published under its old
  * name keeps that file name as `publishedAs`. */

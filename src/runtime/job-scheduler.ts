@@ -24,7 +24,7 @@ export const JOB_SCHEDULER_TICK_MS = 1000;
 export const JOB_LATE_LIMIT_MS = 5 * 60_000;
 /** How often a Target with a job run in progress is checked for rig.yaml turning its role off. */
 export const JOB_OFF_CHECK_MS = 10_000;
-/** How often a checkout a job run kept is offered back again while it cannot be given back yet. */
+/** How often a held checkout (one a job run or a kept Service ran in) is offered back again while it cannot be given back yet. */
 export const JOB_CHECKOUT_RETRY_MS = 30_000;
 /** How long `stop` waits for the work in flight. */
 const JOB_SCHEDULER_STOP_MS = 5000;
@@ -70,7 +70,7 @@ export interface JobSchedulerDependencies {
   /** Under the Target's lease, reads the run again and, when it is still the one judged, records its end, or stops it past
    * its timeout and records it timed out. Never rejects. */
   settle(request: JobSettleRequest): Promise<void>;
-  /** Gives back the checkouts job runs of the Target kept, once nothing uses them. Never rejects. */
+  /** Gives back the Target's held checkouts (of job runs and kept Services) once nothing runs in them. Never rejects. */
   releaseCheckouts(targetId: string): Promise<void>;
   /** Stops the Target's runs in progress when rig.yaml turns its role off. Never rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
@@ -142,7 +142,7 @@ export function pastTimeout(run: JobRun, now: number): boolean {
  * - a run recorded in progress whose process is gone, or which is past its timeout, goes to `settle`, never while an
  *   Operation holds the Target, which may be starting or stopping it; a run a deploy left on its earlier checkout, or of a
  *   job the new plan dropped, too;
- * - a checkout a run kept goes to `releaseCheckouts`, again every JOB_CHECKOUT_RETRY_MS while it stays;
+ * - a held checkout (a job run's or a kept Service's) goes to `releaseCheckouts`, again every JOB_CHECKOUT_RETRY_MS while it stays;
  * - a Target with a run in progress goes to `stopJobsIfOff` every JOB_OFF_CHECK_MS.
  * Which times were handled lives in memory, seeded from each record's `lastScheduled`, or its `watchedFrom` (written the
  * first time a job is seen), so a new rigd never runs a time twice and runs one it missed by less than the late limit. Work
@@ -321,9 +321,9 @@ export function createJobScheduler(
       }
       for (const targetId of offChecks.keys())
         if (!withRuns.has(targetId)) offChecks.delete(targetId);
-      // Kept checkouts are offered back until they are gone, by this rigd or the next.
+      // Held checkouts (of job runs and kept Services) are offered back until they are gone, by this rigd or the next.
       const keeping = new Set(
-        (state.jobCheckouts ?? []).map((kept) => kept.target),
+        (state.heldCheckouts ?? []).map((kept) => kept.target),
       );
       for (const targetId of keeping) {
         const key = `checkout:${targetId}`;
@@ -334,7 +334,7 @@ export function createJobScheduler(
         )
           continue;
         checkoutOffers.set(targetId, now);
-        dispatch(key, "job-checkout", targetId, () =>
+        dispatch(key, "held-checkout", targetId, () =>
           deps.releaseCheckouts(targetId),
         );
       }

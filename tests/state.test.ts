@@ -244,6 +244,32 @@ const inventory = {
   activity: [],
 };
 
+test("state version 6 is read with the checkouts job runs kept as held checkouts, and saved as version 7", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-held-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const kept = [
+      { target: "t", project: "p", workspace: "/tmp/rig/revisions/old" },
+    ];
+    await writeFile(
+      path,
+      JSON.stringify({ version: 6, jobCheckouts: kept, ...inventory }),
+    );
+    const store = new FileStateStore(root);
+    const read = await store.read();
+    expect(read.version).toBe(7);
+    expect(read.heldCheckouts).toEqual(kept);
+    expect(read).not.toHaveProperty("jobCheckouts");
+    await store.update(() => {});
+    const written = JSON.parse(await readFile(path, "utf8"));
+    expect(written).toMatchObject({ version: 7, heldCheckouts: kept });
+    expect(written).not.toHaveProperty("jobCheckouts");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("keys this rigd does not know survive a read-modify-write round trip, so a newer version's fields are not lost through an older one", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-passthrough-"));
   try {

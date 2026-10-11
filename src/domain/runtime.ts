@@ -279,9 +279,10 @@ export interface JobRecord {
    * runs within the late limit, before any time was acted on. */
   watchedFrom?: string;
 }
-/** A checkout a job run kept after a deploy, to give back once nothing uses it. Recorded with the run's end, in the same
- * write, so a rigd that stops before giving it back finds it again. */
-export interface JobCheckout {
+/** A superseded checkout something may still run in, to give back once nothing does (ADR 0013, ADR 0016): one a job run
+ * kept after a deploy, recorded in the same write as the run's end, or one a Service a deploy kept runs in, recorded by
+ * that deploy. A rigd that stops before giving it back finds it again. */
+export interface HeldCheckout {
   /** The Target's id. */
   target: string;
   /** The Project's id, for a Target removed meanwhile. */
@@ -299,8 +300,8 @@ export interface RuntimeState {
   deployments?: DeploymentRecord[];
   /** Job runs per Target and job; absent until a job first ran or was scheduled. */
   jobs?: JobRecord[];
-  /** Checkouts job runs kept after a deploy, waiting to be given back. */
-  jobCheckouts?: JobCheckout[];
+  /** Superseded checkouts a job run or a kept Service may still run in, waiting to be given back. */
+  heldCheckouts?: HeldCheckout[];
   /** Kept backups of backup jobs, per Target and job (ADR 0017). */
   backups?: BackupRecord[];
   /** Backup directories waiting to be deleted. */

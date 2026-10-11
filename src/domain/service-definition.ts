@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ManagedComponent, TargetPlan } from "../config/types";
+import type { TargetRecord } from "./runtime";
 
 /* What a deploy compares to decide whether a running Service is unchanged (ADR 0016). Every Deployment runs from its own
  * checkout, so the checkout path differs between any two plans; it is replaced by a placeholder before anything is
@@ -56,6 +57,33 @@ export function serviceDefinition(
     .digest("hex");
 }
 
+/** Pure: the digest of the environments `target`'s checkout was prepared in for `service`, from its recorded preparation:
+ * the dependency installation's, the shared build's and the Service's own build's, each as it was when it ran. Every start
+ * from that checkout carries the same value, since a start rebuilds nothing; a deploy compares the new checkout's. Undefined
+ * when the preparation is another workspace's or did not record them all. */
+export function preparedBuild(
+  target: Pick<TargetRecord, "plan" | "preparation">,
+  service: string,
+): string | undefined {
+  const preparation = target.preparation;
+  if (
+    preparation?.deployment !== target.plan.workspacePath ||
+    preparation.environment === undefined
+  )
+    return undefined;
+  const units = (target.plan.builds ?? []).filter(
+    (unit) => unit.component === undefined || unit.id === `service:${service}`,
+  );
+  const built: Record<string, string> = {};
+  for (const unit of units) {
+    const environment = preparation.units[unit.id]?.environment;
+    if (environment === undefined) return undefined;
+    built[unit.id] = environment;
+  }
+  return createHash("sha256")
+    .update(canonicalJson({ install: preparation.environment, built }))
+    .digest("hex");
+}
 /** Pure: the text of a composed process environment that its keyed digest is taken of: every name and value, the checkout
  * path in values replaced by a placeholder. It holds values, so it is never stored or logged; only its digest is. */
 export function environmentText(

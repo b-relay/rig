@@ -236,6 +236,11 @@ const preparation = z
     deployment: text.describe(
       "The workspace the outcomes belong to; outcomes never carry over to another workspace.",
     ),
+    environment: text
+      .optional()
+      .describe(
+        "Keyed digest of the Project-scope environment the workspace's dependency installation ran in, as it was when the preparation began; never a value.",
+      ),
     units: z.record(
       text,
       z.object({
@@ -248,6 +253,11 @@ const preparation = z
           "Digest of the unit's public policy; never env-file values.",
         ),
         commit: text.optional(),
+        environment: text
+          .optional()
+          .describe(
+            "Keyed digest of the environment the unit's command ran in, as it was then; never a value.",
+          ),
         startedAt: text,
         finishedAt: text.optional(),
       }),
@@ -285,10 +295,10 @@ const services = z
             .describe(
               "Keyed digest (HMAC-SHA256, key under <RIG_ROOT>/auth) of the environment the process was started with, env files included, the checkout path normalized; never a value. Absent when it could not be computed, and the run is then never kept.",
             ),
-          project: text
+          build: text
             .optional()
             .describe(
-              "Keyed digest of the Project-scope environment (the Project's environment and env files) its checkout's shared build and dependency installation ran in, normalized the same way; never a value. Absent when it could not be computed, and the run is then never kept.",
+              "Digest of the environments its checkout was prepared in, as recorded then: the dependency installation's, the shared build's and the Service's own build's. A restart never changes it, since it rebuilds nothing. Absent when they were not all recorded, and the run is then never kept.",
             ),
         })
         .optional()

@@ -10,6 +10,7 @@ import type { ManagedComponent, TargetPlan } from "../src/config/types";
 import {
   canonicalJson,
   environmentText,
+  preparedBuild,
   serviceDefinition,
 } from "../src/domain/service-definition";
 
@@ -160,4 +161,60 @@ test("a key Rig did not write fails ENV_DIGEST with the path to delete", async (
     code: "ENV_DIGEST",
     hint: expect.stringContaining(environmentKeyPath(root)),
   });
+});
+
+test("a Service's prepared build digest covers the installation's, the shared build's and its own build's recorded environments, and nothing else", () => {
+  const at = checkout("a");
+  const target = (
+    environments: Record<string, string | undefined>,
+    install: string | null = "install",
+  ) => ({
+    plan: {
+      workspacePath: at,
+      components: [],
+      builds: [
+        { id: "shared", command: "make", timeout: 600 },
+        { id: "service:db", component: "db", command: "initdb", timeout: 600 },
+        { id: "service:web", component: "web", command: "vite", timeout: 600 },
+      ],
+    } as unknown as TargetPlan,
+    preparation: {
+      deployment: at,
+      ...(install !== null ? { environment: install } : {}),
+      units: Object.fromEntries(
+        Object.entries(environments).map(([id, environment]) => [
+          id,
+          {
+            state: "succeeded" as const,
+            policy: "p",
+            startedAt: "then",
+            ...(environment !== undefined ? { environment } : {}),
+          },
+        ]),
+      ),
+    },
+  });
+  const base = { shared: "s1", "service:db": "d1", "service:web": "w1" };
+  const db = preparedBuild(target(base), "db");
+  expect(db).toMatch(/^[0-9a-f]{64}$/);
+  expect(preparedBuild(target({ ...base, "service:web": "w2" }), "db")).toBe(
+    db,
+  );
+  for (const changed of [
+    target({ ...base, "service:db": "d2" }),
+    target({ ...base, shared: "s2" }),
+    target(base, "install-2"),
+  ])
+    expect(preparedBuild(changed, "db")).not.toBe(db);
+  // Anything not recorded, or another workspace's preparation, cannot be compared.
+  expect(
+    preparedBuild(target({ ...base, "service:db": undefined }), "db"),
+  ).toBeUndefined();
+  expect(preparedBuild(target(base, null), "db")).toBeUndefined();
+  expect(
+    preparedBuild(
+      { ...target(base), plan: { ...target(base).plan, workspacePath: "/x" } },
+      "db",
+    ),
+  ).toBeUndefined();
 });

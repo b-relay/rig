@@ -21,7 +21,7 @@ import type { ProcessObservation } from "../providers/contracts";
 import { boundedObservations } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
 import type { ActivationJournal, StartEvidence } from "./lifecycle";
-import { serviceDefinition } from "../domain/service-definition";
+import { preparedBuild, serviceDefinition } from "../domain/service-definition";
 
 /** Automatic attempts after a known exit allowed within RESTART_WINDOW_MS of each other. */
 export const RESTART_LIMIT = 5;
@@ -354,7 +354,9 @@ function startSource(
     ...(evidence?.environment !== undefined
       ? { environment: evidence.environment }
       : {}),
-    ...(evidence?.project !== undefined ? { project: evidence.project } : {}),
+    ...((build) => (build !== undefined ? { build } : {}))(
+      preparedBuild(target, service),
+    ),
   };
 }
 /** `fresh` with what a start that is not explicit carries over from `current`: both budgets' spent attempts, and the

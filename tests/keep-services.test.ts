@@ -11,7 +11,10 @@ import type {
 } from "../src/providers/contracts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { ServiceRun, TargetRecord } from "../src/domain/runtime";
-import { serviceDefinition } from "../src/domain/service-definition";
+import {
+  preparedBuild,
+  serviceDefinition,
+} from "../src/domain/service-definition";
 import { runtimeWorld } from "./support/runtime-world";
 import { localActivation } from "./support/activation-doubles";
 
@@ -206,8 +209,9 @@ test("every start records where its process runs: the checkout, its Commit, the 
       db as Parameters<typeof serviceDefinition>[1],
     ),
     environment: expect.stringMatching(/^[0-9a-f]{64}$/),
-    project: expect.stringMatching(/^[0-9a-f]{64}$/),
+    build: preparedBuild(target, "db"),
   });
+  expect(run.source!.build).toMatch(/^[0-9a-f]{64}$/);
   // The digest is what a start would record now, so an unchanged environment compares equal.
   expect(await f.world.deps.lifecycle.environmentDigest(target, "db")).toBe(
     run.source!.environment!,
@@ -391,6 +395,52 @@ test("a changed definition restarts that Service and every dependent, in depende
   expect(target.services!.search!.source!.checkout).not.toBe(
     target.plan.workspacePath,
   );
+});
+
+test("rig restart does not hide a changed build environment: a start carries the digest its checkout was prepared with", async () => {
+  const config = parseProjectConfig({
+    name: "melody",
+    build: 'printf %s "$FLAVOR" > built.txt',
+    services: { app: { command: "node app.js", watch: [] } },
+    targets: { stable: true },
+  });
+  const f = await fixture(config);
+  // A Project env file supplies FLAVOR to the shared build; app's own env file masks it for the process.
+  const projectFile = join(f.world.root, "env", "melody", "all.env");
+  const appFile = join(f.world.root, "env", "melody", "app", "all.env");
+  await mkdir(join(appFile, ".."), { recursive: true });
+  await writeFile(projectFile, "FLAVOR=v1\n");
+  await writeFile(appFile, "FLAVOR=runtime\n");
+  await f.deploy();
+  const first = await f.stable();
+  const built = first.services!.app!.source!.build;
+  expect(built).toBeDefined();
+  // The env file changes, and a restart starts app again from the same checkout, which still holds v1's output.
+  await writeFile(projectFile, "FLAVOR=v2\n");
+  await f.runtime.command({
+    action: "restart",
+    repoPath: f.world.repo,
+    target: "stable",
+  });
+  const restarted = await f.stable();
+  expect(
+    await readFile(join(restarted.plan.workspacePath, "built.txt"), "utf8"),
+  ).toBe("v1");
+  expect(restarted.services!.app!.incarnation).not.toBe(
+    first.services!.app!.incarnation,
+  );
+  expect(restarted.services!.app!.source!.build).toBe(built);
+  // The next deploy builds v2 in its new checkout, so app restarts from it.
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  expect(await f.deploy()).toMatchObject({
+    kept: [],
+    restarted: [{ service: "app", reason: "definition" }],
+  });
+  const second = await f.stable();
+  expect(
+    await readFile(join(second.plan.workspacePath, "built.txt"), "utf8"),
+  ).toBe("v2");
 });
 
 test("a change to the Project environment the shared build runs in restarts a Service whose own environment masks it", async () => {

@@ -300,15 +300,10 @@ async function decideKeeping(
   intent: DeploymentIntent,
   deps: RuntimeDependencies,
 ): Promise<KeepDecision> {
-  const keep = intent.activation === "start" && !intent.force;
-  const project = keep
-    ? await deps.lifecycle.environmentDigest(candidate).catch(() => undefined)
-    : undefined;
   const input = {
     previous,
     candidate,
-    keep,
-    ...(project !== undefined ? { project } : {}),
+    keep: intent.activation === "start" && !intent.force,
   };
   const facts = new Map<string, KeepFacts>();
   for (const service of servicesToObserve(input))

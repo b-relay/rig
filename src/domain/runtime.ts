@@ -18,6 +18,9 @@ export interface BuildOutcome {
   /** Digest of the unit's public policy: command, public env, env-file paths and workspace; never env-file values. */
   policy: string;
   commit?: string;
+  /** Keyed digest of the environment the unit's command ran in (ADR 0016), as it was when it ran; never a value. Absent
+   * when it could not be computed, or the unit ran before Rig recorded it. */
+  environment?: string;
   startedAt: string;
   finishedAt?: string;
 }
@@ -26,6 +29,9 @@ export interface Preparation {
   /** The workspace the outcomes belong to; a new revision starts a fresh scope. */
   deployment: string;
   units: Record<string, BuildOutcome>;
+  /** Keyed digest of the Project-scope environment the workspace's dependency installation ran in, as it was when this
+   * preparation began (ADR 0016); never a value. Absent when it could not be computed, or before Rig recorded it. */
+  environment?: string;
 }
 
 /** How the latest process of a Service ended, as far as Rig knows. `unknown` is a finding, not a gap: the process is gone and
@@ -63,10 +69,10 @@ export interface ServiceSource {
   /** Keyed digest (HMAC-SHA256) of the environment the process was started with, the checkout path normalized; absent
    * when it could not be computed, and such a run is never kept. */
   environment?: string;
-  /** Keyed digest of the Project-scope environment (the Project's `environment` and env files) the shared build and
-   * dependency installation of its checkout ran in, normalized the same way; absent when it could not be computed, and
-   * the run is then never kept. */
-  project?: string;
+  /** Digest of the environments its checkout was prepared in, as recorded when it was prepared (`preparedBuild`): the
+   * dependency installation's, the shared build's and the Service's own build's. A restart never changes it, since it
+   * rebuilds nothing. Absent when they were not all recorded, and the run is then never kept. */
+  build?: string;
 }
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
 export interface ServiceRun {

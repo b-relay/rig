@@ -95,7 +95,8 @@ export type RouteChange =
   | { readonly verified: ReadonlySet<string> };
 /** Where build outcomes are kept. `started` must be durable before it returns: it is the only evidence a crashed build leaves. */
 export interface BuildJournal {
-  started(unit: BuildUnit): Promise<void>;
+  /** `evidence.environment` is the keyed digest of the environment the unit's command is about to run in. */
+  started(unit: BuildUnit, evidence?: { environment?: string }): Promise<void>;
   finished(unit: BuildUnit, state: "succeeded" | "failed"): Promise<void>;
 }
 /** The runtime's say over each process start, and what it learns before a route is published.
@@ -110,9 +111,6 @@ export interface ActivationJournal {
 export interface StartEvidence {
   /** The keyed digest of the environment the process is started with; absent when it could not be computed. */
   environment?: string;
-  /** The keyed digest of the Project-scope environment the plan's shared build and dependency installation ran in;
-   * absent when it could not be computed. */
-  project?: string;
 }
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
@@ -402,7 +400,12 @@ export function createTargetLifecycle(
       await effects.prepare(target);
       const units = await selectUnits(target, select, effects);
       for (const unit of units) {
-        await journal.started(unit);
+        // Best effort: a build never fails for its digest, and a unit recorded without one keeps no Service running.
+        const environment = await unitEnvironment(target, unit);
+        await journal.started(
+          unit,
+          environment !== undefined ? { environment } : {},
+        );
         try {
           await effects.build(unit, target);
         } catch (error) {
@@ -717,6 +720,27 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
+  /** The keyed digest of the environment `unit` runs in: its Component's scope, or the Project's for the shared unit. */
+  async function unitEnvironment(
+    target: TargetRecord,
+    unit: BuildUnit,
+  ): Promise<string | undefined> {
+    if (!effects.digestEnvironment) return undefined;
+    const component = target.plan.components.find(
+      (candidate) => candidate.name === unit.component,
+    );
+    try {
+      return await effects.digestEnvironment(
+        target,
+        await effects.environment(
+          target,
+          component?.kind === "persistent" ? undefined : component,
+        ),
+      );
+    } catch {
+      return undefined;
+    }
+  }
   /** Stops `job`'s run in progress within its stop_timeout under `stops`, telling the observers as the stop begins and ends;
    * a job with nothing running is left alone, unannounced. */
   async function stopJob(
@@ -787,20 +811,12 @@ export function createTargetLifecycle(
     const environment = await effects
       .digestEnvironment?.(target, env)
       .catch(() => undefined);
-    // The Project scope the plan's shared build ran in: a change there may change what the checkout holds, whatever this
-    // Service's own environment masks.
-    const project = effects.digestEnvironment
-      ? await effects
-          .environment(target)
-          .then((scope) => effects.digestEnvironment!(target, scope))
-          .catch(() => undefined)
-      : undefined;
     observer?.changing(target, component.name);
     const incarnation = journal
-      ? await journal.starting(component.name, {
-          ...(environment !== undefined ? { environment } : {}),
-          ...(project !== undefined ? { project } : {}),
-        })
+      ? await journal.starting(
+          component.name,
+          environment !== undefined ? { environment } : {},
+        )
       : randomUUID();
     const kill = stops.kill?.(target);
     const result = await supervisor.ensureRunning(

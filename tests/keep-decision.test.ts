@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ManagedComponent, TargetPlan } from "../src/config/types";
 import type { ServiceRun, TargetRecord } from "../src/domain/runtime";
-import { serviceDefinition } from "../src/domain/service-definition";
+import {
+  preparedBuild,
+  serviceDefinition,
+} from "../src/domain/service-definition";
 import {
   decideKept,
   servicesToObserve,
@@ -82,7 +85,7 @@ function previous(
               component as ManagedComponent,
             ),
             environment: `env-${component.name}`,
-            project: "project-env",
+            build: BUILD,
           },
           ...overrides[component.name],
         } satisfies ServiceRun,
@@ -109,12 +112,23 @@ function facts(
     ]),
   );
 }
+/** `target` prepared with the installation's environment digest `environment`, and nothing built. */
+function prepared(
+  target: TargetPlan,
+  environment = "install-env",
+): KeepInput["candidate"] {
+  return {
+    plan: target,
+    preparation: { deployment: target.workspacePath, units: {}, environment },
+  };
+}
+/** The build digest of a checkout prepared as `prepared` prepares it; no unit is built, so every Service shares it. */
+const BUILD = preparedBuild(prepared(plan(NEW)), "db")!;
 const decide = (input: Partial<KeepInput> = {}) =>
   decideKept({
     previous: previous(),
-    candidate: { plan: plan(NEW) },
+    candidate: prepared(plan(NEW)),
     keep: true,
-    project: "project-env",
     facts: facts(),
     ...input,
   });
@@ -148,9 +162,9 @@ describe("decideKept", () => {
   test("a new Service starts, one the new plan dropped is stopped, and --force or --no-up keeps nothing", () => {
     expect(
       decide({
-        candidate: {
-          plan: plan(NEW, { worker: {} }, ["db", "search", "api", "worker"]),
-        },
+        candidate: prepared(
+          plan(NEW, { worker: {} }, ["db", "search", "api", "worker"]),
+        ),
       }),
     ).toEqual({
       kept: ["db", "search", "api"],
@@ -197,35 +211,34 @@ describe("decideKept", () => {
   test("a changed definition restarts the Service; a changed watch alone does not", () => {
     expect(
       decide({
-        candidate: { plan: plan(NEW, { search: { stopTimeout: 60 } }) },
+        candidate: prepared(plan(NEW, { search: { stopTimeout: 60 } })),
       }).restarted[0],
     ).toEqual({ service: "search", reason: "definition" });
     expect(
       decide({
-        candidate: {
-          plan: plan(NEW, { db: { watch: ["scripts/rig-postgres.sh"] } }),
-        },
+        candidate: prepared(
+          plan(NEW, { db: { watch: ["scripts/rig-postgres.sh"] } }),
+        ),
       }).kept,
     ).toEqual(["db", "search", "api", "web"]);
     // The Project's shared build is part of every definition.
     const built = plan(NEW);
     built.builds = [{ id: "shared", command: "pnpm install", timeout: 600 }];
-    expect(decide({ candidate: { plan: built } }).kept).toEqual([]);
-    // So is the Project-scope environment that build ran in, even when a Service's own environment masks it.
-    expect(decide({ project: "project-env-changed" }).restarted).toEqual(
+    expect(decide({ candidate: prepared(built) }).kept).toEqual([]);
+    // So are the environments the new checkout was prepared in, as recorded when it was: the installation's ...
+    expect(
+      decide({ candidate: prepared(plan(NEW), "install-env-changed") })
+        .restarted,
+    ).toEqual(
       ["db", "search", "api", "web"].map((service) => ({
         service,
         reason: "definition",
       })),
     );
-    const { project: _project, ...unknown } = {
-      previous: previous(),
-      candidate: { plan: plan(NEW) },
-      keep: true,
-      facts: facts(),
-      project: "project-env",
-    };
-    expect(decideKept(unknown).kept).toEqual([]);
+    // ... and a preparation that recorded none keeps nothing.
+    const unknown = prepared(plan(NEW));
+    delete unknown.preparation!.environment;
+    expect(decide({ candidate: unknown }).kept).toEqual([]);
   });
 
   test("a process that is not the recorded one, or cannot be observed, restarts", () => {
@@ -290,17 +303,15 @@ test("servicesToObserve names only the Services the records leave open", () => {
   expect(
     servicesToObserve({
       previous: unrecorded,
-      candidate: { plan: plan(NEW, { db: { command: "postgres" } }) },
+      candidate: prepared(plan(NEW, { db: { command: "postgres" } })),
       keep: true,
-      project: "project-env",
     }),
   ).toEqual(["api", "web"]);
   expect(
     servicesToObserve({
       previous: previous(),
-      candidate: { plan: plan(NEW) },
+      candidate: prepared(plan(NEW)),
       keep: false,
-      project: "project-env",
     }),
   ).toEqual([]);
 });

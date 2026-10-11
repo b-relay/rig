@@ -1,6 +1,6 @@
 import type { ManagedComponent, TargetPlan } from "../config/types";
 import type { ServiceRun, TargetRecord } from "../domain/runtime";
-import { serviceDefinition } from "../domain/service-definition";
+import { preparedBuild, serviceDefinition } from "../domain/service-definition";
 import { currentRun } from "./supervision";
 
 /* Which Services a deploy keeps running (ADR 0016). A Service is kept when it is in both plans, its definition is
@@ -58,15 +58,12 @@ export interface KeepInput {
     TargetRecord,
     "plan" | "services" | "desired" | "deploymentIncomplete"
   >;
-  candidate: { plan: TargetPlan };
+  /** With its preparation, whose recorded build environments are part of every Service's definition. */
+  candidate: Pick<TargetRecord, "plan" | "preparation">;
   /** False for a deploy that keeps nothing: `--force`, or `--no-up`, which starts nothing. */
   keep: boolean;
   /** By Service name; only the Services `servicesToObserve` names need any. */
   facts: ReadonlyMap<string, KeepFacts>;
-  /** The keyed digest of the Project-scope environment the candidate's shared build and dependency installation ran in;
-   * absent when it could not be computed. Part of every Service's definition: a change there may change what the
-   * checkout holds even when a Service's own environment masks it. */
-  project?: string;
 }
 
 /** Pure: what the deploy from `previous` to `candidate` does with each Service. Each Service of the new plan is judged on
@@ -135,8 +132,8 @@ function settledReason(
     return "not-running";
   if (
     serviceDefinition(input.candidate.plan, after) !== run.source.definition ||
-    input.project === undefined ||
-    run.source.project !== input.project
+    run.source.build === undefined ||
+    run.source.build !== preparedBuild(input.candidate, service)
   )
     return "definition";
   return undefined;

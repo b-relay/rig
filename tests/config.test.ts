@@ -1299,6 +1299,51 @@ test("working_dir is a directory inside the workspace, recorded normalized and p
   });
 });
 
+test("watch lists paths, directories and globs inside the workspace, is recorded in the plan as written, and is patchable per Target", () => {
+  const message =
+    "must be a path or glob inside the workspace, relative to its root, such as scripts/rig-postgres.sh: no absolute path, ~, '..', reference or leading ':'";
+  for (const value of [
+    "/srv/app",
+    "~/app",
+    "..",
+    "scripts/../../x",
+    "${rig.workspace}/scripts",
+    ":(exclude)scripts",
+  ])
+    expect(
+      failureOf({ name: "app", services: web({ watch: [value] }) })?.context
+        .issues,
+    ).toEqual([{ path: ["services", "web", "watch", "0"], message }]);
+  expect(
+    issuePaths({ name: "app", services: web({ watch: "scripts" }) }),
+  ).toEqual(["services.web.watch"]);
+  const config = parseProjectConfig({
+    name: "app",
+    services: web({ watch: ["scripts/rig-postgres.sh", "apps/web/**"] }),
+    targets: {
+      working: true,
+      stable: { services: { web: { watch: [] } } },
+      preview: true,
+    },
+  });
+  const planned = (target: "working" | "stable" | "preview") =>
+    resolveTargetPlan({ config, target, ...roots_, assignedPorts: { web: 1 } })
+      .components[0]!;
+  expect(planned("working")).toMatchObject({
+    watch: ["scripts/rig-postgres.sh", "apps/web/**"],
+  });
+  expect(planned("stable")).toMatchObject({ watch: [] });
+  // Without watch the whole checkout counts, and the plan records nothing, as before watch existed.
+  expect(
+    resolveTargetPlan({
+      config: parseProjectConfig({ name: "app", services: web() }),
+      target: "working",
+      ...roots_,
+      assignedPorts: { web: 1 },
+    }).components[0],
+  ).not.toHaveProperty("watch");
+});
+
 test("${port} and ${ports.<port>} name the ports of the Service whose setting holds them, and ${services.<service>.port} a Service's only port anywhere", () => {
   const config = parseProjectConfig({
     name: "app",

@@ -607,10 +607,11 @@ Each deploy checks out its revision under
 own mirror and installs its dependencies once, recording that in a
 `.rig-prepared` file at the workspace root. Once the new revision is committed,
 the superseded checkout, its install output, and its worktree registration are
-removed; a candidate that fails to start is removed the same way when the
-previous plan is restored. A revision that could not be removed is reported as
-a deploy warning naming its path, and the deploy still succeeds. Destroying a
-Preview also drops its worktree registration from the mirror.
+removed, unless a job run or a kept Service (below) still runs in it; a
+candidate that fails to start is removed the same way when the previous plan
+is restored. A revision that could not be removed is reported as a deploy
+warning naming its path, and the deploy still succeeds. Destroying a Preview
+also drops its worktree registration from the mirror.
 
 Every deploy resolves its Project from `--project` or the working directory
 and, before anything changes, prints a line such as
@@ -645,7 +646,8 @@ rig deploy preview feature/login --force
 `--no-up` materializes without starting. If a new Commit replaces a running
 Target, the old process is stopped rather than left running on stale code, so
 nothing serves until `rig up`; the deploy output warns and names that command.
-`--force` redeploys even when the same Commit is already deployed.
+`--force` redeploys even when the same Commit is already deployed, and
+restarts every Service.
 
 The Host config's `deploy.previews.max` caps Previews per Project (default 25);
 every recorded Preview counts, running or not. Under `replace_policy: oldest`, a
@@ -685,6 +687,73 @@ not reserve them against other processes on the machine.
 
 CLI deploy uses local Branches only. It should warn, not block, when the Branch
 is ahead or behind its configured upstream. It should not fetch implicitly.
+
+### Which Services a deploy restarts
+
+A deploy of a new Commit restarts only the Services it changed, as Docker
+Compose does ([ADR 0016](adr/0016-keep-unchanged-services.md)). It keeps a
+running Service running when all of these hold, and otherwise restarts it:
+
+1. The Service is in both plans and its definition is unchanged: its
+   `command`, `working_dir`, `environment` (with references resolved, so the
+   Project's `environment`, ports and `${rig.url}` count), `env_file` paths,
+   `ports`, `depends_on`, `healthcheck`, `stop_timeout`, `restart`, its own
+   `build` and the Project's shared `build`. Only the checkout path may differ.
+2. Its composed environment is unchanged, env file contents included. Rig
+   compares a keyed digest (HMAC-SHA256 under a random key in
+   `<RIG_ROOT>/auth/environment-digest.key`) and never stores a value. A
+   rotated key in `typesense.env` therefore restarts `search` on the next deploy.
+3. None of the files it `watch`es changed between the Commit its process was
+   started from and the new one. Without `watch` that is the whole checkout, so
+   any change to the tree restarts it, which is how every deploy behaved before.
+4. It runs the process Rig recorded for it and is not unhealthy or waiting for
+   a health restart.
+5. Nothing it `depends_on` is restarted: a restart spreads to every dependent.
+6. The deploy starts the Target: `--no-up` and `--force` keep nothing.
+
+New Services start and Services the new plan dropped stop. The Services to
+restart stop in reverse dependency order and start in order, so a kept `db`
+under a changed `api` is checked and left running, and a changed `db`
+restarts `api` and `web` too. Anything Rig cannot establish (a diff that
+fails, an env file it cannot read, a process it cannot observe) restarts the
+Service. The first deploy after upgrading Rig restarts everything once, since
+older records say nothing to compare.
+
+A kept process keeps running in the checkout it was started in, which Rig
+holds on disk while it runs; the new Deployment adopts it. Every later start of
+that Service (a crash or health restart, `rig restart`, `rig up` after
+`rig down`, a Mac restart) starts it from the current checkout, and the earlier
+checkout is removed within about 30 seconds of the last process leaving it.
+`rig restart` restarts every Service and gives the earlier checkout back at
+once. A failed deploy stops only what it started, so a kept Service is never
+stopped by it. The deploy line names what it kept, for example
+`melody stable deployed main@470a510 (was 83496f8), kept db, search`; the JSON
+result has `kept` and `restarted` (each with its reason), the deploy history
+records `kept`, and `rig status` shows `kept from <sha>` beside a Service that
+runs from an earlier Commit than its Target:
+
+```text
+stable  healthy  main@470a510
+  db  healthy  :5433  kept from 83496f8
+  search  healthy  :8108  kept from 83496f8
+  api  healthy  :4000
+  web  healthy  :3000
+```
+
+Melody narrows two Services with `watch`:
+
+```yaml
+services:
+  db:
+    command: sh scripts/rig-postgres.sh
+    watch: [scripts/rig-postgres.sh]
+  search:
+    command: /opt/homebrew/bin/typesense-server --data-dir ${rig.data}
+    watch: [] # an absolute binary, data under ${rig.data}
+```
+
+A web-only change then keeps `db` and `search` running; a change to
+`scripts/rig-postgres.sh` restarts `db`, `api` and `web`.
 
 ## Lifecycle And Logs
 
@@ -1396,6 +1465,15 @@ down`, `rig restart`, a deploy that replaces or rolls back the Target, a
   restart".
 - `build` and `build_timeout`: the Service's own build unit; see
   "Environment, builds, and startup".
+- `watch`: which checkout files a deploy compares to decide whether the
+  Service restarts; see "Which Services a deploy restarts". It only decides
+  what a deploy restarts: it is not live sync, and nothing watches files while
+  the Service runs. Each entry is a tracked file, a directory (everything under
+  it) or a glob, relative to the workspace root as `env_file` paths are; `*`
+  matches within one directory and `**` across directories. Absolute paths,
+  `~`, `..`, references and a leading `:` are refused. Leave it out to compare
+  the whole checkout; `[]` says the Service reads nothing from the checkout. A
+  role patch may set it.
 
 A Tool is an executable the Project makes available on the Host rather than a
 process Rig keeps running. `bin` (required) is the executable's path relative
@@ -1917,9 +1995,11 @@ for due times every second.
   after a long sleep at most the latest time within those 5 minutes runs.
   `rig status` shows the last and next run.
 - **Deploys do not cut a run off.** A deploy stops the previous plan's
-  Services, not its job runs: a run finishes on the checkout it started in,
-  which Rig keeps until the run ends and then removes, and the next run uses
-  the new deployment. `rig restart` leaves a run alone too.
+  changed Services, never its job runs: a run finishes on the checkout it
+  started in, which Rig keeps until the run ends and then removes, and the next
+  run uses the new deployment. A deploy that keeps `db` running (see "Which
+  Services a deploy restarts") keeps a run's database connection too. `rig
+restart` leaves a run alone.
 - **What stops a run:** `rig down` of its Target (with its `stop_timeout`,
   shown as stopping like a Service; `--kill` cuts it short), destroying a
   Preview, turning the Target's role off in rig.yaml (noticed within about 10
@@ -2134,8 +2214,9 @@ logs under the Tool name, and dependency installation under `setup`.
 belong in env files: their values are read when an invocation starts and go
 only into that process's environment, never into references, plans, build
 receipts, errors, or logs. Because files are read again on every start,
-`rig restart` picks up a changed file; a changed file does not rerun a
-completed build.
+`rig restart` picks up a changed file, and so does a deploy, which restarts
+just the Services whose composed environment changed (it compares a keyed
+digest, never a value); a changed file does not rerun a completed build.
 
 A listed `env_file` is required: when it is missing the command fails as
 `ENV_FILE_MISSING` naming the path before any build or process runs. The

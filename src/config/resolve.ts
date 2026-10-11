@@ -288,6 +288,7 @@ export function resolveTargetPlan(
           service.stop_timeout ?? `${DEFAULT_STOP_TIMEOUT_SECONDS}s`,
         ),
         restart: service.restart ?? DEFAULT_RESTART_POLICY,
+        ...(service.watch !== undefined ? { watch: [...service.watch] } : {}),
         ...(ready !== undefined ? { health: ready.value } : {}),
         ...(check
           ? {

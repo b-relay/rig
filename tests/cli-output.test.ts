@@ -51,6 +51,66 @@ test("a deploy outcome names the Branch and Commits so a wrong Project is visibl
   ).toBe("share stable started\n");
 });
 
+test("a deploy names the Services it kept running, and status says which Commit a kept Service runs from", () => {
+  expect(
+    renderResult("deploy", {
+      project: "melody",
+      target: "stable",
+      outcome: "deployed",
+      branch: "main",
+      commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      previousCommit: "83496f8dafde3909a7a7121ef496aeae4dacd2ef",
+      kept: ["db", "search"],
+    }),
+  ).toBe(
+    "melody stable deployed main@470a510 (was 83496f8), kept db, search\n",
+  );
+  // A deploy that restarted everything says nothing more.
+  expect(
+    renderResult("deploy", {
+      project: "melody",
+      target: "stable",
+      outcome: "deployed",
+      branch: "main",
+      commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      kept: [],
+    }),
+  ).toBe("melody stable deployed main@470a510\n");
+  const text = renderStatus(
+    {
+      project: "melody",
+      targets: [
+        {
+          name: "stable",
+          kind: "stable",
+          state: "running",
+          branch: "main",
+          commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
+          components: [
+            {
+              name: "db",
+              kind: "managed",
+              state: "running",
+              port: 5433,
+              commit: "1a2b3c4d5e6f",
+            },
+            {
+              name: "web",
+              kind: "managed",
+              state: "running",
+              port: 3000,
+              commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
+            },
+          ],
+        },
+      ],
+    },
+    new Date("2026-10-11T12:00:00Z"),
+  );
+  expect(text).toContain("  db  running  :5433  kept from 1a2b3c4\n");
+  expect(text).toContain("  web  running  :3000\n");
+});
+
 test("status lists a Target's jobs with their schedule, last and next run, and a failed last run among the failures", () => {
   const text = renderStatus(
     {

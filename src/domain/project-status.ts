@@ -106,6 +106,12 @@ const componentReportSchema = z
       .describe(
         "Every hostname whose '/' reaches this Service: the Target's domain when the Service serves its '/', then the Service's own domain. Absent when none does.",
       ),
+    commit: z
+      .string()
+      .optional()
+      .describe(
+        "For a running Service of a deployed Target: the Commit its process was started from. One that differs from the Target's Commit was kept running by a deploy that changed nothing it uses (kept from that Commit); absent when the process predates this record.",
+      ),
     exitCode: z
       .number()
       .int()

@@ -1,18 +1,22 @@
 import { healthOf } from "@/lib/health";
 import { healthSummary, toneOf } from "@/lib/present";
-import { componentPorts, exitText } from "@/lib/target-detail";
-import type { ComponentReport } from "@/lib/types";
+import { componentPorts, exitText, keptFrom } from "@/lib/target-detail";
+import type { ComponentReport, TargetReport } from "@/lib/types";
 import { CARD, HEALTH_DOT, HEALTH_TILE } from "./bits";
 import { cn } from "@/lib/utils";
 
 const KIND = { managed: "service", persistent: "store", installed: "tool" };
 /** A Target's Services and Tools, each as a card: its state as a tinted tile, then cached health,
- * every port by name, process id, automatic restarts, and what rigd said about it. */
+ * every port by name, process id, automatic restarts, the Commit a Service a deploy kept running
+ * runs from, and what rigd said about it. */
 export function ServiceCards({
   components,
+  target,
   now,
 }: {
   components: readonly ComponentReport[];
+  /** The Target they belong to, whose Commit a kept Service's is compared with. */
+  target: Pick<TargetReport, "commit">;
   /** The instant health ages are measured from, so a render is stable. */
   now: Date;
 }) {
@@ -25,6 +29,7 @@ export function ServiceCards({
           .filter(Boolean)
           .join(" ");
         const summary = healthSummary(component, now);
+        const kept = keptFrom(target, component);
         return (
           <li key={component.name} className={cn(CARD, "flex flex-col p-3")}>
             <div className="flex items-start justify-between gap-3 px-1 pb-3">
@@ -89,6 +94,19 @@ export function ServiceCards({
                     )}
                   >
                     {component.restarts ?? 0}
+                  </dd>
+                </>
+              ) : null}
+              {kept ? (
+                <>
+                  <dt
+                    className="text-muted-foreground"
+                    title="A deploy kept this Service running because nothing it uses changed; its process still runs from the checkout of this earlier Commit."
+                  >
+                    Kept from
+                  </dt>
+                  <dd className="text-right font-mono" title={component.commit}>
+                    {kept}
                   </dd>
                 </>
               ) : null}

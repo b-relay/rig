@@ -2,6 +2,7 @@ import { healthOf, projectHealth, type Health } from "./health";
 import { orderedTargets, type ProjectEntry } from "./overview";
 import { ago, toneOf } from "./present";
 import { projectHref } from "./target";
+import { keptFrom } from "./target-detail";
 import type { ComponentReport, JobReport, TargetReport } from "./types";
 
 /* The overview's matrix, one per Project: its Targets across the top, its Services, stores, Tools
@@ -141,6 +142,8 @@ export type Tile =
       busy: boolean;
       /** A port (`:4000`) or, for a job, when it runs next. */
       detail?: string;
+      /** The short Commit a Service a deploy kept running runs from, when it is not the Target's. */
+      kept?: string;
       /** Everything else, for the tooltip. */
       title: string;
     };
@@ -156,14 +159,17 @@ export function matrixTile(
   }
   const component = target.components.find((each) => each.name === row.name);
   if (!component) return { absent: true };
+  const kept = keptFrom(target, component);
   return {
     word: component.state,
     health: healthOf(component.state),
     busy: toneOf(component.state) === "busy",
     ...(component.port !== undefined ? { detail: `:${component.port}` } : {}),
+    ...(kept ? { kept } : {}),
     title: [
       component.state,
       component.pid ? `pid ${component.pid}` : undefined,
+      kept ? `kept from ${kept}` : undefined,
       component.reason,
     ]
       .filter(Boolean)

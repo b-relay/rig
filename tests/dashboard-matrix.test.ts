@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { activityDays, dayLabel } from "../web/lib/activity";
+import { keptFrom } from "../web/lib/target-detail";
 import {
   healthOf,
   monogram,
@@ -183,6 +184,52 @@ describe("matrix tiles", () => {
       detail: ":4000",
       title: "starting, pid 12",
     });
+  });
+  test("a Service a deploy kept running from an earlier Commit says so on its tile; one on the Target's Commit does not", () => {
+    const deployed = target("stable", "stable", {
+      commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
+      components: [
+        {
+          name: "db",
+          kind: "managed",
+          state: "healthy",
+          port: 5433,
+          pid: 7,
+          commit: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b",
+        },
+        {
+          name: "web",
+          kind: "managed",
+          state: "healthy",
+          port: 3000,
+          commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
+        },
+      ],
+    });
+    expect(
+      matrixTile(
+        deployed,
+        { key: "component:db", name: "db", kind: "service" },
+        NOW,
+      ),
+    ).toEqual({
+      word: "healthy",
+      health: "green",
+      busy: false,
+      detail: ":5433",
+      kept: "1a2b3c4",
+      title: "healthy, pid 7, kept from 1a2b3c4",
+    });
+    expect(
+      matrixTile(
+        deployed,
+        { key: "component:web", name: "web", kind: "service" },
+        NOW,
+      ),
+    ).not.toHaveProperty("kept");
+    expect(keptFrom(deployed, deployed.components[0]!)).toBe("1a2b3c4");
+    expect(keptFrom({}, deployed.components[0]!)).toBeUndefined();
+    expect(keptFrom(deployed, { commit: undefined })).toBeUndefined();
   });
   test("a row the Target does not have is absent", () => {
     expect(

@@ -455,3 +455,69 @@ test("a kept Service that crashes later starts from the current checkout, and th
   for (const run of Object.values((await f.stable()).services!))
     expect(run.source!.checkout).toBe(target.plan.workspacePath);
 });
+
+test("Melody's watch settings: a web-only change keeps db and search; a change to db's script restarts db and its dependents", async () => {
+  const f = await fixture(
+    melody({
+      db: { watch: ["scripts/rig-postgres.sh"] },
+      search: { watch: [] },
+    }),
+  );
+  /** The files each Commit changed since the one before. */
+  const touched: Record<string, string[]> = {
+    c2: ["apps/web/page.tsx"],
+    c3: ["scripts/rig-postgres.sh"],
+  };
+  const asked: { to: string; paths?: readonly string[] }[] = [];
+  f.git.changed = (_from, to, paths) => {
+    asked.push({ to, ...(paths ? { paths } : {}) });
+    return touched[to]!.some(
+      (file) => paths === undefined || paths.includes(file),
+    );
+  };
+  await f.deploy();
+  const first = await f.pids();
+  f.git.head = "c2";
+  expect(await f.deploy()).toMatchObject({
+    kept: ["db", "search"],
+    restarted: [
+      { service: "api", reason: "files" },
+      { service: "web", reason: "files" },
+    ],
+  });
+  const second = await f.pids();
+  expect(second.db).toBe(first.db);
+  expect(second.search).toBe(first.search);
+  expect(second.api).not.toBe(first.api);
+  // search watches nothing, so only db's script and the whole tree for api and web were compared.
+  expect(asked).toEqual([
+    { to: "c2", paths: ["scripts/rig-postgres.sh"] },
+    { to: "c2" },
+    { to: "c2" },
+  ]);
+  f.git.head = "c3";
+  // api and web watch the whole checkout, which changed too; their own reason is the one reported.
+  expect(await f.deploy()).toMatchObject({
+    kept: ["search"],
+    restarted: [
+      { service: "db", reason: "files" },
+      { service: "api", reason: "files" },
+      { service: "web", reason: "files" },
+    ],
+  });
+  const third = await f.pids();
+  expect(third.search).toBe(first.search);
+  expect(third.db).not.toBe(first.db);
+  // search still runs in the first checkout, so that one stays held; the second, which nothing runs in, went.
+  const target = await f.stable();
+  expect(target.services!.search!.source).toMatchObject({ commit: "c1" });
+  expect(target.services!.db!.source).toMatchObject({ commit: "c3" });
+  expect(f.released).toHaveLength(1);
+  expect((await f.world.store.read()).heldCheckouts).toHaveLength(1);
+  // Status says which Commit each Service runs from.
+  const status = await f.runtime.status({ repoPath: f.world.repo });
+  const stable = status.targets.find((t) => t.name === "stable")!;
+  expect(
+    Object.fromEntries(stable.components.map((c) => [c.name, c.commit])),
+  ).toEqual({ db: "c3", search: "c1", api: "c3", web: "c3" });
+});

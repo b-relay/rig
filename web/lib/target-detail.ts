@@ -12,6 +12,16 @@ export function componentPorts(
     }));
   return component.port !== undefined ? [{ port: component.port }] : [];
 }
+/** Pure: the short Commit a Service runs from when a deploy kept it running from an earlier Commit than its Target's
+ * (ADR 0016), such as `1a2b3c4`; nothing for one that runs the Target's own Commit, or whose Commit is not known. */
+export function keptFrom(
+  target: Pick<TargetReport, "commit">,
+  component: Pick<ComponentReport, "commit">,
+): string | undefined {
+  return component.commit && target.commit && component.commit !== target.commit
+    ? component.commit.slice(0, 7)
+    : undefined;
+}
 /** Pure: how a stopped Service ended, in a few words; nothing for one that runs or never ran. */
 export function exitText(
   component: Pick<ComponentReport, "exit" | "exitCode" | "signal">,

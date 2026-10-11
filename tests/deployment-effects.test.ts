@@ -1016,3 +1016,51 @@ test("a route-free deploy still reserves the hostname it would restore: a reload
   expect(f.running.size).toBe(1);
   expect(caddy.servedRoutes()).toContain("old.test");
 });
+
+test("a deploy blocked by an unrelated duplicate owner is refused before anything stops, naming the way out; removing one owner clears it", async () => {
+  const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+  roots.push(caddy.root);
+  const site = (key: string, hostname: string) => ({
+    key,
+    sites: [
+      { hostname, routes: [{ prefix: "/", upstream: "127.0.0.1:4000" }] },
+    ],
+  });
+  const f = await fixture({ router: caddy.caddy.router });
+  await f.lifecycle.up(f.previous);
+  await caddy.caddy.router.apply(site("b", "b.test"));
+  await caddy.caddy.router.apply(site("c", "c.test"));
+  const served = caddy.servedRoutes();
+  // Seeded by hand (or a crash before the write-point check): C's block also claims b.test.
+  const routesFile = join(caddy.root, "proxy", "Caddyfile");
+  await writeFile(
+    routesFile,
+    (await readFile(routesFile, "utf8")).replace("c.test {", "b.test {"),
+  );
+  await expect(
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
+  ).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    message: expect.stringContaining("b.test would belong to two owners"),
+    hint: expect.stringContaining("rig down or rig destroy"),
+  });
+  // The previous Deployment never stopped, and Caddy serves what it served.
+  expect(f.running.size).toBe(1);
+  expect(f.state.targets[0]).toMatchObject({ commit: "old" });
+  expect(caddy.servedRoutes()).toBe(served);
+  // Removing one of the two owners (rig down or destroy of C) is allowed while the duplicate exists, and clears it.
+  await caddy.caddy.router.remove("c");
+  const deployed = await activateDeployment(
+    f.candidate,
+    f.previous,
+    { activation: "start" },
+    f.deps,
+  );
+  expect(deployed).toMatchObject({ commit: "new" });
+  expect(caddy.servedRoutes()).toContain("new.test");
+});

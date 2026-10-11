@@ -686,6 +686,9 @@ test("one owner per hostname, at the write point: every publication path refuses
   });
   await w.caddy.router.apply(site("a", "one.example.test"));
   await w.caddy.router.apply(site("b", "two.example.test"));
+  await w.caddy.router.apply(site("d", "four.example.test"));
+  const savedD = await w.caddy.router.checkpoint("d");
+  await w.caddy.router.apply(site("d", "five.example.test"));
   const served = await w.current();
   // However it came about (a bug, a crash, a hand edit), b's block now claims a's hostname as well.
   const routesFile = join(w.root, "proxy", "Caddyfile");
@@ -694,16 +697,21 @@ test("one owner per hostname, at the write point: every publication path refuses
     (await w.routes()).replace("two.example.test {", "one.example.test {"),
   );
   const duplicate = await w.routes();
-  const refused = { code: "ROUTE_CONFLICT" };
+  const refused = {
+    code: "ROUTE_CONFLICT",
+    hint: expect.stringContaining("rig down or rig destroy"),
+  };
+  // Every path that would publish the file refuses it, before writing anything.
   const paths: [string, () => Promise<unknown>][] = [
     ["apply", () => w.caddy.router.apply(site("c", "three.example.test"))],
-    ["remove of another route", () => w.caddy.router.remove("c")],
     [
       "restore (a rollback or a recovery stop)",
-      async () => {
-        const saved = await w.caddy.router.checkpoint("c");
-        await w.caddy.router.restore({ key: "c", value: null }, saved);
-      },
+      async () =>
+        w.caddy.router.restore(savedD, await w.caddy.router.checkpoint("d")),
+    ],
+    [
+      "remove of a route that is not one of the two owners",
+      () => w.caddy.router.remove("d"),
     ],
     ["republish (rigd's start, rig proxy reload)", () => w.caddy.republish()],
   ];
@@ -715,7 +723,14 @@ test("one owner per hostname, at the write point: every publication path refuses
     );
     expect({ name, error }).toMatchObject({ name, error: refused });
     expect(await w.current()).toBe(served);
+    expect(await w.routes()).toBe(duplicate);
   }
+  // A change with nothing of its own to publish (removing a route that is not there, rolling back one that never changed)
+  // publishes nothing and succeeds.
+  await w.caddy.router.remove("absent");
+  const unchanged = await w.caddy.router.checkpoint("a");
+  await w.caddy.router.restore(unchanged, unchanged);
+  expect(await w.current()).toBe(served);
   // Removing one of the two owners is the way out, and it publishes.
   await writeFile(routesFile, duplicate);
   await w.caddy.router.remove("b");
@@ -752,4 +767,36 @@ test("a restoration cannot take a hostname another Target has committed since: i
   ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
   expect(w.servedRoutes().match(/old\.example\.test \{/g)).toHaveLength(1);
   expect(w.servedRoutes()).toContain("127.0.0.1:4001");
+});
+
+test("ownership is checked on the prospective file before any write: a refused restoration leaves no duplicate in the route file, its backup or a generation", async () => {
+  const w = await world();
+  const site = (key: string, hostname: string, upstream: string) => ({
+    key,
+    sites: [{ hostname, routes: [{ prefix: "/", upstream }] }],
+  });
+  await w.caddy.router.apply(site("a", "old.example.test", "127.0.0.1:3001"));
+  const saved = await w.caddy.router.checkpoint("a");
+  await w.caddy.router.apply(site("a", "new.example.test", "127.0.0.1:3001"));
+  await w.caddy.router.apply(site("b", "old.example.test", "127.0.0.1:4001"));
+  const routes = await w.routes();
+  const backup = await w.file("proxy", "Caddyfile.rig-backup");
+  const generations = await w.generations();
+  await expect(
+    w.caddy.router.restore(saved, await w.caddy.router.checkpoint("a")),
+  ).rejects.toMatchObject({ code: "ROUTE_CONFLICT" });
+  // Nothing was written: not the route file, not its backup, not a generation (not even a rejected one).
+  expect(await w.routes()).toBe(routes);
+  expect(await w.file("proxy", "Caddyfile.rig-backup")).toBe(backup);
+  expect(await w.generations()).toEqual(generations);
+  for (const text of [await w.routes(), backup])
+    expect(text.match(/old\.example\.test \{/g) ?? []).toHaveLength(
+      text.includes("old.example.test") ? 1 : 0,
+    );
+  // A reload whose proxy.routes would duplicate a Target's hostname writes nothing either.
+  w.setSettings({ routes: { "new.example.test": 3005 } });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+  });
+  expect(await w.generations()).toEqual(generations);
 });

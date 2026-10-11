@@ -252,7 +252,9 @@ hostnames until the deploy is decided, so neither another deploy nor a
 Every hostname has exactly one owner, a Target or one `proxy.routes` entry.
 Any publication that would give one two owners (a deploy, a rollback, a
 recovery stop, a reload, rigd's start) is refused with `ROUTE_CONFLICT`,
-naming both, and nothing changes.
+naming both, before anything is written or stopped. To clear one, remove an
+owner: `rig down` or `rig destroy` the Target that should not serve it, or take
+it out of `proxy.routes` and run `rig proxy reload`.
 
 Rig's own Caddy publishes only what Rig renders from the route file's blocks.
 Text it did not write there, such as an external router's `extra_config`, is

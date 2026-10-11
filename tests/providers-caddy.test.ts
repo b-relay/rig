@@ -829,3 +829,35 @@ test("the external router keeps one owner per site at its write point: a restora
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("the external router's deploy check refuses a prospective route file with two owners for a site, before anything stops", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-external-check-"));
+  try {
+    const caddyfile = join(root, "Caddyfile");
+    const router = createCaddyRouter({
+      caddyfile,
+      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    });
+    const site = (key: string, hostname: string) => ({
+      key,
+      sites: [
+        { hostname, routes: [{ prefix: "/", upstream: "127.0.0.1:3001" }] },
+      ],
+    });
+    await router.apply(site("b", "b.test"));
+    await router.apply(site("c", "c.test"));
+    await writeFile(
+      caddyfile,
+      (await readFile(caddyfile, "utf8")).replace("c.test {", "b.test {"),
+    );
+    await expect(router.check!(site("a", "a.test"))).rejects.toMatchObject({
+      code: "ROUTE_CONFLICT",
+      hint: expect.stringContaining("rig down or rig destroy"),
+    });
+    // Removing one owner is the way out.
+    await router.remove("c");
+    await router.check!(site("a", "a.test"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

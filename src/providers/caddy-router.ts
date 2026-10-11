@@ -217,13 +217,15 @@ export function createCaddyRouter(options: {
     remove: (key) => serialized(key),
     async check(route) {
       await pending.catch(() => {});
-      if (!route.sites.length) return;
-      editRouteFile({
-        before: await readRoutes(),
+      const before = await readRoutes();
+      // The whole prospective file keeps one owner per site, as commit will require, before anything stops.
+      const edit = editRouteFile({
+        before,
         key: route.key,
-        route,
+        ...(route.sites.length ? { route } : {}),
         siteConfig: options.extraConfig ?? [],
       });
+      assertSingleOwners(edit?.after ?? before, siteAddress);
     },
     async withheld(key) {
       await pending.catch(() => {});

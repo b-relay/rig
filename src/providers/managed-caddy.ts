@@ -312,10 +312,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     // The invariant, at the one point every publication passes (apply, restore, a recovery stop, a republish, a reload): a
     // hostname has one owner, a Target's block or a proxy.routes entry. One name is one site to a client, whatever scheme or
     // port it is written with, and Caddy would merge two blocks for it, so they are compared bare.
-    assertSingleOwners(routes, bareHostname, {
-      sites: customRoutes.map((route) => route.hostname),
-      owner: "proxy.routes in Host config",
-    });
+    assertOwners(routes, settings);
     // Reservations protect deploys in flight, on top of the invariant: an owner route may not claim what one is about to
     // publish or restore.
     const reserved = customRoutes.find((route) =>
@@ -563,6 +560,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   ): Promise<void> {
     const raw = (await readText(paths.routes)) ?? "";
     const routes = canonicalRouteFile(raw).text;
+    // Checked before anything is written: no file, backup or generation ever holds a hostname with two owners.
+    assertOwners(routes, settings);
     if (routes !== raw) await writeRoutes(routes, raw);
     try {
       await publish(routes, kind, settings);
@@ -572,6 +571,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         await writeRoutes(canonicalRouteFile(raw).text, routes);
       throw error;
     }
+  }
+  /** The one-owner invariant for Rig's Caddy: `text`'s Target blocks and `settings`' proxy.routes, by bare hostname. */
+  function assertOwners(text: string, settings: ProxySettings): void {
+    assertSingleOwners(text, bareHostname, {
+      sites: hostRoutes(settings).map((route) => route.hostname),
+      owner: "proxy.routes in Host config",
+    });
   }
   /** The route file as Rig's Caddy may publish it: only what Rig renders from its owned blocks. */
   async function canonicalRoutes(): Promise<{ raw: string; routes: string }> {
@@ -650,6 +656,18 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       if (raw !== after) await writeRoutes(after, raw);
       return;
     }
+    // A change that leaves this Target's block as it is and as Caddy serves it (such as rolling back a route that never
+    // changed) has nothing of its own to publish; whatever else the file holds is published by its own change.
+    if (
+      served !== undefined &&
+      ownedBlock(after, key) === ownedBlock(before, key) &&
+      ownedBlock(served, key) === ownedBlock(after, key)
+    )
+      return;
+    // The prospective file is checked before anything is written, so neither the route file nor its backup ever holds a
+    // hostname with two owners. A change that removes one of two owners passes; one that leaves a duplicate in place does
+    // not, since publishing it would serve the duplicate.
+    assertOwners(after, settings);
     if (after !== raw) await writeRoutes(after, raw);
     try {
       await publish(after, "route", settings);
@@ -686,8 +704,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       check: (route) =>
         queued(async () => {
           const { routes } = await canonicalRoutes();
-          // A route-free candidate has nothing to check, but still reserves what a rollback would restore.
-          if (route.sites.length) await edited(routes, route.key, route);
+          // The whole prospective route file, with this Target's change applied (a route-free candidate removes its block),
+          // must keep one owner per hostname before anything stops: a duplicate elsewhere would fail the publication later.
+          const edit = await edited(
+            routes,
+            route.key,
+            route.sites.length ? route : undefined,
+          );
+          assertOwners(edit?.after ?? routes, await acceptedSettings());
           const serving = parseOwnedSites(ownedBlock(routes, route.key) ?? "");
           reservations.set(route.key, [
             ...new Set(

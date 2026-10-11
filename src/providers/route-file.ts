@@ -302,7 +302,7 @@ export function assertSingleOwners(
       throw new RigError(
         "ROUTE_CONFLICT",
         `The hostname ${address} would belong to two owners: ${held.owner} and ${owner}.`,
-        "Each hostname has one owner: take it off one of them, or choose a different hostname. Nothing changed.",
+        "Each hostname has one owner. Remove one: rig down or rig destroy the Target that should not serve it, or take it out of proxy.routes in config.yaml and run rig proxy reload. Nothing changed.",
         { hostname: address, owners: [held.owner, owner] },
       );
     owners.set(id, { owner, address });

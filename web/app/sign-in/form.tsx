@@ -51,7 +51,11 @@ export function SignInForm() {
       </Field>
       <Failure failure={failure} />
       <div>
-        <Button type="submit" disabled={busy || key.length === 0}>
+        <Button
+          type="submit"
+          className="w-full"
+          disabled={busy || key.length === 0}
+        >
           {busy ? "Signing in…" : "Sign in"}
         </Button>
       </div>

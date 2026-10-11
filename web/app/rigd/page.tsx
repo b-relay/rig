@@ -4,7 +4,7 @@ import { when } from "@/lib/present";
 import type { DaemonHealth, QueueResult } from "@/lib/types";
 import { daemon, read } from "@/server/daemon";
 import { site } from "@/server/site";
-import { Empty, Facts, Failure, PageHeader, Section } from "@/components/bits";
+import { Facts, Failure, PageHeader, Section } from "@/components/bits";
 import { RigdControls } from "@/components/rigd-controls";
 
 export const metadata: Metadata = { title: "rigd" };
@@ -32,60 +32,70 @@ export default async function RigdPage() {
             : "The daemon that owns every process, route and record on this Mac."
         }
       />
-      <Section title="Daemon">
-        {health.ok ? (
-          <Facts
-            items={[
-              ["Version", (health.value as DaemonHealth).version ?? "unknown"],
-              [
-                "Process",
-                <code key="p">{(health.value as DaemonHealth).pid}</code>,
-              ],
-              [
-                "Instance",
-                <code key="i">
-                  {(health.value as DaemonHealth).instanceId}
-                </code>,
-              ],
-              ["Rig root", <code key="r">{settings.root}</code>],
-            ]}
-          />
-        ) : (
-          <Failure failure={health.failure} />
-        )}
-      </Section>
-      <Section title="Operation queue">
-        {!queue.ok ? <Failure failure={queue.failure} /> : null}
-        {running.map((operation) => (
-          <Facts
-            key={operation.operationId}
-            items={[
-              [
-                "Running",
-                [operation.action, operation.project, operation.target]
-                  .filter(Boolean)
-                  .join(" "),
-              ],
-              ["Started", when(operation.startedAt)],
-              [
-                "Operation",
-                <a
-                  key="o"
-                  href={`/activity?operation=${encodeURIComponent(operation.operationId)}`}
-                  className="font-mono text-xs"
-                >
-                  {operation.operationId}
-                </a>,
-              ],
-            ]}
-          />
-        ))}
-        {running.length ? (
-          <Empty>{queued?.waiting ?? 0} waiting.</Empty>
-        ) : queued ? (
-          <Empty>Nothing is running; {queued.waiting} waiting.</Empty>
-        ) : null}
-      </Section>
+      <div className="grid items-start gap-4 lg:grid-cols-2">
+        <Section title="Daemon">
+          {health.ok ? (
+            <Facts
+              items={[
+                [
+                  "Version",
+                  (health.value as DaemonHealth).version ?? "unknown",
+                ],
+                [
+                  "Process",
+                  <code key="p">{(health.value as DaemonHealth).pid}</code>,
+                ],
+                [
+                  "Instance",
+                  <code key="i">
+                    {(health.value as DaemonHealth).instanceId}
+                  </code>,
+                ],
+                ["Rig root", <code key="r">{settings.root}</code>],
+              ]}
+            />
+          ) : (
+            <Failure failure={health.failure} />
+          )}
+        </Section>
+        <Section title="Operation queue">
+          {!queue.ok ? <Failure failure={queue.failure} /> : null}
+          {running.map((operation) => (
+            <Facts
+              key={operation.operationId}
+              items={[
+                [
+                  "Running",
+                  [operation.action, operation.project, operation.target]
+                    .filter(Boolean)
+                    .join(" "),
+                ],
+                ["Started", when(operation.startedAt)],
+                [
+                  "Operation",
+                  <a
+                    key="o"
+                    href={`/activity?operation=${encodeURIComponent(operation.operationId)}`}
+                    className="font-mono text-xs"
+                  >
+                    {operation.operationId}
+                  </a>,
+                ],
+              ]}
+            />
+          ))}
+          {running.length ? (
+            <p className="text-sm text-muted-foreground">
+              {queued?.waiting ?? 0} waiting.
+            </p>
+          ) : queued ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span aria-hidden className="size-1.5 rounded-full bg-good" />
+              Nothing is running; {queued.waiting} waiting.
+            </p>
+          ) : null}
+        </Section>
+      </div>
       <RigdControls />
     </>
   );

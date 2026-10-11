@@ -1,13 +1,24 @@
 import Link from "next/link";
+import { MapPinOff } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 export default function NotFound() {
   return (
-    <div className="flex flex-col gap-2 py-10">
-      <h1 className="title text-2xl">Not here</h1>
-      <p className="text-sm text-muted-foreground">
-        Nothing is served at this address.{" "}
-        <Link href="/">Back to the board.</Link>
-      </p>
-    </div>
+    <section className="mx-auto mt-6 flex w-full max-w-lg flex-col items-start gap-4 rounded-xl border border-dashed p-6">
+      <span className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+        <MapPinOff className="size-5" aria-hidden />
+      </span>
+      <div>
+        <h1 className="text-lg font-semibold tracking-tight">Not here</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Nothing is served at this address.
+        </p>
+      </div>
+      <Button asChild variant="outline" size="sm">
+        <Link href="/" className="text-foreground no-underline">
+          Back to the overview
+        </Link>
+      </Button>
+    </section>
   );
 }

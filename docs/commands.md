@@ -71,9 +71,9 @@ rig
 │    --project <name>
 ├─ forget <name>                    drop a stopped Project's registration
 │
-├─ proxy                            Rig's own Caddy: its job, every served site, the custom files
+├─ proxy                            Rig's own Caddy: its job and every served hostname, proxy.routes included
 │    --json
-│  ├─ reload                        apply proxy/custom*.caddy and the proxy settings as they are now
+│  ├─ reload                        apply Host config's proxy section (proxy.routes, ports, certificates) as it is now
 │  ├─ verify                        TLS handshake per served hostname; exits 1 when any is not ready
 │  │   --port <port>                default: proxy.ports.https
 │  │   --wait <seconds>             keep checking failing hostnames this long
@@ -138,7 +138,7 @@ status` takes no Target.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
 - `--json` exists on `status`, `deploy`, `up`, `down`, `restart`, `run`,
-  `backup list` and `backup restore` only.
+  `backup list`, `backup restore`, `proxy` and `dns list` only.
 - `run` starts one run of a job from `jobs` in `rig.yaml` and answers once it
   started; it never waits for the run to end. Without a Target it means
   `stable`, where jobs are scheduled by default; it runs the job in any Target

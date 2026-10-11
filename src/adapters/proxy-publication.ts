@@ -4,6 +4,7 @@ import type { HostConfig } from "../config/types";
 import {
   countOwnedRoutes,
   inspectProxyPublication,
+  ownedRouteBlocks,
 } from "../domain/proxy-publication";
 import { proxyPaths } from "../domain/managed-proxy";
 import type { ProxyPublication } from "../domain/proxy-publication";
@@ -31,6 +32,7 @@ export function inspectHostProxy(
       .then((text) => ({
         proxyFile,
         routes: countOwnedRoutes(text),
+        blocks: ownedRouteBlocks(text),
         state: "managed" as const,
       }));
   }

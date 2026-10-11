@@ -45,6 +45,7 @@ import {
   canonicalRouteFile,
   routeFileHostnames,
   withheldPaths,
+  withoutUnownedBlocks,
   type RouteCheckpoint,
   type RouteRequest,
   type Router,
@@ -676,6 +677,30 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       throw error;
     }
   }
+  /** Withdraws the owned blocks whose key `owners` does not hold, published as one change; see `Router.withdrawUnowned`. */
+  async function withdrawUnowned(
+    owners: () => Promise<ReadonlySet<string>>,
+  ): Promise<string[]> {
+    const { raw, routes: before } = await canonicalRoutes();
+    const { text: after, hostnames } = withoutUnownedBlocks(
+      before,
+      await owners(),
+    );
+    // Nothing to withdraw asks nothing of Caddy, so a sweep never fails on a Caddy it did not need.
+    if (after === before) return [];
+    // As every change: nothing is edited while what Caddy serves is unknown.
+    await reconcile("route");
+    const settings = await acceptedSettings();
+    assertOwners(after, settings);
+    await writeRoutes(after, raw);
+    try {
+      await publish(after, "route", settings);
+    } catch (error) {
+      await writeRoutes(before, after);
+      throw error;
+    }
+    return hostnames;
+  }
   /** Read in the queue: a change writes the route file before it publishes and puts it back when publishing fails, so a read
    * beside it could see a block that was never served. */
   function readOwned(key: string): Promise<string | null> {
@@ -688,6 +713,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     router: {
       apply: (route) => queued(() => change(route.key, route)),
       remove: (key) => queued(() => change(key)),
+      withdrawUnowned: (owners) => queued(() => withdrawUnowned(owners)),
       withheld: async (key) => withheldPaths((await readOwned(key)) ?? ""),
       checkpoint: async (key) => ({ key, value: await readOwned(key) }),
       restore: (saved, expected) =>

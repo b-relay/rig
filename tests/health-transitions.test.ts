@@ -198,6 +198,12 @@ test("the lifecycle reports every start and stop of a Service as it begins, and 
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(

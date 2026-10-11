@@ -114,6 +114,12 @@ function fixture(
       return { outcome: "unchanged" };
     },
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000]),
     supervisor: () => ({
       async observe(key) {

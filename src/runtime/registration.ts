@@ -58,7 +58,11 @@ function projectActive(): RigError {
   );
 }
 /** Removes the registration and its stopped working and stable records; Previews own data and must be destroyed first.
- * Returns a warning for every live workspace and data root left on disk. */
+ * Every route its Targets own is withdrawn first, confirmed in the proxy: a route left behind would be keyed by a Target
+ * nothing records any more and would hold its hostnames from every later owner (#336). When a route cannot be withdrawn
+ * (Caddy unreachable, a reload refused) the forget is refused with that failure and nothing changes; when the records
+ * cannot be removed, the routes are published again. Returns a warning for every live workspace and data root left on
+ * disk. */
 export async function forgetProject(
   project: ProjectRecord,
   targets: TargetRecord[],
@@ -73,19 +77,40 @@ export async function forgetProject(
       `Run rig down preview <branch> --destroy for each Preview, then rig forget ${project.name}.`,
       { previews: previews.map((t) => t.name) },
     );
+  let withdrawal;
+  try {
+    withdrawal = await deps.lifecycle.withdrawRoutes(targets);
+  } catch (error) {
+    throw notForgotten(project, error);
+  }
   // Its backups stay on disk, as its data does; their records go, since nothing could reach them by a forgotten Project.
   const kept = new Set<string>();
-  await deps.store.update((state) => {
-    state.projects = state.projects.filter((p) => p.id !== project.id);
-    state.targets = state.targets.filter((t) => t.projectId !== project.id);
-    for (const backup of state.backups ?? [])
-      if (backup.project === project.id)
-        kept.add(dirname(dirname(dirname(backup.path))));
-    if (kept.size)
-      state.backups = state.backups!.filter(
-        (backup) => backup.project !== project.id,
+  try {
+    await deps.store.update((state) => {
+      state.projects = state.projects.filter((p) => p.id !== project.id);
+      state.targets = state.targets.filter((t) => t.projectId !== project.id);
+      for (const backup of state.backups ?? [])
+        if (backup.project === project.id)
+          kept.add(dirname(dirname(dirname(backup.path))));
+      if (kept.size)
+        state.backups = state.backups!.filter(
+          (backup) => backup.project !== project.id,
+        );
+    });
+  } catch (error) {
+    try {
+      await withdrawal.restore();
+    } catch (recovery) {
+      throw new RigError(
+        "FORGET_ROLLBACK",
+        `Project '${project.name}' is still registered, but its routes (${withdrawal.hostnames.join(", ")}) were withdrawn and could not be published again.`,
+        `Its Targets are stopped, so nothing was served through them; rig up or rig deploy of a Target publishes its route again. Run rig forget ${project.name} to retry.`,
+        { hostnames: [...withdrawal.hostnames] },
+        failureCauses(error, recovery),
       );
-  });
+    }
+    throw error;
+  }
   return [
     ...targets
       .filter((t) => t.kind === "stable")
@@ -98,6 +123,20 @@ export async function forgetProject(
         `Its backups in ${directory} were kept on disk; Rig no longer lists them.`,
     ),
   ];
+}
+/** The refusal of a forget whose routes could not be withdrawn: the provider's failure, with its code and details kept, said
+ * as a forget that changed nothing and can be run again. */
+function notForgotten(project: ProjectRecord, error: unknown): unknown {
+  if (!(error instanceof RigError)) return error;
+  return new RigError(
+    error.code,
+    `Project '${project.name}' was not forgotten: its routes could not be withdrawn. ${error.message}`,
+    error.code === "WITHDRAW_ROLLBACK"
+      ? `${error.hint} Its registration is unchanged: fix that, then run rig forget ${project.name} again.`
+      : `${error.hint} Its registration and routes are unchanged: fix that, then run rig forget ${project.name} again.`,
+    error.details,
+    error.causes,
+  );
 }
 /** What a registration change left behind; `project` is the record as stored, never the argument mutated. */
 export interface RegistrationUpdate {

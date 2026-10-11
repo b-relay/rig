@@ -342,6 +342,10 @@ export async function composeDaemon(
           }),
       );
       await runtime.reconcile();
+      // Queued behind the republish, beside everything else: a route block no recorded Target owns (one an earlier rig
+      // forget left, #336) is withdrawn so its hostnames can be published again. A failure is recorded, and doctor names
+      // the blocks.
+      void runtime.withdrawOrphanedRoutes();
       if (stopped) return;
       // Restart policy is applied here, never by a supervisor: every pass records exits and makes the attempts that are due.
       stopMonitor = startFailureMonitor({

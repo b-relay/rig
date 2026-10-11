@@ -58,6 +58,7 @@ function fixture() {
       return {
         proxyFile: "/tmp/isolated-rig/proxy/Caddyfile",
         routes: 0,
+        blocks: [],
         state: "unpublished" as const,
       };
     },
@@ -134,6 +135,12 @@ function fixture() {
     lifecycle: {
       async checkRoute() {},
       async releaseRoute() {},
+      async withdrawRoutes() {
+        return { hostnames: [], async restore() {} };
+      },
+      async pruneRoutes() {
+        return [];
+      },
       async startJob() {},
       async observeJob() {
         return { state: "stopped" as const };
@@ -3441,6 +3448,12 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     async route() {},
     listeners: async (pid: number) => loopbackListeners(pid, []),
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
   });
   try {
     await expect(f.destroy()).rejects.toMatchObject({

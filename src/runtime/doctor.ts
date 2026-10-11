@@ -13,6 +13,7 @@ import { roleLabel, turnOnInstruction } from "./targets";
 import { withPlanDefaults } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
+import { routeOwnerToken } from "../domain/proxy-publication";
 import { transitionInProgress } from "./project-status";
 import {
   identityDriftHint,
@@ -68,9 +69,14 @@ export async function hostDoctor(
 }
 
 async function inspectRuntimeHost(
-  deps: Pick<RuntimeDependencies, "inspectHost" | "store" | "notices">,
+  deps: Pick<
+    RuntimeDependencies,
+    "inspectHost" | "inspectProxy" | "store" | "notices"
+  >,
 ) {
   const checks = await deps.inspectHost();
+  const orphans = await orphanedRoutesCheck(deps);
+  if (orphans) checks.push(orphans);
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
   for (const notice of deps.notices?.() ?? [])
     checks.push({
@@ -98,6 +104,43 @@ async function inspectRuntimeHost(
     });
   }
   return checks;
+}
+/** A failing `route-owners` check when the route file holds blocks whose Target no state record names: such a block holds its
+ * hostnames from every new owner (ROUTE_CONFLICT) until it is withdrawn. Undefined when there is none, or when the route
+ * file or the state cannot be read (other checks report that). The route file is read before the state, and every Target
+ * is recorded before its route is published, so a deploy in progress is never reported. */
+async function orphanedRoutesCheck(
+  deps: Pick<RuntimeDependencies, "inspectProxy" | "store">,
+): Promise<DoctorCheck | undefined> {
+  let publication, state;
+  try {
+    publication = await deps.inspectProxy();
+    state = await deps.store.read();
+  } catch {
+    return undefined;
+  }
+  const owned = new Set(
+    state.targets.map((target) => routeOwnerToken(target.id)),
+  );
+  const orphaned = publication.blocks.filter(
+    (block) => !owned.has(block.token),
+  );
+  if (!orphaned.length) return undefined;
+  const hostnames = orphaned.flatMap((block) =>
+    block.hostnames.length
+      ? block.hostnames
+      : [`(route ${block.token.slice(0, 12)})`],
+  );
+  return {
+    name: "route-owners",
+    ok: false,
+    message: `${publication.proxyFile} holds ${orphaned.length === 1 ? "a route" : `${orphaned.length} routes`} whose Target no longer exists, for ${hostnames.join(", ")}. No Target can publish ${hostnames.length === 1 ? "that hostname" : "those hostnames"} until ${orphaned.length === 1 ? "it is" : "they are"} withdrawn.`,
+    reason: "route-orphaned",
+    hint:
+      publication.state === "managed"
+        ? "Run rig proxy reload to withdraw them now. rigd also withdraws them when it starts and before a deploy, up or restart publishes a route."
+        : "rigd withdraws them when it starts and before a deploy, up or restart publishes a route: run the deploy or up that needs the hostname again.",
+  };
 }
 export async function doctor(
   project: ProjectRecord,

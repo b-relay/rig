@@ -35,6 +35,7 @@ import { isSourceEntrypoint } from "../providers/artifact-installer";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
+import { parseOwnedSites } from "../providers/route-file";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
@@ -734,6 +735,20 @@ export function createTargetEffects(
         options.router.remove(target.id),
       );
     },
+    async withdrawRoute(target) {
+      const saved = await options.router.checkpoint(target.id);
+      // A Target that publishes nothing asks nothing of the proxy.
+      if (saved.value === null) return undefined;
+      await transactions.withRouteChange(target.id, () =>
+        options.router.remove(target.id),
+      );
+      const expected = await options.router.checkpoint(target.id);
+      return {
+        hostnames: parseOwnedSites(saved.value).map((site) => site.hostname),
+        restore: () => options.router.restore(saved, expected),
+      };
+    },
+    pruneRoutes: (owners) => options.router.withdrawUnowned(owners),
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),

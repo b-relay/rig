@@ -170,6 +170,12 @@ function world(
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) =>
       loopbackListeners(pid, [4567, 5000, 5001, 5002]),
   };
@@ -188,6 +194,7 @@ function world(
       return {
         proxyFile: "/tmp/isolated-rig-278/proxy/Caddyfile",
         routes: 0,
+        blocks: [],
         state: "imported" as const,
         hostCaddyfile: "/tmp/isolated-rig-278/Caddyfile",
       };

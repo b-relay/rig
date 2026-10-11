@@ -102,6 +102,14 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       if (value) published.set(saved.key, value);
       else published.delete(saved.key);
     },
+    async withdrawUnowned(owners) {
+      const owned = await owners();
+      const withdrawn = [...published].filter(([key]) => !owned.has(key));
+      for (const [key] of withdrawn) published.delete(key);
+      return withdrawn.flatMap(([, route]) =>
+        route.sites.map((site) => site.hostname),
+      );
+    },
   };
   const world = await runtimeWorld({
     name: "activation",

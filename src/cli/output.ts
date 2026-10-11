@@ -21,7 +21,11 @@ export function renderResult(action: string, value: unknown): string {
   if (["dns-create", "dns-update", "dns-delete"].includes(action))
     return `${capitalized(word(report.summary)) || "DNS record changed"}.\n`;
   if (action === "proxy-apply")
-    return "Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n";
+    return `Rig's Caddy serves the proxy section of Host config as it is now, proxy.routes included.\n${
+      Array.isArray(report.withdrawn) && report.withdrawn.length
+        ? `Withdrew routes no recorded Target owned: ${report.withdrawn.map(word).join(", ")}.\n`
+        : ""
+    }`;
   if (action === "daemon-status")
     return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
       report.version ? `Version    ${word(report.version)}\n` : ""

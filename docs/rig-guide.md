@@ -256,6 +256,14 @@ naming both, before anything is written or stopped. To clear one, remove an
 owner: `rig down` or `rig destroy` the Target that should not serve it, or take
 it out of `proxy.routes` and run `rig proxy reload`.
 
+A route whose Target no longer exists (one a `rig forget` from before this was
+fixed left behind, or one whose Target record was lost) owns nothing Rig can
+reach, so Rig withdraws it: when rigd starts, before a deploy, `up` or
+`restart` of a Target with a route publishes it, and on `rig proxy reload`.
+Only a route no recorded Target owns is withdrawn, and never two owners are
+published. Until then `rig doctor` names it (`route-owners`) with its
+hostnames.
+
 Rig's own Caddy publishes only what Rig renders from the route file's blocks.
 Text it did not write there, such as an external router's `extra_config`, is
 never published, the next change rewrites the file without it, and
@@ -2580,6 +2588,16 @@ would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
 Previews. Stopped working and stable records go with the registration, and a
 warning names the live workspace and data root that remain on disk for the
 operator to delete.
+
+Before the records go, `forget` withdraws every route its Targets publish,
+confirmed by Caddy, so a hostname a forgotten Project served can be deployed
+again at once, by the same repository registered again or by another Project.
+When a route cannot be withdrawn (Rig's Caddy runs but does not answer,
+`PROXY_UNREACHABLE`; the external Caddy refuses the reload, `ROUTE_RELOAD`),
+the forget is refused with that code and nothing changes: the Project stays
+registered and its routes stay as they were. Fix what the hint names and run
+`rig forget` again. A Project whose Targets publish no route never needs Caddy
+to be forgotten.
 
 A moved repository is recovered from inside it: `cd <new path> && rig repoint .`
 selects the Project by the config's name, so the registered path may differ.

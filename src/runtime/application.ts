@@ -208,6 +208,11 @@ export interface RigRuntime extends ProjectStatusReader {
   /** Gives back the checkouts of the Target `targetId` that job runs or kept Services held after a deploy, once nothing
    * runs in them, under the Target's lease; drops those of a Target that is gone. Never rejects. */
   releaseHeldCheckouts(targetId: string): Promise<void>;
+  /** Withdraws every route block whose Target no state record names, so a hostname a forgotten or lost Target held can be
+   * published again; rigd runs it once it has started, and a deploy, up or restart of a Target with a route runs it first
+   * (`rig proxy reload` too, failing when it fails). Resolves with the hostnames withdrawn. Never rejects: a failure is
+   * recorded, and doctor's route-owners check keeps naming the blocks. */
+  withdrawOrphanedRoutes(): Promise<string[]>;
   /** Measures any backup a rigd that stopped right after its run left without a size, then deletes the backup
    * directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview), forgetting each one
    * deleted. Never rejects. */
@@ -630,7 +635,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (command.action === "proxy-apply") {
           // Publication runs in the router's own queue, so it never interleaves with a route change; no Target scope is held.
           await deps.proxy.apply();
-          return { outcome: "applied" };
+          // A route block whose Target is gone is withdrawn too, so a reload is the way to clear one without restarting rigd.
+          const withdrawn = await withdrawOrphanedRoutes(deps);
+          return {
+            outcome: "applied",
+            ...(withdrawn.length ? { withdrawn } : {}),
+          };
         }
         const state = await deps.store.read();
         return deps.proxy.report(
@@ -1174,6 +1184,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         const wasRunning = target?.desired === "running";
         const revisions = [...(target ? [target] : []), candidate];
+        // A route block no recorded Target owns (#336) never holds a hostname from this deploy.
+        if (plannedSites(candidate.plan).length) await withdrawOrphans();
         let decision: KeepDecision;
         try {
           ({ target, decision } = await deployCandidate(
@@ -1359,6 +1371,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run rig restart ${targetSelector(target)} to apply the current rig.yaml.`,
           );
         const journal = activationJournal(target, "explicit", deps);
+        // A route block no recorded Target owns (#336) never holds a hostname from this start.
+        if (plannedSites(target.plan).length) await withdrawOrphans();
         try {
           outcome = (await deps.lifecycle.up(target, undefined, journal))
             .outcome;
@@ -1853,12 +1867,33 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     void running.finally(() => executing.delete(running)).catch(() => {});
     await running;
   };
+  /** `withdrawOrphanedRoutes`, which never rejects: a failure is recorded and nothing is withdrawn. No Target is held: the
+   * router reads the recorded Targets inside its own queue, after every route change queued before the sweep, and every
+   * Target is recorded before its route is published. */
+  async function withdrawOrphans(): Promise<string[]> {
+    const operationId = deps.id();
+    try {
+      return await withdrawOrphanedRoutes(deps, operationId);
+    } catch (error) {
+      await deps
+        .diagnostic({
+          operationId,
+          action: "reconcile",
+          outcome: "route-orphans-failed",
+          errorCode: diagnosticErrorCode(error),
+          ...diagnosticCauses(error),
+        })
+        .catch(() => {});
+      return [];
+    }
+  }
   return {
     status,
     restartUnhealthy,
     runScheduledJob,
     // No Target is held: nothing reads a queued directory once it left the inventory, and measuring a kept one only reads it.
     tidyBackups: () => tidyBackups(deps),
+    withdrawOrphanedRoutes: withdrawOrphans,
     async releaseHeldCheckouts(targetId) {
       const state = await deps.store.read();
       const recorded = state.targets.find((target) => target.id === targetId);
@@ -2345,6 +2380,29 @@ async function pruneCheckpoints(
       ...diagnosticCauses(error),
     });
   }
+}
+/** Withdraws every route block whose Target no state record names (one an earlier `rig forget` left, #336, or a state that
+ * lost a Target), so it no longer holds its hostnames from a new owner. The owners are read inside the router's queue.
+ * Records that it withdrew some and resolves with their hostnames; fails as the route change fails. */
+async function withdrawOrphanedRoutes(
+  deps: Pick<RuntimeDependencies, "lifecycle" | "store" | "diagnostic" | "id">,
+  operationId = deps.id(),
+): Promise<string[]> {
+  const withdrawn = await deps.lifecycle.pruneRoutes(
+    async () =>
+      new Set((await deps.store.read()).targets.map((target) => target.id)),
+  );
+  // Hostnames come from config, which diagnostics never carry: the entry says how many were withdrawn.
+  if (withdrawn.length)
+    await deps
+      .diagnostic({
+        operationId,
+        action: "reconcile",
+        outcome: "route-orphans-withdrawn",
+        reason: `${withdrawn.length} hostname${withdrawn.length === 1 ? "" : "s"} no recorded Target owned`,
+      })
+      .catch(() => {});
+  return withdrawn;
 }
 /** The Project's current rig.yaml, read once per action. A config that cannot be read, or that names another Project,
  * yields its failure instead so recorded names keep selecting Targets to stop or inspect. */

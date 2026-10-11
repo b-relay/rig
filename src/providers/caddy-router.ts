@@ -18,6 +18,7 @@ import {
   rerenderOwnedBlocks,
   siteAddress,
   withheldPaths,
+  withoutUnownedBlocks,
   type RouteCheckpoint,
   type RouteRequest,
   type Router,
@@ -215,6 +216,22 @@ export function createCaddyRouter(options: {
       return operation;
     },
     remove: (key) => serialized(key),
+    withdrawUnowned(owners) {
+      const operation = pending
+        .catch(() => {})
+        .then(async () => {
+          const before = await readRoutes();
+          const { text: after, hostnames } = withoutUnownedBlocks(
+            before,
+            await owners(),
+          );
+          if (after === before) return [];
+          await commit(before, after);
+          return hostnames;
+        });
+      pending = operation;
+      return operation;
+    },
     async check(route) {
       await pending.catch(() => {});
       const before = await readRoutes();

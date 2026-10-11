@@ -16,6 +16,9 @@ export function noRoutes(): Router {
       return { key, value: null };
     },
     async restore() {},
+    async withdrawUnowned() {
+      return [];
+    },
   };
 }
 

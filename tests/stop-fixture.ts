@@ -57,6 +57,12 @@ export function stopFixture(active: string[] = []) {
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) =>
       loopbackListeners(pid, [4000, 4001, 4567]),
   };

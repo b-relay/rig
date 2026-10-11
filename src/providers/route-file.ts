@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
+import { routeOwnerToken } from "../domain/proxy-publication";
 import { bareHostname } from "../domain/managed-proxy";
 import { checkCaddyValue } from "../domain/caddy-value";
 
@@ -44,6 +44,15 @@ export interface Router {
   check?(route: RouteRequest): Promise<void>;
   /** Lets go of the hostnames `check` reserved for `key`, once the deployment that asked is decided. */
   release?(key: string): Promise<void>;
+  /** Withdraws, as one change published like any other, every owned block whose key `owners` does not hold: a route whose
+   * Target no longer exists, which would otherwise hold its hostnames from every new owner. `owners` is asked inside the
+   * router's queue, after every change queued before this one, so a block published for a Target recorded meanwhile is
+   * never taken for an orphan (every Target is recorded before its route is published). Resolves with the hostnames
+   * withdrawn; with none to withdraw it publishes nothing and asks nothing of the proxy. Fails as `remove` fails (such as
+   * PROXY_UNREACHABLE), with the route file as it was. */
+  withdrawUnowned(
+    owners: () => Promise<ReadonlySet<string>>,
+  ): Promise<string[]>;
 }
 
 /** One change to the route file, worked out from its text alone. */
@@ -341,8 +350,26 @@ function hostnamePresent(text: string, hostname: string): boolean {
   });
 }
 function routeMarkers(key: string): { begin: string; end: string } {
-  const token = createHash("sha256").update(key).digest("hex");
+  const token = routeOwnerToken(key);
   return { begin: `# rig begin ${token}`, end: `# rig end ${token}` };
+}
+/** `text` without the owned blocks whose key is not in `owners`, everything else left as it is, and the hostnames those
+ * blocks served. A block is matched by its markers' token, the sha256 of its key; incomplete markers are left alone. */
+export function withoutUnownedBlocks(
+  text: string,
+  owners: ReadonlySet<string>,
+): { text: string; hostnames: string[] } {
+  const owned = new Set([...owners].map(routeOwnerToken));
+  const hostnames: string[] = [];
+  const kept = text.replace(
+    /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(?:\r?\n)?/g,
+    (whole, token: string, body: string) => {
+      if (owned.has(token)) return whole;
+      hostnames.push(...parseOwnedSites(body).map((site) => site.hostname));
+      return "";
+    },
+  );
+  return { text: kept, hostnames };
 }
 /** Reads the complete owned block, including its newline, or rejects incomplete markers. */
 export function ownedBlock(text: string, key: string): string | null {

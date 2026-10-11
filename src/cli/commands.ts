@@ -146,7 +146,7 @@ export function createRigCommand(
   command
     .command("forget")
     .description(
-      "Remove a stopped Project's registration; its repository is untouched.",
+      "Remove a stopped Project's registration and withdraw its routes; its repository is untouched. Refused, changing nothing, when a route cannot be withdrawn.",
     )
     .argument("<name>", "Registered Project identity", nonEmpty)
     .action(async (project: string) =>
@@ -180,7 +180,7 @@ function addProxyCommands(
   proxy
     .command("reload")
     .description(
-      "Apply the proxy section of Host config as it is now: proxy.routes, ports and certificate settings. rigd also applies it when it starts. Settings Rig refuses change nothing that is served: Caddy keeps the ones it last accepted, and rig proxy shows the refused ones as pending.",
+      "Apply the proxy section of Host config as it is now: proxy.routes, ports and certificate settings. rigd also applies it when it starts. Settings Rig refuses change nothing that is served: Caddy keeps the ones it last accepted, and rig proxy shows the refused ones as pending. Routes whose Target no longer exists are withdrawn.",
     )
     .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
   proxy

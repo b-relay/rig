@@ -80,9 +80,9 @@ export function Notice({
     <Alert
       className={cn(
         tone === "warn" &&
-          "border-warn/30 bg-warn-fill text-warn [&>svg]:text-warn *:data-[slot=alert-description]:text-warn/90",
+          "border-warn/30 bg-warn-fill text-warn [&>svg]:text-warn *:data-[slot=alert-description]:text-warn",
         tone === "good" &&
-          "border-good/30 bg-good-fill text-good [&>svg]:text-good *:data-[slot=alert-description]:text-good/90",
+          "border-good/30 bg-good-fill text-good [&>svg]:text-good *:data-[slot=alert-description]:text-good",
         className,
       )}
     >

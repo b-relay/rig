@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import {
   contrast,
   parseColor,
@@ -63,4 +65,27 @@ describe("theme contrast", () => {
     expect(themeTokens(css, "light").get("b")).toBe("#ffffff");
     expect(themeTokens(css, "dark").get("b")).toBe("oklch(0.2 0.01 220)");
   });
+});
+
+/** Every .ts/.tsx source under the dashboard's app, components and lib. */
+function sources(directory: string): string[] {
+  return readdirSync(directory).flatMap((name) => {
+    const path = join(directory, name);
+    if (statSync(path).isDirectory()) return sources(path);
+    return /\.tsx?$/.test(name) ? [path] : [];
+  });
+}
+
+test("no text ink is faded with an opacity modifier, which the token pairs above would not cover", () => {
+  const web = join(import.meta.dir, "..", "web");
+  const faded = ["app", "components", "lib"]
+    .flatMap((part) => sources(join(web, part)))
+    .flatMap((path) =>
+      [
+        ...readFileSync(path, "utf8").matchAll(
+          /text-(?:good|warn|bad|idle|busy|muted-foreground|link|foreground)\/\d+/g,
+        ),
+      ].map((match) => `${path}: ${match[0]}`),
+    );
+  expect(faded).toEqual([]);
 });

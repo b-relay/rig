@@ -21,6 +21,7 @@ import type {
 } from "../config/types";
 import { isHealthUrl } from "../config/schema";
 import { installedPath } from "../domain/installed-path";
+import { isGitCommit } from "../domain/git";
 import { componentDirectory } from "../config/working-dir";
 import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
 import { composeEnvironment } from "../domain/process-environment";
@@ -90,6 +91,9 @@ export interface TargetAdapterOptions {
   /** The Target ids state records now. A Tool whose owner it does not name is released: the next Target that publishes
    * there takes it over while its bytes are the ones Rig published (#343). Absent: no Tool is ever taken over. */
   recordedTargets?: () => Promise<ReadonlySet<string>>;
+  /** The registered repository path of Project `projectId`, read from state now, or undefined when it is not registered.
+   * Rig's own Tools are identified by that repository's history (ADR 0019). Absent: no repository is ever identified. */
+  projectRepository?: (projectId: string) => Promise<string | undefined>;
 }
 export { installedPath };
 /** Budget in seconds when the Project config declares none. */
@@ -399,29 +403,37 @@ export function createTargetEffects(
         !retained.has(installedPath(options.root, previous, component)),
     );
   };
-  /** The identity of the repository `target`'s workspace was checked out from: its root commits, sorted and joined by
-   * commas, the same in every full clone and whatever its remotes. A shallow checkout (a deployed one shares its mirror's
-   * history) is `shallow`: git reports where its history was cut as roots, which match nothing. Unknown when git cannot
-   * say (no repository, no commit). Never fetches anything. */
+  /** The identity of the repository `target` was deployed from: the root commits of its Commit (the Working copy's HEAD
+   * when it has none), read in the Project's own registered repository, sorted and joined by commas: the same in every full
+   * clone, whatever its remotes. Never read from Rig's mirror or a checkout, whose history Rig fetched piecemeal. A shallow
+   * Project repository is `shallow`: git reports where its history was cut as roots, which match nothing. Unknown when
+   * git cannot say: no registered repository, the Commit not in it, no git. Never fetches anything. */
   const repositoryIdentity = async (
     target: TargetRecord,
   ): Promise<RepositoryIdentity> => {
-    const git = async (args: string[]) => {
-      const result = await options.run({
-        command: ["git", ...args],
-        cwd: target.plan.workspacePath,
-        env: options.environment,
-        timeoutMs: 30_000,
-      });
-      return result.exitCode === 0 ? result.stdout : undefined;
-    };
     try {
+      const repository = await options.projectRepository?.(target.projectId);
+      if (repository === undefined) return { kind: "unknown" };
+      if (target.commit !== undefined && !isGitCommit(target.commit))
+        return { kind: "unknown" };
+      const git = async (args: string[]) => {
+        const result = await options.run({
+          command: ["git", ...args],
+          cwd: repository,
+          env: options.environment,
+          timeoutMs: 30_000,
+        });
+        return result.exitCode === 0 ? result.stdout : undefined;
+      };
       const shallow = (
         await git(["rev-parse", "--is-shallow-repository"])
       )?.trim();
       if (shallow === "true") return { kind: "shallow" };
       if (shallow !== "false") return { kind: "unknown" };
-      const roots = ((await git(["rev-list", "--max-parents=0", "HEAD"])) ?? "")
+      const roots = (
+        (await git(["rev-list", "--max-parents=0", target.commit ?? "HEAD"])) ??
+        ""
+      )
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => /^[0-9a-f]{40,64}$/.test(line))

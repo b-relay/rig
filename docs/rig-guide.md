@@ -2622,8 +2622,8 @@ registered again from any clone. Every other repository is refused
 Rig recorded that, or when git cannot identify the checkout. A shallow clone
 (`git clone --depth`) cannot prove its history, so it is refused too
 (`repository-shallow`) and never recorded: run `git fetch --unshallow` in the
-Project's repository, then deploy again; Rig's copy of the repository follows
-it. On such a Host,
+Project's repository, then deploy again. Rig reads that history in the
+Project's registered repository, at the deployed Commit. On such a Host,
 upgrade Rig with the manual steps of the rig:rigd skill's upgrade reference. A
 recorded `rig` Project's own deploys are no takeover and work as before; the
 next one records its repository. Delete a Tool you no longer want; never

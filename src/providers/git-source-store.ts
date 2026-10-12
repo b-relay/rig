@@ -47,18 +47,6 @@ export function createGitSourceStore(options: {
       );
     return result.stdout.trim();
   }
-  /** Whether the repository `args` (a `--git-dir`) or `cwd` names is a shallow clone; undefined when git cannot say. */
-  async function shallowRepository(
-    args: readonly string[],
-    cwd?: string,
-  ): Promise<boolean | undefined> {
-    const result = await run({
-      command: ["git", ...args, "rev-parse", "--is-shallow-repository"],
-      cwd,
-    }).catch(() => undefined);
-    const answer = result?.exitCode === 0 ? result.stdout.trim() : undefined;
-    return answer === "true" ? true : answer === "false" ? false : undefined;
-  }
   async function prepare(
     request: SourceRequest,
   ): Promise<{ workspacePath: string; commit: string }> {
@@ -108,20 +96,12 @@ export function createGitSourceStore(options: {
         await rm(temporary, { recursive: true, force: true });
       }
     }
-    // Fetch the exact resolved Commit. The independent mirror has no alternates or hardlinked objects. A mirror first cloned
-    // from a shallow repository stays shallow on such fetches; once that repository has its whole history (the user ran
-    // git fetch --unshallow there), the mirror takes the rest of it from the same local repository, so a deployed checkout
-    // can identify its repository (Rig's own Tools, ADR 0019). Nothing is fetched from anywhere else, and a repository
-    // that is itself still shallow leaves the mirror as it is.
-    const deepen =
-      (await shallowRepository(["--git-dir", mirror])) &&
-      (await shallowRepository([], request.repository)) === false;
+    // Fetch the exact resolved Commit. The independent mirror has no alternates or hardlinked objects.
     await git([
       "--git-dir",
       mirror,
       "fetch",
       "--no-tags",
-      ...(deepen ? ["--unshallow"] : []),
       "--",
       request.repository,
       commit,

@@ -65,6 +65,8 @@ const configs: Record<string, ProjectConfig> = {
 // Another clone of Rig's repository, and an unrelated repository that also calls itself `rig`.
 configs["/tmp/rig-clone"] = configs["/tmp/rig"]!;
 configs["/tmp/impostor"] = configs["/tmp/rig"]!;
+/** The Commit every deploy here resolves to. */
+const COMMIT = "c".repeat(40);
 /** Each repository's root commit, as `git rev-list --max-parents=0 HEAD` reports it: equal for clones of one history. */
 const rootCommits: Record<string, string> = {
   "/tmp/rig": "a".repeat(40),
@@ -117,10 +119,10 @@ async function rigWorld() {
     recordingTime: () => new Date().toISOString(),
     // Tool-only Projects run no Service: the supervisor is only asked what runs.
     supervisors: new Map([["rigd", idle]]),
-    // Only git asks the command runner anything here: whether a checkout is shallow (never), and which root commits its
-    // history starts from.
+    // Only git asks the command runner anything here, in the Project's registered repository: whether it is shallow (never),
+    // and which root commits the deployed Commit's history starts from.
     run: async ({ command, cwd }) => {
-      const repository = cwd === undefined ? undefined : checkouts.get(cwd);
+      const repository = cwd;
       if (
         !gitWorks ||
         repository === undefined ||
@@ -129,7 +131,7 @@ async function rigWorld() {
         return { exitCode: 128, stdout: "", stderr: "not a git repository" };
       if (command.join(" ") === "git rev-parse --is-shallow-repository")
         return { exitCode: 0, stdout: "false\n", stderr: "" };
-      if (command.join(" ") !== "git rev-list --max-parents=0 HEAD")
+      if (command.join(" ") !== `git rev-list --max-parents=0 ${COMMIT}`)
         return { exitCode: 1, stdout: "", stderr: "unexpected" };
       return {
         exitCode: 0,
@@ -152,6 +154,9 @@ async function rigWorld() {
     // What rigd hands its effects: the Target ids state records now, read from whichever store the world uses.
     recordedTargets: async () =>
       new Set((await deps.store.read()).targets.map((target) => target.id)),
+    projectRepository: async (projectId) =>
+      (await deps.store.read()).projects.find((p) => p.id === projectId)
+        ?.repoPath,
   });
   effects.prepare = async () => {};
   effects.build = async () => {};
@@ -224,7 +229,7 @@ async function rigWorld() {
     },
     sources: {
       async preflight() {
-        return { commit: "abc", warnings: [] };
+        return { commit: COMMIT, warnings: [] };
       },
       async prepare(request) {
         // The checkout of this deploy: every Tool's bin, as `build` makes it.
@@ -236,10 +241,10 @@ async function rigWorld() {
             `#!/bin/sh\necho ${name} ${build}\n`,
             { mode: 0o755 },
           );
-        return { workspacePath: request.destination, commit: "abc" };
+        return { workspacePath: request.destination, commit: COMMIT };
       },
       async resolve() {
-        return "abc";
+        return COMMIT;
       },
       async currentBranch() {
         return "main";

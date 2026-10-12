@@ -182,6 +182,10 @@ export async function composeDaemon(
   const effects = createTargetEffects({
     // A Tool whose owner Target state no longer records is released to the next Target that publishes there (#343).
     recordedTargets,
+    // Rig's own Tools are identified by the history of the Project's registered repository (ADR 0019).
+    projectRepository: async (projectId) =>
+      (await store.read()).projects.find((project) => project.id === projectId)
+        ?.repoPath,
     recordingTime: () => new Date().toISOString(),
     logRetention,
     root,

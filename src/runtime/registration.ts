@@ -110,6 +110,7 @@ export async function forgetProject(
     if (registered === false)
       return [
         ...(await forgottenWarnings(targets, kept, deps)),
+        ...(await forgetUsage(project, deps)),
         `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${project.name} again.`,
       ];
     if (registered === undefined)
@@ -139,7 +140,25 @@ export async function forgetProject(
     }
     throw error;
   }
-  return await forgottenWarnings(targets, kept, deps);
+  return [
+    ...(await forgottenWarnings(targets, kept, deps)),
+    ...(await forgetUsage(project, deps)),
+  ];
+}
+/** Removes a forgotten Project's CPU and memory history. The forget is already saved, so a failure is a warning: the
+ * history is then left until retention removes it. */
+async function forgetUsage(
+  project: ProjectRecord,
+  deps: Pick<RuntimeDependencies, "usage">,
+): Promise<string[]> {
+  try {
+    await deps.usage?.forget(project.id);
+    return [];
+  } catch (error) {
+    return [
+      `${project.name}'s CPU and memory history could not be removed (${failureReason(error)}); it is removed with other old history once monitor.retention_days have passed.`,
+    ];
+  }
 }
 /** What a forget leaves on disk: the stable Target's workspace and data, the backup directories in `kept`, and the Tools
  * `targets` published, now released. Read after the forget was saved; a Tool that cannot be read is left unnamed. */

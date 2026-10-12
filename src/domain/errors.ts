@@ -32,6 +32,9 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "PROXY_UNMANAGED",
   "PROXY_NOT_READY",
   // DNS records (ADR 0018): each names the setup step, the field, or the change to read again.
+  // Monitor (#345): an older rigd, a rigd stopping, or a history store whose directory needs fixing.
+  "MONITOR_UNAVAILABLE",
+  "MONITOR_STORAGE",
   "DNS_UNCONFIGURED",
   "DNS_TOKEN",
   "DNS_AUTH",

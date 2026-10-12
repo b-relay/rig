@@ -126,6 +126,7 @@ export const commandSchema = z
       "dns-create",
       "dns-update",
       "dns-delete",
+      "monitor",
     ]),
     operationId: z.string().min(1).max(128).optional(),
     project: projectName.optional(),
@@ -183,6 +184,16 @@ export const commandSchema = z
     newPath: absolutePath.optional(),
     /** The zone, record and expected state a `dns` read or write names (ADR 0018). */
     dns: dnsRequestSchema.optional(),
+    /** monitor only: the window the report covers, as ISO instants; rig resolves durations such as 1h against its own
+     * clock before sending. No `since` reads the last hour; no `until` reads up to now. */
+    window: z
+      .strictObject({
+        since: z.iso.datetime({ offset: true }).optional(),
+        until: z.iso.datetime({ offset: true }).optional(),
+      })
+      .optional(),
+    /** monitor only: report the whole Host (every Project's total, Rig itself and the Host) instead of one Project. */
+    host: z.boolean().optional(),
   })
   .strict();
 export type DnsRequest = z.infer<typeof dnsRequestSchema>;
@@ -202,6 +213,7 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "proxy",
   "backups",
   "dns",
+  "monitor",
 ] as const);
 /** Replies to the reads whose collections rig renders. A missing or malformed
  * collection is a protocol failure, never an empty page; unknown top-level keys
@@ -255,6 +267,53 @@ export const activityResultSchema = z
     operation: z.string().optional(),
   })
   .passthrough();
+const usageStatsSchema = z.object({
+  low: z.number(),
+  high: z.number(),
+  average: z.number(),
+  median: z.number(),
+  p95: z.number(),
+});
+const usageSummarySchema = {
+  cpu: usageStatsSchema.optional(),
+  memory: usageStatsSchema.optional(),
+};
+/** A `monitor` reply: what a Project or the whole Host used over a window, one entry per series. */
+export const monitorResultSchema = z
+  .object({
+    /** The Project reported on; absent for the Host. */
+    project: z.string().optional(),
+    /** The window asked for, in Unix seconds; `until` absent for a live window ending now. */
+    since: z.number(),
+    until: z.number().optional(),
+    from: z.number(),
+    to: z.number(),
+    step: z.number().int().positive(),
+    sampledEvery: z.number().positive(),
+    series: z.array(
+      z.object({
+        series: z
+          .object({
+            scope: z.enum(["host", "rig", "project", "target", "component"]),
+            projectId: z.string().optional(),
+            project: z.string().optional(),
+            targetId: z.string().optional(),
+            target: z.string().optional(),
+            targetKind: z.enum(["working", "stable", "preview"]).optional(),
+            component: z.string().optional(),
+            componentKind: z.enum(["service", "job"]).optional(),
+          })
+          .passthrough(),
+        now: z
+          .object({ cpuPercent: z.number(), memoryBytes: z.number() })
+          .optional(),
+        summary: z.object(usageSummarySchema),
+        points: z.array(z.object({ at: z.number(), ...usageSummarySchema })),
+      }),
+    ),
+  })
+  .passthrough();
+export type MonitorResult = z.infer<typeof monitorResultSchema>;
 /** One Service a running Operation asked to stop. */
 export const serviceStopSchema = z
   .object({
@@ -358,6 +417,7 @@ export const readResultSchemas = {
   logs: logsResultSchema,
   activity: activityResultSchema,
   backups: backupsResultSchema,
+  monitor: monitorResultSchema,
 } as const;
 export interface DaemonAddress {
   port: number;

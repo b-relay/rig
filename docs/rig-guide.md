@@ -1115,6 +1115,35 @@ directory, or is not writable), `rig status` prints the reason under the still
 running component, naming the log directory, and clears it once a line is
 recorded again.
 
+## Monitor
+
+`rigd` samples the CPU and memory of every running Service and Job run on every
+Target once a second, and keeps the history under `<RIG_ROOT>/monitor/`.
+
+- A Component's use is everything below the capture wrapper `rigd` started it
+  under: the process it runs and every child of it, including a child that left
+  the process group. The wrapper itself counts towards Rig itself, with `rigd`
+  and Rig's own Caddy.
+- CPU reads as Activity Monitor shows it: 100% is one full core, so a busy
+  Component can read 350%. It is measured from the CPU time each process gained
+  since the last sample. Memory is the physical footprint, the figure Activity
+  Monitor shows.
+- Each Target, each Project (all its Targets together), the whole Host and Rig
+  itself have their own total, so a combined chart's median and p95 come from
+  the combined samples rather than from adding up each Component's.
+- Every 1-second sample is kept for `monitor.detail_hours` (24 by default).
+  Every minute is also kept as a distribution for `monitor.retention_days` (7
+  by default), so a week-long chart still estimates its median and p95 from
+  every sample (within about 5%) and keeps the exact peak. Samples are written
+  about every 30 seconds rather than every second. A change to either setting
+  applies at `rigd`'s next hourly prune.
+- On a Mac where `rigd` cannot read the kernel's process figures directly, it
+  runs `ps` every 5 seconds instead, and memory is then the resident size,
+  which reads higher.
+- A destroyed Preview keeps its history until retention removes it.
+  `rig forget` removes the Project's history.
+- A Job run shorter than one sample may record nothing.
+
 ## Status, List, Doctor
 
 ```bash
@@ -1401,6 +1430,9 @@ capability:
 - `logs.max_bytes` (default 64 MiB) and `logs.generations` (default 1): the
   size at which a Target log file is rotated and how many rotated files are
   kept (see Logs)
+- `monitor.detail_hours` (default 24) and `monitor.retention_days` (default 7):
+  how long `rigd` keeps every 1-second CPU and memory sample, and how long it
+  keeps the per-minute history behind week-long charts (see Monitor)
 
 Rig no longer sends alerts. An `alerts` section an earlier Rig read is ignored,
 so `rigd` still starts, and `rig doctor` asks you to delete it.

@@ -172,6 +172,7 @@ export function createSystemCaddyJob(options: {
     description: plistPath,
     matches,
     state: async () => (await observe()).state,
+    pid: async () => (await observe()).pid,
     async restart() {
       const before = await observe();
       await options.admin.stop();
@@ -242,6 +243,7 @@ export function createLaunchAgentCaddyJob(options: {
     matches: async () =>
       (await readFile(plistPath, "utf8").catch(() => undefined)) === plist,
     state: async () => (await observe()).state,
+    pid: async () => (await observe()).pid,
     async restart() {
       const before = await observe();
       await options.admin.stop();
@@ -382,6 +384,8 @@ export function createProcessCaddyJob(options: {
     description: paths.processRecord,
     matches: async () => true,
     state,
+    pid: async () =>
+      (await state()) === "running" ? (await record())?.pid : undefined,
     async restart() {
       await stop();
       await start();

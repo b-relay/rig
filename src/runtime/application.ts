@@ -1,3 +1,5 @@
+import type { UsageMonitor } from "./usage-report";
+import type { UsageWindow } from "../domain/usage-summary";
 import { targetSelector } from "../domain/target-selector";
 import type {
   ProjectStatusReader,
@@ -715,6 +717,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ),
         } satisfies ListResult;
       }
+      if (command.action === "monitor" && command.host)
+        return await usage(deps).report({
+          filter: { kind: "host" },
+          window: usageWindow(command, deps.now()),
+        });
       if (command.action === "activity" && !command.project) {
         const [state, admin] = await Promise.all([
           deps.store.read(),
@@ -851,6 +858,14 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "config")
         return { project: project.name, ...selection.document };
+      if (command.action === "monitor")
+        return {
+          project: project.name,
+          ...(await usage(deps).report({
+            filter: { kind: "project", projectId: project.id },
+            window: usageWindow(command, deps.now()),
+          })),
+        };
       if (command.action === "activity")
         return selectActivity(
           state.activity.filter((o) => o.projectId === project!.id),
@@ -2898,4 +2913,34 @@ function listed(items: string[]): string {
   return items.length < 2
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+/** Monitor's history, or the failure a monitor read gets where rigd samples nothing. */
+function usage(deps: Pick<RuntimeDependencies, "usage">): UsageMonitor {
+  if (deps.usage) return deps.usage;
+  throw new RigError(
+    "MONITOR_UNAVAILABLE",
+    "This rigd does not sample CPU and memory.",
+    "Upgrade rigd with rigd install, then try again.",
+  );
+}
+/** The window a monitor read covers, in Unix seconds: the last hour when no `since` was given. Fails USAGE when `since`
+ * is not before `until`. */
+function usageWindow(command: RuntimeCommand, now: string): UsageWindow {
+  // Kept to the millisecond: a window starting between two samples must not take in the one before it.
+  const seconds = (iso: string) => Date.parse(iso) / 1000;
+  const since =
+    command.window?.since === undefined
+      ? seconds(now) - 3600
+      : seconds(command.window.since);
+  const until =
+    command.window?.until === undefined
+      ? undefined
+      : seconds(command.window.until);
+  if (until !== undefined && until <= since)
+    throw new RigError(
+      "USAGE",
+      "The window's since is not before its until.",
+      "Pass a since earlier than until.",
+    );
+  return { since, ...(until === undefined ? {} : { until }) };
 }

@@ -3,6 +3,7 @@ import { readProxySettings } from "../adapters/proxy-settings";
 import {
   HEALTH_MONITOR,
   JOB_SCHEDULER,
+  USAGE_SAMPLER,
   createNoticeBoard,
   recordingDiagnostic,
   startFailureMonitor,
@@ -25,9 +26,10 @@ import {
 } from "../adapters/proxy-publication";
 import { randomUUID } from "node:crypto";
 import { executionBaseline, inheritedEnvironment } from "./environment";
-import { homedir, userInfo } from "node:os";
+import { availableParallelism, homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
+  parseHostConfig,
   readHostConfig,
   readProjectConfigSource,
   previewProjectConfig,
@@ -65,6 +67,7 @@ import { createCaddyJob } from "../providers/caddy-job";
 import type { DaemonMode } from "./installation";
 import {
   createManagedCaddy,
+  type CaddyJob,
   type ManagedCaddy,
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
@@ -86,6 +89,16 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
+import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
+import { guardedUsageHistory } from "../adapters/guarded-usage-history";
+import { createNativeProcessUsageReader } from "../providers/native-process-usage";
+import { createPsProcessUsageReader } from "../providers/ps-process-usage";
+import { monitoredProcesses } from "../runtime/monitored-processes";
+import {
+  createUsageSampler,
+  type UsageRetention,
+} from "../runtime/usage-sampler";
+import { usageReport, type UsageMonitor } from "../runtime/usage-report";
 import type { Supervisor } from "../providers/contracts";
 import {
   hostLogRetention,
@@ -215,6 +228,15 @@ export async function composeDaemon(
     activated: (target, service, incarnation) =>
       health?.started(target, service, incarnation),
   });
+  // CPU and memory of every running Component, sampled beside the other loops and kept under monitor/ (Monitor, #345).
+  const usage = composeUsage({
+    root,
+    store,
+    observations: effects.observations,
+    lifecycle,
+    caddyPid: managed?.job.pid,
+    shutdown: shuttingDown.signal,
+  });
   const runtime = createRuntime({
     root,
     // Nothing starts until the first pass has read the state, however early a command arrives.
@@ -227,6 +249,7 @@ export async function composeDaemon(
     routeFileInRoot: () => routeFileInRoot(root, host),
     orphanedTools: (recorded) => effects.orphanedTools(recorded),
     ...(managed ? { proxy: managed.control } : {}),
+    usage: usage.monitor,
     // Host config and the token are read at every request, so DNS needs no restart after rig proxy token or an edit.
     dns: createDnsControl({
       settings: async () => (await readHostConfig(root)).proxy,
@@ -335,6 +358,7 @@ export async function composeDaemon(
   let stopMonitor: (() => Promise<void>) | undefined;
   let stopHealth: (() => Promise<void>) | undefined;
   let stopJobs: (() => Promise<void>) | undefined;
+  let stopUsage: (() => Promise<void>) | undefined;
   return {
     handle: runtime.command,
     editor,
@@ -380,6 +404,12 @@ export async function composeDaemon(
         channel: JOB_SCHEDULER,
         run: () => jobs.pass(),
       });
+      stopUsage = startFailureMonitor({
+        intervalMs: usage.intervalMs,
+        notices,
+        channel: USAGE_SAMPLER,
+        run: () => usage.sampler.pass(),
+      });
     },
     async shutdown() {
       stopped = true;
@@ -388,6 +418,9 @@ export async function composeDaemon(
       // No new run starts from here on; a run in progress keeps running under its capture wrapper, and the next rigd
       // adopts it by lease and records how it ends.
       await stopJobs?.();
+      // What was sampled since the last write is written now, so a clean restart leaves no gap in the charts.
+      await stopUsage?.();
+      await usage.sampler.flush().catch(() => {});
       const scheduler = jobs.stop();
       // The monitor writes nothing from here on; its probes are aborted (a command's process group killed) and waited for
       // within a bound, beside the drain, which detaches the stop of any health restart in flight.
@@ -395,6 +428,8 @@ export async function composeDaemon(
       // With the runtime's own stops, which its drain detaches as it begins.
       shuttingDown.abort();
       await runtime.drain();
+      // Reads are not drained with the runtime's Operations: closing the history waits for every one in progress.
+      await usage.close();
       await health;
       await scheduler;
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
@@ -408,7 +443,7 @@ export async function composeDaemon(
 function composeManagedCaddy(
   root: string,
   mode: DaemonMode,
-): { caddy: ManagedCaddy; control: ProxyControl } {
+): { caddy: ManagedCaddy; control: ProxyControl; job: CaddyJob } {
   const paths = proxyPaths(root);
   const admin = createCaddyAdmin(paths.socket);
   const job = createCaddyJob({
@@ -430,6 +465,7 @@ function composeManagedCaddy(
   });
   return {
     caddy,
+    job,
     control: {
       report: async (targets) =>
         proxyReport({
@@ -445,5 +481,92 @@ function composeManagedCaddy(
         await caddy.republish();
       },
     },
+  };
+}
+/** How long Rig's Caddy's pid is trusted before its process manager is asked again: asking launchd starts a process. */
+const CADDY_PID_REFRESH_MS = 60_000;
+
+/** rigd's usage sampling: the native reader where the kernel calls load, `ps` otherwise; history in SQLite under
+ * `monitor/`; and the reads Monitor serves from both. Retention is read from Host config at every prune, so an edit needs
+ * no restart; an unreadable config keeps the defaults. */
+function composeUsage(input: {
+  readonly root: string;
+  readonly store: FileStateStore;
+  readonly observations: Parameters<
+    typeof monitoredProcesses
+  >[0]["observations"];
+  readonly lifecycle: Parameters<typeof monitoredProcesses>[0]["lifecycle"];
+  readonly caddyPid: (() => Promise<number | undefined>) | undefined;
+  readonly shutdown: AbortSignal;
+}) {
+  const reader =
+    createNativeProcessUsageReader() ?? createPsProcessUsageReader(runCommand);
+  const path = join(input.root, "monitor", "usage.sqlite");
+  const history = guardedUsageHistory({
+    open: () => openSqliteUsageHistory(path),
+    path,
+  });
+  let caddy: { at: number; pid: number | undefined } | undefined;
+  // An unreadable config keeps the defaults rather than stopping pruning or reports; doctor reports the config itself.
+  const retention = async (): Promise<UsageRetention> => {
+    const monitor = (
+      await readHostConfig(input.root).catch(() => parseHostConfig({}))
+    ).monitor;
+    return {
+      detailHours: monitor.detail_hours,
+      retentionDays: monitor.retention_days,
+    };
+  };
+  const sampler = createUsageSampler({
+    reader,
+    processes: () =>
+      monitoredProcesses({
+        store: input.store,
+        observations: input.observations,
+        lifecycle: input.lifecycle,
+        signal: input.shutdown,
+      }),
+    rigProcesses: async () => {
+      if (
+        input.caddyPid &&
+        (!caddy || Date.now() - caddy.at >= CADDY_PID_REFRESH_MS)
+      )
+        caddy = {
+          at: Date.now(),
+          pid: await input.caddyPid().catch(() => undefined),
+        };
+      return caddy?.pid === undefined
+        ? [process.pid]
+        : [process.pid, caddy.pid];
+    },
+    history,
+    retention,
+    now: Date.now,
+    elapsed: () => performance.now(),
+    cores: availableParallelism(),
+  });
+  const monitor: UsageMonitor = {
+    // Between passes, flushes and forgets, so a report never mixes stored history from before a write or removal with
+    // held minutes from after it.
+    report: (request) =>
+      sampler.consistently(async (snapshot) => {
+        const now = Date.now();
+        return usageReport({
+          ...request,
+          now,
+          detailSince:
+            Math.floor(now / 1000) - (await retention()).detailHours * 3600,
+          sampledEvery: reader.intervalMs / 1000,
+          history,
+          snapshot,
+        });
+      }),
+    forget: (projectId) => sampler.forget(projectId),
+  };
+  return {
+    sampler,
+    monitor,
+    intervalMs: reader.intervalMs,
+    close: () => history.close(),
   };
 }

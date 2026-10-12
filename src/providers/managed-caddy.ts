@@ -62,6 +62,9 @@ export interface CaddyJob {
   /** Ends the running Caddy so its manager starts it again from the current generation and binary. Resolves once the new
    * process answers on its admin socket; fails at the deadline. */
   restart(): Promise<void>;
+  /** The running Caddy's process id, for usage sampling; `undefined` when it is not running or its manager cannot tell.
+   * Absent on a job that cannot report one. */
+  pid?(): Promise<number | undefined>;
 }
 /** Caddy's admin API on its Unix socket. */
 export interface CaddyAdmin {

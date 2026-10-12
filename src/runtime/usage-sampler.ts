@@ -247,8 +247,14 @@ export function createUsageSampler(deps: {
         if (pruneDueAt === undefined || at >= pruneDueAt) {
           try {
             const retention = await deps.retention();
+            // Never the seconds of a minute still held unwritten: its write merges with them, and a store whose minutes
+            // lose their seconds strictly oldest first can tell where detail starts.
+            const held = minutes.pending().map((each) => each.minute * 60);
             await deps.history.prune({
-              detailBefore: second - retention.detailHours * 3600,
+              detailBefore: Math.min(
+                second - retention.detailHours * 3600,
+                ...held,
+              ),
               historyBefore: second - retention.retentionDays * 86_400,
             });
             pruneFailure = undefined;

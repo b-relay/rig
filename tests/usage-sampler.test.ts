@@ -90,6 +90,10 @@ function scriptedHost(trees: Record<number, ScriptedProcess[]>) {
     tick: () => {
       seconds++;
     },
+    /** Jumps the clock, as while nothing is sampled. */
+    skip: (count: number) => {
+      seconds += count;
+    },
     /** Every later read takes this long on the monotonic clock. */
     slowReads: (ms: number) => {
       delay = ms;
@@ -104,6 +108,7 @@ function sampler(
     rig?: readonly number[];
     history?: UsageHistory;
     reader?: ProcessUsageReader;
+    detailHours?: number;
   },
 ) {
   return createUsageSampler({
@@ -111,7 +116,10 @@ function sampler(
     processes: async () => options.processes(),
     rigProcesses: async () => options.rig ?? [],
     history: options.history ?? history,
-    retention: async () => ({ detailHours: 24, retentionDays: 7 }),
+    retention: async () => ({
+      detailHours: options.detailHours ?? 24,
+      retentionDays: 7,
+    }),
     now: host.now,
     elapsed: host.elapsed,
     cores: 8,
@@ -376,6 +384,81 @@ describe("the usage sampler", () => {
     );
     expect(outcomes.at(-1)).toBe("ok");
     expect(await storedSeconds(0, 60)).toEqual(seconds(1, 46));
+  });
+
+  test("a minute whose writes fail is never pruned of its seconds, so recovering keeps every sample and detail stays newest-first", async () => {
+    const minute = Math.floor(START / 60_000);
+    const other = { scope: "host" } as const;
+    // An earlier rigd stored seconds 0–19 of this minute at 100%; another series has a minute half an hour later.
+    await history.write([
+      {
+        series: component("web", 10).series,
+        minute,
+        slots: Array.from({ length: 20 }, () => ({ cpu: 1000, memory: 100 })),
+      },
+      {
+        series: other,
+        minute: minute + 30,
+        slots: Array.from({ length: 60 }, () => ({ cpu: 100, memory: 100 })),
+      },
+    ]);
+    const host = scriptedHost({
+      10: [{ pid: 11, cores: 0.1, memoryBytes: 100 }],
+    });
+    let failing = true;
+    const sampled = sampler(host, {
+      processes: () => [component("web", 10)],
+      history: watched(() => failing).store,
+      detailHours: 1 / 60,
+    });
+    // This rigd samples seconds 20–48 at 10%, but cannot write them.
+    host.skip(20);
+    for (let i = 0; i < 29; i++)
+      (await sampled.pass().catch(() => {}), host.tick());
+    // Two hours on, detail retention (one minute) has long passed the minute, and pruning runs.
+    host.skip(7200);
+    await sampled.pass().catch(() => {});
+    host.tick();
+    failing = false;
+    for (let i = 0; i < 40; i++)
+      (await sampled.pass().catch(() => {}), host.tick());
+
+    const stored = await history.read({
+      filter: PROJECT,
+      from: minute * 60,
+      to: (minute + 1) * 60,
+      detail: false,
+    });
+    const cpu = stored.find((each) => each.series.scope === "component")!
+      .spans[0]!.histograms.cpu;
+    // The earlier rigd's 20 seconds at 100% survived the merge beside this one's 28 at 10% (stored in tenths of a percent).
+    expect(cpu).toMatchObject({ count: 48, high: 1000, low: 100 });
+
+    // Every minute at or after where detail is said to start still has its seconds.
+    const from = await history.detailFrom();
+    for (const filter of [PROJECT, { kind: "host" } as const]) {
+      const minutes = await history.read({
+        filter,
+        from,
+        to: from + 86_400,
+        detail: false,
+      });
+      const seconds = await history.read({
+        filter,
+        from,
+        to: from + 86_400,
+        detail: true,
+      });
+      for (const each of minutes)
+        for (const span of each.spans)
+          expect(
+            seconds
+              .find((found) => found.series.scope === each.series.scope)
+              ?.spans.some(
+                (second) => Math.floor(second.at / 60) * 60 === span.at,
+              ),
+          ).toBe(true);
+    }
   });
 
   test("while pruning fails every pass fails, until a retry a minute later succeeds", async () => {

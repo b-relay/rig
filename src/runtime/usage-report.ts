@@ -7,12 +7,11 @@ import {
 import type { UsageSample } from "../domain/usage-sample";
 import {
   chartOf,
-  RANGE_SECONDS,
   stepFor,
   type RecordedSpan,
   type UsagePoint,
-  type UsageRange,
   type UsageSummary,
+  type UsageWindow,
 } from "../domain/usage-summary";
 import {
   seriesKey,
@@ -29,14 +28,16 @@ export interface UsageReportSeries {
   readonly series: UsageSeries;
   /** The newest sample, when it is from the last couple of sampling intervals: absent once the series stops running. */
   readonly now?: UsageSample;
-  /** CPU and memory over the whole range. */
+  /** CPU and memory over the whole window. */
   readonly summary: UsageSummary;
   readonly points: readonly UsagePoint[];
 }
 
-/** What a scope used over a range, for `rig monitor` and the dashboard's Monitor pages. */
+/** What a scope used over a window, for `rig monitor` and the dashboard's Monitor pages. */
 export interface UsageReport {
-  readonly range: UsageRange;
+  /** The window asked for, in Unix seconds; `until` absent for a live window ending now. */
+  readonly since: number;
+  readonly until?: number;
   /** Unix seconds: the first point's start, and the end of the last. */
   readonly from: number;
   readonly to: number;
@@ -49,35 +50,40 @@ export interface UsageReport {
 
 /** Monitor's reads and removals, as rigd's runtime uses them. */
 export interface UsageMonitor {
-  /** What `filter` used over `range`, ending now. */
+  /** What `filter` used over `window`. */
   report(request: {
     readonly filter: SeriesFilter;
-    readonly range: UsageRange;
+    readonly window: UsageWindow;
   }): Promise<UsageReport>;
   /** Removes all of a Project's history, buffered or stored, as `rig forget` does. */
   forget(projectId: string): Promise<void>;
 }
 
-/** The usage report for `filter` over `range`, ending at the current step. Stored history is overlaid with the minutes
+/** The usage report for `filter` over `window`, in steps sized to the window (about 360 points). Stored history is overlaid with the minutes
  * the sampler holds unwritten, so the chart reaches the current second: second by second, a held sample replaces the
  * stored one, and stored seconds the sampler does not hold (written before a rigd restart) are kept. Points shorter
- * than a minute are drawn from the 1-second detail; longer ones from per-minute histograms. Series are ordered as the
+ * than a minute are drawn from the 1-second detail when the window starts after `detailSince`; otherwise, and for longer
+ * steps, from per-minute histograms. Series are ordered as the
  * pages list them: the Host, Rig itself and Projects by name for the Host; the Project, then its Targets, then their
  * Components, for a Project. */
 export async function usageReport(input: {
   readonly filter: SeriesFilter;
-  readonly range: UsageRange;
+  readonly window: UsageWindow;
   /** Milliseconds since the Unix epoch. */
   readonly now: number;
+  /** Unix seconds from which 1-second detail is still kept (detail retention). */
+  readonly detailSince: number;
   readonly sampledEvery: number;
   readonly history: UsageHistory;
   readonly snapshot: UsageSnapshot;
 }): Promise<UsageReport> {
-  const step = stepFor(RANGE_SECONDS[input.range]);
   const nowSecond = Math.floor(input.now / 1000);
-  const to = (Math.floor(nowSecond / step) + 1) * step;
-  const from = to - Math.ceil(RANGE_SECONDS[input.range] / step) * step;
-  const detail = step < 60;
+  const end = Math.min(input.window.until ?? nowSecond, nowSecond);
+  const span = Math.max(end - input.window.since, 1);
+  const detail = stepFor(span) < 60 && input.window.since >= input.detailSince;
+  const step = detail ? stepFor(span) : Math.max(stepFor(span), 60);
+  const from = Math.floor(input.window.since / step) * step;
+  const to = (Math.floor(end / step) + 1) * step;
   const pending = input.snapshot.pending.filter(
     (minute) =>
       selected(minute.series, input.filter) &&
@@ -140,7 +146,8 @@ export async function usageReport(input: {
     })
     .sort((a, b) => order(a.series).localeCompare(order(b.series)));
   return {
-    range: input.range,
+    since: input.window.since,
+    ...(input.window.until !== undefined && { until: input.window.until }),
     from,
     to,
     step,

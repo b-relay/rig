@@ -1,6 +1,5 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { USAGE_RANGES } from "../domain/usage-summary";
 
 /** Only domain commands cross the local control plane, never arbitrary scripts. */
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
@@ -185,8 +184,14 @@ export const commandSchema = z
     newPath: absolutePath.optional(),
     /** The zone, record and expected state a `dns` read or write names (ADR 0018). */
     dns: dnsRequestSchema.optional(),
-    /** monitor only: the span the report covers; absent reads 1h. */
-    range: z.enum(USAGE_RANGES).optional(),
+    /** monitor only: the window the report covers, as ISO instants; rig resolves durations such as 1h against its own
+     * clock before sending. No `since` reads the last hour; no `until` reads up to now. */
+    window: z
+      .strictObject({
+        since: z.iso.datetime({ offset: true }).optional(),
+        until: z.iso.datetime({ offset: true }).optional(),
+      })
+      .optional(),
     /** monitor only: report the whole Host (every Project's total, Rig itself and the Host) instead of one Project. */
     host: z.boolean().optional(),
   })
@@ -273,12 +278,14 @@ const usageSummarySchema = {
   cpu: usageStatsSchema.optional(),
   memory: usageStatsSchema.optional(),
 };
-/** A `monitor` reply: what a Project or the whole Host used over a range, one entry per series. */
+/** A `monitor` reply: what a Project or the whole Host used over a window, one entry per series. */
 export const monitorResultSchema = z
   .object({
     /** The Project reported on; absent for the Host. */
     project: z.string().optional(),
-    range: z.enum(USAGE_RANGES),
+    /** The window asked for, in Unix seconds; `until` absent for a live window ending now. */
+    since: z.number(),
+    until: z.number().optional(),
     from: z.number(),
     to: z.number(),
     step: z.number().int().positive(),

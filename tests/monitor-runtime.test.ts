@@ -71,7 +71,7 @@ function recordingMonitor(options: { failForget?: boolean } = {}) {
     async report(request) {
       asked.push(request);
       return {
-        range: request.range,
+        since: request.window.since,
         from: 0,
         to: 3600,
         step: 15,
@@ -128,21 +128,48 @@ test("the sampler is given every running Service, with the capture wrapper's pid
   ).toEqual([]);
 });
 
-test("monitor reads one Project by its identity, or the whole Host when asked, over the range asked (1h by default)", async () => {
+test("monitor reads one Project by its identity, or the whole Host when asked, over the window asked (the last hour by default)", async () => {
   const usage = recordingMonitor();
   const { world, runtime } = await fixture(usage.monitor);
   const projectId = (await world.store.read()).projects[0]!.id;
+  const seconds = (iso: string) => Date.parse(iso) / 1000;
 
   const project = await runtime.command({
     action: "monitor",
     repoPath: world.repo,
   });
-  expect(project).toMatchObject({ project: "demo", range: "1h" });
-  await runtime.command({ action: "monitor", host: true, range: "7d" });
+  expect(project).toMatchObject({ project: "demo" });
+  await runtime.command({
+    action: "monitor",
+    host: true,
+    window: {
+      since: "2026-10-11T06:00:00.000Z",
+      until: "2026-10-11T09:30:00.000Z",
+    },
+  });
   expect(usage.asked).toEqual([
-    { filter: { kind: "project", projectId }, range: "1h" },
-    { filter: { kind: "host" }, range: "7d" },
+    {
+      filter: { kind: "project", projectId },
+      window: { since: seconds("2026-10-12T07:00:00.000Z") },
+    },
+    {
+      filter: { kind: "host" },
+      window: {
+        since: seconds("2026-10-11T06:00:00.000Z"),
+        until: seconds("2026-10-11T09:30:00.000Z"),
+      },
+    },
   ]);
+  await expect(
+    runtime.command({
+      action: "monitor",
+      host: true,
+      window: {
+        since: "2026-10-11T09:30:00.000Z",
+        until: "2026-10-11T09:30:00.000Z",
+      },
+    }),
+  ).rejects.toMatchObject({ code: "USAGE" });
 });
 
 test("a rigd that samples nothing refuses monitor with a hint, rather than reporting no use", async () => {

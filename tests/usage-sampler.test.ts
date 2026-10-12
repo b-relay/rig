@@ -514,7 +514,10 @@ describe("usage reports", () => {
     (
       await usageReport({
         filter: PROJECT,
-        range,
+        window: {
+          since: START / 1000 + 40 - (range === "1h" ? 3600 : 86_400),
+        },
+        detailSince: START / 1000 - 86_400,
         now: START + 40_000,
         sampledEvery: 1,
         history,
@@ -542,6 +545,57 @@ describe("usage reports", () => {
       high: 100,
       average: 55,
     });
+  });
+});
+
+describe("usage report windows", () => {
+  const web = component("web", 10).series;
+  const minute = Math.floor(START / 60_000);
+  const full = (cpu: number) =>
+    Array.from({ length: 60 }, () => ({ cpu, memory: 100 }));
+
+  test("a closed window in the past covers just that span, in steps sized to it, and nothing after it", async () => {
+    await history.write([
+      { series: web, minute, slots: full(100) },
+      { series: web, minute: minute + 5, slots: full(900) },
+    ]);
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: START / 1000, until: START / 1000 + 120 },
+      detailSince: START / 1000 - 3600,
+      now: START + 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.step).toBe(1);
+    expect(report.until).toBe(START / 1000 + 120);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+  });
+
+  test("a short window older than the 1-second detail reads the per-minute history instead of coming back empty", async () => {
+    await history.write([{ series: web, minute, slots: full(250) }]);
+    await history.prune({
+      detailBefore: START / 1000 + 3600,
+      historyBefore: START / 1000 - 3600,
+    });
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: START / 1000, until: START / 1000 + 600 },
+      detailSince: START / 1000 + 3600,
+      now: START + 7_200_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.step).toBe(60);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 25, high: 25 });
   });
 });
 

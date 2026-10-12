@@ -507,6 +507,16 @@ function composeUsage(input: {
     path,
   });
   let caddy: { at: number; pid: number | undefined } | undefined;
+  // An unreadable config keeps the defaults rather than stopping pruning or reports; doctor reports the config itself.
+  const retention = async (): Promise<UsageRetention> => {
+    const monitor = (
+      await readHostConfig(input.root).catch(() => parseHostConfig({}))
+    ).monitor;
+    return {
+      detailHours: monitor.detail_hours,
+      retentionDays: monitor.retention_days,
+    };
+  };
   const sampler = createUsageSampler({
     reader,
     processes: () =>
@@ -530,29 +540,24 @@ function composeUsage(input: {
         : [process.pid, caddy.pid];
     },
     history,
-    retention: async (): Promise<UsageRetention> => {
-      // An unreadable config keeps the defaults rather than stopping pruning; doctor reports the config itself.
-      const monitor = (
-        await readHostConfig(input.root).catch(() => parseHostConfig({}))
-      ).monitor;
-      return {
-        detailHours: monitor.detail_hours,
-        retentionDays: monitor.retention_days,
-      };
-    },
+    retention,
     now: Date.now,
     elapsed: () => performance.now(),
     cores: availableParallelism(),
   });
   const monitor: UsageMonitor = {
-    report: (request) =>
-      usageReport({
+    report: async (request) => {
+      const now = Date.now();
+      return usageReport({
         ...request,
-        now: Date.now(),
+        now,
+        detailSince:
+          Math.floor(now / 1000) - (await retention()).detailHours * 3600,
         sampledEvery: reader.intervalMs / 1000,
         history,
         snapshot: sampler.snapshot(),
-      }),
+      });
+    },
     forget: (projectId) => sampler.forget(projectId),
   };
   return {

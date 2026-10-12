@@ -35,7 +35,14 @@ export interface RecordedSpan {
   readonly histograms: UsageHistograms;
 }
 
-/** The spans `rig monitor` and the dashboard chart. */
+/** The span a usage report covers, in Unix seconds: from `since` up to `until`, or up to now when `until` is absent
+ * (a live window). */
+export interface UsageWindow {
+  readonly since: number;
+  readonly until?: number;
+}
+
+/** The dashboard's preset spans, each a live window ending now. */
 export const USAGE_RANGES = ["1h", "24h", "7d"] as const;
 export type UsageRange = (typeof USAGE_RANGES)[number];
 export const RANGE_SECONDS: Readonly<Record<UsageRange, number>> = {
@@ -45,7 +52,10 @@ export const RANGE_SECONDS: Readonly<Record<UsageRange, number>> = {
 };
 
 /** The steps a chart may use, in seconds, so its points line up with whole minutes and hours. */
-const STEPS = [1, 5, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200];
+const STEPS = [
+  1, 5, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14_400, 21_600,
+  43_200, 86_400,
+];
 /** Roughly how many points a chart wants: enough to show a spike, few enough to draw every second. */
 const POINTS_WANTED = 360;
 

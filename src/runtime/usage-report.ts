@@ -59,11 +59,13 @@ export interface UsageMonitor {
   forget(projectId: string): Promise<void>;
 }
 
-/** The usage report for `filter` over `window`, in steps sized to the window (about 360 points). Stored history is overlaid with the minutes
- * the sampler holds unwritten, so the chart reaches the current second: second by second, a held sample replaces the
- * stored one, and stored seconds the sampler does not hold (written before a rigd restart) are kept. Points shorter
- * than a minute are drawn from the 1-second detail when the window starts after `detailSince`; otherwise, and for longer
- * steps, from per-minute histograms. Series are ordered as the
+/** The usage report for `filter` over `window`, in steps sized to the window (about 360 points). Stored history is
+ * overlaid with the minutes the sampler holds unwritten, so the chart reaches the current second: second by second, a
+ * held sample replaces the stored one, and stored seconds the sampler does not hold (written before a rigd restart)
+ * are kept. Points shorter than a minute are drawn from the 1-second detail when the window starts after
+ * `detailSince`; otherwise, and for longer steps, from per-minute histograms. The summary counts only samples inside
+ * the window: a minute it starts or ends inside is read second by second while its detail is kept, and counted whole
+ * from its start once only the minute is. A window wholly in the future is one empty step. Series are ordered as the
  * pages list them: the Host, Rig itself and Projects by name for the Host; the Project, then its Targets, then their
  * Components, for a Project. */
 export async function usageReport(input: {
@@ -78,88 +80,85 @@ export async function usageReport(input: {
   readonly snapshot: UsageSnapshot;
 }): Promise<UsageReport> {
   const nowSecond = Math.floor(input.now / 1000);
-  const end = Math.min(input.window.until ?? nowSecond, nowSecond);
-  const span = Math.max(end - input.window.since, 1);
-  const detail = stepFor(span) < 60 && input.window.since >= input.detailSince;
-  const step = detail ? stepFor(span) : Math.max(stepFor(span), 60);
-  const from = Math.floor(input.window.since / step) * step;
-  const to = (Math.floor(end / step) + 1) * step;
-  const pending = input.snapshot.pending.filter(
-    (minute) =>
-      selected(minute.series, input.filter) &&
-      (minute.minute + 1) * 60 > from &&
-      minute.minute * 60 < to,
+  const { since } = input.window;
+  // A window starting after now is empty but never inverted.
+  const end = Math.max(
+    Math.min(input.window.until ?? nowSecond, nowSecond),
+    since,
   );
-  const stored = await input.history.read({
-    filter: input.filter,
-    from,
-    to,
-    detail,
-  });
-  // A held minute replaces its stored minute, so the stored seconds of the held minutes are read to merge into them.
-  const storedSeconds =
-    detail || pending.length === 0
-      ? stored
-      : await input.history.read({
-          filter: input.filter,
-          from: Math.min(...pending.map((minute) => minute.minute)) * 60,
-          to: (Math.max(...pending.map((minute) => minute.minute)) + 1) * 60,
-          detail: true,
-        });
-  const overlays = overlaysOf(pending, detail ? [] : storedSeconds, detail);
+  const span = Math.max(end - since, 1);
+  const detail = stepFor(span) < 60 && since >= input.detailSince;
+  const step = detail ? stepFor(span) : Math.max(stepFor(span), 60);
+  const from = Math.floor(since / step) * step;
+  const to = (Math.floor(end / step) + 1) * step;
+  // `until` is exclusive; a window ending now counts the second being sampled.
+  const until =
+    input.window.until !== undefined && input.window.until <= nowSecond
+      ? input.window.until
+      : nowSecond + 1;
+  const read = (range: { from: number; to: number; detail: boolean }) =>
+    spansIn({
+      ...range,
+      filter: input.filter,
+      history: input.history,
+      pending: input.snapshot.pending,
+    });
+  const entries = await read({ from, to, detail });
 
-  const entries = new Map<
-    string,
-    { series: UsageSeries; stored: SeriesHistory["spans"] }
-  >();
-  const entry = (series: UsageSeries) => {
-    const key = seriesKey(series);
-    const found = entries.get(key) ?? { series, stored: [] };
-    found.series = series;
-    entries.set(key, found);
-    return found;
-  };
-  for (const history of stored) entry(history.series).stored = history.spans;
-  for (const { series } of overlays.values()) entry(series);
+  // The minutes the window starts or ends inside, while their seconds are kept: the summary reads them second by second.
+  const boundaries = detail
+    ? []
+    : [
+        ...new Set(
+          [since, ...(until <= nowSecond ? [until] : [])]
+            .filter((at) => at % 60 !== 0 && at >= input.detailSince)
+            .map((at) => Math.floor(at / 60) * 60),
+        ),
+      ];
+  const boundarySeconds = await Promise.all(
+    boundaries.map((start) =>
+      read({ from: start, to: start + 60, detail: true }),
+    ),
+  );
+
   const fresh = new Map<string, UsageSample>();
   for (const latest of input.snapshot.latest)
     if (
       selected(latest.series, input.filter) &&
       latest.at >= nowSecond - 2 * input.sampledEvery
     ) {
-      entry(latest.series);
+      if (!entries.has(seriesKey(latest.series)))
+        entries.set(seriesKey(latest.series), {
+          series: latest.series,
+          spans: [],
+        });
       fresh.set(seriesKey(latest.series), latest.sample);
     }
 
   const series = [...entries.entries()]
-    .map(([key, { series, stored }]): UsageReportSeries => {
-      const overlay = overlays.get(key)?.spans;
-      const spans: RecordedSpan[] = overlay
-        ? [
-            ...stored.filter((span) => !overlay.has(span.at)),
-            ...[...overlay].map(([at, histograms]) => ({ at, histograms })),
-          ]
-        : [...stored];
+    .map(([key, { series, spans }]): UsageReportSeries => {
       const now = fresh.get(key);
+      const summarized = boundaries.length
+        ? [
+            ...spans.filter((each) => !boundaries.includes(each.at)),
+            ...boundarySeconds.flatMap(
+              (seconds) => seconds.get(key)?.spans ?? [],
+            ),
+          ]
+        : spans;
       const { summary, points } = chartOf({
         from,
         to,
         step,
-        // `until` is exclusive; a window ending now counts the second being sampled.
-        window: {
-          since: input.window.since,
-          until:
-            input.window.until !== undefined && input.window.until <= nowSecond
-              ? input.window.until
-              : nowSecond + 1,
-        },
+        window: { since, until },
         spans,
+        summarized,
       });
       return { series, ...(now && { now }), summary, points };
     })
     .sort((a, b) => order(a.series).localeCompare(order(b.series)));
   return {
-    since: input.window.since,
+    since,
     ...(input.window.until !== undefined && { until: input.window.until }),
     from,
     to,
@@ -167,6 +166,57 @@ export async function usageReport(input: {
     sampledEvery: input.sampledEvery,
     series,
   };
+}
+
+/** Each selected series' spans from `from` up to `to`: one per second for `detail`, else one per minute; stored history
+ * overlaid with the minutes the sampler holds unwritten. */
+async function spansIn(input: {
+  readonly filter: SeriesFilter;
+  readonly from: number;
+  readonly to: number;
+  readonly detail: boolean;
+  readonly history: UsageHistory;
+  readonly pending: readonly RecordedMinute[];
+}): Promise<Map<string, { series: UsageSeries; spans: RecordedSpan[] }>> {
+  const { filter, from, to, detail } = input;
+  const pending = input.pending.filter(
+    (minute) =>
+      selected(minute.series, filter) &&
+      (minute.minute + 1) * 60 > from &&
+      minute.minute * 60 < to,
+  );
+  const stored = await input.history.read({ filter, from, to, detail });
+  // A held minute replaces its stored minute, so the stored seconds of the held minutes are read to merge into them.
+  const storedSeconds =
+    detail || pending.length === 0
+      ? stored
+      : await input.history.read({
+          filter,
+          from: Math.min(...pending.map((minute) => minute.minute)) * 60,
+          to: (Math.max(...pending.map((minute) => minute.minute)) + 1) * 60,
+          detail: true,
+        });
+  const overlays = overlaysOf(pending, detail ? [] : storedSeconds, detail);
+  const entries = new Map<
+    string,
+    { series: UsageSeries; spans: RecordedSpan[] }
+  >();
+  for (const history of stored)
+    entries.set(seriesKey(history.series), {
+      series: history.series,
+      spans: [...history.spans],
+    });
+  for (const [key, overlay] of overlays) {
+    const found = entries.get(key);
+    entries.set(key, {
+      series: overlay.series,
+      spans: [
+        ...(found?.spans ?? []).filter((span) => !overlay.spans.has(span.at)),
+        ...[...overlay.spans].map(([at, histograms]) => ({ at, histograms })),
+      ],
+    });
+  }
+  return entries;
 }
 
 /** Each series' held spans, by start: one per held second for detail; otherwise one per held minute, built from its

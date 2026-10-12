@@ -2926,7 +2926,8 @@ function usage(deps: Pick<RuntimeDependencies, "usage">): UsageMonitor {
 /** The window a monitor read covers, in Unix seconds: the last hour when no `since` was given. Fails USAGE when `since`
  * is not before `until`. */
 function usageWindow(command: RuntimeCommand, now: string): UsageWindow {
-  const seconds = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  // Kept to the millisecond: a window starting between two samples must not take in the one before it.
+  const seconds = (iso: string) => Date.parse(iso) / 1000;
   const since =
     command.window?.since === undefined
       ? seconds(now) - 3600

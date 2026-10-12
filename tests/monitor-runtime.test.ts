@@ -170,6 +170,19 @@ test("monitor reads one Project by its identity, or the whole Host when asked, o
       },
     }),
   ).rejects.toMatchObject({ code: "USAGE" });
+  // Instants keep their milliseconds: a window inside one second is still a window.
+  await runtime.command({
+    action: "monitor",
+    host: true,
+    window: {
+      since: "2026-10-11T09:30:00.100Z",
+      until: "2026-10-11T09:30:00.900Z",
+    },
+  });
+  expect(usage.asked.at(-1)!.window).toEqual({
+    since: seconds("2026-10-11T09:30:00.100Z"),
+    until: seconds("2026-10-11T09:30:00.900Z"),
+  });
 });
 
 test("a rigd that samples nothing refuses monitor with a hint, rather than reporting no use", async () => {

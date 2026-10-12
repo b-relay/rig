@@ -637,6 +637,92 @@ describe("usage report windows", () => {
     expect(web_.points.at(-1)!.cpu!.high).toBeCloseTo(99);
   });
 
+  test("a window between whole seconds counts the samples inside it, not the second it starts in", async () => {
+    const slots = full(100).map((slot, index) =>
+      index === 0 ? { cpu: 990, memory: 100 } : slot,
+    );
+    await history.write([{ series: web, minute, slots }]);
+    const since = START / 1000 + 0.5;
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since, until: since + 2 },
+      detailSince: since - 3600,
+      now: START + 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    // Seconds 1 and 2 count; second 0, with its spike, starts before the window.
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+  });
+
+  test("on the minute history, the minutes a window starts and ends inside count only their seconds inside it", async () => {
+    const spikeAt = (second: number) =>
+      full(100).map((slot, index) =>
+        index === second ? { cpu: 990, memory: 100 } : slot,
+      );
+    // A spike just before the window, and one just after it, each in a minute the window shares.
+    await history.write([
+      { series: web, minute, slots: spikeAt(0) },
+      { series: web, minute: minute + 240, slots: spikeAt(5) },
+    ]);
+    const since = START / 1000 + 1;
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since, until: since + 4 * 3600 + 1 },
+      detailSince: since - 3600,
+      now: START + 8 * 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.step).toBeGreaterThanOrEqual(60);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+    // The chart's minutes still draw the spikes.
+    expect(
+      Math.max(...web_.points.map((point) => point.cpu?.high ?? 0)),
+    ).toBeCloseTo(99);
+  });
+
+  test("a window wholly in the future is one empty step, never an inverted one", async () => {
+    const now = START + 3_600_000;
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: now / 1000 + 100, until: now / 1000 + 200 },
+      detailSince: START / 1000,
+      now,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.to).toBeGreaterThan(report.from);
+    expect(report.series).toEqual([]);
+  });
+
+  test("a window reaching back centuries still draws at most 360 points", async () => {
+    await history.write([{ series: web, minute, slots: full(100) }]);
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: Date.parse("0000-01-01T00:00:00Z") / 1000 },
+      detailSince: START / 1000,
+      now: START + 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.points.length).toBeLessThanOrEqual(361);
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+  });
+
   test("a short window older than the 1-second detail reads the per-minute history instead of coming back empty", async () => {
     await history.write([{ series: web, minute, slots: full(250) }]);
     await history.prune({

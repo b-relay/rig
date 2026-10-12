@@ -2408,8 +2408,8 @@ name>` for a Preview. Two Projects that both install `cli` on
    `rig forget` left it, or the Target's record was lost) is no conflict: the
    Target that publishes there next takes it over, as long as its bytes are
    still the ones Rig published. `bin/rig` and `bin/rigd` go only to a Target
-   of the Project that published them, Rig's own. `rig doctor` names such
-   Tools (`tool-owners`) until then.
+   whose repository is the one that published them (see below). `rig doctor`
+   names such Tools (`tool-owners`) until then.
    An executable Rig did not install is never overwritten
    (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
@@ -2613,9 +2613,17 @@ to be forgotten.
 `PATH` keeps working, and a warning names them. Rig no longer owns them: the
 next deploy, `rig up` or `rig restart` that publishes a Tool of the same name,
 from the same repository registered again or from another Project, replaces
-it by atomic rename, as an upgrade does. `rig` and `rigd` are the exception:
-only Rig's own Project, registered again, takes them over. Delete a Tool you no
-longer want; never delete `<RIG_ROOT>/bin/rigd`, which rigd's system job runs.
+it by atomic rename, as an upgrade does. `rig` and `rigd` are the exception,
+since rigd's system job runs `<RIG_ROOT>/bin/rigd` and any repository may call
+itself `rig`: Rig records which repository published them (its root commits,
+the same in every clone) and hands them only to a Target of that repository,
+registered again from any clone. Every other repository is refused
+`ARTIFACT_CONFLICT`, and so is every repository when they were published before
+Rig recorded that, or when git cannot identify the checkout. On such a Host,
+upgrade Rig with the manual steps of the rig:rigd skill's upgrade reference. A
+recorded `rig` Project's own deploys are no takeover and work as before; the
+next one records its repository. Delete a Tool you no longer want; never
+delete `<RIG_ROOT>/bin/rigd`.
 Until a Target takes one over, `rig doctor` names it (`tool-owners`, passing).
 A Tool that was edited after Rig published it is never replaced or removed:
 publishing there fails as `ARTIFACT_CHANGED` until you move or delete the

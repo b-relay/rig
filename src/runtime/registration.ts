@@ -182,7 +182,7 @@ async function forgottenWarnings(
     ),
     ...(tools.length
       ? [
-          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}${rigItself ? " (rig and rigd only from this Project registered again)" : ""}, and you may delete any you no longer want${tools.includes(daemon) ? `, except ${daemon}, which rigd's system job runs` : ""}.`,
+          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}${rigItself ? " (rig and rigd only from a clone of this repository registered again)" : ""}, and you may delete any you no longer want${tools.includes(daemon) ? `, except ${daemon}, which rigd's system job runs` : ""}.`,
         ]
       : []),
     ...(changed.length

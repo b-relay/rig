@@ -21,6 +21,7 @@ import { runCommand } from "../src/providers/command-runner";
 import { createCaddyRouter } from "../src/providers/caddy-router";
 import { inspectProxyPublication } from "../src/domain/proxy-publication";
 import type { Supervisor } from "../src/providers/contracts";
+import type { RigError } from "../src/domain/errors";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { RuntimeState } from "../src/domain/runtime";
 import { STATE_VERSION } from "../src/runtime/state-schema";
@@ -61,6 +62,15 @@ const configs: Record<string, ProjectConfig> = {
     targets: { stable: true },
   }),
 };
+// Another clone of Rig's repository, and an unrelated repository that also calls itself `rig`.
+configs["/tmp/rig-clone"] = configs["/tmp/rig"]!;
+configs["/tmp/impostor"] = configs["/tmp/rig"]!;
+/** Each repository's root commit, as `git rev-list --max-parents=0 HEAD` reports it: equal for clones of one history. */
+const rootCommits: Record<string, string> = {
+  "/tmp/rig": "a".repeat(40),
+  "/tmp/rig-clone": "a".repeat(40),
+  "/tmp/impostor": "b".repeat(40),
+};
 
 /** A runtime over an in-memory state whose Targets publish their Tools into a real `<root>/bin` through the real lifecycle,
  * effects, ownership and installer. Each deploy's checkout holds every Tool's `bin` as a script naming `build`. */
@@ -82,6 +92,8 @@ async function rigWorld() {
   const root = await mkdtemp(join(tmpdir(), "rig-tools-"));
   roots.push(root);
   let build = "v1";
+  /** Whether git answers in checkouts; false is a Host whose records predate provenance, or a checkout git cannot read. */
+  let gitWorks = true;
   /** Which repository each prepared checkout was made from, so its committed config is that repository's. */
   const checkouts = new Map<string, string>();
   const state: RuntimeState = {
@@ -105,7 +117,22 @@ async function rigWorld() {
     recordingTime: () => new Date().toISOString(),
     // Tool-only Projects run no Service: the supervisor is only asked what runs.
     supervisors: new Map([["rigd", idle]]),
-    run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    // Only git asks the command runner anything here: which root commits a checkout's history starts from.
+    run: async ({ command, cwd }) => {
+      const repository = cwd === undefined ? undefined : checkouts.get(cwd);
+      if (
+        !gitWorks ||
+        command.join(" ") !== "git rev-list --max-parents=0 HEAD" ||
+        repository === undefined ||
+        rootCommits[repository] === undefined
+      )
+        return { exitCode: 128, stdout: "", stderr: "not a git repository" };
+      return {
+        exitCode: 0,
+        stdout: `${rootCommits[repository]}\n`,
+        stderr: "",
+      };
+    },
     installer: createArtifactInstaller({
       run: runCommand,
       bunExecutable: process.execPath,
@@ -258,6 +285,19 @@ async function rigWorld() {
     rebuild(next: string) {
       build = next;
     },
+    gitAnswers(answers: boolean) {
+      gitWorks = answers;
+    },
+    /** Which repository the provenance beside `name`'s ownership record names, if any. */
+    provenance: async (name: string) =>
+      (
+        JSON.parse(
+          await readFile(
+            ownerFile(name).replace(/\.json$/, ".repository.json"),
+            "utf8",
+          ).catch(() => "null"),
+        ) as { repository: string } | null
+      )?.repository,
     tool: (name: string) => readFile(bin(name), "utf8"),
     owner: async (name: string) =>
       JSON.parse(await readFile(ownerFile(name), "utf8")) as {
@@ -272,12 +312,12 @@ async function rigWorld() {
           state.projects.find((p) => p.id === target.projectId)?.name ===
             project,
       )?.id,
-    /** Registers `project`'s repository and deploys its stable Target, which publishes its Tools. */
-    async registerAndDeploy(project = "ledger") {
-      await runtime.command({ action: "init", repoPath: `/tmp/${project}` });
+    /** Registers the repository `/tmp/<repository>` and deploys its stable Target, which publishes its Tools. */
+    async registerAndDeploy(repository = "ledger") {
+      await runtime.command({ action: "init", repoPath: `/tmp/${repository}` });
       return await runtime.command({
         action: "deploy",
-        project,
+        project: configs[`/tmp/${repository}`]!.name,
         target: "stable",
       });
     },
@@ -596,4 +636,82 @@ test("forget names a Tool edited since Rig published it apart: it stays, and pub
     expect.stringContaining("Its Tools stay installed"),
   );
   expect(await w.tool("ledger")).toBe("#!/bin/sh\necho edited\n");
+});
+
+test("two repositories both named rig: once Rig is forgotten, only a clone of the repository that published rigd takes it over", async () => {
+  const w = await rigWorld();
+  await w.registerAndDeploy("rig");
+  expect(await w.provenance("rigd")).toBe("a".repeat(40));
+  await w.stop("rig");
+  await w.runtime.command({ action: "forget", project: "rig" });
+  const daemon = w.bin("rigd");
+  const before = { bytes: await w.tool("rigd"), ino: (await stat(daemon)).ino };
+  // A different repository that calls itself rig: same Project name, same Tool names, another history.
+  w.rebuild("impostor");
+  const refused = (await w
+    .registerAndDeploy("impostor")
+    .catch((e: unknown) => e)) as RigError;
+  expect(refused).toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+    message: expect.stringContaining(`${w.bin("rig")} is Rig itself`),
+    details: expect.objectContaining({ reason: "repository-different" }),
+  });
+  expect(refused.hint).toContain(`Keep it: rigd's system job runs ${daemon}`);
+  expect(refused.hint).not.toMatch(/delete/i);
+  expect(await w.tool("rigd")).toBe(before.bytes);
+  expect((await stat(daemon)).ino).toBe(before.ino);
+  expect(await w.tool("rig")).toBe("#!/bin/sh\necho rig.sh v1\n");
+  // Gone again, the clone of Rig's own repository takes both over.
+  await w.runtime.command({ action: "forget", project: "rig" });
+  w.rebuild("v2");
+  expect(await w.registerAndDeploy("rig-clone")).toMatchObject({
+    outcome: "deployed",
+  });
+  expect(await w.tool("rigd")).toBe("#!/bin/sh\necho rigd.sh v2\n");
+  expect(await w.provenance("rigd")).toBe("a".repeat(40));
+});
+
+test("rigd published before provenance was recorded: its recorded Target keeps deploying and records it; forgotten, it goes to no one", async () => {
+  const w = await rigWorld();
+  // Published by a Rig that recorded no provenance, as every Host's is before this change.
+  w.gitAnswers(false);
+  await w.registerAndDeploy("rig");
+  expect(await w.provenance("rigd")).toBeUndefined();
+  // Its own Target is no takeover: deploys and starts go on as before, and the next one that can records provenance.
+  w.rebuild("v2");
+  expect(
+    await w.runtime.command({
+      action: "deploy",
+      project: "rig",
+      target: "stable",
+      force: true,
+    }),
+  ).toMatchObject({ outcome: "deployed" });
+  expect(await w.tool("rigd")).toBe("#!/bin/sh\necho rigd.sh v2\n");
+  expect(await w.provenance("rigd")).toBeUndefined();
+  w.gitAnswers(true);
+  await w.runtime.command({ action: "up", project: "rig", target: "stable" });
+  expect(await w.tool("rigd")).toBe("#!/bin/sh\necho rigd.sh v2\n");
+  expect(await w.provenance("rigd")).toBe("a".repeat(40));
+
+  // A Host where provenance was never recorded, then Rig forgotten: no registration takes rigd, the original included.
+  const legacy = await rigWorld();
+  legacy.gitAnswers(false);
+  await legacy.registerAndDeploy("rig");
+  await legacy.stop("rig");
+  await legacy.runtime.command({ action: "forget", project: "rig" });
+  legacy.gitAnswers(true);
+  const daemon = legacy.bin("rigd");
+  const before = (await stat(daemon)).ino;
+  const refused = (await legacy
+    .registerAndDeploy("rig")
+    .catch((e: unknown) => e)) as RigError;
+  expect(refused).toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+    details: expect.objectContaining({ reason: "provenance-missing" }),
+  });
+  expect(refused.hint).toContain(`Keep it: rigd's system job runs ${daemon}`);
+  expect(refused.hint).toContain("rig:rigd skill's upgrade reference");
+  expect(refused.hint).not.toMatch(/delete/i);
+  expect((await stat(daemon)).ino).toBe(before);
 });

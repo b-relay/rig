@@ -398,26 +398,55 @@ export function createTargetEffects(
         !retained.has(installedPath(options.root, previous, component)),
     );
   };
+  /** The identity of the repository `target`'s workspace was checked out from: its root commits, sorted and joined by
+   * commas, the same in every clone and whatever its remotes. Undefined when git cannot say (no repository, no commit). */
+  const repositoryIdentity = async (
+    target: TargetRecord,
+  ): Promise<string | undefined> => {
+    try {
+      const result = await options.run({
+        command: ["git", "rev-list", "--max-parents=0", "HEAD"],
+        cwd: target.plan.workspacePath,
+        env: options.environment,
+        timeoutMs: 30_000,
+      });
+      if (result.exitCode !== 0) return undefined;
+      const roots = result.stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^[0-9a-f]{40,64}$/.test(line))
+        .sort();
+      return roots.length ? roots.join(",") : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  /** Who publishes `component` of `target`, as ownership records it. */
+  const artifactIdentity = (
+    target: TargetRecord,
+    component: InstalledComponent,
+  ) => ({
+    targetId: target.id,
+    componentName: component.name,
+    destination: installedPath(options.root, target, component),
+    project: target.plan.project,
+    target: target.name,
+    repository: () => repositoryIdentity(target),
+  });
   const retireComponents = async (
     target: TargetRecord,
     components: readonly InstalledComponent[],
   ) => {
     for (const component of components) {
       if (component.kind !== "installed") continue;
-      const destination = installedPath(options.root, target, component),
-        ownerFile = ownership.ownerPath(destination),
+      const identity = artifactIdentity(target, component),
+        destination = identity.destination,
         receiptFile = receiptPath(target, component);
-      const owned = await ownership.inspect({
-        targetId: target.id,
-        componentName: component.name,
-        destination,
-        project: target.plan.project,
-        target: target.name,
-      });
+      const owned = await ownership.inspect(identity);
       // A released executable (its owner Target is gone) is not this Target's to retire: it stays, as a forget leaves it.
       const retired = owned.released
         ? [receiptFile]
-        : [destination, ownerFile, receiptFile];
+        : [destination, ...ownership.ownedPaths(destination), receiptFile];
       // Only what it removes is journalled as changing, so a recovery never takes a released Tool for its own work.
       await transactions.withArtifactChange(target.id, retired, async () => {
         for (const path of retired) await rm(path, { force: true });
@@ -461,12 +490,8 @@ export function createTargetEffects(
               }))
             : []),
         ].map(({ target: owner, component }) => ({
-          targetId: owner.id,
-          componentName: component.name,
-          destination: installedPath(options.root, owner, component),
+          ...artifactIdentity(owner, component),
           receiptPath: receiptPath(owner, component),
-          project: owner.plan.project,
-          target: owner.name,
         })),
       ),
     commitEffects: (target) => transactions.commit(target.id),
@@ -619,15 +644,9 @@ export function createTargetEffects(
         );
     },
     async install(component, target) {
-      const destination = installedPath(options.root, target, component),
+      const identity = artifactIdentity(target, component),
+        destination = identity.destination,
         source = resolve(target.plan.workspacePath, component.entrypoint);
-      const identity = {
-        targetId: target.id,
-        componentName: component.name,
-        destination,
-        project: target.plan.project,
-        target: target.name,
-      };
       await ownership.inspect(identity);
       const env = await environment(target, component);
       const key = installationPolicyKey(
@@ -648,10 +667,18 @@ export function createTargetEffects(
           digestFile,
           options.installer,
         )) === receipt!.sourceRevision;
-      if (await unchanged()) return { outcome: "unchanged" };
+      if (await unchanged()) {
+        // Rig's own executable published before its provenance was recorded gets it now, so a later forget can hand it on.
+        const owned = ownership.ownedPaths(destination).slice(1);
+        if (owned.length)
+          await transactions.withArtifactChange(target.id, owned, () =>
+            ownership.backfillProvenance(identity),
+          );
+        return { outcome: "unchanged" };
+      }
       await transactions.withArtifactChange(
         target.id,
-        [destination, ownership.ownerPath(destination), receiptFile],
+        [destination, ...ownership.ownedPaths(destination), receiptFile],
         async () => {
           await ownership.publish(identity, async () => {
             await options.installer.install({

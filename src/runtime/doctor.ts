@@ -218,7 +218,7 @@ async function orphanedToolsCheck(
         ? "Move or delete a changed one to keep or discard that change; a Target can then publish there."
         : "",
       rigOwn.length
-        ? `Never delete ${rigOwn.join(" or ")}: ${rigOwn.length === 1 ? "it is" : "they are"} Rig itself, and rigd's system job runs ${join(deps.root, "bin", "rigd")}. Only Rig's own Project takes ${rigOwn.length === 1 ? "it" : "them"} over: register its repository again and deploy its stable Target.`
+        ? `Never delete ${rigOwn.join(" or ")}: ${rigOwn.length === 1 ? "it is" : "they are"} Rig itself, and rigd's system job runs ${join(deps.root, "bin", "rigd")}. Only the repository that published ${rigOwn.length === 1 ? "it" : "them"} takes ${rigOwn.length === 1 ? "it" : "them"} over: register it (any clone) again and deploy its stable Target. One published before Rig recorded its repository goes to no one; upgrade with the manual steps of the rig:rigd skill's upgrade reference.`
         : "",
     ]
       .filter(Boolean)

@@ -89,10 +89,9 @@ suite, `bun run build`, and `bun run format:check`.
 - Before a PR merges, independent review agents read it, and the author and
   reviewers go back and forth until they agree on every finding. Merge only
   after they converge and the full pre-merge checks above pass.
-- Reviewers also judge the tests. Keep a test only if it pins behaviour a user
-  or caller relies on; drop tests that restate the implementation, exercise the
-  framework or a mock, or repeat another test.
-- Keep a PR to its issue. When a review finds a problem outside that scope,
+- Reviewers also judge whether the PR's tests are worth having: they should
+  cover the changed behaviour and catch its regressions.
+- Keep a PR within its agreed scope. When a review finds a problem outside it,
   file a new GitHub issue for it instead of fixing it in the same PR.
 - Use conventional commit messages: `feat:`, `fix:`, `test:`, `docs:`,
   `refactor:`, etc.

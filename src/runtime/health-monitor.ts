@@ -915,6 +915,7 @@ export function createHealthMonitor(
         projectId: target.projectId,
         project: state.projects.find((p) => p.id === target.projectId)?.name,
         target: target.name,
+        component: { kind: "service", name: service },
         occurredAt: new Date(deps.now()).toISOString(),
         ...entry,
       });

@@ -104,6 +104,7 @@ export async function restartForHealth(
           projectId: target.projectId,
           project: state.projects.find((p) => p.id === target.projectId)?.name,
           target: target.name,
+          component: { kind: "service", name: request.service },
           occurredAt: deps.now(),
           action: "health-restart",
           outcome,

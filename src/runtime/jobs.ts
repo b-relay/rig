@@ -434,6 +434,7 @@ export async function recordSkippedRun(
         projectId: target.projectId,
         project: projectName(state, target),
         target: target.name,
+        component: { kind: "job", name: job },
         action: "job",
         outcome: "skipped",
         occurredAt: deps.now(),
@@ -465,6 +466,7 @@ function jobActivity(
     projectId: target.projectId,
     project: projectName(state, target),
     target: target.name,
+    component: { kind: "job", name: job },
     action: run.trigger === "restore" ? "restore" : "job",
     outcome:
       run.outcome === "succeeded"

@@ -312,3 +312,20 @@ export function cardsOf(
     ];
   });
 }
+
+/** Pure: the Activity a Project Monitor card lists and marks, of `operations` (already narrowed to the Target shown):
+ * with `all`, a Target's card has its Target's; otherwise a Service's or Job's card has the records about that
+ * Component. Records name a Target or Component, not its incarnation, so a card of an earlier one has none. */
+export function cardActivity(
+  card: Pick<UsageCard, "name" | "kind" | "incarnation">,
+  operations: readonly Operation[],
+  target: string,
+): Operation[] {
+  if (card.incarnation) return [];
+  return operations.filter((operation) =>
+    target === "all"
+      ? operation.target === card.name
+      : operation.component?.kind === card.kind &&
+        operation.component?.name === card.name,
+  );
+}

@@ -564,6 +564,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     let attempted = false;
     // What the Operation acted on, for its Activity entry, such as the job and backup a restore put back.
     let activityNote: string | undefined;
+    // The Job a run or restore acted on, so its Activity entry is filed under it.
+    let activityComponent: OperationRecord["component"];
     // What a deploy set out to deploy, so its history names the source even when it fails before a Target records it.
     let deploySource:
       | {
@@ -1072,6 +1074,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         if (!target) throw missingTarget(command, name);
         const job = runnableJob(target, command.job, configured.document);
         attempted = true;
+        activityComponent = { kind: "job", name: job.name };
         const run = await startJobRun(
           target,
           job,
@@ -1102,6 +1105,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const storage = backupStorage(deps);
         attempted = true;
         activityNote = `${job.name} from ${which}`;
+        activityComponent = { kind: "job", name: job.name };
         // A run of the job that ended but is not recorded yet is settled first, under this Operation's hold on the Target,
         // so its retention runs before the backup is chosen and can never delete the one chosen.
         await settlePreviousRun(target, job.name, deps);
@@ -1462,6 +1466,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           projectId: project?.id,
           project: project?.name,
           target: target?.name ?? aimed,
+          ...(activityComponent ? { component: activityComponent } : {}),
           action: command.action,
           outcome,
           occurredAt: deps.now(),

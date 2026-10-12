@@ -166,10 +166,18 @@ export interface OperationRecord {
   projectId?: string;
   project?: string;
   target?: string;
+  /** The Service or Job the record is about, when it is about one: a crash, an automatic or health restart, a job run
+   * or restore, an env file of one Service. Absent for whole-Target and Project Operations. */
+  component?: ActivityComponent;
   action: string;
   outcome: OperationOutcome;
   occurredAt: string;
   message?: string;
+}
+/** A Service or Job an Activity record is about, by its name in rig.yaml. */
+export interface ActivityComponent {
+  kind: "service" | "job";
+  name: string;
 }
 
 /** One deploy rigd attempted, with the source it deployed and how it ended; the dashboard's deploy history and rollback read it. */

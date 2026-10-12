@@ -232,6 +232,7 @@ describe("the env editor", () => {
         projectId: "p1",
         project: "demo",
         target: "stable",
+        component: { kind: "service", name: "web" },
         action: "env",
         outcome: "updated",
         occurredAt: "2026-10-10T00:00:00.000Z",

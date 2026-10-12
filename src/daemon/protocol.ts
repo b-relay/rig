@@ -260,6 +260,10 @@ export const activityResultSchema = z
         occurredAt: z.string(),
         project: z.string().optional(),
         target: z.string().optional(),
+        /** The Service or Job the record is about; absent for a whole Target or Project. */
+        component: z
+          .object({ kind: z.enum(["service", "job"]), name: z.string() })
+          .optional(),
         message: z.string().optional(),
       }),
     ),

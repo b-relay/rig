@@ -91,6 +91,7 @@ test("a recorded exit becomes Activity once, however many passes see it, and nam
   expect(state.activity[0]).toMatchObject({
     project: "app",
     target: "stable",
+    component: { kind: "service", name: "web" },
     action: "crash",
     outcome: "failed",
     message: "web exited with code 7.",

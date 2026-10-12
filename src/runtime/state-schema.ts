@@ -636,6 +636,12 @@ const operation = z.object({
   projectId: text.optional(),
   project: text.optional(),
   target: text.optional(),
+  component: z
+    .object({ kind: z.enum(["service", "job"]), name: text })
+    .optional()
+    .describe(
+      "The Service or Job the record is about, by its name in rig.yaml; absent for a whole Target or Project.",
+    ),
   action: text,
   // `forgotten`, and `updated` (an operator env file changed from the dashboard), joined this list without a STATE_VERSION
   // bump (see there). A rigd from before either refuses the state as
@@ -651,6 +657,8 @@ const operation = z.object({
  * A new optional top-level key needs no bump: an older rigd validates without it and writes it back unchanged.
  * A new value of an existing enum, such as an Activity outcome, needs none either: the file stays readable by an older
  * rigd until a record holds the new value, and that rigd then refuses it as STATE_CORRUPT rather than misread it.
+ * An Activity record's `component` needed none: an older rigd keeps it as it is (the store returns the file as read),
+ * and only ignores it, which changes nothing it does; a bump would make it refuse the whole state instead.
  * Version 6 added scheduled jobs to plans (`plan.jobs`): an older rigd would keep them but never run them. Version 7 added
  * backups (`backup` on a plan's job and on a run, ADR 0017): an older rigd would run a backup job without its directory.
  * Version 8 (ADR 0016) added where each Service's process runs (`source`), the Services a deploy kept, `watch`, and held

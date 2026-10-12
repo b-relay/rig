@@ -274,6 +274,7 @@ function fixture(
       };
     },
     activity: () => state.activity.map((entry) => entry.message ?? ""),
+    records: () => state.activity,
   };
 }
 const SECOND = 1000;
@@ -316,6 +317,9 @@ test("a Service whose checks keep failing is unhealthy after retries × interval
   });
   expect(f.activity()).toContain(
     "web is unhealthy: 3 health checks in a row failed (HTTP 503). Rig restarts it.",
+  );
+  expect(f.records().map((entry) => entry.component)).toEqual(
+    f.records().map(() => ({ kind: "service", name: "web" })),
   );
 });
 

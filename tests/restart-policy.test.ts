@@ -285,6 +285,12 @@ for (const [name, exit, restarted] of [
     expect(
       activity.filter((entry) => entry === "restart/started"),
     ).toHaveLength(restarted.length);
+    // Each automatic restart is filed under the Service it started.
+    expect(
+      (await f.store.read()).activity
+        .filter((each) => each.action === "restart")
+        .map((each) => each.component),
+    ).toEqual(restarted.map((name) => ({ kind: "service", name })));
   });
 
 test("an exit record that names an earlier start proves nothing about this one: it is an unknown exit, never retried under on-failure and retried under always only on the slower budget", async () => {

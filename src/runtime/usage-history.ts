@@ -69,7 +69,7 @@ export interface UsageHistory {
    * as it fills, or after a restart part way through it, keeps every sample. Updates each series' names. */
   write(minutes: readonly RecordedMinute[]): Promise<void>;
   /** The series `filter` selects and their spans that start from `from` up to `to` (Unix seconds). `detail` reads the
-   * 1-second samples, one span per second, and returns nothing older than detail retention; otherwise one span per
+   * 1-second samples, one span per second, of which nothing older than the last prune is left; otherwise one span per
    * minute. The `host` filter selects the Host, Rig itself and every Project's total; the `project` filter selects that
    * Project's total, its Targets and their Components. */
   read(request: {
@@ -84,6 +84,9 @@ export interface UsageHistory {
     readonly detailBefore: number;
     readonly historyBefore: number;
   }): Promise<void>;
+  /** Unix seconds before which detail has been pruned: the latest cutoff any prune applied, kept across restarts; 0 when
+   * none has. Detail before it is gone, however far detail retention reaches now. */
+  detailPrunedBefore(): Promise<number>;
   /** Removes all history of a Project, as `rig forget` does. */
   forget(projectId: string): Promise<void>;
   /** Closes the store once every call in progress has finished; a later call fails. */

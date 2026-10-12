@@ -97,7 +97,7 @@ export function chartOf(input: {
     summary: summaryOf(summarized),
     points: merged.map((histograms, index) => ({
       at: input.from + index * input.step,
-      ...(histograms ? summaryOf([histograms]) : {}),
+      ...(histograms && statsOfBoth(histograms)),
     })),
   };
 }
@@ -119,6 +119,14 @@ export function summaryOf(
   return {
     ...(cpu && { cpu: statsOf(cpu, cpuPercentOf) }),
     ...(memory && { memory: statsOf(memory, memoryBytesOf) }),
+  };
+}
+
+/** Pure: the stats of histograms already merged, without merging them again. */
+function statsOfBoth(histograms: UsageHistograms): UsageSummary {
+  return {
+    cpu: statsOf(histograms.cpu, cpuPercentOf),
+    memory: statsOf(histograms.memory, memoryBytesOf),
   };
 }
 

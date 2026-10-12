@@ -49,6 +49,7 @@ export function guardedUsageHistory(input: {
     write: (minutes) => tracked((each) => each.write(minutes)),
     read: (request) => tracked((each) => each.read(request)),
     prune: (input) => tracked((each) => each.prune(input)),
+    detailPrunedBefore: () => tracked((each) => each.detailPrunedBefore()),
     forget: (projectId) => tracked((each) => each.forget(projectId)),
     async close() {
       closed = true;

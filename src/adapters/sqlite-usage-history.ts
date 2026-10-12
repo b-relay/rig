@@ -16,7 +16,7 @@ import {
   type UsageSeries,
 } from "../runtime/usage-history";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 /** Usage history in SQLite at `path` (`<RIG_ROOT>/monitor/usage.sqlite`), created on first use. Detail is one row of 60
  * packed slots per series and minute; history one row of two histograms per series and minute. The database is in WAL
@@ -123,6 +123,11 @@ export function openSqliteUsageHistory(path: string): UsageHistory {
         db.run("DELETE FROM detail WHERE minute < ?", [
           Math.floor(input.detailBefore / 60),
         ]);
+        db.run(
+          `INSERT INTO pruned (id, detail_before) VALUES (0, ?)
+             ON CONFLICT (id) DO UPDATE SET detail_before = max(detail_before, excluded.detail_before)`,
+          [Math.floor(input.detailBefore / 60) * 60],
+        );
         db.run("DELETE FROM history WHERE minute < ?", [
           Math.floor(input.historyBefore / 60),
         ]);
@@ -131,6 +136,15 @@ export function openSqliteUsageHistory(path: string): UsageHistory {
              AND NOT EXISTS (SELECT 1 FROM detail WHERE detail.series = series.id)`,
         );
       })();
+    },
+    async detailPrunedBefore() {
+      return (
+        db
+          .query<{ detail_before: number }, []>(
+            "SELECT detail_before FROM pruned WHERE id = 0",
+          )
+          .get()?.detail_before ?? 0
+      );
     },
     async forget(projectId) {
       db.transaction(() => {
@@ -180,6 +194,11 @@ function migrate(db: Database): void {
       memory BLOB NOT NULL,
       PRIMARY KEY (series, minute)
     ) WITHOUT ROWID`);
+    // How far detail has been pruned, so a report never looks for seconds already gone when retention grows.
+    db.run(`CREATE TABLE IF NOT EXISTS pruned (
+      id INTEGER PRIMARY KEY CHECK (id = 0),
+      detail_before INTEGER NOT NULL
+    )`);
     db.run("CREATE INDEX IF NOT EXISTS detail_minute ON detail (minute)");
     db.run("CREATE INDEX IF NOT EXISTS history_minute ON history (minute)");
     db.run("CREATE INDEX IF NOT EXISTS series_project ON series (project_id)");

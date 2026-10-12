@@ -165,6 +165,7 @@ function watched(failing: () => boolean = () => false) {
     },
     read: (request) => history.read(request),
     prune: (input) => history.prune(input),
+    detailPrunedBefore: () => history.detailPrunedBefore(),
     forget: (id) => history.forget(id),
     close: async () => {},
   };
@@ -507,6 +508,11 @@ describe("stored usage history", () => {
       high: 20,
     });
 
+    // How far detail was pruned is kept, and only ever moves forward.
+    expect(await history.detailPrunedBefore()).toBe(200 * 60);
+    await history.prune({ detailBefore: 120 * 60 + 30, historyBefore: 0 });
+    expect(await history.detailPrunedBefore()).toBe(200 * 60);
+
     await history.forget("p-fletcher");
     expect(await read(false)).toEqual([]);
     const hostRead = await history.read({
@@ -516,6 +522,16 @@ describe("stored usage history", () => {
       detail: false,
     });
     expect(hostRead.map((each) => each.series.scope)).toEqual(["host"]);
+  });
+
+  test("how far detail was pruned survives reopening the database", async () => {
+    expect(await history.detailPrunedBefore()).toBe(0);
+    await history.prune({ detailBefore: 300 * 60 + 45, historyBefore: 0 });
+    await history.close();
+    history = openSqliteUsageHistory(
+      join(directory, "monitor", "usage.sqlite"),
+    );
+    expect(await history.detailPrunedBefore()).toBe(300 * 60);
   });
 
   test("history survives reopening the database", async () => {
@@ -739,6 +755,61 @@ describe("usage report windows", () => {
       (each) => each.series.scope === "component",
     )!;
     expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+  });
+
+  test("after detail retention grows, a short window whose seconds were pruned reads the minute history", async () => {
+    await history.write([{ series: web, minute, slots: full(100) }]);
+    // detail_hours was 1 when this prune ran; it is 24 now.
+    await history.prune({
+      detailBefore: START / 1000 + 3600,
+      historyBefore: START / 1000 - 86_400,
+    });
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: START / 1000, until: START / 1000 + 600 },
+      detailSince: START / 1000 - 86_400,
+      now: START + 5 * 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.step).toBe(60);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+    expect(web_.points.some((point) => point.cpu)).toBe(true);
+  });
+
+  test("a short window crossing from pruned to kept seconds reads minutes, counting the kept end by the second", async () => {
+    const spikeAt = (second: number) =>
+      full(100).map((slot, index) =>
+        index === second ? { cpu: 990, memory: 100 } : slot,
+      );
+    // Minute 0's seconds are pruned; minute 2's are kept, with a spike after the window's end.
+    await history.write([
+      { series: web, minute, slots: full(100) },
+      { series: web, minute: minute + 2, slots: spikeAt(40) },
+    ]);
+    await history.prune({
+      detailBefore: START / 1000 + 60,
+      historyBefore: START / 1000 - 86_400,
+    });
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: START / 1000, until: START / 1000 + 150 },
+      detailSince: START / 1000 - 86_400,
+      now: START + 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.step).toBe(60);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+    expect(web_.points.filter((point) => point.cpu)).toHaveLength(2);
   });
 
   test("a window wholly in the future is one empty step, never an inverted one", async () => {

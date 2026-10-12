@@ -73,7 +73,7 @@ export async function usageReport(input: {
   readonly window: UsageWindow;
   /** Milliseconds since the Unix epoch. */
   readonly now: number;
-  /** Unix seconds from which 1-second detail is still kept (detail retention). */
+  /** Unix seconds from which detail retention keeps 1-second detail now; the report also allows for the last prune. */
   readonly detailSince: number;
   readonly sampledEvery: number;
   readonly history: UsageHistory;
@@ -81,13 +81,18 @@ export async function usageReport(input: {
 }): Promise<UsageReport> {
   const nowSecond = Math.floor(input.now / 1000);
   const { since } = input.window;
+  // Detail retention may have grown since the last prune; the seconds before that prune are gone all the same.
+  const detailSince = Math.max(
+    input.detailSince,
+    await input.history.detailPrunedBefore(),
+  );
   // A window starting after now is empty but never inverted.
   const end = Math.max(
     Math.min(input.window.until ?? nowSecond, nowSecond),
     since,
   );
   const span = Math.max(end - since, 1);
-  const detail = stepFor(span) < 60 && since >= input.detailSince;
+  const detail = stepFor(span) < 60 && since >= detailSince;
   const step = detail ? stepFor(span) : Math.max(stepFor(span), 60);
   const from = Math.floor(since / step) * step;
   const to = (Math.floor(end / step) + 1) * step;
@@ -111,7 +116,7 @@ export async function usageReport(input: {
     : [
         ...new Set(
           [since, ...(until <= nowSecond ? [until] : [])]
-            .filter((at) => at % 60 !== 0 && at >= input.detailSince)
+            .filter((at) => at % 60 !== 0 && at >= detailSince)
             .map((at) => Math.floor(at / 60) * 60),
         ),
       ];

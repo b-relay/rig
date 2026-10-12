@@ -57,6 +57,17 @@ export async function reportDetached(
   return 130;
 }
 /** Owns terminal error policy; provider failure details never cross this Interface. */
+/** `error`, marked as already written to stdout in the command's own report (rig proxy verify --json), so reporting it
+ * records the diagnostic and writes nothing more: stdout stays one document. */
+export function reported(error: RigError): RigError {
+  return new RigError(
+    error.code,
+    error.message,
+    error.hint,
+    { ...error.details, reported: true },
+    error.causes,
+  );
+}
 export async function reportFailure(
   error: unknown,
   input: {
@@ -82,6 +93,10 @@ export async function reportFailure(
     code: failure.code,
   });
   const unexpected = !userCorrectable(failure.code);
+  if (failure.details.reported === true) {
+    if (evidence.error) input.output.error(`${evidence.error}\n`);
+    return;
+  }
   if (input.json) {
     input.output.write(
       `${JSON.stringify({ error: { code: failure.code, message: failure.message, hint: failure.hint, ...(unexpected && input.operationId ? { operationId: input.operationId } : {}), ...(unexpected && evidence.path ? { diagnosticPath: evidence.path } : {}) } })}\n`,

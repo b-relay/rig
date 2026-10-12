@@ -68,7 +68,8 @@ export async function readTargetLogs(
   lines: number,
   filter: LogFilter = {},
 ): Promise<{ entries: TargetLogEntry[]; cursor: string }> {
-  if (!Number.isSafeInteger(lines) || lines < 1 || lines > 10000)
+  // A first page of the 10000 entries the control plane allows reads one more, to tell whether older ones match.
+  if (!Number.isSafeInteger(lines) || lines < 1 || lines > 10001)
     throw new RigError(
       "LOG_LIMIT",
       "Request between 1 and 10000 log entries.",

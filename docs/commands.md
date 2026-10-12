@@ -27,7 +27,7 @@ rig
 │    --project <name>   --json
 ├─ config                           show the validated rig.yaml and its path
 │    --project <name>   --json
-├─ activity [operation]             what Rig did, newest last, or one Operation by id
+├─ activity [operation]             what Rig did, newest last, or one Operation by id (looked up on the whole Host)
 │    --project <name>               another Project's (default: the one this directory is in)
 │    --all                          every Project's, and rigd's own administration
 │    --target <name>                only this Target's: working, stable or a Preview's name
@@ -96,6 +96,7 @@ rig
 │  │   --port <port>                default: proxy.ports.https
 │  │   --wait <seconds>             keep checking failing hostnames this long
 │  │   --staging-ok                 accept certificates from a staging CA
+│  │   --json                       { ready, hostnames, error? }; still exits 1 when not ready
 │  └─ token                         store the DNS API token read from a pipe (pbpaste | rig proxy token)
 │
 ├─ dns                              your Cloudflare records, with the proxy's token (ADR 0018)
@@ -156,7 +157,8 @@ status` takes no Target.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
 - Reads take `--json`; actions do not. `list`, `status`, `doctor`, `config`,
-  `monitor`, `proxy`, `dns list` and `backup list` print one JSON document;
+  `monitor`, `proxy`, `proxy verify`, `dns list` and `backup list` print one
+  JSON document;
   `activity` and `logs` print JSON Lines, one record per line, for a file a
   program reads record by record. An action (`deploy`, `up`, `down`,
   `restart`, `run`, `backup restore` and the rest) answers with its exit code

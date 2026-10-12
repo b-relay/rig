@@ -204,7 +204,8 @@ export async function runRigCli(
   dependencies: CliDependencies,
 ): Promise<number> {
   let operationId: string | undefined;
-  let json = requestsStructuredOutput(args);
+  // Set from the arguments once the grammar exists, then by the command that runs.
+  let json = false;
   let exitCode = 0;
   const execute: ExecuteCommand = async (request, options = {}) => {
     json = options.json === true;
@@ -287,6 +288,7 @@ export async function runRigCli(
         : {}),
     },
   );
+  json = requestsStructuredOutput(command, args);
   try {
     await command.parseAsync(args.length ? [...args] : ["--help"], {
       from: "user",
@@ -425,7 +427,8 @@ async function followLogs(
     cursor = object(result).cursor;
   }
 }
-/** The reads that take --json, by their words: `backup list`, not `backup restore`. */
+/** The reads that take --json, by their command path: `proxy verify` and `backup list`, not `proxy reload` or
+ * `backup restore`. */
 const STRUCTURED_READS = [
   "list",
   "status",
@@ -435,16 +438,21 @@ const STRUCTURED_READS = [
   "logs",
   "monitor",
   "proxy",
+  "proxy verify",
   "dns list",
   "backup list",
 ];
-/** Error rendering follows the same scoped flag even when argument validation fails before execution. */
-function requestsStructuredOutput(args: readonly string[]): boolean {
+/** Error rendering follows the same scoped flag even when argument validation fails before execution. The command path
+ * is read from the words alone, so `rig proxy --json reload` is the reload it names. */
+function requestsStructuredOutput(
+  command: Parameters<typeof commandPath>[0],
+  args: readonly string[],
+): boolean {
   const end = args.indexOf("--");
   const options = end < 0 ? args : args.slice(0, end);
+  const words = options.filter((arg) => !arg.startsWith("-"));
   return (
     options.includes("--json") &&
-    (STRUCTURED_READS.includes(args[0] ?? "") ||
-      STRUCTURED_READS.includes(args.slice(0, 2).join(" ")))
+    STRUCTURED_READS.includes(commandPath(command, words).join(" "))
   );
 }

@@ -4,10 +4,14 @@ import type { ProjectStatusReport } from "../src/domain/project-status";
 
 /** rig against a fake rigd that answers every command with `reply`, recording each request and what went to stdout and
  * stderr apart. */
-function cli(reply: (request: Record<string, unknown>) => unknown) {
+function cli(
+  reply: (request: Record<string, unknown>) => unknown,
+  extra: Record<string, unknown> = {},
+) {
   const requests: Record<string, unknown>[] = [];
   const out = { stdout: "", stderr: "" };
   const dependencies = {
+    ...extra,
     root: "/isolated/.rig",
     cwd: "/workspace",
     client: {
@@ -73,8 +77,19 @@ test("rig activity reads this Project's newest 20 records; --all reads the Host;
   ).toBe(0);
   expect(await f.run(["activity", "3f2a"])).toBe(0);
   expect(f.requests).toEqual([
-    { action: "activity", repoPath: "/workspace", lines: 20 },
-    { action: "activity", repoPath: "/workspace", host: true, lines: 5 },
+    {
+      action: "activity",
+      repoPath: "/workspace",
+      lines: 20,
+      activityFilter: {},
+    },
+    {
+      action: "activity",
+      repoPath: "/workspace",
+      host: true,
+      lines: 5,
+      activityFilter: {},
+    },
     {
       action: "activity",
       repoPath: "/workspace",
@@ -87,8 +102,25 @@ test("rig activity reads this Project's newest 20 records; --all reads the Host;
         since: "2026-10-11T12:00:00.000Z",
       },
     },
-    { action: "activity", repoPath: "/workspace", operation: "3f2a" },
+    // An Operation id is looked up on the whole Host.
+    {
+      action: "activity",
+      repoPath: "/workspace",
+      host: true,
+      operation: "3f2a",
+    },
   ]);
+});
+
+test("an activity read always carries its filter, so a rigd from before filters refuses it instead of answering with every Project's records", async () => {
+  const { commandSchema } = await import("../src/daemon/protocol");
+  const f = cli(() => ({ operations: [] }));
+  expect(await f.run(["activity"])).toBe(0);
+  expect(f.requests[0]).toHaveProperty("activityFilter", {});
+  // The older protocol is this one without activityFilter; being strict, it refuses the key.
+  const older = commandSchema.omit({ activityFilter: true });
+  expect(older.safeParse(f.requests[0]).success).toBe(false);
+  expect(commandSchema.safeParse(f.requests[0]).success).toBe(true);
 });
 
 test("rig activity refuses what cannot be read together, and more records than rigd keeps, before asking rigd", async () => {
@@ -189,4 +221,119 @@ test("list, doctor and config print their report as JSON", async () => {
     expect(await f.run([read, "--json"])).toBe(0);
     expect(JSON.parse(f.out.stdout)).toEqual({ action: read, ok: true });
   }
+});
+
+test("rig logs --json --follow keeps printing one entry per line, shortened unless --full; only the first page says what it left out", async () => {
+  for (const full of [false, true]) {
+    const controller = new AbortController();
+    const f = cli(
+      (request) => {
+        if (request.after === undefined)
+          return {
+            project: "pantry",
+            target: "working",
+            entries: [entry("first")],
+            cursor: "c1",
+            more: true,
+          };
+        // The second page ends the follow, as a Ctrl-C would.
+        controller.abort();
+        return {
+          project: "pantry",
+          target: "working",
+          entries: [entry(long)],
+          cursor: "c2",
+          more: true,
+        };
+      },
+      { signal: controller.signal },
+    );
+    await f.run(["logs", "--json", "--follow", ...(full ? ["--full"] : [])]);
+    expect(f.requests.map((request) => request.after)).toEqual([
+      undefined,
+      "c1",
+    ]);
+    expect(
+      f.out.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([
+      entry("first"),
+      full ? entry(long) : { ...entry("x".repeat(2000)), omitted: 500 },
+    ]);
+    expect(f.out.stderr).toBe(
+      "showing the latest 1 entry; older ones match too, --lines or --since to see them\n",
+    );
+  }
+});
+
+const verdict = (hostname: string, ok: boolean) => ({
+  hostname,
+  ok,
+  ...(ok
+    ? { issuer: "R11", validTo: "2026-12-01T00:00:00Z" }
+    : { problem: "expired" }),
+});
+
+test("rig proxy verify --json prints one document of verdicts, its failure inside it, and exits 1 when not ready", async () => {
+  for (const [verdicts, code] of [
+    [[verdict("a.example.com", true)], 0],
+    [[verdict("a.example.com", true), verdict("b.example.com", false)], 1],
+  ] as const) {
+    const f = cli(() => ({}), {
+      local: {
+        proxyToken: async () => "/unused",
+        proxyVerify: async () => verdicts,
+      },
+    });
+    for (const args of [
+      ["proxy", "verify", "--json"],
+      ["proxy", "--json", "verify"],
+    ]) {
+      f.out.stdout = "";
+      expect(await f.run(args)).toBe(code);
+      expect(JSON.parse(f.out.stdout)).toEqual({
+        ready: code === 0,
+        hostnames: verdicts,
+        ...(code
+          ? {
+              error: {
+                code: "PROXY_NOT_READY",
+                message: "1 of 2 hostnames are not ready.",
+                hint: expect.stringContaining("--wait 600"),
+              },
+            }
+          : {}),
+      });
+      expect(f.out.stderr).toBe("");
+    }
+  }
+});
+
+test("rig proxy reload and token take no --json, wherever it is given, and do nothing", async () => {
+  let tokens = 0;
+  const f = cli(() => ({ outcome: "applied" }), {
+    local: {
+      proxyToken: async () => {
+        tokens++;
+        return "/stored";
+      },
+      proxyVerify: async () => [],
+    },
+  });
+  for (const args of [
+    ["proxy", "reload", "--json"],
+    ["proxy", "--json", "reload"],
+    ["proxy", "token", "--json"],
+  ]) {
+    f.out.stdout = "";
+    f.out.stderr = "";
+    expect(await f.run(args)).toBe(1);
+    // An action's refusal is text on stderr, never JSON.
+    expect(f.out.stdout).toBe("");
+    expect(f.out.stderr).toContain("takes no --json");
+  }
+  expect(f.requests).toEqual([]);
+  expect(tokens).toBe(0);
 });

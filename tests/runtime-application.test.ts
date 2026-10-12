@@ -4962,7 +4962,7 @@ test("an Activity read is this Project's unless it asks for the Host, keeps the 
   });
 });
 
-test("a first logs page says when older entries match than it kept; a follow page and a 10000-entry page never look further", async () => {
+test("a first logs page says when older entries match than it kept, even at 10000 entries; a follow page never looks further", async () => {
   const { runtime, deps } = fixture();
   const reads: unknown[][] = [];
   const entry = (n: number) => ({
@@ -5003,5 +5003,5 @@ test("a first logs page says when older entries match than it kept; a follow pag
   });
   await logs({ lines: 2, after: "c" });
   await logs({ lines: 10000 });
-  expect(reads.map((args) => args[2])).toEqual([3, 5, 2, 10000]);
+  expect(reads.map((args) => args[2])).toEqual([3, 5, 2, 10001]);
 });

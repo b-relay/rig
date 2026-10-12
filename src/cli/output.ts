@@ -496,8 +496,10 @@ export function readNotice(action: string, value: unknown): string | undefined {
       ? `showing ${shown} of ${report.total} records; --lines to see more`
       : undefined;
   }
-  if (action === "logs" && report.more === true)
-    return `showing the latest ${rows(report.entries).length} entries; older ones match too, --lines or --since to see them`;
+  if (action === "logs" && report.more === true) {
+    const shown = rows(report.entries).length;
+    return `showing the latest ${shown} ${shown === 1 ? "entry" : "entries"}; older ones match too, --lines or --since to see them`;
+  }
   return undefined;
 }
 export function renderLogs(value: unknown, heading: boolean): string {

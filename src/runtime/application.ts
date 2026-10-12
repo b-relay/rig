@@ -1069,9 +1069,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           );
         const lines = command.lines ?? 100;
         // A first page reads one entry more than it keeps, so it can say older ones match too; the cursor is the
-        // newest position either way. At the 10000 limit it cannot look further and says nothing.
-        const asked =
-          command.after === undefined && lines < 10000 ? lines + 1 : lines;
+        // newest position either way.
+        const asked = command.after === undefined ? lines + 1 : lines;
         const page = await deps.files.logs(
           target,
           command.after,

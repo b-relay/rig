@@ -122,7 +122,7 @@ export function addActivityCommand(
           "Pass an action as rig activity lists it, such as deploy, crash or job.",
         );
       const activityFilter = filterOf(options, now());
-      if (operation !== undefined && activityFilter)
+      if (operation !== undefined && Object.keys(activityFilter).length)
         throw new RigError(
           "USAGE",
           "An Operation id cannot be combined with filters.",
@@ -133,27 +133,31 @@ export function addActivityCommand(
           action: "activity",
           repoPath: cwd,
           ...projectScope(options),
-          ...(options.all ? { host: true } : {}),
+          // An Operation id names one Operation on the whole Host, such as the one a failed rigd install printed, so it
+          // is looked up there unless --project narrows it.
+          ...(options.all || (operation !== undefined && !options.project)
+            ? { host: true }
+            : {}),
+          // The filter is sent even when empty: a rigd from before it refuses the request as version skew, rather
+          // than answering with every Project's records.
           ...(operation === undefined
-            ? { lines: options.lines }
+            ? { lines: options.lines, activityFilter }
             : { operation }),
-          ...(activityFilter ? { activityFilter } : {}),
         },
         { json: options.json },
       );
     });
 }
 
-/** The filter the flags ask for, or undefined when none narrows the read. */
+/** The filter the flags ask for; empty when none narrows the read. */
 function filterOf(
   options: ActivityOptions,
   now: Date,
-): RuntimeCommand["activityFilter"] {
-  const filter: NonNullable<RuntimeCommand["activityFilter"]> = {
+): NonNullable<RuntimeCommand["activityFilter"]> {
+  return {
     ...(options.target !== undefined ? { target: options.target } : {}),
     ...(options.action !== undefined ? { action: options.action } : {}),
     ...(options.outcome !== undefined ? { outcome: options.outcome } : {}),
     ...logTimeWindow(options, now),
   };
-  return Object.keys(filter).length ? filter : undefined;
 }

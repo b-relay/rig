@@ -12,6 +12,7 @@ rig init
 rig up
 rig status
 rig logs
+rig monitor
 rig down
 
 rig deploy

@@ -1117,6 +1117,25 @@ recorded again.
 
 ## Monitor
 
+```bash
+rig monitor
+rig monitor --since 24h
+rig monitor --all
+rig monitor --since 2026-10-12T02:00:00Z --until 2026-10-12T04:00:00Z
+rig monitor --project fletcher --json
+```
+
+`rig monitor` shows the Project's CPU and memory: the total over all its
+Targets, then each Target with its Services and Jobs under it. Each row shows
+CPU and memory now, then the median and peak over the window from `--since` to
+`--until`. Each is a duration back from now (`90s`, `15m`, `1h`, `2d`, `1w`) or
+an ISO time with a zone, as `rig logs` takes them; the window is the last hour
+by default. `--all` shows the whole Host instead: its total, Rig itself, and
+each Project. Without `--until`, on a terminal the table is redrawn every
+sample until Ctrl-C, and a duration moves with the clock; with `--until`,
+piped, or with `--json`, it prints once. A window older than
+`monitor.detail_hours` is read from the per-minute history.
+
 `rigd` samples the CPU and memory of every running Service and Job run on every
 Target once a second, and keeps the history under `<RIG_ROOT>/monitor/`.
 

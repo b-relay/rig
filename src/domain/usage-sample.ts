@@ -85,3 +85,8 @@ export function sumSamples(
   }
   return any ? { cpuPercent, memoryBytes } : undefined;
 }
+
+/** Pure: a CPU share as Activity Monitor shows it: one decimal below 10%, whole percents from there. */
+export function formatCpu(percent: number): string {
+  return `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%`;
+}

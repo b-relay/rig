@@ -11,6 +11,10 @@ const UNIT_MS = {
 } as const;
 /** One or more `<count><unit>` parts such as `90s`, `15m`, `1h30m`, `2d` or `1w`. */
 const duration = z.string().regex(/^(\d+[smhdw])+$/);
+/** Pure: whether a `--since` or `--until` value is a duration back from now (`90s`, `1h30m`), not an ISO time. */
+export function isDuration(value: string): boolean {
+  return duration.safeParse(value).success;
+}
 /** An ISO 8601 date and time with seconds and a zone (`Z` or an offset), so the instant never depends on this Mac's zone. */
 const instant = z.iso.datetime({ offset: true });
 
@@ -42,7 +46,7 @@ export function logTimeWindow(
 
 function resolveTime(value: string, flag: string, now: Date): string {
   let at: number | undefined;
-  if (duration.safeParse(value).success) at = now.getTime() - durationMs(value);
+  if (isDuration(value)) at = now.getTime() - durationMs(value);
   else if (instant.safeParse(value).success) at = Date.parse(value);
   // Date only represents ±8.64e15 ms; anything further is not a time Rig can compare.
   if (at === undefined || !Number.isFinite(at) || Math.abs(at) > 8.64e15)

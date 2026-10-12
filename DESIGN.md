@@ -54,6 +54,7 @@ capability interfaces without Effect TS. See the
 - `rig down`
 - `rig restart`
 - `rig logs`
+- `rig monitor`
 - `rig run`
 
 `rigd` is daemon administration only:

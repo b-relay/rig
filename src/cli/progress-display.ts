@@ -1,3 +1,4 @@
+import { liveRegion } from "./live-region";
 import type { ServiceStop } from "../daemon/protocol";
 import type { UserOutput } from "./types";
 import type { WaitStatus } from "./wait-notice";
@@ -32,21 +33,10 @@ export function liveDisplay(
   output: Pick<UserOutput, "error">,
   columns = 80,
 ): ProgressDisplay {
-  let drawn: string[] = [];
+  const region = liveRegion((text) => output.error(text), columns);
+  const draw = region.draw;
   let project: string | undefined;
   let stops: readonly ServiceStop[] = [];
-  const fit = (line: string) =>
-    line.length < columns
-      ? line
-      : `${line.slice(0, Math.max(columns - 2, 1))}…`;
-  const draw = (lines: readonly string[]) => {
-    const next = lines.map(fit);
-    if (next.join("\n") === drawn.join("\n")) return;
-    // Up to the region's first row, then clear to the end of the screen before writing it again.
-    const erase = drawn.length ? `\x1b[${drawn.length}A\r\x1b[J` : "";
-    output.error(`${erase}${next.map((line) => `${line}\n`).join("")}`);
-    drawn = next;
-  };
   return {
     show(status, now) {
       if (status.state === "waiting") return draw([status.notice]);
@@ -66,7 +56,7 @@ export function liveDisplay(
     },
     note(text) {
       output.error(text);
-      drawn = [];
+      region.release();
     },
     stopping: (now) => visibleStopping(stops, now),
   };

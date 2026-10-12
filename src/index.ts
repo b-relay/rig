@@ -53,6 +53,15 @@ export async function main(args: readonly string[]): Promise<number> {
       wait: waitForLogPoll,
       now: () => new Date(),
       liveOutput: process.stderr.isTTY === true,
+      ...(process.stdout.isTTY
+        ? {
+            outputTerminal: () => ({
+              // A terminal that reports no size, or zero, is taken to be the classic 80 by 24.
+              columns: process.stdout.columns || 80,
+              rows: process.stdout.rows || 24,
+            }),
+          }
+        : {}),
       ...(process.stderr.columns
         ? { terminalColumns: process.stderr.columns }
         : {}),

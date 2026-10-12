@@ -1,6 +1,10 @@
 import { RigError, cancelled } from "../domain/errors";
 import { prepareInteractiveRequest } from "./interaction";
-import { readActions, type RuntimeCommand } from "../daemon/protocol";
+import {
+  readActions,
+  type MonitorResult,
+  type RuntimeCommand,
+} from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
@@ -11,6 +15,10 @@ import {
   type ProgressDisplay,
 } from "./progress-display";
 import { formatClock } from "./stop-display";
+import { screenView } from "./live-region";
+import { monitorLines } from "./monitor-output";
+import type { MonitorWindowInput } from "./monitor-command";
+import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
 import { awaitRestore } from "./restore-wait";
 import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
@@ -219,13 +227,22 @@ export async function runRigCli(
     // A restore answers once its run started; rig waits for it to end, so the command says how the restore went.
     if (request.action === "restore")
       result = await restoreOutcome(request, result, operationId, dependencies);
-    dependencies.output.write(
-      json
-        ? `${JSON.stringify(result)}\n`
-        : status
-          ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
-          : renderResult(request.action, result),
-    );
+    const watching =
+      request.action === "monitor" &&
+      options.follow === true &&
+      dependencies.outputTerminal !== undefined;
+    if (watching)
+      await watchMonitor(correlated, result, options.window, dependencies);
+    else
+      dependencies.output.write(
+        json
+          ? `${JSON.stringify(result)}\n`
+          : status
+            ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
+            : request.action === "monitor"
+              ? `${monitorLines(result as MonitorResult, options.window ? { window: options.window } : {}).join("\n")}\n`
+              : renderResult(request.action, result),
+      );
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
       event: "command.completed",
       operationId,
@@ -236,7 +253,8 @@ export async function runRigCli(
     if (evidence.error) dependencies.output.error(`${evidence.error}\n`);
     if (request.action === "doctor" && object(result).ok === false)
       exitCode = 1;
-    if (options.follow) await followLogs(correlated, result, dependencies);
+    if (options.follow && request.action === "logs")
+      await followLogs(correlated, result, dependencies);
   };
   const command = createRigCommand(
     dependencies.cwd,
@@ -324,6 +342,43 @@ async function restoreOutcome(
 function json(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+/** `rig monitor` on a terminal: the table redrawn on the alternate screen after every sample, with the time it was
+ * read, until cancellation; then the last table is left on the main screen. A read that fails ends the watch with that
+ * failure, written below it. */
+async function watchMonitor(
+  request: RuntimeCommand,
+  first: unknown,
+  window: MonitorWindowInput | undefined,
+  dependencies: CliDependencies,
+): Promise<void> {
+  const size = dependencies.outputTerminal!;
+  const view = screenView((text) => dependencies.output.write(text), size);
+  const clock = dependencies.now ?? (() => new Date());
+  let result = first as MonitorResult;
+  try {
+    while (!dependencies.signal?.aborted) {
+      view.draw([
+        ...monitorLines(result, {
+          columns: size().columns,
+          ...(window ? { window } : {}),
+        }),
+        "",
+        `Updated ${clock().toLocaleTimeString()} · Ctrl-C to stop`,
+      ]);
+      await dependencies.wait(result.sampledEvery * 1000, dependencies.signal);
+      if (dependencies.signal?.aborted) return;
+      // A duration is resolved again, so the window moves with the clock; an ISO time stays where it was.
+      result = (await dependencies.client.command(
+        window
+          ? { ...request, window: logTimeWindow(window, clock()) }
+          : request,
+        dependencies.signal,
+      )) as MonitorResult;
+    }
+  } finally {
+    view.close();
+  }
+}
 /** Entries fetched per follow poll: --lines sizes the first page only, so a busy Target is not throttled to it. */
 const FOLLOW_BATCH_LINES = 1000;
 /** Follow consumes opaque daemon cursors; duplicate text is never used as identity.
@@ -355,6 +410,8 @@ function requestsStructuredOutput(args: readonly string[]): boolean {
   const options = end < 0 ? args : args.slice(0, end);
   return (
     options.includes("--json") &&
-    ["status", "up", "down", "restart", "deploy"].includes(args[0] ?? "")
+    ["status", "up", "down", "restart", "deploy", "monitor"].includes(
+      args[0] ?? "",
+    )
   );
 }

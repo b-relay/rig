@@ -41,6 +41,13 @@ export interface ChartLayout {
   /** Each layer's running total, point by point. */
   readonly stacks: readonly (readonly (number | null)[])[];
   readonly flags: readonly PeakFlag[];
+  /** The median line's label: its left edge, baseline and text. Placed first, at the end of the line away from the
+   * peak, so the peak labels keep clear of it. */
+  readonly medianLabel?: {
+    readonly x: number;
+    readonly y: number;
+    readonly text: string;
+  };
   /** `x` of a time, Unix seconds. */
   timeX(at: number): number;
   /** `x` of a point: the middle of the span it covers. */
@@ -72,6 +79,7 @@ export function chartLayout({
   pad,
   floor,
   labelOf,
+  median,
 }: {
   layers: readonly LayoutLayer[];
   from: number;
@@ -90,6 +98,8 @@ export function chartLayout({
     layer: number,
     peak: Peak,
   ) => { readonly name: string; readonly value: string };
+  /** A single layer's median and its label, drawn as a dashed line across the chart. */
+  median?: { readonly value: number; readonly text: string };
 }): ChartLayout {
   const count = layers[0]?.average.length ?? 0;
   const plot = {
@@ -116,6 +126,28 @@ export function chartLayout({
     plot.bottom - (value / top) * (plot.bottom - plot.top);
 
   const boxes: { x0: number; x1: number; y0: number; y1: number }[] = [];
+  const labelBox = (x0: number, baseline: number, text: string) => ({
+    x0,
+    x1: x0 + text.length * LABEL_CHARACTER,
+    y0: baseline - LABEL_HEIGHT + 2,
+    y1: baseline + 2,
+  });
+  // The median's label sits on its line at the end away from the first layer's peak, before any peak label is placed.
+  let medianLabel: ChartLayout["medianLabel"];
+  if (median) {
+    const peak = layers[0]?.peak;
+    const wide = median.text.length * LABEL_CHARACTER;
+    const x =
+      peak && peak.index > count * 0.45
+        ? plot.left + 2
+        : Math.max(plot.left, plot.right - 2 - wide);
+    const baseline = Math.min(
+      Math.max(y(median.value) - 4, LABEL_HEIGHT - 2),
+      height - 2,
+    );
+    medianLabel = { x, y: baseline, text: median.text };
+    boxes.push(labelBox(x, baseline, median.text));
+  }
   const flags = layers
     .map((layer, index) => ({ layer: index, peak: layer.peak }))
     .filter((each): each is { layer: number; peak: Peak } => !!each.peak)
@@ -180,6 +212,7 @@ export function chartLayout({
     plot,
     stacks,
     flags,
+    ...(medianLabel && { medianLabel }),
     timeX,
     pointX: (index) => timeX(from + (index + 0.5) * step),
     indexAt: (x) =>

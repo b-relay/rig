@@ -98,6 +98,9 @@ export function advancesOf(
     const original = base128();
     const transformed =
       tag === "glyf" || tag === "loca" ? flags >> 6 === 0 : flags >> 6 !== 0;
+    // A transformed hmtx stores its advances differently; the fonts read here keep it plain.
+    if (tag === "hmtx" && transformed)
+      throw new Error("transformed hmtx tables are not supported");
     directory.push({ tag, length: transformed ? base128() : original });
   }
   const data = brotliDecompressSync(bytes.subarray(at, at + compressed));

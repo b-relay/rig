@@ -7,6 +7,8 @@ import {
   LABEL_ADVANCE_EM,
   LABEL_FONT_SIZE,
 } from "../web/lib/chart-layout";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Tag } from "../web/components/usage-chart";
 import { advancesOf } from "./support/font-advances";
 import {
   cardsOf,
@@ -371,10 +373,18 @@ test("a peak label's width is known exactly: the dashboard's monospace font adva
   );
   // Project, Target and Component names are ASCII letters, digits, '_' and '-'; values are digits, units and '%'.
   const characters =
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. %…";
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. %…()";
   expect(new Set(advancesOf(font, characters).values())).toEqual(
     new Set([LABEL_ADVANCE_EM]),
   );
+  // And the labels are drawn in that font, at that size.
+  const drawn = renderToStaticMarkup(
+    <svg>
+      <Tag x={0} y={0} anchor="start" text="web 3%" />
+    </svg>,
+  );
+  expect(drawn).toContain("font-mono");
+  expect(drawn).toContain(`text-[${LABEL_FONT_SIZE}px]`);
   // So a long name of the widest letter is cut to fit, by the font's own measure.
   const layout = chartLayout({
     ...box,
@@ -396,6 +406,32 @@ test("a peak label's width is known exactly: the dashboard's monospace font adva
     expect(flag.labelX).toBeGreaterThanOrEqual(0);
     expect(flag.labelX + rendered).toBeLessThanOrEqual(300);
   }
+});
+
+test("the median's label is placed first, and the peak's label keeps clear of it", () => {
+  // A small memory chart: a constant 128 MB from point 100 on, so its median sits just below its peak.
+  const average = Array.from({ length: 240 }, (_, index) =>
+    index < 100 ? null : 128e6,
+  );
+  const layout = chartLayout({
+    width: 168,
+    height: 56,
+    pad: { top: 22, right: 6, bottom: 2, left: 2 },
+    layers: [{ average, peak: { index: 100, value: 128e6 } }],
+    from: 0,
+    step: 15,
+    floor: 64e6,
+    labelOf: () => ({ name: "peak", value: "128 MB" }),
+    median: { value: 128e6, text: "median 128 MB" },
+  });
+  const median = layout.medianLabel!;
+  const flag = layout.flags[0]!;
+  const apart =
+    flag.labelX + flag.labelWidth <= median.x ||
+    median.x + median.text.length * 6 <= flag.labelX ||
+    flag.labelY + 2 <= median.y - 9 ||
+    median.y + 2 <= flag.labelY - 9;
+  expect(apart).toBe(true);
 });
 
 test("points, markers and inspection share one mapping of time to x", () => {

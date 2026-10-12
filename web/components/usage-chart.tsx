@@ -83,8 +83,22 @@ export function UsageChart({
           name: layers.length > 1 ? layers[index]!.label : "peak",
           value: format(peak.value),
         }),
+        ...(median !== undefined &&
+          layers.length === 1 && {
+            median: { value: median, text: `median ${format(median)}` },
+          }),
       }),
-    [layers, report.from, report.step, width, height, axis, floor, format],
+    [
+      layers,
+      report.from,
+      report.step,
+      width,
+      height,
+      axis,
+      floor,
+      format,
+      median,
+    ],
   );
   const { plot, stacks, y, pointX } = layout;
   const top = layout.top;
@@ -235,7 +249,7 @@ export function UsageChart({
               </g>
             );
           })}
-          {median !== undefined && layers.length === 1 ? (
+          {median !== undefined && layout.medianLabel ? (
             <g>
               <line
                 x1={plot.left}
@@ -247,18 +261,10 @@ export function UsageChart({
                 strokeDasharray="5 4"
               />
               <Tag
-                x={
-                  medianSide(layers[0]!.peak, count) === "left"
-                    ? plot.left + 2
-                    : plot.right - 2
-                }
-                y={y(median) - 4}
-                anchor={
-                  medianSide(layers[0]!.peak, count) === "left"
-                    ? "start"
-                    : "end"
-                }
-                text={`median ${format(median)}`}
+                x={layout.medianLabel.x}
+                y={layout.medianLabel.y}
+                anchor="start"
+                text={layout.medianLabel.text}
                 quiet
               />
             </g>
@@ -377,7 +383,7 @@ export function UsageChart({
 }
 
 /** A small label with a halo in the card's colour, so it reads over the lines it sits on. */
-function Tag({
+export function Tag({
   x,
   y,
   anchor,
@@ -407,14 +413,6 @@ function Tag({
       {text}
     </text>
   );
-}
-
-/** The median's label goes on the side away from the peak, so the two never overlap. */
-function medianSide(
-  peak: { index: number } | undefined,
-  count: number,
-): "left" | "right" {
-  return peak && peak.index > count * 0.45 ? "left" : "right";
 }
 
 /** The runs of consecutive points with a value: a chart draws each run as one shape, with gaps between. */

@@ -189,6 +189,7 @@ describe("chart points", () => {
       from: 600,
       to: 900,
       step: 120,
+      window: { since: 600, until: 900 },
       spans: [
         minute(540, 1),
         minute(600, 100),

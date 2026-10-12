@@ -141,7 +141,20 @@ export async function usageReport(input: {
           ]
         : [...stored];
       const now = fresh.get(key);
-      const { summary, points } = chartOf({ from, to, step, spans });
+      const { summary, points } = chartOf({
+        from,
+        to,
+        step,
+        // `until` is exclusive; a window ending now counts the second being sampled.
+        window: {
+          since: input.window.since,
+          until:
+            input.window.until !== undefined && input.window.until <= nowSecond
+              ? input.window.until
+              : nowSecond + 1,
+        },
+        spans,
+      });
       return { series, ...(now && { now }), summary, points };
     })
     .sort((a, b) => order(a.series).localeCompare(order(b.series)));

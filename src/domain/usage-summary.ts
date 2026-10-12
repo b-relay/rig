@@ -68,27 +68,29 @@ export function stepFor(rangeSeconds: number): number {
 }
 
 /** Pure: a chart from `from` up to `to` (Unix seconds, `from` a multiple of `step`): one point per `step` from the
- * recorded spans that start in it, and the summary of the whole range. A step with no spans is a point with neither
- * measure, which a chart draws as a gap; spans outside the range are ignored. Each span is merged once into its step,
- * and the summary merges the steps. */
+ * recorded spans that start in it, and the summary of the spans that start inside `window` (`since` up to `until`),
+ * which whole steps may overhang. A step with no spans is a point with neither measure, which a chart draws as a gap;
+ * spans outside the range are ignored. */
 export function chartOf(input: {
   readonly from: number;
   readonly to: number;
   readonly step: number;
+  readonly window: { readonly since: number; readonly until: number };
   readonly spans: Iterable<RecordedSpan>;
 }): { readonly summary: UsageSummary; readonly points: UsagePoint[] } {
   const count = Math.max(0, Math.ceil((input.to - input.from) / input.step));
   const groups: UsageHistograms[][] = Array.from({ length: count }, () => []);
+  const summarized: UsageHistograms[] = [];
   for (const span of input.spans) {
     const index = Math.floor((span.at - input.from) / input.step);
     if (span.at < input.to && index >= 0 && index < count)
       groups[index]!.push(span.histograms);
+    if (span.at >= input.window.since && span.at < input.window.until)
+      summarized.push(span.histograms);
   }
   const merged = groups.map(mergedHistograms);
   return {
-    summary: summaryOf(
-      merged.filter((each): each is UsageHistograms => each !== undefined),
-    ),
+    summary: summaryOf(summarized),
     points: merged.map((histograms, index) => ({
       at: input.from + index * input.step,
       ...(histograms ? summaryOf([histograms]) : {}),

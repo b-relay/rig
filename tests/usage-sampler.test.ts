@@ -607,6 +607,36 @@ describe("usage report windows", () => {
     expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
   });
 
+  test("the summary counts only the seconds inside the window, though the chart's first and last steps reach past it", async () => {
+    const spikeAt = (second: number) =>
+      full(100).map((slot, index) =>
+        index === second ? { cpu: 990, memory: 100 } : slot,
+      );
+    // A spike a second before `since` and one five seconds after `until`, each in a step the window shares.
+    await history.write([
+      { series: web, minute, slots: spikeAt(0) },
+      { series: web, minute: minute + 60, slots: spikeAt(5) },
+    ]);
+    const since = START / 1000 + 1;
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since, until: since + 3600 },
+      detailSince: since - 3600,
+      now: START + 7_200_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    expect(report.from).toBeLessThan(since);
+    expect(report.to).toBeGreaterThan(since + 3605);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+    expect(web_.points[0]!.cpu!.high).toBeCloseTo(99);
+    expect(web_.points.at(-1)!.cpu!.high).toBeCloseTo(99);
+  });
+
   test("a short window older than the 1-second detail reads the per-minute history instead of coming back empty", async () => {
     await history.write([{ series: web, minute, slots: full(250) }]);
     await history.prune({

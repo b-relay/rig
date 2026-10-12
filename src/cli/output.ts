@@ -493,7 +493,7 @@ export function readNotice(action: string, value: unknown): string | undefined {
   if (action === "activity" && typeof report.total === "number") {
     const shown = rows(report.operations).length;
     return report.total > shown
-      ? `showing ${shown} of ${report.total} records; --lines to see more`
+      ? `showing ${shown} of ${report.total} records; --lines or --until to see more`
       : undefined;
   }
   if (action === "logs" && report.more === true) {

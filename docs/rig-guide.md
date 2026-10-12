@@ -1397,10 +1397,10 @@ most recent 1000 Operations in its state; older ones remain in the diagnostic
 log until its retention expires. `rig activity` lists the Project of the
 directory it runs in (`--project` names another, and `--all` lists every
 Project's with rigd's own administration), newest last, 20 records unless
-`--lines` asks for up to 1000. `--target`, `--action`, `--outcome`, `--since`
+`--lines` asks for up to 10000. `--target`, `--action`, `--outcome`, `--since`
 and `--until` narrow it, and rigd filters before it answers. When records are
-left out, stderr says how many (`showing 20 of 340 records; --lines to see
-more`). `--json` prints one record per line (JSON Lines). A request rigd refuses before an Operation
+left out, stderr says how many (`showing 20 of 340 records; --lines or --until
+to see more`). `--json` prints one record per line (JSON Lines). A request rigd refuses before an Operation
 begins (an unregistered Project, a missing Target, a deploy aimed at working, an
 init without a directory) is a usage mistake and is not listed; a refusal after
 the attempt began (a failed preflight, an unresolved transition) is listed as

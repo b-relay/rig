@@ -16,8 +16,9 @@ interface ActivityOptions {
   lines: number;
   json?: boolean;
 }
-/** The records rigd keeps, so the most one read can list. */
-const MAX_LINES = 1000;
+/** The most records one read lists, as the control plane allows. A Project keeps at most 1000; the Host adds rigd's own
+ * administration, kept apart, so it can hold more. */
+const MAX_LINES = 10000;
 const HELP = `
 Without --project or --all, the Project of the directory it runs in. Times are
 a duration back from now, such as 90s, 15m, 1h, 2d or 1w (parts combine, as in
@@ -60,6 +61,7 @@ export function addActivityCommand(
     .argument(
       "[operation]",
       "Show one Operation by the id a failed command printed",
+      nonEmpty,
     )
     .option("--project <name>", "Registered Project identity")
     .option("--all", "Every Project's records and rigd's own")
@@ -89,7 +91,7 @@ export function addActivityCommand(
     )
     .option(
       "--lines <count>",
-      "Number of newest records, counted after filtering",
+      "Number of newest records, counted after filtering (at most 10000)",
       positiveInteger,
       20,
     )
@@ -105,8 +107,8 @@ export function addActivityCommand(
       if (options.lines > MAX_LINES)
         throw new RigError(
           "USAGE",
-          `Request at most ${MAX_LINES} records; rigd keeps no more.`,
-          "Reduce --lines.",
+          `Request at most ${MAX_LINES} records.`,
+          "Reduce --lines, and use --since and --until to read an older stretch.",
         );
       // The lengths the control plane takes, checked here so a long value is named rather than read as version skew.
       if ((options.target?.length ?? 0) > 63)

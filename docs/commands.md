@@ -34,7 +34,7 @@ rig
 │    --action <action>              only this action, such as deploy, crash or job
 │    --outcome <outcome>            only this outcome, such as failed
 │    --since <time>  --until <time> 1h, 15m, 2d … back from now, or an ISO time with a zone
-│    --lines <count>                default 20, at most 1000, counted after filtering
+│    --lines <count>                default 20, at most 10000, counted after filtering
 │    --json                         one record per line (JSON Lines)
 ├─ monitor                          CPU and memory of one Project, redrawn every sample on a terminal
 │    --project <name>
@@ -165,7 +165,7 @@ status` takes no Target.
   and a line saying what it did.
 - `activity` and `logs` print a bounded number of records (20 and 50 by
   default) and say on stderr when they left matching ones out, such as
-  `showing 20 of 340 records; --lines to see more`, so stdout redirected to a
+  `showing 20 of 340 records; --lines or --until to see more`, so stdout redirected to a
   file holds only the records. `logs` shortens a line past 2,000 characters,
   ending it `… (61,440 more characters)` (in JSON, the entry's `omitted`);
   `--full` prints it whole.

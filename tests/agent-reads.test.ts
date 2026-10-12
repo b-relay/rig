@@ -123,12 +123,20 @@ test("an activity read always carries its filter, so a rigd from before filters 
   expect(commandSchema.safeParse(f.requests[0]).success).toBe(true);
 });
 
+test("a Host read may ask for more records than one Project keeps, since rigd's administration is kept apart", async () => {
+  const f = cli(() => ({ operations: [] }));
+  expect(await f.run(["activity", "--all", "--lines", "10000"])).toBe(0);
+  expect(f.requests[0]).toMatchObject({ host: true, lines: 10000 });
+});
+
 test("rig activity refuses what cannot be read together, and more records than rigd keeps, before asking rigd", async () => {
   const f = cli(() => ({ operations: [] }));
   for (const args of [
     ["activity", "--all", "--project", "pantry"],
     ["activity", "3f2a", "--outcome", "failed"],
-    ["activity", "--lines", "1001"],
+    ["activity", "--lines", "10001"],
+    // An empty id is a usage mistake, not an id this rigd cannot read.
+    ["activity", ""],
     ["activity", "--outcome", "sideways"],
   ])
     expect(await f.run(args)).toBe(1);
@@ -146,7 +154,9 @@ test("rig activity --json prints one record per line, and says on stderr how man
     JSON.stringify(record("b")),
     "",
   ]);
-  expect(f.out.stderr).toBe("showing 2 of 340 records; --lines to see more\n");
+  expect(f.out.stderr).toBe(
+    "showing 2 of 340 records; --lines or --until to see more\n",
+  );
 });
 
 test("nothing is said on stderr when every matching record is shown", async () => {

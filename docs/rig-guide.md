@@ -2626,8 +2626,9 @@ Project's repository, then deploy again. Rig reads that history in the
 Project's registered repository, at the deployed Commit. On such a Host,
 upgrade Rig with the manual steps of the rig:rigd skill's upgrade reference. A
 recorded `rig` Project's own deploys are no takeover and work as before; the
-next one records its repository. Delete a Tool you no longer want; never
-delete `<RIG_ROOT>/bin/rigd`.
+next one records its repository. Delete a Tool you no longer want, except
+`<RIG_ROOT>/bin/rig` and `<RIG_ROOT>/bin/rigd`: they are Rig itself, and
+rigd's system job runs `bin/rigd`.
 Until a Target takes one over, `rig doctor` names it (`tool-owners`, passing).
 A Tool that was edited after Rig published it is never replaced or removed:
 publishing there fails as `ARTIFACT_CHANGED` until you move or delete the

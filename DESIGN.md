@@ -207,7 +207,7 @@ installer, command runner) all implement the contracts in
 - version-bump deploys (`rig bump`)
 - `--state-root` and generic `--config` path overrides; tests use `RIG_ROOT`
 - provider-profile flags and stub provider choices
-- a global `--json` flag; `--json` is per command (status, lifecycle, deploy)
+- a global `--json` flag; every read takes `--json`, and no action does
 - hooks and plugins
 
 Project deletion that removes data is out of scope. `rig forget` only drops

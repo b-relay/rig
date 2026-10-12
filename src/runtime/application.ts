@@ -724,7 +724,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           filter: { kind: "host" },
           window: usageWindow(command, deps.now()),
         });
-      if (command.action === "activity" && !command.project) {
+      // The whole Host when asked for, or when nothing names a Project (the dashboard's Host pages); rig sends the directory
+      // it runs in, so it reads that Project's unless --all.
+      if (
+        command.action === "activity" &&
+        (command.host === true || (!command.project && !command.repoPath))
+      ) {
         const [state, admin] = await Promise.all([
           deps.store.read(),
           deps.readAdminActivity(),
@@ -818,7 +823,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         ["config", "deploy", "deployment-context", "rename"].includes(
           command.action,
         ),
-      );
+      ).catch((error: unknown) => {
+        throw command.action === "activity" && !command.project
+          ? activityScopeError(error)
+          : error;
+      });
       project = selection.project;
       const state = await deps.store.read();
       let targets = state.targets.filter((t) => t.projectId === project!.id);
@@ -1058,15 +1067,22 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             command.logFilter,
             (await deps.store.read()).jobs,
           );
+        const lines = command.lines ?? 100;
+        // A first page reads one entry more than it keeps, so it can say older ones match too; the cursor is the
+        // newest position either way.
+        const asked = command.after === undefined ? lines + 1 : lines;
+        const page = await deps.files.logs(
+          target,
+          command.after,
+          asked,
+          command.logFilter,
+        );
+        const more = page.entries.length > lines;
         return {
           project: project.name,
           target: target.name,
-          ...(await deps.files.logs(
-            target,
-            command.after,
-            command.lines ?? 100,
-            command.logFilter,
-          )),
+          ...page,
+          ...(more ? { entries: page.entries.slice(-lines), more } : {}),
           ...(command.logFilter ? { filtered: true } : {}),
         } satisfies LogsResult;
       }
@@ -2873,11 +2889,12 @@ async function destroyReplacedPreviews(
   }
   return { retired, warnings };
 }
-/** The most recent records, or every record the requested Operation id (or prefix) names. */
+/** Every record the requested Operation id (or prefix) names; otherwise the newest `lines` the filter keeps, with how
+ * many it kept in all. */
 function selectActivity(
   records: readonly OperationRecord[],
-  command: Pick<RuntimeCommand, "operation" | "lines">,
-): { operations: OperationRecord[]; operation?: string } {
+  command: Pick<RuntimeCommand, "operation" | "lines" | "activityFilter">,
+): { operations: OperationRecord[]; operation?: string; total?: number } {
   if (command.operation)
     return {
       operations: records.filter((record) =>
@@ -2885,9 +2902,38 @@ function selectActivity(
       ),
       operation: command.operation,
     } satisfies ActivityResult;
+  const filter = command.activityFilter ?? {};
+  const since =
+    filter.since === undefined ? undefined : Date.parse(filter.since);
+  const until =
+    filter.until === undefined ? undefined : Date.parse(filter.until);
+  const kept = records.filter((record) => {
+    const at = Date.parse(record.occurredAt);
+    return (
+      (filter.target === undefined || record.target === filter.target) &&
+      (filter.action === undefined || record.action === filter.action) &&
+      (filter.outcome === undefined || record.outcome === filter.outcome) &&
+      (since === undefined || at >= since) &&
+      (until === undefined || at <= until)
+    );
+  });
   return {
-    operations: records.slice(-(command.lines ?? 100)),
+    operations: kept.slice(-(command.lines ?? 100)),
+    total: kept.length,
   } satisfies ActivityResult;
+}
+/** An activity read from a directory that names no registered Project: the reason, with how to read another Project's or
+ * every Project's instead. */
+function activityScopeError(error: unknown): unknown {
+  const noProject =
+    (error instanceof ConfigError && error.code === "missing_config") ||
+    (error instanceof RigError && error.code === "PROJECT_MISSING");
+  if (!noProject) return error;
+  return new RigError(
+    "PROJECT_REQUIRED",
+    error.message,
+    "Run rig activity inside a Project directory, pass --project <name>, or pass --all for every Project.",
+  );
 }
 
 /** A registered directory that is gone entirely, as opposed to one whose config is unreadable. */

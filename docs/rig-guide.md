@@ -1025,6 +1025,14 @@ interleaved, as before:
   that pass `--service` and `--stream`. `--until` cannot be combined with
   `--follow`.
 
+A line longer than 2,000 characters is shortened, ending
+`… (61,440 more characters)`; `--full` prints every line whole. `--json`
+prints one entry per line (JSON Lines: `timestamp`, `component`, `stream`,
+`line`, and `omitted` on a shortened one), so
+`rig logs --since 1d --json --full > logs.jsonl` gives a program every line.
+When older lines match than `--lines` let through, stderr says so, and stdout
+holds only the lines.
+
 A filtered read walks back through every retained file from the newest line
 and stops once it has `--lines` matches or has passed `--since`, so it never
 loads whole files; `--since` reaches back as far as the retained files go.
@@ -1385,9 +1393,14 @@ It includes daemon administration and terminal crash evidence; two `rigd
 install` runs that overlap both record their outcome, because an
 administration waits (about five seconds) for a live writer to release the
 activity journal before warning that its record was lost. rigd keeps the
-most recent 1000 Operations in its state, and `rig activity` lists the latest
-100 of them; older ones remain in the diagnostic log until its retention
-expires. A request rigd refuses before an Operation
+most recent 1000 Operations in its state; older ones remain in the diagnostic
+log until its retention expires. `rig activity` lists the Project of the
+directory it runs in (`--project` names another, and `--all` lists every
+Project's with rigd's own administration), newest last, 20 records unless
+`--lines` asks for up to 10000. `--target`, `--action`, `--outcome`, `--since`
+and `--until` narrow it, and rigd filters before it answers. When records are
+left out, stderr says how many (`showing 20 of 340 records; --lines or --until
+to see more`). `--json` prints one record per line (JSON Lines). A request rigd refuses before an Operation
 begins (an unregistered Project, a missing Target, a deploy aimed at working, an
 init without a directory) is a usage mistake and is not listed; a refusal after
 the attempt began (a failed preflight, an unresolved transition) is listed as
@@ -1395,9 +1408,9 @@ failed. Each line ends with the record's Operation id and is followed by its
 message: the error code for a failed Operation, or `web exited with code 137.`
 for a crash. A record about one Service or Job (a crash, an automatic or
 health restart, a job run, skip or restore) names it as `component`
-(`{ "kind": "service", "name": "web" }`) in rigd's `activity` reply, which the
-dashboard reads. A failure that prints `Operation: <id>` can be looked up with
-`rig activity <id>` (a unique prefix of the id also works), which shows only
+(`{ "kind": "service", "name": "web" }`) in `rig activity --json`. A failure that prints `Operation: <id>` can be looked up with
+`rig activity <id>` (a unique prefix of the id also works, and it is looked up
+on the whole Host unless `--project` narrows it), which shows only
 that record or reports that none was recorded, as happens when the request
 never reached rigd. A failure the user can correct (a bad argument, a config
 problem, a missing branch or directory, a reserved port, a Component that

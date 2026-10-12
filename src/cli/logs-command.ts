@@ -4,6 +4,7 @@ import { RigError } from "../domain/errors";
 import type { ExecuteCommand } from "./commands";
 import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
+import { LONG_LINE_CHARS } from "./output";
 
 interface LogsOptions {
   project?: string;
@@ -14,6 +15,8 @@ interface LogsOptions {
   stream?: "stdout" | "stderr";
   since?: string;
   until?: string;
+  json?: boolean;
+  full?: boolean;
 }
 /** The most --service names one request carries, as the control plane allows. */
 const MAX_SERVICES = 64;
@@ -27,6 +30,9 @@ Examples:
   rig logs --service scheduler --since 1h
   rig logs stable --stream stderr --follow
   rig logs stable --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
+  rig logs --since 1d --json --full > logs.jsonl
+
+When older entries match than --lines lets through, stderr says so.
 `;
 
 /** `rig logs`: the grammar checks every flag, resolves durations against `now`, and sends one request; rigd checks the
@@ -96,6 +102,14 @@ export function addLogsCommand(
       "--until <time>",
       "Only lines recorded at or before this time, such as 1h or an ISO time",
     )
+    .option(
+      "--full",
+      `Print every line whole; without it a line longer than ${LONG_LINE_CHARS} characters is shortened`,
+    )
+    .option(
+      "--json",
+      "Print each entry as one line of JSON, with how many characters a shortened line left out",
+    )
     .addHelpText("after", TIME_HELP)
     .action(
       async (
@@ -116,7 +130,11 @@ export function addLogsCommand(
             lines: options.lines,
             ...(logFilter ? { logFilter } : {}),
           },
-          { follow: options.follow },
+          {
+            follow: options.follow,
+            json: options.json,
+            full: options.full,
+          },
         );
       },
     );

@@ -25,7 +25,8 @@ test("a complete Project runs a web Service with SQLite under ${rig.data} and an
     stdout: string;
     stderr: string;
   }) => {
-    expect(result.stderr).toBe("");
+    // A deploy names what it deploys on stderr before it acts; nothing else may be there.
+    expect(result.stderr.replace(/^Deploying .*\n/, "")).toBe("");
     expect(result.code).toBe(0);
     return result.stdout;
   };
@@ -128,9 +129,9 @@ tools:
     await f.git(["branch", "feature/full"]);
     success(await f.rigd(["install"]));
     success(await f.rig(["init"]));
-    expect(
-      JSON.parse(success(await f.rig(["up", "working", "--json"]))),
-    ).toMatchObject({ outcome: "started" });
+    expect(success(await f.rig(["up", "working"]))).toContain(
+      "demo working started",
+    );
     const local = await app("working", "local-preserved");
     expect(local).toMatchObject({
       directory: f.canonicalRepo,
@@ -139,11 +140,9 @@ tools:
     });
     await invoke("bundle-tool-dev");
 
-    expect(
-      JSON.parse(
-        success(await f.rig(["deploy", "stable", "--no-up", "--json"])),
-      ),
-    ).toMatchObject({ outcome: "deployed", commit, branch: "main" });
+    expect(success(await f.rig(["deploy", "stable", "--no-up"]))).toContain(
+      `demo stable deployed main@${commit.slice(0, 7)}`,
+    );
     expect(await target("stable")).toMatchObject({
       state: "stopped",
       commit,
@@ -161,29 +160,21 @@ tools:
     const live = await app("stable", "live-preserved");
     expect(live.directory).not.toBe(f.canonicalRepo);
     await invoke("bundle-tool");
-    expect(
-      JSON.parse(success(await f.rig(["deploy", "stable", "--json"]))),
-    ).toMatchObject({ outcome: "unchanged", commit });
+    expect(success(await f.rig(["deploy", "stable"]))).toContain(
+      "demo stable unchanged",
+    );
 
     expect(
-      JSON.parse(
-        success(
-          await f.rig([
-            "deploy",
-            "preview",
-            "feature/full",
-            "--deployment",
-            "battle",
-            "--json",
-          ]),
-        ),
+      success(
+        await f.rig([
+          "deploy",
+          "preview",
+          "feature/full",
+          "--deployment",
+          "battle",
+        ]),
       ),
-    ).toMatchObject({
-      outcome: "deployed",
-      target: "battle",
-      commit,
-      branch: "feature/full",
-    });
+    ).toContain(`demo battle deployed feature/full@${commit.slice(0, 7)}`);
     const preview = await app("battle", "preview-preserved");
     await invoke("bundle-tool-battle");
     expect(
@@ -210,19 +201,16 @@ tools:
       ).toMatchObject({ state: "installed" });
     }
     expect(
-      JSON.parse(
-        success(
-          await f.rig([
-            "deploy",
-            "preview",
-            "feature/full",
-            "--deployment",
-            "battle",
-            "--json",
-          ]),
-        ),
+      success(
+        await f.rig([
+          "deploy",
+          "preview",
+          "feature/full",
+          "--deployment",
+          "battle",
+        ]),
       ),
-    ).toMatchObject({ outcome: "unchanged" });
+    ).toContain("demo battle unchanged");
     for (const args of [
       ["working"],
       ["stable"],

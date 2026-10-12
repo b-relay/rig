@@ -41,7 +41,7 @@ test("bare help exits successfully without contacting the daemon", async () => {
   expect(calls).toBe(0);
 });
 
-test("status and scoped structured lifecycle output use one correlated daemon request", async () => {
+test("a lifecycle command sends one correlated daemon request and prints its outcome; it takes no --json", async () => {
   const requests: unknown[] = [];
   let text = "";
   const dependencies = {
@@ -78,11 +78,17 @@ test("status and scoped structured lifecycle output use one correlated daemon re
     wait: async () => {},
     newOperationId: () => "op-42",
   };
+  // An action answers with its exit and a line; --json is for reads.
   expect(
     await runRigCli(
       ["up", "stable", "--project", "pantry", "--json"],
       dependencies,
     ),
+  ).toBe(1);
+  expect(requests).toEqual([]);
+  text = "";
+  expect(
+    await runRigCli(["up", "stable", "--project", "pantry"], dependencies),
   ).toBe(0);
   expect(requests).toEqual([
     {
@@ -93,17 +99,6 @@ test("status and scoped structured lifecycle output use one correlated daemon re
       operationId: "op-42",
     },
   ]);
-  expect(JSON.parse(text)).toEqual({
-    project: "pantry",
-    target: "stable",
-    action: "up",
-    outcome: "unchanged",
-    operationId: "op-42",
-  });
-  text = "";
-  expect(
-    await runRigCli(["up", "stable", "--project", "pantry"], dependencies),
-  ).toBe(0);
   expect(text).toBe("pantry stable unchanged\n");
 });
 
@@ -513,7 +508,7 @@ test("every command supports both help flags without side effects; removed globa
     ["--log-level", "debug"],
     ["status", "--state-root", "/tmp/forbidden"],
     ["config", "read"],
-    ["list", "--json"],
+    ["up", "--json"],
   ])
     expect(await runRigCli(args, dependencies)).toBe(1);
   expect(calls).toBe(0);
@@ -731,12 +726,18 @@ test("scoped JSON also renders usage failures before a daemon request is created
     wait: async () => {},
     newOperationId: () => "unused",
   };
-  expect(await runRigCli(["up", "preview", "--json"], dependencies)).toBe(1);
+  expect(
+    await runRigCli(
+      ["activity", "--all", "--project", "x", "--json"],
+      dependencies,
+    ),
+  ).toBe(1);
   expect(JSON.parse(text)).toMatchObject({ error: { code: "USAGE" } });
   expect(errors).toBe("");
   expect(calls).toBe(0);
+  // An action takes no --json, so its refusal is text.
   text = "";
-  expect(await runRigCli(["config", "--json"], dependencies)).toBe(1);
+  expect(await runRigCli(["up", "--json"], dependencies)).toBe(1);
   expect(text).toBe("");
   expect(errors).toContain("unknown option");
 });
@@ -1078,7 +1079,8 @@ test.each([
     expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
     expect(text).toBe("Something you can fix.\nFix it this way.\n");
     text = "";
-    expect(await runRigCli(["up", "stable", "--json"], dependencies)).toBe(1);
+    // A read with --json reports the same failure as JSON.
+    expect(await runRigCli(["list", "--json"], dependencies)).toBe(1);
     expect(JSON.parse(text)).toEqual({
       error: {
         code,

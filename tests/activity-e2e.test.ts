@@ -29,7 +29,8 @@ targets:
     let activity = "";
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
-      activity = (await f.rig(["activity"])).stdout;
+      // rigd's own administration is the Host's, so --all lists it beside the Project's records.
+      activity = (await f.rig(["activity", "--all"])).stdout;
       if (/crash\s+failed/.test(activity)) break;
       await Bun.sleep(150);
     }

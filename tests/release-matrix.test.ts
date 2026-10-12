@@ -68,8 +68,25 @@ const text = async (f: Fixture, args: string[]) => {
   expect(result.code).toBe(0);
   return result.stdout;
 };
-const ok = async (f: Fixture, args: string[]) =>
-  JSON.parse(await text(f, [...args, "--json"]));
+/** A read's JSON report; or an action's result line, `<project> <target> <outcome> [<branch>@<commit>]`, as its parts.
+ * An action's stderr may name what it does (`Deploying demo …`), so only its exit is checked. */
+const ok = async (f: Fixture, args: string[]) => {
+  if (args[0] === "status")
+    return JSON.parse(await text(f, [...args, "--json"]));
+  const result = await f.rig(args);
+  expect(result.code).toBe(0);
+  const line = result.stdout
+    .split("\n")
+    .find((each) => each !== "" && !/^\S+ \S+ retired/.test(each))!;
+  const [, project, target, outcome, branch, commit] =
+    /^(\S+) (\S+) (\S+)(?: (\S+)@([0-9a-f]{7}))?/.exec(line)!;
+  return {
+    project,
+    target,
+    outcome,
+    ...(branch ? { branch, commit } : {}),
+  } as Record<string, string>;
+};
 const refused = async (f: Fixture, args: string[]) => {
   const result = await f.rig(args);
   expect(result.code).toBe(1);
@@ -114,7 +131,7 @@ test("one Service with every Target on: config, Doctor, no-up deploy, up, restar
     expect(await ok(f, ["deploy", "stable", "--no-up"])).toMatchObject({
       outcome: "deployed",
       target: "stable",
-      commit,
+      commit: commit.slice(0, 7),
     });
     expect(
       (await targets(f)).find((entry) => entry.name === "stable"),
@@ -192,7 +209,7 @@ test("one Service with every Target on: config, Doctor, no-up deploy, up, restar
     );
     expect(
       await ok(f, ["down", "preview", "feature/x", "--destroy"]),
-    ).toMatchObject({ action: "destroy" });
+    ).toMatchObject({ outcome: "stopped" });
     await expect(readdir(preview.data)).rejects.toThrow();
     expect((await targets(f)).map((entry) => entry.name).sort()).toEqual([
       "stable",
@@ -247,7 +264,7 @@ test("a Tool-only Project: the stable Target publishes the plain command, the wo
       );
     expect(
       await ok(f, ["down", "preview", "feature/x", "--destroy"]),
-    ).toMatchObject({ action: "destroy" });
+    ).toMatchObject({ outcome: "stopped" });
     expect((await readdir(join(f.root, "bin"))).sort()).toEqual([
       "hello",
       "hello-dev",

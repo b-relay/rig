@@ -3912,7 +3912,8 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
     cursor: "0",
     filtered: true,
   });
-  expect(reads[0]!.slice(1)).toEqual([undefined, 20, logFilter]);
+  // A first page reads one entry more than it keeps, to tell whether older ones match.
+  expect(reads[0]!.slice(1)).toEqual([undefined, 21, logFilter]);
   expect(
     await runtime.command({
       action: "logs",
@@ -3920,7 +3921,7 @@ test("a logs filter reaches the reader and marks the reply filtered; an unknown 
       target: "working",
     }),
   ).toEqual({ project: "demo", target: "working", entries: [], cursor: "0" });
-  expect(reads[1]!.slice(1)).toEqual([undefined, 100, undefined]);
+  expect(reads[1]!.slice(1)).toEqual([undefined, 101, undefined]);
   await expect(
     runtime.command({
       action: "logs",
@@ -4863,4 +4864,144 @@ test("every deploy is recorded with its source, the Commit it replaced, its outc
       .filter((operation) => operation.action === "deploy")
       .map((operation) => operation.id),
   );
+});
+
+test("an Activity read is this Project's unless it asks for the Host, keeps the newest the filter keeps, and counts them", async () => {
+  const { runtime, state, deps } = fixture();
+  deps.readAdminActivity = async () => [
+    {
+      id: "admin",
+      action: "daemon-install",
+      outcome: "installed",
+      occurredAt: "2026-10-12T09:30:00.000Z",
+    },
+  ];
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const projectId = state.projects[0]!.id;
+  const entry = (
+    id: string,
+    hour: number,
+    target: string,
+    action: string,
+    outcome: "deployed" | "failed" | "started",
+  ) => ({
+    id,
+    projectId,
+    project: "demo",
+    target,
+    action,
+    outcome,
+    occurredAt: `2026-10-12T${String(hour).padStart(2, "0")}:00:00.000Z`,
+  });
+  state.activity = [
+    entry("d1", 8, "stable", "deploy", "deployed"),
+    entry("d2", 9, "stable", "deploy", "failed"),
+    entry("u1", 10, "working", "up", "started"),
+    entry("d3", 11, "stable", "deploy", "deployed"),
+    {
+      ...entry("other", 11, "stable", "deploy", "deployed"),
+      projectId: "p2",
+      project: "other",
+    },
+  ];
+  const ids = (reply: unknown) =>
+    (reply as { operations: { id: string }[] }).operations.map(
+      (each) => each.id,
+    );
+  // From the Project's directory: its records only, newest last, with how many matched.
+  const own = await runtime.command({
+    action: "activity",
+    repoPath: "/tmp/developer",
+    lines: 2,
+  });
+  expect(ids(own)).toEqual(["u1", "d3"]);
+  expect(own).toMatchObject({ total: 4 });
+  // The Host: every Project's and rigd's own administration.
+  expect(
+    ids(
+      await runtime.command({
+        action: "activity",
+        repoPath: "/tmp/developer",
+        host: true,
+      }),
+    ),
+  ).toEqual(["d1", "d2", "admin", "u1", "d3", "other"]);
+  const filtered = await runtime.command({
+    action: "activity",
+    project: "demo",
+    activityFilter: {
+      target: "stable",
+      action: "deploy",
+      since: "2026-10-12T09:00:00.000Z",
+      until: "2026-10-12T11:00:00.000Z",
+    },
+  });
+  expect(ids(filtered)).toEqual(["d2", "d3"]);
+  expect(filtered).toMatchObject({ total: 2 });
+  expect(
+    ids(
+      await runtime.command({
+        action: "activity",
+        project: "demo",
+        activityFilter: { outcome: "failed" },
+      }),
+    ),
+  ).toEqual(["d2"]);
+  // A directory with no registered Project says how to read one by name, or every Project.
+  deps.documents.discover = async (path) => {
+    throw new ConfigError(`${path} has no rig.yaml.`, "missing_config", {
+      path,
+    });
+  };
+  await expect(
+    runtime.command({ action: "activity", repoPath: "/tmp/elsewhere" }),
+  ).rejects.toMatchObject({
+    code: "PROJECT_REQUIRED",
+    message: "/tmp/elsewhere has no rig.yaml.",
+    hint: "Run rig activity inside a Project directory, pass --project <name>, or pass --all for every Project.",
+  });
+});
+
+test("a first logs page says when older entries match than it kept, even at 10000 entries; a follow page never looks further", async () => {
+  const { runtime, deps } = fixture();
+  const reads: unknown[][] = [];
+  const entry = (n: number) => ({
+    timestamp: `2026-10-12T11:00:0${n}.000Z`,
+    component: "web",
+    stream: "stdout" as const,
+    line: `line ${n}`,
+  });
+  deps.files.logs = async (...args: unknown[]) => {
+    reads.push(args);
+    const asked = args[2] as number;
+    return {
+      entries: [1, 2, 3, 4].slice(-asked).map(entry),
+      cursor: "end",
+    };
+  };
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  const logs = (extra: Record<string, unknown>) =>
+    runtime.command({
+      action: "logs",
+      project: "demo",
+      target: "working",
+      ...extra,
+    });
+  expect(await logs({ lines: 2 })).toEqual({
+    project: "demo",
+    target: "working",
+    entries: [entry(3), entry(4)],
+    cursor: "end",
+    more: true,
+  });
+  expect(await logs({ lines: 4 })).toEqual({
+    project: "demo",
+    target: "working",
+    entries: [1, 2, 3, 4].map(entry),
+    cursor: "end",
+  });
+  await logs({ lines: 2, after: "c" });
+  await logs({ lines: 10000 });
+  expect(reads.map((args) => args[2])).toEqual([3, 5, 2, 10001]);
 });

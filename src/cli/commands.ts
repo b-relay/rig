@@ -8,12 +8,14 @@ import {
   type RuntimeCommand,
 } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { reported } from "./failure";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";
 import { addLogsCommand } from "./logs-command";
+import { addActivityCommand } from "./activity-command";
 import { addDnsCommands, type DnsCommandDependencies } from "./dns-command";
 
 export type ExecuteCommand = (
@@ -22,6 +24,8 @@ export type ExecuteCommand = (
    * was given as typed, which a watch resolves again at every refresh so a duration moves with the clock. */
   options?: {
     json?: boolean;
+    /** rig logs: print long lines whole instead of shortened. */
+    full?: boolean;
     follow?: boolean;
     yes?: boolean;
     window?: MonitorWindowInput;
@@ -49,51 +53,34 @@ export function createRigCommand(
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
   );
-  for (const action of [
-    "list",
-    "status",
-    "doctor",
-    "config",
-    "activity",
-  ] as const) {
+  for (const action of ["list", "status", "doctor", "config"] as const) {
     const child = command.command(action).description(
       {
         list: "List registered Projects.",
         status: "Observe all Targets for one Project.",
         doctor: "Check Host and optional Project health.",
         config: "Inspect validated Project configuration.",
-        activity: "Read recent Rig activity.",
       }[action],
     );
-    if (!["list", "activity"].includes(action))
+    if (action !== "list")
       child.option("--project <name>", "Registered Project identity");
-    if (action === "status")
-      child.option("--json", "Render the observed report as JSON");
-    if (action === "activity")
-      child
-        .argument(
-          "[operation]",
-          "Show one Operation by the id a failed command printed",
-        )
-        .action(async (operation: string | undefined, options: ScopeOptions) =>
-          execute(
-            {
-              action,
-              repoPath: cwd,
-              ...projectScope(options),
-              ...(operation ? { operation } : {}),
-            },
-            { json: options.json },
-          ),
-        );
-    else
-      child.action(async (options: ScopeOptions) =>
+    child
+      .option("--json", "Print the report as JSON")
+      .action(async (options: ScopeOptions) =>
         execute(
           { action, repoPath: cwd, ...projectScope(options) },
           { json: options.json },
         ),
       );
   }
+  addActivityCommand(command, {
+    cwd,
+    execute,
+    now,
+    projectScope,
+    positiveInteger,
+    nonEmpty,
+  });
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
   addRunCommand(command, cwd, execute);
@@ -185,12 +172,24 @@ function addProxyCommands(
     .action(async (options: { json?: boolean }) =>
       execute({ action: "proxy", repoPath: cwd }, { json: options.json }),
     );
+  // --json belongs to rig proxy and rig proxy verify, the reads; commander would let the actions under it take it too.
+  const noJson = (name: string) => {
+    if (proxy.opts<{ json?: boolean }>().json)
+      throw new RigError(
+        "USAGE",
+        `rig proxy ${name} takes no --json: it answers with its exit and a line saying what it did.`,
+        `Run rig proxy ${name} without --json.`,
+      );
+  };
   proxy
     .command("reload")
     .description(
       "Apply the proxy section of Host config as it is now: proxy.routes, ports and certificate settings. rigd also applies it when it starts. Settings Rig refuses change nothing that is served: Caddy keeps the ones it last accepted, and rig proxy shows the refused ones as pending. Routes whose Target no longer exists are withdrawn first; without Rig's own Caddy that is all it does.",
     )
-    .action(async () => execute({ action: "proxy-apply", repoPath: cwd }));
+    .action(async () => {
+      noJson("reload");
+      await execute({ action: "proxy-apply", repoPath: cwd });
+    });
   proxy
     .command("verify")
     .description(
@@ -210,11 +209,16 @@ function addProxyCommands(
       "--staging-ok",
       "Accept a certificate from a staging CA, for the very name it was issued to",
     )
+    .option(
+      "--json",
+      "Print the verdicts as JSON: { ready, hostnames, error? }; exits 1 the same way",
+    )
     .action(
       async (options: {
         port?: number;
         wait?: number;
         stagingOk?: boolean;
+        json?: boolean;
       }) => {
         if (!local) throw unavailable("verify");
         const verdicts = await local.proxyVerify({
@@ -222,25 +226,47 @@ function addProxyCommands(
           waitSeconds: options.wait ?? 0,
           stagingOk: options.stagingOk === true,
         });
+        const failed = verdicts.filter((verdict) => !verdict.ok).length;
+        const problem = !verdicts.length
+          ? new RigError(
+              "PROXY_NOT_READY",
+              "Rig's Caddy serves no hostname with a certificate.",
+              "Run rigd install, then deploy or start a Target with a hostname.",
+            )
+          : failed
+            ? new RigError(
+                "PROXY_NOT_READY",
+                `${failed} of ${verdicts.length} hostnames are not ready.`,
+                "A new certificate can take minutes while DNS propagates: retry with --wait 600. Otherwise run rig doctor and read Caddy's log under the Rig root (caddy/caddy.log).",
+              )
+            : undefined;
+        if (options.json || proxy.opts<{ json?: boolean }>().json) {
+          // One document either way; a failure is in it, so nothing else is written and only the exit says it failed.
+          output.write(
+            `${JSON.stringify({
+              ready: problem === undefined,
+              hostnames: verdicts,
+              ...(problem
+                ? {
+                    error: {
+                      code: problem.code,
+                      message: problem.message,
+                      hint: problem.hint,
+                    },
+                  }
+                : {}),
+            })}\n`,
+          );
+          if (problem) throw reported(problem);
+          return;
+        }
         for (const verdict of verdicts)
           output.write(
             verdict.ok
               ? `ok    ${verdict.hostname}  ${verdict.issuer ?? ""}, until ${verdict.validTo?.slice(0, 10) ?? "?"}\n`
               : `FAIL  ${verdict.hostname}  ${verdict.problem ?? "not ready"}\n`,
           );
-        const failed = verdicts.filter((verdict) => !verdict.ok).length;
-        if (!verdicts.length)
-          throw new RigError(
-            "PROXY_NOT_READY",
-            "Rig's Caddy serves no hostname with a certificate.",
-            "Run rigd install, then deploy or start a Target with a hostname.",
-          );
-        if (failed)
-          throw new RigError(
-            "PROXY_NOT_READY",
-            `${failed} of ${verdicts.length} hostnames are not ready.`,
-            "A new certificate can take minutes while DNS propagates: retry with --wait 600. Otherwise run rig doctor and read Caddy's log under the Rig root (caddy/caddy.log).",
-          );
+        if (problem) throw problem;
         output.write(`All ${verdicts.length} hostnames are ready.\n`);
       },
     );
@@ -250,6 +276,7 @@ function addProxyCommands(
       "Store the DNS provider API token Caddy uses for certificates, read from standard input (for example: pbpaste | rig proxy token).",
     )
     .action(async () => {
+      noJson("token");
       if (!local) throw unavailable("token");
       const path = await local.proxyToken();
       output.write(`Stored the DNS API token in ${path} (mode 600).\n`);
@@ -354,7 +381,6 @@ function addLifecycleCommands(
       )
       .argument("[branch]", "Preview Branch or name", nonEmpty)
       .option("--project <name>", "Registered Project identity")
-      .option("--json", "Render the final domain result as JSON")
       .option("--deployment <name>", "Explicit Preview name");
     if (action === "down")
       child.option(
@@ -379,14 +405,11 @@ function addLifecycleCommands(
             "Use rig down preview <branch> --destroy.",
           );
         const request = targetRequest(action, target, branch, cwd, options);
-        await execute(
-          {
-            ...request,
-            ...(options.destroy ? { action: "destroy" as const } : {}),
-            ...(options.kill ? { kill: true } : {}),
-          },
-          { json: options.json },
-        );
+        await execute({
+          ...request,
+          ...(options.destroy ? { action: "destroy" as const } : {}),
+          ...(options.kill ? { kill: true } : {}),
+        });
       },
     );
   }
@@ -413,8 +436,7 @@ function addDeployCommands(
       "--no-up",
       "Deploy without starting; a running Target is stopped until rig up",
     )
-    .option("--deployment <name>", "Explicit Preview name")
-    .option("--json", "Render the final domain result as JSON");
+    .option("--deployment <name>", "Explicit Preview name");
   deploy.action(
     async (
       target: string | undefined,
@@ -428,20 +450,17 @@ function addDeployCommands(
           "Only a Preview takes --deployment.",
           "Use rig deploy preview --deployment <name>.",
         );
-      await execute(
-        {
-          action: "deploy",
-          repoPath: cwd,
-          // In a checkout a deploy means the stable Target unless it names a Preview.
-          target: target ?? "stable",
-          ...projectScope(options),
-          ...(branch ? { branch } : {}),
-          ...(options.force ? { force: true } : {}),
-          ...(options.up === false ? { noUp: true } : {}),
-          ...previewScope(options),
-        },
-        { json: options.json },
-      );
+      await execute({
+        action: "deploy",
+        repoPath: cwd,
+        // In a checkout a deploy means the stable Target unless it names a Preview.
+        target: target ?? "stable",
+        ...projectScope(options),
+        ...(branch ? { branch } : {}),
+        ...(options.force ? { force: true } : {}),
+        ...(options.up === false ? { noUp: true } : {}),
+        ...previewScope(options),
+      });
     },
   );
 }
@@ -463,7 +482,6 @@ function addRunCommand(
     .argument("[branch]", "Preview Branch or name", nonEmpty)
     .option("--project <name>", "Registered Project identity")
     .option("--deployment <name>", "Explicit Preview name")
-    .option("--json", "Render the final domain result as JSON")
     .action(
       async (
         job: string,
@@ -485,7 +503,7 @@ function addRunCommand(
           cwd,
           options,
         );
-        await execute({ ...request, job }, { json: options.json });
+        await execute({ ...request, job });
       },
     );
 }
@@ -566,7 +584,6 @@ function addBackupCommands(
     .option("--project <name>", "Registered Project identity")
     .option("--deployment <name>", "Explicit Preview name")
     .option("--yes", "Restore without asking for confirmation")
-    .option("--json", "Render the final result as JSON")
     .action(
       async (
         job: string,
@@ -592,7 +609,7 @@ function addBackupCommands(
         );
         await execute(
           { ...request, job, backup: id },
-          { json: options.json, yes: options.yes === true },
+          { yes: options.yes === true },
         );
       },
     );

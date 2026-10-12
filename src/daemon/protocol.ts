@@ -1,5 +1,6 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { OPERATION_OUTCOMES } from "../domain/activity";
 
 /** Only domain commands cross the local control plane, never arbitrary scripts. */
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
@@ -179,6 +180,19 @@ export const commandSchema = z
     backup: backupSelector.optional(),
     /** An Operation id (or unambiguous prefix) that activity narrows to; the id a failed command prints. */
     operation: z.string().min(1).optional(),
+    /** Narrows an activity read; absent keeps every record. `lines` counts the records it keeps. */
+    activityFilter: z
+      .strictObject({
+        /** A Target's name: working, stable or a Preview's name. */
+        target: z.string().min(1).max(63).optional(),
+        /** What the record is about, such as deploy, crash or job. */
+        action: z.string().min(1).max(64).optional(),
+        outcome: z.enum(OPERATION_OUTCOMES).optional(),
+        /** Inclusive ISO instants; rig resolves durations such as 1h against its own clock before sending. */
+        since: z.iso.datetime({ offset: true }).optional(),
+        until: z.iso.datetime({ offset: true }).optional(),
+      })
+      .optional(),
     after: z.string().optional(),
     newName: z.string().optional(),
     newPath: absolutePath.optional(),
@@ -192,7 +206,8 @@ export const commandSchema = z
         until: z.iso.datetime({ offset: true }).optional(),
       })
       .optional(),
-    /** monitor only: report the whole Host (every Project's total, Rig itself and the Host) instead of one Project. */
+    /** monitor and activity: the whole Host instead of one Project. A monitor reports every Project's total, Rig itself
+     * and the Host; an activity read has every Project's records and rigd's own administration. */
     host: z.boolean().optional(),
   })
   .strict();
@@ -248,6 +263,8 @@ export const logsResultSchema = z
     cursor: z.string(),
     /** The read was narrowed by a filter, so no entries means none matched rather than none recorded. */
     filtered: z.boolean().optional(),
+    /** A first page left out older entries that match: more than `lines` were recorded. */
+    more: z.boolean().optional(),
   })
   .passthrough();
 export const activityResultSchema = z
@@ -269,6 +286,8 @@ export const activityResultSchema = z
     ),
     /** The Operation id (or prefix) the records were selected by, when one was. */
     operation: z.string().optional(),
+    /** How many records matched before the newest `lines` were kept; absent for an Operation id. */
+    total: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 const usageStatsSchema = z.object({

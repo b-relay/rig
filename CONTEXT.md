@@ -575,9 +575,10 @@ _Relationship_: Managed config can be stored in Project config without being
 freely mutable through generic config editing. Rig detects unsafe manual
 changes, such as Project identity drift, and reports them.
 
-_Relationship_: There is no blanket `--json` flag; `--json` is per command
-(status, lifecycle, deploy). Other machine-readable access comes through the
-`rigd` control-plane API or the config files.
+_Relationship_: There is no blanket `--json` flag. Every read takes `--json`
+(`activity` and `logs` print JSON Lines, one record per line); actions do not,
+since their exit code and result line say what they did. Agents use the CLI,
+and redirect a read to a file to analyse it there.
 
 _Relationship_: There is no `rig config set` or `rig config get`. Project
 config is created by `rig init`, changed by direct file edits, and validated by

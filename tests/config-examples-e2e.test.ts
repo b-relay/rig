@@ -191,17 +191,12 @@ test("a deployed Commit whose rig.yaml is invalid is refused even though the che
     // The checkout is fixed but not committed: the deploy reads the Commit, never the working copy.
     await writeFile(join(f.repo, "rig.yaml"), valid);
     const branch = await f.git(["branch", "--show-current"]);
-    const refused = await f.rig([
-      "deploy",
-      "stable",
-      branch,
-      "--no-up",
-      "--json",
-    ]);
+    const refused = await f.rig(["deploy", "stable", branch, "--no-up"]);
     expect(refused.code).toBe(1);
-    expect(JSON.parse(refused.stdout)).toMatchObject({
-      error: { code: "INVALID_CONFIG" },
-    });
+    expect(refused.stdout).toBe("");
+    // Refused for the Commit's own rig.yaml, which names a field Rig does not have.
+    expect(refused.stderr).toContain("Invalid Project configuration.");
+    expect(refused.stderr).toContain('has no field named "components"');
     expect(await targets(f, f.repo)).toEqual([
       expect.objectContaining({ name: "working", state: "configured" }),
       expect.objectContaining({ name: "stable", state: "configured" }),

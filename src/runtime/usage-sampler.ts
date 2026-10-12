@@ -150,9 +150,8 @@ export function createUsageSampler(deps: {
       : { cpuPercent: usage.cpuPercent, memoryBytes: usage.memoryBytes };
   };
   const writeChanged = async () => {
-    const batch = minutes.changed();
-    await deps.history.write(batch.minutes);
-    minutes.written(batch, Math.floor(deps.now() / 60_000));
+    await deps.history.write(minutes.changed());
+    minutes.written(Math.floor(deps.now() / 60_000));
   };
 
   return {
@@ -336,13 +335,13 @@ interface OpenMinute {
   series: UsageSeries;
   readonly minute: number;
   readonly slots: (StoredSample | undefined)[];
-  /** Samples recorded into it so far, and how many of them a write has taken. */
-  revision: number;
-  writtenRevision: number;
+  /** It holds a sample its last write did not take. */
+  dirty: boolean;
 }
 
 /** Samples by series and minute: the minute each series is filling now, and finished minutes not written yet. Only
- * minutes that changed since their last write are written again. */
+ * minutes that changed since their last write are written again. The sampler runs its passes and writes one at a time,
+ * so nothing is recorded while a write is in progress. */
 function createMinuteBuffer() {
   const open = new Map<string, OpenMinute>();
   let finished: RecordedMinute[] = [];
@@ -354,8 +353,7 @@ function createMinuteBuffer() {
       const minute = Math.floor(second / 60);
       let buffer = open.get(key);
       if (buffer && buffer.minute !== minute) {
-        if (buffer.revision > buffer.writtenRevision)
-          finished.push(copyOf(buffer));
+        if (buffer.dirty) finished.push(copyOf(buffer));
         buffer = undefined;
       }
       buffer ??= {
@@ -364,47 +362,30 @@ function createMinuteBuffer() {
         slots: Array<StoredSample | undefined>(SLOTS_PER_MINUTE).fill(
           undefined,
         ),
-        revision: 0,
-        writtenRevision: 0,
+        dirty: false,
       };
       buffer.series = series;
       buffer.slots[second % 60] = sample;
-      buffer.revision++;
+      buffer.dirty = true;
       open.set(key, buffer);
       if (finished.length > PENDING_LIMIT)
         finished = finished.slice(-PENDING_LIMIT);
     },
     /** What a write should take: every finished minute and every open one that changed since it was last written. */
-    changed() {
-      const changedOpen = [...open.values()].filter(
-        (buffer) => buffer.revision > buffer.writtenRevision,
-      );
-      return {
-        minutes: [...finished, ...changedOpen.map(copyOf)],
-        finished: finished.length,
-        revisions: changedOpen.map(
-          (buffer) => [buffer, buffer.revision] as const,
-        ),
-      };
+    changed(): RecordedMinute[] {
+      return [
+        ...finished,
+        ...[...open.values()].filter((buffer) => buffer.dirty).map(copyOf),
+      ];
     },
-    /** After a successful write of what `changed` returned: those minutes are stored as they were then. An open minute
-     * that ended before `currentMinute` (Unix minutes) began, and is stored, is let go. */
-    written(
-      batch: {
-        readonly finished: number;
-        readonly revisions: readonly (readonly [OpenMinute, number])[];
-      },
-      currentMinute: number,
-    ) {
-      finished = finished.slice(batch.finished);
-      for (const [buffer, revision] of batch.revisions)
-        buffer.writtenRevision = Math.max(buffer.writtenRevision, revision);
-      for (const [key, buffer] of open)
-        if (
-          buffer.minute < currentMinute - 1 &&
-          buffer.revision === buffer.writtenRevision
-        )
-          open.delete(key);
+    /** After a successful write of what `changed` returned: everything is stored as it is now. An open minute that
+     * ended before `currentMinute` (Unix minutes) began is let go. */
+    written(currentMinute: number) {
+      finished = [];
+      for (const [key, buffer] of open) {
+        buffer.dirty = false;
+        if (buffer.minute < currentMinute - 1) open.delete(key);
+      }
     },
     /** Every minute a report must lay over stored history: finished ones not written, and every open one. */
     pending(): RecordedMinute[] {

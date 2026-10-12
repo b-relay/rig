@@ -64,6 +64,7 @@ describe.skipIf(process.platform !== "darwin")("the native reader", () => {
     const reader = createNativeProcessUsageReader()!;
     expect(reader.kind).toBe("native");
     // A bounded bit of work in a child that leads its own group, under a shell that waits for it.
+    const began = performance.now();
     const shell = Bun.spawn(
       [
         "/bin/sh",
@@ -74,15 +75,19 @@ describe.skipIf(process.platform !== "darwin")("the native reader", () => {
     );
     try {
       const deadline = Date.now() + 5000;
-      let child: { pid: number; cpuNs: number } | undefined;
+      let child:
+        { pid: number; cpuNs: number; memoryBytes: number } | undefined;
       while (Date.now() < deadline && !(child && child.cpuNs > 0)) {
         await Bun.sleep(50);
         const tree = (await reader.read([shell.pid])).get(shell.pid) ?? [];
         child = tree.find((reading) => reading.pid !== shell.pid);
       }
       expect(child?.cpuNs).toBeGreaterThan(0);
-      // Never more CPU time than wall time since the child began: a wrong timebase would multiply it.
-      expect(child!.cpuNs).toBeLessThan(5.5e9);
+      // One process never gains more CPU time than the wall time since it began: a wrong timebase would multiply it.
+      expect(child!.cpuNs).toBeLessThanOrEqual(
+        (performance.now() - began) * 1e6 * 1.05,
+      );
+      expect(child!.memoryBytes).toBeGreaterThan(0);
       const gone = await reader.read([2_147_483_000]);
       expect(gone.size).toBe(0);
     } finally {

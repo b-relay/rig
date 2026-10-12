@@ -35,7 +35,7 @@ export const USAGE_SAMPLER: NoticeChannel = {
   name: "usage",
   consequence:
     "The last CPU and memory sample, or the write or prune of their history, failed, so Monitor's history may have a gap; rigd keeps sampling and tries the write again within seconds.",
-  hint: "Check that the monitor directory under the Rig root is writable; on a Mac where rigd samples with ps, also check that /bin/ps runs. The notice clears once a write succeeds.",
+  hint: "Check that the monitor directory under the Rig root is writable; on a Mac where rigd samples with ps, also check that /bin/ps runs. The notice clears once a sample succeeds and any failed write or prune has succeeded since.",
 };
 /** Bounded in-memory evidence: one entry per channel, a count, and the latest message. Never writes anywhere, so a failing sink cannot recurse. */
 export interface NoticeBoard {

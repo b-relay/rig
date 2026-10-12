@@ -271,16 +271,19 @@ describe("the usage sampler", () => {
     const sampled = sampler(host, { processes: () => running, history: store });
     await run(host, sampled, 31);
     // The first pass only learns the tree; seconds 1 to 30 are stored.
-    expect(await storedSeconds(0, 60)).toEqual(seconds(1, 31));
-    // The Component stops.
+    expect(await storedSeconds(0, 120)).toEqual(seconds(1, 31));
+    // On into the next minute, then the Component stops.
+    await run(host, sampled, 59);
     delete trees[10];
     running = [];
     await run(host, sampled, 70);
-    expect(await storedSeconds(0, 60)).toEqual(seconds(1, 31));
+    expect(await storedSeconds(0, 120)).toEqual(seconds(1, 90));
     const webWrites = writes
       .flat()
-      .filter((minute) => minute.series.scope === "component");
-    expect(webWrites.length).toBe(1);
+      .filter((minute) => minute.series.scope === "component")
+      .map((minute) => minute.minute - Math.floor(START / 60_000));
+    // Minute 0 at 30 s and again when it finished; minute 1 at 60 s and 90 s; nothing once it went quiet.
+    expect(webWrites).toEqual([0, 0, 1, 1]);
   });
 
   test("while history cannot be written every pass fails, so doctor keeps the notice, and the samples are written once it can", async () => {
@@ -338,6 +341,91 @@ describe("the usage sampler", () => {
         .snapshot()
         .pending.filter((minute) => "projectId" in minute.series),
     ).toEqual([]);
+  });
+});
+
+describe("stored usage history", () => {
+  const web = component("web", 10).series;
+  const slots = (cpu: number, from = 0, to = 60) =>
+    Array.from({ length: 60 }, (_, second) =>
+      second >= from && second < to ? { cpu, memory: 100 } : undefined,
+    );
+
+  test("a minute written again as it fills, or after a restart, keeps every sample written before", async () => {
+    await history.write([
+      { series: web, minute: 100, slots: slots(10, 0, 20) },
+    ]);
+    await history.write([
+      { series: web, minute: 100, slots: slots(30, 20, 40) },
+    ]);
+    const [read] = await history.read({
+      filter: { kind: "project", projectId: "p-fletcher" },
+      from: 6000,
+      to: 6060,
+      detail: true,
+    });
+    expect(read!.spans.length).toBe(40);
+    const [minute] = await history.read({
+      filter: { kind: "project", projectId: "p-fletcher" },
+      from: 6000,
+      to: 6060,
+      detail: false,
+    });
+    expect(minute!.spans[0]!.histograms.cpu).toMatchObject({
+      count: 40,
+      low: 10,
+      high: 30,
+    });
+  });
+
+  test("pruning drops detail and history on their own schedules, and forgetting a Project drops all of its history", async () => {
+    await history.write([
+      { series: web, minute: 100, slots: slots(10) },
+      { series: web, minute: 200, slots: slots(10) },
+      { series: { scope: "host" }, minute: 200, slots: slots(10) },
+    ]);
+    await history.prune({ detailBefore: 200 * 60, historyBefore: 150 * 60 });
+    const read = (detail: boolean) =>
+      history.read({
+        filter: { kind: "project", projectId: "p-fletcher" },
+        from: 0,
+        to: 300 * 60,
+        detail,
+      });
+    expect(
+      (await read(true))[0]!.spans.map((span) => Math.floor(span.at / 60)),
+    ).toContain(200);
+    expect(
+      (await read(true))[0]!.spans.some((span) => span.at < 200 * 60),
+    ).toBe(false);
+    expect((await read(false))[0]!.spans.map((span) => span.at)).toEqual([
+      200 * 60,
+    ]);
+
+    await history.forget("p-fletcher");
+    expect(await read(false)).toEqual([]);
+    const hostRead = await history.read({
+      filter: { kind: "host" },
+      from: 0,
+      to: 300 * 60,
+      detail: false,
+    });
+    expect(hostRead.map((each) => each.series.scope)).toEqual(["host"]);
+  });
+
+  test("history survives reopening the database", async () => {
+    await history.write([{ series: web, minute: 100, slots: slots(10) }]);
+    await history.close();
+    history = openSqliteUsageHistory(
+      join(directory, "monitor", "usage.sqlite"),
+    );
+    const [read] = await history.read({
+      filter: { kind: "project", projectId: "p-fletcher" },
+      from: 6000,
+      to: 6060,
+      detail: false,
+    });
+    expect(read!.series).toEqual(web);
   });
 });
 

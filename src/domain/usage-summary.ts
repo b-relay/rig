@@ -57,15 +57,16 @@ export function stepFor(rangeSeconds: number): number {
   );
 }
 
-/** Pure: the points of a chart from `from` up to `to` (Unix seconds, `from` a multiple of `step`), one per `step`, from
- * the recorded spans that start in each. A step with no spans is a point with neither measure, which a chart draws as
- * a gap. Spans outside the range are ignored. */
-export function pointsOf(input: {
+/** Pure: a chart from `from` up to `to` (Unix seconds, `from` a multiple of `step`): one point per `step` from the
+ * recorded spans that start in it, and the summary of the whole range. A step with no spans is a point with neither
+ * measure, which a chart draws as a gap; spans outside the range are ignored. Each span is merged once into its step,
+ * and the summary merges the steps. */
+export function chartOf(input: {
   readonly from: number;
   readonly to: number;
   readonly step: number;
   readonly spans: Iterable<RecordedSpan>;
-}): UsagePoint[] {
+}): { readonly summary: UsageSummary; readonly points: UsagePoint[] } {
   const count = Math.max(0, Math.ceil((input.to - input.from) / input.step));
   const groups: UsageHistograms[][] = Array.from({ length: count }, () => []);
   for (const span of input.spans) {
@@ -73,10 +74,24 @@ export function pointsOf(input: {
     if (span.at < input.to && index >= 0 && index < count)
       groups[index]!.push(span.histograms);
   }
-  return groups.map((histograms, index) => ({
-    at: input.from + index * input.step,
-    ...summaryOf(histograms),
-  }));
+  const merged = groups.map(mergedHistograms);
+  return {
+    summary: summaryOf(
+      merged.filter((each): each is UsageHistograms => each !== undefined),
+    ),
+    points: merged.map((histograms, index) => ({
+      at: input.from + index * input.step,
+      ...(histograms ? summaryOf([histograms]) : {}),
+    })),
+  };
+}
+
+function mergedHistograms(
+  histograms: readonly UsageHistograms[],
+): UsageHistograms | undefined {
+  const cpu = mergeHistograms(histograms.map((each) => each.cpu));
+  const memory = mergeHistograms(histograms.map((each) => each.memory));
+  return cpu && memory ? { cpu, memory } : undefined;
 }
 
 /** Pure: CPU and memory over all of the given histograms together. */

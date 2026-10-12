@@ -1328,7 +1328,7 @@ export const hostConfigSchema = z.strictObject({
         .max(168)
         .default(24)
         .describe(
-          "Hours every 1-second CPU and memory sample is kept, for the `rig monitor` and dashboard charts of the last hour and day. Older samples survive only in the per-minute history. Default 24; 1 to 168.",
+          "Hours every 1-second CPU and memory sample is kept, for the charts of the last hour. Older samples survive only in the per-minute history. Default 24; 1 to 168. A change applies at rigd's next hourly prune.",
         ),
       retention_days: z
         .number()
@@ -1337,12 +1337,12 @@ export const hostConfigSchema = z.strictObject({
         .max(90)
         .default(7)
         .describe(
-          "Days the per-minute CPU and memory history is kept, each minute as a distribution so any span still has a true median and peak. Default 7; 1 to 90. About 1 MB per Component per week.",
+          "Days the per-minute CPU and memory history is kept, each minute as a distribution, so a chart of any span estimates its median and p95 from every sample in it and keeps its exact peak. Default 7; 1 to 90. About 1 MB per Component per week. A change applies at rigd's next hourly prune.",
         ),
     })
     .prefault({})
     .describe(
-      "How long rigd keeps the CPU and memory it samples from every running Service and Job. rigd reads a change within a few seconds.",
+      "How long rigd keeps the CPU and memory it samples from every running Service and Job.",
     ),
   // Retired, not refused: rigd reads this file as it starts, so a refusal would keep it from starting at all.
   alerts: z.unknown().optional().meta({

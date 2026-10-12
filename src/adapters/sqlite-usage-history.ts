@@ -147,7 +147,7 @@ export function openSqliteUsageHistory(path: string): UsageHistory {
         }
       })();
     },
-    close() {
+    async close() {
       db.close();
     },
   };

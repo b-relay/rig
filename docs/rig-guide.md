@@ -1129,11 +1129,14 @@ Target once a second, and keeps the history under `<RIG_ROOT>/monitor/`.
   since the last sample. Memory is the physical footprint, the figure Activity
   Monitor shows.
 - Each Target, each Project (all its Targets together), the whole Host and Rig
-  itself have their own total, so combined charts keep a true median and peak.
+  itself have their own total, so a combined chart's median and p95 come from
+  the combined samples rather than from adding up each Component's.
 - Every 1-second sample is kept for `monitor.detail_hours` (24 by default).
   Every minute is also kept as a distribution for `monitor.retention_days` (7
-  by default), so a week-long chart still shows a real median and p95. Samples
-  are written about every 30 seconds rather than every second.
+  by default), so a week-long chart still estimates its median and p95 from
+  every sample (within about 5%) and keeps the exact peak. Samples are written
+  about every 30 seconds rather than every second. A change to either setting
+  applies at `rigd`'s next hourly prune.
 - On a Mac where `rigd` cannot read the kernel's process figures directly, it
   runs `ps` every 5 seconds instead, and memory is then the resident size,
   which reads higher.

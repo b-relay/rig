@@ -34,8 +34,8 @@ export const JOB_SCHEDULER: NoticeChannel = {
 export const USAGE_SAMPLER: NoticeChannel = {
   name: "usage",
   consequence:
-    "CPU and memory are not sampled or stored, so Monitor charts show a gap, until a pass succeeds; rigd tries again at the next sample.",
-  hint: "Check that monitor/usage.sqlite under the Rig root is writable and that /bin/ps runs, then run doctor again.",
+    "The last CPU and memory sample, or the write or prune of their history, failed, so Monitor's history may have a gap; rigd keeps sampling and tries the write again within seconds.",
+  hint: "Check that the monitor directory under the Rig root is writable; on a Mac where rigd samples with ps, also check that /bin/ps runs. The notice clears once a write succeeds.",
 };
 /** Bounded in-memory evidence: one entry per channel, a count, and the latest message. Never writes anywhere, so a failing sink cannot recurse. */
 export interface NoticeBoard {

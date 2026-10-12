@@ -9,21 +9,40 @@ export interface UsageSample {
 /** One process as the OS reports it at one moment. */
 export interface ProcessReading {
   readonly pid: number;
+  /** When the process started, in the reader's own clock: with `pid` it names one process, so a pid the OS hands to
+   * another process later is never compared with the first. */
+  readonly started: number;
   /** CPU time the process has used since it started, user and system together, in nanoseconds. */
   readonly cpuNs: number;
   readonly memoryBytes: number;
 }
 
+/** Pure: the key one process is known by across readings: its pid and when it started. */
+export function processKey(
+  reading: Pick<ProcessReading, "pid" | "started">,
+): string {
+  return `${reading.pid}@${reading.started}`;
+}
+
+/** Pure: a tree's reading as the next `treeUsage` measures from: each process's CPU time by `processKey`. */
+export function cpuByProcess(
+  readings: readonly ProcessReading[],
+): Map<string, number> {
+  return new Map(
+    readings.map((reading) => [processKey(reading), reading.cpuNs]),
+  );
+}
+
 /** Pure: what a process tree used over the interval since the previous reading of the same tree.
  *
  * CPU is the CPU time each process gained, summed, over the wall time between the readings. A process that was not in
- * the previous reading started during the interval, so all of its CPU time falls in it; it is capped at every core busy
- * for the whole interval, which a process missed by an earlier reading could otherwise exceed. A process whose CPU time
- * went down is a new process that reused a pid and counts as new. CPU is `undefined` when there is no previous reading
- * of the tree to measure from, as at the first sight of a Component. Memory is the sum of the footprints now. */
+ * the previous reading (by pid and start, so a reused pid is a new process) started during the interval, so all of its
+ * CPU time falls in it; it is capped at every core busy for the whole interval, which a process missed by an earlier
+ * reading could otherwise exceed. CPU is `undefined` when there is no previous reading of the tree to measure from, as
+ * at the first sight of a Component. Memory is the sum of the footprints now. */
 export function treeUsage(input: {
-  /** The previous reading of the same tree: pid to its CPU time then. Absent at the first sight of the tree. */
-  readonly previous: ReadonlyMap<number, number> | undefined;
+  /** The previous reading of the same tree (`cpuByProcess`). Absent at the first sight of the tree. */
+  readonly previous: ReadonlyMap<string, number> | undefined;
   readonly current: readonly ProcessReading[];
   /** Wall time since the previous reading, in nanoseconds. */
   readonly elapsedNs: number;
@@ -39,10 +58,10 @@ export function treeUsage(input: {
   const ceiling = input.elapsedNs * input.cores;
   let gained = 0;
   for (const process of input.current) {
-    const before = input.previous.get(process.pid);
+    const before = input.previous.get(processKey(process));
     gained +=
-      before !== undefined && process.cpuNs >= before
-        ? process.cpuNs - before
+      before !== undefined
+        ? Math.max(0, process.cpuNs - before)
         : Math.min(process.cpuNs, ceiling);
   }
   return {

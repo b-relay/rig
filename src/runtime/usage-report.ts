@@ -1,18 +1,24 @@
-import { histogramsOf, type UsageHistograms } from "../domain/usage-minute";
+import { mergeHistograms } from "../domain/usage-histogram";
+import {
+  histogramsOf,
+  SLOTS_PER_MINUTE,
+  type UsageHistograms,
+} from "../domain/usage-minute";
 import type { UsageSample } from "../domain/usage-sample";
 import {
-  pointsOf,
+  chartOf,
   RANGE_SECONDS,
   stepFor,
-  summaryOf,
-  type UsageRange,
+  type RecordedSpan,
   type UsagePoint,
+  type UsageRange,
   type UsageSummary,
 } from "../domain/usage-summary";
 import {
   seriesKey,
   type RecordedMinute,
   type SeriesFilter,
+  type SeriesHistory,
   type UsageHistory,
   type UsageSeries,
 } from "./usage-history";
@@ -52,11 +58,12 @@ export interface UsageMonitor {
   forget(projectId: string): Promise<void>;
 }
 
-/** The usage report for `filter` over `range`, ending at the current step. Stored history is merged with what the
- * sampler holds unwritten, so the chart reaches the current second; for a minute in both, the sampler's copy wins. Points
- * shorter than a minute are drawn from the 1-second detail; longer ones from per-minute histograms. Series are ordered
- * as the pages list them: the Host, Rig itself and Projects by name for the Host; the Project, then its Targets, then
- * their Components, for a Project. */
+/** The usage report for `filter` over `range`, ending at the current step. Stored history is overlaid with the minutes
+ * the sampler holds unwritten, so the chart reaches the current second: second by second, a held sample replaces the
+ * stored one, and stored seconds the sampler does not hold (written before a rigd restart) are kept. Points shorter
+ * than a minute are drawn from the 1-second detail; longer ones from per-minute histograms. Series are ordered as the
+ * pages list them: the Host, Rig itself and Projects by name for the Host; the Project, then its Targets, then their
+ * Components, for a Project. */
 export async function usageReport(input: {
   readonly filter: SeriesFilter;
   readonly range: UsageRange;
@@ -71,61 +78,65 @@ export async function usageReport(input: {
   const to = (Math.floor(nowSecond / step) + 1) * step;
   const from = to - Math.ceil(RANGE_SECONDS[input.range] / step) * step;
   const detail = step < 60;
+  const pending = input.snapshot.pending.filter(
+    (minute) =>
+      selected(minute.series, input.filter) &&
+      (minute.minute + 1) * 60 > from &&
+      minute.minute * 60 < to,
+  );
   const stored = await input.history.read({
     filter: input.filter,
     from,
     to,
     detail,
   });
+  // A held minute replaces its stored minute, so the stored seconds of the held minutes are read to merge into them.
+  const storedSeconds =
+    detail || pending.length === 0
+      ? stored
+      : await input.history.read({
+          filter: input.filter,
+          from: Math.min(...pending.map((minute) => minute.minute)) * 60,
+          to: (Math.max(...pending.map((minute) => minute.minute)) + 1) * 60,
+          detail: true,
+        });
+  const overlays = overlaysOf(pending, detail ? [] : storedSeconds, detail);
 
-  const spans = new Map<
+  const entries = new Map<
     string,
-    { series: UsageSeries; byAt: Map<number, UsageHistograms> }
+    { series: UsageSeries; stored: SeriesHistory["spans"] }
   >();
   const entry = (series: UsageSeries) => {
     const key = seriesKey(series);
-    const found = spans.get(key) ?? { series, byAt: new Map() };
+    const found = entries.get(key) ?? { series, stored: [] };
     found.series = series;
-    spans.set(key, found);
+    entries.set(key, found);
     return found;
   };
-  for (const history of stored) {
-    const found = entry(history.series);
-    for (const span of history.spans) found.byAt.set(span.at, span.histograms);
-  }
-  for (const minute of input.snapshot.pending) {
-    if (!selected(minute.series, input.filter)) continue;
-    const found = entry(minute.series);
-    for (const span of spansOf(minute, detail))
-      if (span.at >= from && span.at < to)
-        found.byAt.set(span.at, span.histograms);
-  }
-  const fresh = new Map(
-    input.snapshot.latest
-      .filter(
-        (latest) =>
-          selected(latest.series, input.filter) &&
-          latest.at >= nowSecond - 2 * input.sampledEvery,
-      )
-      .map((latest) => {
-        entry(latest.series);
-        return [seriesKey(latest.series), latest.sample] as const;
-      }),
-  );
+  for (const history of stored) entry(history.series).stored = history.spans;
+  for (const { series } of overlays.values()) entry(series);
+  const fresh = new Map<string, UsageSample>();
+  for (const latest of input.snapshot.latest)
+    if (
+      selected(latest.series, input.filter) &&
+      latest.at >= nowSecond - 2 * input.sampledEvery
+    ) {
+      entry(latest.series);
+      fresh.set(seriesKey(latest.series), latest.sample);
+    }
 
-  const series = [...spans.entries()]
-    .map(([key, { series, byAt }]): UsageReportSeries => {
-      const recorded = [...byAt].map(([at, histograms]) => ({
-        at,
-        histograms,
-      }));
+  const series = [...entries.entries()]
+    .map(([key, { series, stored }]): UsageReportSeries => {
+      const overlay = overlays.get(key)?.spans;
+      const spans: RecordedSpan[] = overlay
+        ? [
+            ...stored.filter((span) => !overlay.has(span.at)),
+            ...[...overlay].map(([at, histograms]) => ({ at, histograms })),
+          ]
+        : [...stored];
       const now = fresh.get(key);
-      return {
-        series,
-        ...(now && { now }),
-        summary: summaryOf(recorded.map((span) => span.histograms)),
-        points: pointsOf({ from, to, step, spans: recorded }),
-      };
+      const { summary, points } = chartOf({ from, to, step, spans });
+      return { series, ...(now && { now }), summary, points };
     })
     .sort((a, b) => order(a.series).localeCompare(order(b.series)));
   return {
@@ -138,6 +149,50 @@ export async function usageReport(input: {
   };
 }
 
+/** Each series' held spans, by start: one per held second for detail; otherwise one per held minute, built from its
+ * held seconds and, for the seconds it does not hold, the stored ones. */
+function overlaysOf(
+  pending: readonly RecordedMinute[],
+  storedSeconds: readonly SeriesHistory[],
+  detail: boolean,
+): Map<string, { series: UsageSeries; spans: Map<number, UsageHistograms> }> {
+  const storedByKey = new Map(
+    storedSeconds.map((history) => [
+      seriesKey(history.series),
+      new Map(history.spans.map((span) => [span.at, span.histograms])),
+    ]),
+  );
+  const overlays = new Map<
+    string,
+    { series: UsageSeries; spans: Map<number, UsageHistograms> }
+  >();
+  for (const minute of pending) {
+    const key = seriesKey(minute.series);
+    const found = overlays.get(key) ?? {
+      series: minute.series,
+      spans: new Map<number, UsageHistograms>(),
+    };
+    overlays.set(key, found);
+    const start = minute.minute * 60;
+    const seconds: UsageHistograms[] = [];
+    for (let second = 0; second < SLOTS_PER_MINUTE; second++) {
+      const held = minute.slots[second];
+      const histograms = held
+        ? histogramsOf([held])
+        : storedByKey.get(key)?.get(start + second);
+      if (!histograms) continue;
+      if (detail) found.spans.set(start + second, histograms);
+      else seconds.push(histograms);
+    }
+    if (detail || seconds.length === 0) continue;
+    found.spans.set(start, {
+      cpu: mergeHistograms(seconds.map((each) => each.cpu))!,
+      memory: mergeHistograms(seconds.map((each) => each.memory))!,
+    });
+  }
+  return overlays;
+}
+
 function selected(series: UsageSeries, filter: SeriesFilter): boolean {
   if (filter.kind === "host")
     return (
@@ -146,21 +201,6 @@ function selected(series: UsageSeries, filter: SeriesFilter): boolean {
       series.scope === "project"
     );
   return "projectId" in series && series.projectId === filter.projectId;
-}
-
-/** A minute as spans: one per second for detail, or one for the whole minute. */
-function spansOf(
-  minute: RecordedMinute,
-  detail: boolean,
-): { at: number; histograms: UsageHistograms }[] {
-  if (!detail) {
-    const histograms = histogramsOf(minute.slots);
-    return histograms ? [{ at: minute.minute * 60, histograms }] : [];
-  }
-  return minute.slots.flatMap((slot, second) => {
-    const histograms = slot && histogramsOf([slot]);
-    return histograms ? [{ at: minute.minute * 60 + second, histograms }] : [];
-  });
 }
 
 const TARGET_ORDER = { stable: "0", working: "1", preview: "2" } as const;

@@ -24,7 +24,7 @@ export function createPsProcessUsageReader(
     kind: "ps",
     async read(roots) {
       const table = await run({
-        command: ["/bin/ps", "-axo", "pid=,ppid=,pgid=,time=,rss="],
+        command: ["/bin/ps", "-axo", "pid=,ppid=,pgid=,time=,rss=,lstart="],
         env: ENV,
         timeoutMs: BUDGET_MS,
       });
@@ -35,10 +35,10 @@ export function createPsProcessUsageReader(
           "Check that /bin/ps runs for the user rigd runs as; rigd tries again at the next sample.",
           { exitCode: table.exitCode, stderr: table.stderr.slice(0, 500) },
         );
-      const rows = parseProcessTable(table.stdout);
+      const index = indexed(parseProcessTable(table.stdout));
       const trees = new Map<number, readonly ProcessReading[]>();
       for (const root of roots) {
-        const tree = processTree(rows, root);
+        const tree = processTree(index, root);
         if (tree) trees.set(root, tree);
       }
       return trees;
@@ -46,12 +46,12 @@ export function createPsProcessUsageReader(
   };
 }
 
-/** Pure: the rows of `ps -axo pid=,ppid=,pgid=,time=,rss=`. A line that does not parse is skipped. */
+/** Pure: the rows of `ps -axo pid=,ppid=,pgid=,time=,rss=,lstart=`. A line that does not parse is skipped. */
 export function parseProcessTable(output: string): ProcessRow[] {
   const rows: ProcessRow[] = [];
   for (const line of output.split("\n")) {
     const fields = line.trim().split(/\s+/);
-    if (fields.length !== 5) continue;
+    if (fields.length < 6) continue;
     const [pid, ppid, pgid, rss] = [
       fields[0],
       fields[1],
@@ -59,15 +59,19 @@ export function parseProcessTable(output: string): ProcessRow[] {
       fields[4],
     ].map(Number);
     const cpuSeconds = cpuTimeSeconds(fields[3]!);
+    // lstart is the process's start to the second, as `Mon Oct 12 10:00:00 2026`: with the pid it names one process.
+    const started = Date.parse(fields.slice(5).join(" "));
     if (
       ![pid, ppid, pgid, rss].every(Number.isInteger) ||
-      cpuSeconds === undefined
+      cpuSeconds === undefined ||
+      Number.isNaN(started)
     )
       continue;
     rows.push({
       pid: pid!,
       ppid: ppid!,
       pgid: pgid!,
+      started,
       cpuNs: cpuSeconds * 1e9,
       memoryBytes: rss! * 1024,
     });
@@ -88,23 +92,57 @@ export function cpuTimeSeconds(text: string): number | undefined {
   );
 }
 
+/** The process table looked up by pid, by parent and by process group, built once per read. */
+interface ProcessIndex {
+  readonly byPid: ReadonlyMap<number, ProcessRow>;
+  readonly children: ReadonlyMap<number, readonly number[]>;
+  readonly groups: ReadonlyMap<number, readonly number[]>;
+}
+
+function indexed(rows: readonly ProcessRow[]): ProcessIndex {
+  const byPid = new Map<number, ProcessRow>();
+  const children = new Map<number, number[]>();
+  const groups = new Map<number, number[]>();
+  const add = (map: Map<number, number[]>, key: number, pid: number) => {
+    const list = map.get(key);
+    if (list) list.push(pid);
+    else map.set(key, [pid]);
+  };
+  for (const row of rows) {
+    byPid.set(row.pid, row);
+    add(children, row.ppid, row.pid);
+    add(groups, row.pgid, row.pid);
+  }
+  return { byPid, children, groups };
+}
+
 /** Pure: the root's row, its descendants, and every member of a process group one of them leads; `undefined` when the
  * root is not in the table. */
 function processTree(
-  rows: readonly ProcessRow[],
+  index: ProcessIndex,
   root: number,
 ): ProcessReading[] | undefined {
-  if (!rows.some((row) => row.pid === root)) return undefined;
+  if (!index.byPid.has(root)) return undefined;
   const owned = new Set([root]);
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const row of rows)
-      if (!owned.has(row.pid) && (owned.has(row.ppid) || owned.has(row.pgid))) {
-        owned.add(row.pid);
-        grew = true;
+  const queue = [root];
+  for (let next = 0; next < queue.length; next++) {
+    const pid = queue[next]!;
+    for (const other of [
+      ...(index.children.get(pid) ?? []),
+      ...(index.groups.get(pid) ?? []),
+    ])
+      if (!owned.has(other)) {
+        owned.add(other);
+        queue.push(other);
       }
   }
-  return rows
-    .filter((row) => owned.has(row.pid))
-    .map(({ pid, cpuNs, memoryBytes }) => ({ pid, cpuNs, memoryBytes }));
+  return queue.map((pid) => {
+    const {
+      pid: _pid,
+      ppid: _ppid,
+      pgid: _pgid,
+      ...reading
+    } = index.byPid.get(pid)!;
+    return { pid, ...reading };
+  });
 }

@@ -29,6 +29,7 @@ import { executionBaseline, inheritedEnvironment } from "./environment";
 import { availableParallelism, homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import {
+  parseHostConfig,
   readHostConfig,
   readProjectConfigSource,
   previewProjectConfig,
@@ -89,6 +90,7 @@ import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { createFileDiagnosticLog } from "../diagnostics/file-log";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
+import { guardedUsageHistory } from "../adapters/guarded-usage-history";
 import { createNativeProcessUsageReader } from "../providers/native-process-usage";
 import { createPsProcessUsageReader } from "../providers/ps-process-usage";
 import { monitoredProcesses } from "../runtime/monitored-processes";
@@ -419,7 +421,6 @@ export async function composeDaemon(
       // What was sampled since the last write is written now, so a clean restart leaves no gap in the charts.
       await stopUsage?.();
       await usage.sampler.flush().catch(() => {});
-      usage.close();
       const scheduler = jobs.stop();
       // The monitor writes nothing from here on; its probes are aborted (a command's process group killed) and waited for
       // within a bound, beside the drain, which detaches the stop of any health restart in flight.
@@ -427,6 +428,8 @@ export async function composeDaemon(
       // With the runtime's own stops, which its drain detaches as it begins.
       shuttingDown.abort();
       await runtime.drain();
+      // Reads are not drained with the runtime's Operations: closing the history waits for every one in progress.
+      await usage.close();
       await health;
       await scheduler;
       // A clean daemon stop is not a Target stop: children keep serving and the next daemon adopts them by lease.
@@ -498,9 +501,11 @@ function composeUsage(input: {
 }) {
   const reader =
     createNativeProcessUsageReader() ?? createPsProcessUsageReader(runCommand);
-  const history = openSqliteUsageHistory(
-    join(input.root, "monitor", "usage.sqlite"),
-  );
+  const path = join(input.root, "monitor", "usage.sqlite");
+  const history = guardedUsageHistory({
+    open: () => openSqliteUsageHistory(path),
+    path,
+  });
   let caddy: { at: number; pid: number | undefined } | undefined;
   const sampler = createUsageSampler({
     reader,
@@ -526,13 +531,17 @@ function composeUsage(input: {
     },
     history,
     retention: async (): Promise<UsageRetention> => {
-      const host = await readHostConfig(input.root).catch(() => undefined);
+      // An unreadable config keeps the defaults rather than stopping pruning; doctor reports the config itself.
+      const monitor = (
+        await readHostConfig(input.root).catch(() => parseHostConfig({}))
+      ).monitor;
       return {
-        detailHours: host?.monitor.detail_hours ?? 24,
-        retentionDays: host?.monitor.retention_days ?? 7,
+        detailHours: monitor.detail_hours,
+        retentionDays: monitor.retention_days,
       };
     },
     now: Date.now,
+    elapsed: () => performance.now(),
     cores: availableParallelism(),
   });
   const monitor: UsageMonitor = {

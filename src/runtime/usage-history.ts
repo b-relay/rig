@@ -86,5 +86,6 @@ export interface UsageHistory {
   }): Promise<void>;
   /** Removes all history of a Project, as `rig forget` does. */
   forget(projectId: string): Promise<void>;
-  close(): void;
+  /** Closes the store once every call in progress has finished; a later call fails. */
+  close(): Promise<void>;
 }

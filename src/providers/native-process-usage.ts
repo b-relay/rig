@@ -11,6 +11,7 @@ const RUSAGE_WORDS = 64;
 const USER_TIME = 16;
 const SYSTEM_TIME = 24;
 const PHYS_FOOTPRINT = 72;
+const PROC_START = 80;
 /** At most this many children or group members are read per process. */
 const PID_CAPACITY = 4096;
 
@@ -36,11 +37,12 @@ export function createNativeProcessUsageReader():
     const ticks = usage[USER_TIME / 8]! + usage[SYSTEM_TIME / 8]!;
     return {
       pid,
+      started: Number(usage[PROC_START / 8]!),
       cpuNs: Number(ticks) * ticksToNs,
       memoryBytes: Number(usage[PHYS_FOOTPRINT / 8]!),
     };
   };
-  const related = (pid: number): number[] => {
+  const relatedTo = (pid: number): number[] => {
     const found: number[] = [];
     for (const list of [
       symbols.proc_listchildpids,
@@ -52,32 +54,41 @@ export function createNativeProcessUsageReader():
     }
     return found;
   };
-  const tree = (root: number): ProcessReading[] | undefined => {
-    const first = readOne(root);
-    if (!first) return undefined;
-    const readings = [first];
-    const owned = new Set([root]);
-    const queue = [root];
-    while (queue.length > 0) {
-      for (const pid of related(queue.shift()!)) {
-        if (owned.has(pid)) continue;
-        owned.add(pid);
-        const reading = readOne(pid);
-        if (!reading) continue;
-        readings.push(reading);
-        queue.push(pid);
-      }
-    }
-    return readings;
-  };
   return {
     intervalMs: 1000,
     kind: "native",
     async read(roots) {
+      // One read of each process per call, however many roots' trees it is in (rigd's tree holds every Component's).
+      const readings = new Map<number, ProcessReading | undefined>();
+      const related = new Map<number, number[]>();
+      const reading = (pid: number) => {
+        if (!readings.has(pid)) readings.set(pid, readOne(pid));
+        return readings.get(pid);
+      };
+      const tree = (root: number): ProcessReading[] | undefined => {
+        const first = reading(root);
+        if (!first) return undefined;
+        const found = [first];
+        const owned = new Set([root]);
+        const queue = [root];
+        for (let next = 0; next < queue.length; next++) {
+          const pid = queue[next]!;
+          if (!related.has(pid)) related.set(pid, relatedTo(pid));
+          for (const other of related.get(pid)!) {
+            if (owned.has(other)) continue;
+            owned.add(other);
+            const seen = reading(other);
+            if (!seen) continue;
+            found.push(seen);
+            queue.push(other);
+          }
+        }
+        return found;
+      };
       const trees = new Map<number, readonly ProcessReading[]>();
       for (const root of roots) {
-        const readings = tree(root);
-        if (readings) trees.set(root, readings);
+        const found = tree(root);
+        if (found) trees.set(root, found);
       }
       return trees;
     },

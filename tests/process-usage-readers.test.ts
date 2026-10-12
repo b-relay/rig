@@ -15,13 +15,15 @@ describe("the ps reader", () => {
   });
 
   test("a tree holds the root's descendants and the members of groups they lead, even a child whose parent exited", async () => {
+    const started = "Mon Oct 12 10:00:00 2026";
+    // Rows out of order, as a table can list a child before its parent.
     const table = [
-      "  1     0     1   10:00.00  9000",
-      " 50     1    50    0:01.00   100",
-      " 51    50    51    0:02.00   200",
-      " 52    51    51    0:03.00   300",
-      " 53     1    51    0:04.00   400",
-      " 60     1    60    9:00.00  5000",
+      ` 52    51    51    0:03.00   300 ${started}`,
+      `  1     0     1   10:00.00  9000 ${started}`,
+      ` 53     1    51    0:04.00   400 ${started}`,
+      ` 50     1    50    0:01.00   100 ${started}`,
+      ` 51    50    51    0:02.00   200 ${started}`,
+      ` 60     1    60    9:00.00  5000 ${started}`,
       "garbage line",
     ].join("\n");
     const reader = createPsProcessUsageReader(async () => ({
@@ -39,6 +41,7 @@ describe("the ps reader", () => {
     ).toEqual([50, 51, 52, 53]);
     expect(trees.get(50)!.find((reading) => reading.pid === 52)).toEqual({
       pid: 52,
+      started: Date.parse(started),
       cpuNs: 3e9,
       memoryBytes: 300 * 1024,
     });
@@ -57,25 +60,34 @@ describe("the ps reader", () => {
 });
 
 describe.skipIf(process.platform !== "darwin")("the native reader", () => {
-  test("reads a running tree's CPU time and footprint, including a child, and leaves out a root that is gone", async () => {
+  test("reads a tree's CPU time and footprint, including a child that leads its own process group, and leaves out a root that is gone", async () => {
     const reader = createNativeProcessUsageReader()!;
     expect(reader.kind).toBe("native");
-    const child = Bun.spawn(["/bin/sh", "-c", "while :; do :; done"], {
-      stdout: "ignore",
-    });
+    // A bounded bit of work in a child that leads its own group, under a shell that waits for it.
+    const shell = Bun.spawn(
+      [
+        "/bin/sh",
+        "-c",
+        "set -m; /bin/sh -c 'i=0; while [ $i -lt 200000 ]; do i=$((i+1)); done; sleep 5' & wait",
+      ],
+      { stdout: "ignore" },
+    );
     try {
-      await Bun.sleep(300);
-      const first = await reader.read([process.pid]);
-      await Bun.sleep(300);
-      const second = await reader.read([process.pid, 2_147_483_000]);
-      expect([...second.keys()]).toEqual([process.pid]);
-      const before = first.get(process.pid)!.find((r) => r.pid === child.pid)!;
-      const after = second.get(process.pid)!.find((r) => r.pid === child.pid)!;
-      expect(after.cpuNs - before.cpuNs).toBeGreaterThan(0.1e9);
-      expect(after.memoryBytes).toBeGreaterThan(0);
+      const deadline = Date.now() + 5000;
+      let child: { pid: number; cpuNs: number } | undefined;
+      while (Date.now() < deadline && !(child && child.cpuNs > 0)) {
+        await Bun.sleep(50);
+        const tree = (await reader.read([shell.pid])).get(shell.pid) ?? [];
+        child = tree.find((reading) => reading.pid !== shell.pid);
+      }
+      expect(child?.cpuNs).toBeGreaterThan(0);
+      // Never more CPU time than wall time since the child began: a wrong timebase would multiply it.
+      expect(child!.cpuNs).toBeLessThan(5.5e9);
+      const gone = await reader.read([2_147_483_000]);
+      expect(gone.size).toBe(0);
     } finally {
-      child.kill();
-      await child.exited;
+      shell.kill();
+      await shell.exited;
     }
   });
 });

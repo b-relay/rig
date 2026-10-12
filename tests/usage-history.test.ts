@@ -12,22 +12,32 @@ import {
   histogramsOf,
   storedSample,
 } from "../src/domain/usage-minute";
-import { sumSamples, treeUsage } from "../src/domain/usage-sample";
-import { pointsOf, stepFor, summaryOf } from "../src/domain/usage-summary";
+import {
+  cpuByProcess,
+  sumSamples,
+  treeUsage,
+} from "../src/domain/usage-sample";
+import { chartOf, stepFor, summaryOf } from "../src/domain/usage-summary";
 
 const SECOND = 1e9;
 
 describe("treeUsage", () => {
+  const reading = (
+    pid: number,
+    cpuSeconds: number,
+    memoryBytes = 1,
+    started = 1,
+  ) => ({
+    pid,
+    started,
+    cpuNs: cpuSeconds * SECOND,
+    memoryBytes,
+  });
+
   test("CPU is the CPU time the tree gained over the wall time, 100% per busy core", () => {
     const usage = treeUsage({
-      previous: new Map([
-        [10, 4 * SECOND],
-        [11, 1 * SECOND],
-      ]),
-      current: [
-        { pid: 10, cpuNs: 5.5 * SECOND, memoryBytes: 300 },
-        { pid: 11, cpuNs: 2 * SECOND, memoryBytes: 200 },
-      ],
+      previous: cpuByProcess([reading(10, 4), reading(11, 1)]),
+      current: [reading(10, 5.5, 300), reading(11, 2, 200)],
       elapsedNs: SECOND,
       cores: 8,
     });
@@ -36,14 +46,8 @@ describe("treeUsage", () => {
 
   test("a child that started during the interval counts all of its CPU time; one that ended counts none", () => {
     const usage = treeUsage({
-      previous: new Map([
-        [10, SECOND],
-        [12, 9 * SECOND],
-      ]),
-      current: [
-        { pid: 10, cpuNs: 1.2 * SECOND, memoryBytes: 1 },
-        { pid: 13, cpuNs: 0.3 * SECOND, memoryBytes: 1 },
-      ],
+      previous: cpuByProcess([reading(10, 1), reading(12, 9)]),
+      current: [reading(10, 1.2), reading(13, 0.3)],
       elapsedNs: SECOND,
       cores: 8,
     });
@@ -54,7 +58,7 @@ describe("treeUsage", () => {
     expect(
       treeUsage({
         previous: undefined,
-        current: [{ pid: 10, cpuNs: 50 * SECOND, memoryBytes: 7 }],
+        current: [reading(10, 50, 7)],
         elapsedNs: SECOND,
         cores: 8,
       }),
@@ -63,22 +67,30 @@ describe("treeUsage", () => {
 
   test("a long-lived process the previous reading missed cannot push CPU past every core busy", () => {
     const usage = treeUsage({
-      previous: new Map([[10, 0]]),
-      current: [{ pid: 99, cpuNs: 3600 * SECOND, memoryBytes: 1 }],
+      previous: cpuByProcess([reading(10, 0)]),
+      current: [reading(99, 3600)],
       elapsedNs: SECOND,
       cores: 4,
     });
     expect(usage.cpuPercent).toBe(400);
   });
 
-  test("a reused pid whose CPU time went down counts as a new process, never as negative CPU", () => {
-    const usage = treeUsage({
-      previous: new Map([[10, 90 * SECOND]]),
-      current: [{ pid: 10, cpuNs: 0.1 * SECOND, memoryBytes: 1 }],
+  test("a pid another process reuses is a new process, whether its CPU time is lower or higher than the old one's", () => {
+    // The first process used 0.1 s and exited; another got its pid and has used 0.5 s by the next reading.
+    const higher = treeUsage({
+      previous: cpuByProcess([reading(10, 0.1, 1, 100)]),
+      current: [reading(10, 0.5, 1, 200)],
       elapsedNs: SECOND,
       cores: 4,
     });
-    expect(usage.cpuPercent).toBeCloseTo(10);
+    expect(higher.cpuPercent).toBeCloseTo(50);
+    const lower = treeUsage({
+      previous: cpuByProcess([reading(10, 90, 1, 100)]),
+      current: [reading(10, 0.1, 1, 200)],
+      elapsedNs: SECOND,
+      cores: 4,
+    });
+    expect(lower.cpuPercent).toBeCloseTo(10);
   });
 });
 
@@ -173,7 +185,7 @@ describe("chart points", () => {
       at,
       histograms: histogramsOf([{ cpu, memory: 1024 }])!,
     });
-    const points = pointsOf({
+    const { points, summary } = chartOf({
       from: 600,
       to: 900,
       step: 120,
@@ -185,6 +197,7 @@ describe("chart points", () => {
         minute(900, 9),
       ],
     });
+    expect(summary.cpu).toMatchObject({ low: 5, high: 30 });
     expect(points.map((point) => point.at)).toEqual([600, 720, 840]);
     expect(points[0]!.cpu).toMatchObject({ low: 10, high: 30, average: 20 });
     expect(points[0]!.memory).toMatchObject({

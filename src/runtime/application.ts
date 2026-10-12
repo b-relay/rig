@@ -1,3 +1,4 @@
+import type { UsageMonitor } from "./usage-report";
 import { targetSelector } from "../domain/target-selector";
 import type {
   ProjectStatusReader,
@@ -715,6 +716,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ),
         } satisfies ListResult;
       }
+      if (command.action === "monitor" && command.host)
+        return await usage(deps).report({
+          filter: { kind: "host" },
+          range: command.range ?? "1h",
+        });
       if (command.action === "activity" && !command.project) {
         const [state, admin] = await Promise.all([
           deps.store.read(),
@@ -851,6 +857,14 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "config")
         return { project: project.name, ...selection.document };
+      if (command.action === "monitor")
+        return {
+          project: project.name,
+          ...(await usage(deps).report({
+            filter: { kind: "project", projectId: project.id },
+            range: command.range ?? "1h",
+          })),
+        };
       if (command.action === "activity")
         return selectActivity(
           state.activity.filter((o) => o.projectId === project!.id),
@@ -2898,4 +2912,13 @@ function listed(items: string[]): string {
   return items.length < 2
     ? items.join("")
     : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+/** Monitor's history, or the failure a monitor read gets where rigd samples nothing. */
+function usage(deps: Pick<RuntimeDependencies, "usage">): UsageMonitor {
+  if (deps.usage) return deps.usage;
+  throw new RigError(
+    "MONITOR_UNAVAILABLE",
+    "This rigd does not sample CPU and memory.",
+    "Upgrade rigd with rigd install, then try again.",
+  );
 }

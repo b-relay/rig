@@ -1319,6 +1319,31 @@ export const hostConfigSchema = z.strictObject({
     .describe(
       "Size limits for Target logs: each Target's target.jsonl. Every writer reads a change within a few seconds.",
     ),
+  monitor: z
+    .strictObject({
+      detail_hours: z
+        .number()
+        .int()
+        .min(1)
+        .max(168)
+        .default(24)
+        .describe(
+          "Hours every 1-second CPU and memory sample is kept, for the `rig monitor` and dashboard charts of the last hour and day. Older samples survive only in the per-minute history. Default 24; 1 to 168.",
+        ),
+      retention_days: z
+        .number()
+        .int()
+        .min(1)
+        .max(90)
+        .default(7)
+        .describe(
+          "Days the per-minute CPU and memory history is kept, each minute as a distribution so any span still has a true median and peak. Default 7; 1 to 90. About 1 MB per Component per week.",
+        ),
+    })
+    .prefault({})
+    .describe(
+      "How long rigd keeps the CPU and memory it samples from every running Service and Job. rigd reads a change within a few seconds.",
+    ),
   // Retired, not refused: rigd reads this file as it starts, so a refusal would keep it from starting at all.
   alerts: z.unknown().optional().meta({
     deprecated: true,

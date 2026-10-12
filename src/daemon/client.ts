@@ -85,7 +85,8 @@ function validated(command: RuntimeCommand, result: unknown): unknown {
     command.action !== "list" &&
     command.action !== "logs" &&
     command.action !== "activity" &&
-    command.action !== "backups"
+    command.action !== "backups" &&
+    command.action !== "monitor"
   )
     return result;
   const report = readResultSchemas[command.action].safeParse(result);

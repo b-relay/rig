@@ -316,6 +316,28 @@
       },
       "additionalProperties": false
     },
+    "monitor": {
+      "description": "How long rigd keeps the CPU and memory it samples from every running Service and Job. rigd reads a change within a few seconds.",
+      "default": {},
+      "type": "object",
+      "properties": {
+        "detail_hours": {
+          "default": 24,
+          "description": "Hours every 1-second CPU and memory sample is kept, for the `rig monitor` and dashboard charts of the last hour and day. Older samples survive only in the per-minute history. Default 24; 1 to 168.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 168
+        },
+        "retention_days": {
+          "default": 7,
+          "description": "Days the per-minute CPU and memory history is kept, each minute as a distribution so any span still has a true median and peak. Default 7; 1 to 90. About 1 MB per Component per week.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 90
+        }
+      },
+      "additionalProperties": false
+    },
     "alerts": {
       "deprecated": true,
       "description": "No longer used: Rig sends no alerts. The section is ignored, and rig doctor asks you to delete it."

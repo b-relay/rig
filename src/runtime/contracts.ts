@@ -79,6 +79,7 @@ import type { LogFilter } from "../domain/log-filter";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
+import type { UsageMonitor } from "./usage-report";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
 import type { HealthResults } from "./health-monitor";
@@ -264,6 +265,9 @@ export interface RuntimeDependencies {
   proxy?: ProxyControl;
   /** DNS record management (ADR 0018); absent where rigd offers none, as in most tests. */
   dns?: DnsControl;
+  /** CPU and memory history for Monitor; absent where rigd samples nothing, as in most tests. `monitor` then fails
+   * MONITOR_UNAVAILABLE, and a forget has no history to remove. */
+  usage?: UsageMonitor;
   store: StateStore;
   documents: ProjectDocuments;
   sources: DeploymentSources;

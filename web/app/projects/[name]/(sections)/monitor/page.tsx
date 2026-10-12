@@ -4,6 +4,7 @@ import {
   bytes,
   chartReport,
   percent,
+  presetWindow,
   rangeOf,
   type ChartReport,
 } from "@/lib/usage";
@@ -30,13 +31,19 @@ export default async function ProjectMonitorPage({
   const query = await searchParams;
   const range = rangeOf(query.range);
   const [usage, doctor, activity, status] = await Promise.all([
-    attempt(read({ action: "monitor", project: found.name, range })),
+    attempt(
+      read({
+        action: "monitor",
+        project: found.name,
+        window: presetWindow(range, Date.now()),
+      }),
+    ),
     attempt(read({ action: "doctor", project: found.name })),
     attempt(read({ action: "activity", project: found.name })),
     projectStatus(found.name),
   ]);
   if (!usage.ok) return <Failure failure={usage.failure} />;
-  const report = chartReport(usage.value);
+  const report = chartReport(usage.value, range);
   const hrefOf = (next: string) =>
     `${projectHref(found.name)}/monitor?${new URLSearchParams({ target: next, range })}`;
   const targets = chipTargets(

@@ -4,6 +4,7 @@ import {
   chartReport,
   markersOf,
   peakOf,
+  presetWindow,
   rangeOf,
   roundedTop,
   stacked,
@@ -12,7 +13,7 @@ import {
 
 const stats = { low: 1, high: 9, average: 4, median: 3, p95: 8 };
 const report: MonitorResult = {
-  range: "1h",
+  since: 1000,
   from: 1000,
   to: 1045,
   step: 15,
@@ -32,7 +33,7 @@ const report: MonitorResult = {
 };
 
 test("the browser gets each point's average and highest sample, null where nothing was sampled", () => {
-  const charted = chartReport(report);
+  const charted = chartReport(report, "1h");
   expect(charted.series[0]!.key).toBe("project:p");
   expect(charted.series[0]!.cpu).toEqual({
     average: [4, null, 6],
@@ -78,7 +79,7 @@ test("Operations in a chart's range become markers toned like their dots; ones o
     { id: "2", action: "up", outcome: "failed", occurredAt: at(1040) },
     { id: "3", action: "up", outcome: "failed", occurredAt: at(900) },
   ];
-  expect(markersOf(operations, chartReport(report))).toEqual([
+  expect(markersOf(operations, chartReport(report, "1h"))).toEqual([
     { at: 1010, tone: "good", label: "deploy · pantry · deployed" },
     { at: 1040, tone: "bad", label: "up · failed" },
   ]);
@@ -89,4 +90,14 @@ test("a range the page does not keep reads as the last hour", () => {
   expect(rangeOf("7d")).toBe("7d");
   expect(rangeOf("30d")).toBe("1h");
   expect(rangeOf(undefined)).toBe("1h");
+});
+
+test("a preset reads the window that ends now and reaches back its length", () => {
+  const now = Date.parse("2026-10-12T12:00:00Z");
+  expect(presetWindow("1h", now)).toEqual({
+    since: "2026-10-12T11:00:00.000Z",
+  });
+  expect(presetWindow("7d", now)).toEqual({
+    since: "2026-10-05T12:00:00.000Z",
+  });
 });

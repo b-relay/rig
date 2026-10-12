@@ -7,7 +7,7 @@ import type {
   DoctorReport,
   QueueResult,
 } from "@/lib/types";
-import { bytes, chartReport, rangeOf } from "@/lib/usage";
+import { bytes, chartReport, presetWindow, rangeOf } from "@/lib/usage";
 import { daemon, read } from "@/server/daemon";
 import { site } from "@/server/site";
 import { Failure, PageHeader } from "@/components/bits";
@@ -35,7 +35,13 @@ export default async function MonitorPage({
     attempt(read({ action: "queue" })),
     attempt(read({ action: "doctor" })),
     attempt(read({ action: "activity" })),
-    attempt(read({ action: "monitor", host: true, range })),
+    attempt(
+      read({
+        action: "monitor",
+        host: true,
+        window: presetWindow(range, Date.now()),
+      }),
+    ),
   ]);
   const operations = activity.ok
     ? (activity.value as ActivityResult).operations
@@ -56,7 +62,7 @@ export default async function MonitorPage({
       />
       {usage.ok ? (
         <HostMonitor
-          initial={chartReport(usage.value)}
+          initial={chartReport(usage.value, range)}
           operations={operations}
           rigd={
             health.ok ? (

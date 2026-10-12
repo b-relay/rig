@@ -1,5 +1,9 @@
 import type { MonitorResult } from "../../src/daemon/protocol";
-import { USAGE_RANGES, type UsageRange } from "../../src/domain/usage-summary";
+import {
+  RANGE_SECONDS,
+  USAGE_RANGES,
+  type UsageRange,
+} from "../../src/domain/usage-summary";
 import { healthOf } from "./health";
 import type { ActivityResult } from "./types";
 
@@ -28,7 +32,8 @@ export interface ChartSeries {
 
 /** What the Monitor pages draw: a `monitor` reply cut to the numbers the charts use, small enough to poll every sample. */
 export interface ChartReport {
-  readonly range: MonitorResult["range"];
+  /** The preset the chart shows: the last hour, day or week. */
+  readonly range: UsageRange;
   /** Unix seconds of the first point, and seconds per point. */
   readonly from: number;
   readonly step: number;
@@ -49,10 +54,21 @@ export function seriesKeyOf(series: UsageSeriesId): string {
     .join(":");
 }
 
-/** Pure: a `monitor` reply as the Monitor pages draw it. */
-export function chartReport(report: MonitorResult): ChartReport {
+/** Pure: the window a preset reads, ending now (`now` in milliseconds). */
+export function presetWindow(
+  range: UsageRange,
+  now: number,
+): { readonly since: string } {
+  return { since: new Date(now - RANGE_SECONDS[range] * 1000).toISOString() };
+}
+
+/** Pure: a `monitor` reply as the Monitor pages draw it, for the preset it was read for. */
+export function chartReport(
+  report: MonitorResult,
+  range: UsageRange,
+): ChartReport {
   return {
-    range: report.range,
+    range,
     from: report.from,
     step: report.step,
     sampledEvery: report.sampledEvery,

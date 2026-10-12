@@ -252,7 +252,7 @@ describe("the usage sampler", () => {
     expect(latest.rig!.memoryBytes).toBe(52);
   });
 
-  test("a helper rigd keeps running is looked into once, while a Job run that starts beside it is still found within a second", async () => {
+  test("a helper rigd keeps running is looked into once more, while a Job run that starts beside it is still found within a second", async () => {
     const trees: Record<number, ScriptedProcess[]> = {
       1: [
         { pid: 1, cores: 0.1, memoryBytes: 50 },
@@ -271,8 +271,8 @@ describe("the usage sampler", () => {
       rig: [1],
     });
     await run(host, sampled, 4);
-    // Only the first pass reads rigd's records: the helper, counted as Rig itself, never sends it back to them.
-    expect(discoveries).toBe(1);
+    // The second pass looks again to confirm the helper is Rig's own; after that it never sends the sampler back.
+    expect(discoveries).toBe(2);
     const job = [
       { pid: 30, cores: 0.01, memoryBytes: 2 },
       { pid: 31, cores: 1, memoryBytes: 300 },
@@ -281,8 +281,39 @@ describe("the usage sampler", () => {
     trees[1] = [...trees[1]!, ...job];
     running = [component("backup", 30, "job")];
     await run(host, sampled, 2);
+    expect(discoveries).toBe(3);
+    expect(latestBy(sampled).backup!.cpuPercent).toBeCloseTo(100);
+  });
+
+  test("a Job run that starts between a look at rigd's records and the read that follows it is found at the next look", async () => {
+    const trees: Record<number, ScriptedProcess[]> = {
+      1: [{ pid: 1, cores: 0.1, memoryBytes: 50 }],
+    };
+    const host = scriptedHost(trees);
+    const job = [
+      { pid: 30, cores: 0.01, memoryBytes: 2 },
+      { pid: 31, cores: 1, memoryBytes: 300 },
+    ];
+    let running: MonitoredProcess[] = [];
+    let discoveries = 0;
+    const sampled = sampler(host, {
+      processes: () => {
+        discoveries++;
+        // The Job starts just after the first look, before the process tree is read.
+        const seen = running;
+        if (discoveries === 1) {
+          trees[30] = job;
+          trees[1] = [...trees[1]!, ...job];
+          running = [component("backup", 30, "job")];
+        }
+        return seen;
+      },
+      rig: [1],
+    });
+    await run(host, sampled, 3);
     expect(discoveries).toBe(2);
     expect(latestBy(sampled).backup!.cpuPercent).toBeCloseTo(100);
+    expect(latestBy(sampled).rig!.memoryBytes).toBe(52);
   });
 
   test("CPU is divided by the time between the reads that returned the counters, however long a read takes", async () => {

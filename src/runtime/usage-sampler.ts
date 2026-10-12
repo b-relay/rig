@@ -110,8 +110,10 @@ export function createUsageSampler(deps: {
   const previous = new Map<string, { at: number; cpu: Map<string, number> }>();
   const minutes = createMinuteBuffer();
   let latest: LatestSample[] = [];
-  /** The processes the last pass counted as Rig itself (by `processKey`): a helper rigd keeps running, such as a
-   * healthcheck command, is new only once. */
+  /** The processes the last pass counted as Rig itself (by `processKey`), and those of them a later look at rigd's
+   * records still found in no Component: a helper rigd keeps running, such as a healthcheck command, is new only once,
+   * while a Job run that began just before a look is new until a look after it. */
+  let seenAsRig = new Set<string>();
   let countedAsRig = new Set<string>();
   let flushDueAt: number | undefined;
   let pruneDueAt: number | undefined;
@@ -161,10 +163,16 @@ export function createUsageSampler(deps: {
   return {
     pass: () =>
       exclusive(async () => {
+        // A look at rigd's records confirms as Rig itself only what was already counted so before it.
+        let confirmable: ReadonlySet<string> = countedAsRig;
+        const rediscover = () => {
+          confirmable = seenAsRig;
+          return discover();
+        };
         running =
           running && deps.elapsed() - running.at < PROCESS_REFRESH_MS
             ? running
-            : await discover();
+            : await rediscover();
         let trees = await deps.reader.read(rootsOf(running));
         let at = deps.elapsed();
         // A process under rigd that is none of the known ones is most often a Job run that just began: read rigd's
@@ -173,7 +181,7 @@ export function createUsageSampler(deps: {
           at - running.at >= NEWCOMER_REFRESH_MS &&
           hasNewcomer(running, trees, countedAsRig)
         ) {
-          running = await discover();
+          running = await rediscover();
           trees = await deps.reader.read(rootsOf(running));
           at = deps.elapsed();
         }
@@ -205,7 +213,10 @@ export function createUsageSampler(deps: {
         ])
           if (!inComponents.has(reading.pid))
             rigReadings.set(reading.pid, reading);
-        countedAsRig = new Set([...rigReadings.values()].map(processKey));
+        seenAsRig = new Set([...rigReadings.values()].map(processKey));
+        countedAsRig = new Set(
+          [...seenAsRig].filter((key) => confirmable.has(key)),
+        );
         const rig =
           rigReadings.size > 0
             ? measure(RIG, [...rigReadings.values()], at)

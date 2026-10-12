@@ -11,14 +11,9 @@ import {
 import { cn } from "@/lib/utils";
 import { CARD, EYEBROW } from "./bits";
 import { UsageChart, type ChartLayer } from "./usage-chart";
-import {
-  CPU_FLOOR,
-  markersOf,
-  MEMORY_FLOOR,
-  Now,
-  SeriesCard,
-} from "./usage-cards";
+import { CPU_FLOOR, MEMORY_FLOOR, Now, SeriesCard } from "./usage-cards";
 import { useUsage } from "./usage-live";
+import { markersOf } from "@/lib/usage";
 
 type Operation = ActivityResult["operations"][number];
 /** Components take the chart colours in turn, starting away from the Project's own blue. */

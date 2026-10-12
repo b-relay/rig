@@ -6,9 +6,12 @@ import {
   roundedTop,
   stacked,
   timeLabel,
+  type ChartMarker,
   type ChartReport,
 } from "@/lib/usage";
 import { cn } from "@/lib/utils";
+
+export type { ChartMarker };
 
 /** One layer of a chart: a series' values of one measure. */
 export interface ChartLayer {
@@ -18,14 +21,6 @@ export interface ChartLayer {
   readonly color: string;
   readonly average: readonly (number | null)[];
   readonly high: readonly (number | null)[];
-}
-
-/** Something that happened, marked on the time axis. */
-export interface ChartMarker {
-  /** Unix seconds. */
-  readonly at: number;
-  readonly tone: "good" | "warn" | "bad";
-  readonly label: string;
 }
 
 const TONE = {

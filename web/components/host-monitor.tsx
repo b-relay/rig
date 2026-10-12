@@ -15,8 +15,9 @@ import { cn } from "@/lib/utils";
 import { CARD, EYEBROW } from "./bits";
 import { ProjectIcon } from "./project-icon";
 import { UsageChart, type ChartLayer } from "./usage-chart";
-import { CPU_FLOOR, markersOf, MEMORY_FLOOR, SeriesCard } from "./usage-cards";
+import { CPU_FLOOR, MEMORY_FLOOR, SeriesCard } from "./usage-cards";
 import { useUsage } from "./usage-live";
+import { markersOf } from "@/lib/usage";
 import { SideCard } from "./monitor-side";
 
 type Operation = ActivityResult["operations"][number];

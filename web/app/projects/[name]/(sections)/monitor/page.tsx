@@ -1,6 +1,12 @@
 import { attempt } from "@/lib/outcome";
 import type { ActivityResult, DoctorReport } from "@/lib/types";
-import { bytes, chartReport, percent, type ChartReport } from "@/lib/usage";
+import {
+  bytes,
+  chartReport,
+  percent,
+  rangeOf,
+  type ChartReport,
+} from "@/lib/usage";
 import { projectHref } from "@/lib/target";
 import { read } from "@/server/daemon";
 import { project } from "@/server/project";
@@ -9,7 +15,7 @@ import { Failure } from "@/components/bits";
 import { ActivityFeed, DoctorList, SideCard } from "@/components/monitor-side";
 import { ProjectMonitor } from "@/components/project-monitor";
 import { TargetChip, type ChipTarget } from "@/components/target-chip";
-import { RangeTabs, rangeOf } from "@/components/usage-range";
+import { RangeTabs } from "@/components/usage-range";
 
 /** One Project's CPU and memory, Target by Target, beside its Doctor checks and its Activity. `?target=` picks the
  * Target (`all` for every one together; stable when it has history, else the first Target), `?range=` the span. */

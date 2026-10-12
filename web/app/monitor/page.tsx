@@ -7,8 +7,7 @@ import type {
   DoctorReport,
   QueueResult,
 } from "@/lib/types";
-import { chartReport } from "@/lib/usage";
-import { bytes } from "@/lib/usage";
+import { bytes, chartReport, rangeOf } from "@/lib/usage";
 import { daemon, read } from "@/server/daemon";
 import { site } from "@/server/site";
 import { Failure, PageHeader } from "@/components/bits";
@@ -20,7 +19,7 @@ import {
   SideCard,
 } from "@/components/monitor-side";
 import { RigdControls } from "@/components/rigd-controls";
-import { RangeTabs, rangeOf } from "@/components/usage-range";
+import { RangeTabs } from "@/components/usage-range";
 
 export const metadata: Metadata = { title: "Monitor" };
 /** This Mac at a glance: rigd and its queue, Doctor's Host checks, Activity for every Project, and what every Project,

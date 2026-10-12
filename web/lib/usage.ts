@@ -1,4 +1,9 @@
 import type { MonitorResult } from "../../src/daemon/protocol";
+import { USAGE_RANGES, type UsageRange } from "../../src/domain/usage-summary";
+import { healthOf } from "./health";
+import type { ActivityResult } from "./types";
+
+type Operation = ActivityResult["operations"][number];
 
 type ReportedSeries = MonitorResult["series"][number];
 export type UsageSeriesId = ReportedSeries["series"];
@@ -124,4 +129,62 @@ export function timeLabel(
     minute: "2-digit",
     ...(timeZone ? { timeZone } : {}),
   }).format(new Date(at * 1000));
+}
+
+/** Pure: the range a page's `?range=` asks for, or 1h when it names none Rig keeps. */
+export function rangeOf(value: string | undefined): UsageRange {
+  return (USAGE_RANGES as readonly string[]).includes(value ?? "")
+    ? (value as UsageRange)
+    : "1h";
+}
+
+/** Something that happened, marked on a chart's time axis. */
+export interface ChartMarker {
+  /** Unix seconds. */
+  readonly at: number;
+  readonly tone: "good" | "warn" | "bad";
+  readonly label: string;
+}
+
+/** Pure: how an Operation's outcome reads as a marker, as its dot reads everywhere else: `undefined` for an outcome
+ * with no tone, which gets no marker. */
+export function toneOfOutcome(
+  outcome: string,
+): ChartMarker["tone"] | undefined {
+  const health = healthOf(outcome);
+  return health === "green"
+    ? "good"
+    : health === "red"
+      ? "bad"
+      : health === "orange"
+        ? "warn"
+        : undefined;
+}
+
+/** Pure: the Operations that fall in a report's range, as markers on its time axis. */
+export function markersOf(
+  operations: readonly Operation[],
+  report: Pick<ChartReport, "from" | "step" | "series">,
+): ChartMarker[] {
+  const count = report.series[0]?.cpu.average.length ?? 0;
+  const end = report.from + count * report.step;
+  return operations.flatMap((operation) => {
+    const at = Date.parse(operation.occurredAt) / 1000;
+    const tone = toneOfOutcome(operation.outcome);
+    if (!(at >= report.from && at < end) || !tone) return [];
+    return [
+      {
+        at,
+        tone,
+        label: [
+          operation.action,
+          operation.project,
+          operation.target,
+          operation.outcome,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      },
+    ];
+  });
 }

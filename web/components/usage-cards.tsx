@@ -3,7 +3,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import type { ActivityResult } from "@/lib/types";
-import { healthOf } from "@/lib/health";
 import {
   bytes,
   percent,
@@ -20,49 +19,6 @@ type Operation = ActivityResult["operations"][number];
 /** The scale's lowest top for CPU (a quarter of a core) and memory (64 MB): an idle chart is not a scale of noise. */
 export const CPU_FLOOR = 25;
 export const MEMORY_FLOOR = 64e6;
-
-/** Pure: how an Operation's outcome reads as a marker, as its dot reads everywhere else: `undefined` for an outcome
- * with no tone, which gets no marker. */
-export function toneOfOutcome(
-  outcome: string,
-): ChartMarker["tone"] | undefined {
-  const health = healthOf(outcome);
-  return health === "green"
-    ? "good"
-    : health === "red"
-      ? "bad"
-      : health === "orange"
-        ? "warn"
-        : undefined;
-}
-
-/** Pure: the Operations that fall in a report's range, as markers on its time axis. */
-export function markersOf(
-  operations: readonly Operation[],
-  report: Pick<ChartReport, "from" | "step" | "series">,
-): ChartMarker[] {
-  const count = report.series[0]?.cpu.average.length ?? 0;
-  const end = report.from + count * report.step;
-  return operations.flatMap((operation) => {
-    const at = Date.parse(operation.occurredAt) / 1000;
-    const tone = toneOfOutcome(operation.outcome);
-    if (!(at >= report.from && at < end) || !tone) return [];
-    return [
-      {
-        at,
-        tone,
-        label: [
-          operation.action,
-          operation.project,
-          operation.target,
-          operation.outcome,
-        ]
-          .filter(Boolean)
-          .join(" · "),
-      },
-    ];
-  });
-}
 
 /** One series' card: its name, what it uses now in large type, its CPU and memory charts with median and peak, and the
  * latest things that happened to it. A series with nothing sampled in the range says so. */

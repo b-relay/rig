@@ -1,8 +1,14 @@
 import { expect, test } from "bun:test";
 import type { MonitorResult } from "../src/daemon/protocol";
-import { markersOf, toneOfOutcome } from "../web/components/usage-cards";
-import { rangeOf } from "../web/components/usage-range";
-import { chartReport, peakOf, roundedTop, stacked } from "../web/lib/usage";
+import {
+  chartReport,
+  markersOf,
+  peakOf,
+  rangeOf,
+  roundedTop,
+  stacked,
+  toneOfOutcome,
+} from "../web/lib/usage";
 
 const stats = { low: 1, high: 9, average: 4, median: 3, p95: 8 };
 const report: MonitorResult = {

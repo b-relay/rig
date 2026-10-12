@@ -637,9 +637,10 @@ describe("usage report windows", () => {
     expect(web_.points.at(-1)!.cpu!.high).toBeCloseTo(99);
   });
 
-  test("a window between whole seconds counts the samples inside it, not the second it starts in", async () => {
+  test("a window between whole seconds counts the samples inside it at both ends, not the seconds it starts or ends in", async () => {
+    const at = [990, 200, 300, 500];
     const slots = full(100).map((slot, index) =>
-      index === 0 ? { cpu: 990, memory: 100 } : slot,
+      index < at.length ? { cpu: at[index]!, memory: 100 } : slot,
     );
     await history.write([{ series: web, minute, slots }]);
     const since = START / 1000 + 0.5;
@@ -655,8 +656,8 @@ describe("usage report windows", () => {
     const web_ = report.series.find(
       (each) => each.series.scope === "component",
     )!;
-    // Seconds 1 and 2 count; second 0, with its spike, starts before the window.
-    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+    // From 0.5 up to 2.5: seconds 1 and 2 count; second 0 starts before the window, second 3 after it.
+    expect(web_.summary.cpu).toMatchObject({ low: 20, high: 30 });
   });
 
   test("on the minute history, the minutes a window starts and ends inside count only their seconds inside it", async () => {
@@ -688,6 +689,56 @@ describe("usage report windows", () => {
     expect(
       Math.max(...web_.points.map((point) => point.cpu?.high ?? 0)),
     ).toBeCloseTo(99);
+  });
+
+  test("a boundary minute the sampler still holds unwritten is read second by second too", async () => {
+    // Four hours of 10%, the last minute held in memory with a spike after the window's end.
+    const last = minute + 240;
+    await history.write([{ series: web, minute, slots: full(100) }]);
+    const held = full(100).map((slot, index) =>
+      index === 20 ? { cpu: 990, memory: 100 } : slot,
+    );
+    const until = last * 60 + 10;
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: until - 4 * 3600, until },
+      detailSince: START / 1000,
+      now: (last * 60 + 30) * 1000,
+      sampledEvery: 1,
+      history,
+      snapshot: {
+        latest: [],
+        pending: [{ series: web, minute: last, slots: held }],
+      },
+    });
+    expect(report.step).toBeGreaterThanOrEqual(60);
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
+  });
+
+  test("a boundary minute whose seconds were pruned counts whole, even after detail retention grows again", async () => {
+    await history.write([{ series: web, minute, slots: full(100) }]);
+    // detail_hours was 1 when this prune ran; it has since been raised, so detailSince now reaches back past the minute.
+    await history.prune({
+      detailBefore: START / 1000 + 3600,
+      historyBefore: START / 1000 - 86_400,
+    });
+    const until = START / 1000 + 30;
+    const report = await usageReport({
+      filter: PROJECT,
+      window: { since: until - 4 * 3600, until },
+      detailSince: START / 1000 - 3600,
+      now: START + 5 * 3_600_000,
+      sampledEvery: 1,
+      history,
+      snapshot: { latest: [], pending: [] },
+    });
+    const web_ = report.series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
   });
 
   test("a window wholly in the future is one empty step, never an inverted one", async () => {

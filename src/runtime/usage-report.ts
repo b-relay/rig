@@ -105,7 +105,7 @@ export async function usageReport(input: {
     });
   const entries = await read({ from, to, detail });
 
-  // The minutes the window starts or ends inside, while their seconds are kept: the summary reads them second by second.
+  // The minutes the window starts or ends inside: the summary reads them second by second where their seconds are kept.
   const boundaries = detail
     ? []
     : [
@@ -138,12 +138,18 @@ export async function usageReport(input: {
   const series = [...entries.entries()]
     .map(([key, { series, spans }]): UsageReportSeries => {
       const now = fresh.get(key);
-      const summarized = boundaries.length
+      // A boundary minute is replaced by its seconds only where this series has them; once they are pruned (whatever
+      // detail retention says now) the whole minute counts from its start.
+      const finer = boundaries.flatMap((start, index) => {
+        const seconds = boundarySeconds[index]!.get(key)?.spans ?? [];
+        return seconds.length ? [{ start, seconds }] : [];
+      });
+      const summarized = finer.length
         ? [
-            ...spans.filter((each) => !boundaries.includes(each.at)),
-            ...boundarySeconds.flatMap(
-              (seconds) => seconds.get(key)?.spans ?? [],
+            ...spans.filter(
+              (each) => !finer.some(({ start }) => start === each.at),
             ),
+            ...finer.flatMap(({ seconds }) => seconds),
           ]
         : spans;
       const { summary, points } = chartOf({

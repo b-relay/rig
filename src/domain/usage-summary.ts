@@ -78,8 +78,8 @@ export function chartOf(input: {
   readonly to: number;
   readonly step: number;
   readonly window: { readonly since: number; readonly until: number };
-  readonly spans: Iterable<RecordedSpan>;
-  readonly summarized?: Iterable<RecordedSpan>;
+  readonly spans: readonly RecordedSpan[];
+  readonly summarized?: readonly RecordedSpan[];
 }): { readonly summary: UsageSummary; readonly points: UsagePoint[] } {
   const count = Math.max(0, Math.ceil((input.to - input.from) / input.step));
   const groups: UsageHistograms[][] = Array.from({ length: count }, () => []);

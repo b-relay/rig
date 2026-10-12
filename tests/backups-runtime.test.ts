@@ -379,11 +379,13 @@ test("a restore runs the job's restore command once in the job's environment, wi
   expect(entries).toEqual([
     expect.objectContaining({
       action: "restore",
+      component: { kind: "job", name: "db-backup" },
       outcome: "started",
       message: "db-backup from 20261011T030001Z-1",
     }),
     expect.objectContaining({
       action: "restore",
+      component: { kind: "job", name: "db-backup" },
       outcome: "succeeded",
       message: expect.stringContaining(
         "db-backup: restore from 20261011T030001Z-1 succeeded in 2s",

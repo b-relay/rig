@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { Failure as ReadFailure } from "@/lib/outcome";
 import type { ActivityResult } from "@/lib/types";
 import {
+  cardActivity,
   cardsOf,
   currentOf,
   markersOf,
@@ -22,8 +23,8 @@ const PALETTE = [2, 4, 1, 5, 3].map((n) => `var(--chart-${n})`);
 /** A Project's Monitor tab. The side column holds the Project's Doctor (one line on a phone while every check passes)
  * and its Activity. The main column stacks the chosen Target's Services and Jobs in one CPU and one memory chart, each
  * component's peak flagged where it happened; with `all`, it stacks the Targets instead. Then a card per Service and
- * Job of that Target, or per Target, each with its own charts. Live: it reads the Project's report again after every
- * sample; the side column stands even while that read fails. */
+ * Job of that Target, or per Target, each with its own charts and its own latest Activity, marked on them too. Live: it
+ * reads the Project's report again after every sample; the side column stands even while that read fails. */
 export function ProjectMonitor({
   project,
   initial,
@@ -110,38 +111,35 @@ export function ProjectMonitor({
         empty="Nothing ran here in this range, so there is nothing to chart."
       />
       <CardGrid>
-        {cards.map((card) => (
-          <SeriesCard
-            key={card.key}
-            series={card.series}
-            report={report}
-            color={colorOf(card.key)}
-            title={
-              <span className="flex min-w-0 items-center gap-2">
-                <span className="truncate font-mono">{card.name}</span>
-                {card.incarnation ? (
-                  <span className="text-xs font-normal text-muted-foreground">
-                    {card.incarnation}
-                  </span>
-                ) : null}
-                {card.kind ? (
-                  <span className="text-xs font-normal text-muted-foreground">
-                    {card.kind}
-                  </span>
-                ) : null}
-              </span>
-            }
-            // Activity names Targets, not Services, so only a Target's card lists its own; a Service's is in the feed.
-            activity={
-              // Activity names a Target or Project, not its incarnation, so only the current one's card lists it.
-              target === "all" && !card.incarnation
-                ? relevant.filter((operation) => operation.target === card.name)
-                : []
-            }
-            markers={[]}
-            now={now}
-          />
-        ))}
+        {cards.map((card) => {
+          const own = cardActivity(card, relevant, target);
+          return (
+            <SeriesCard
+              key={card.key}
+              series={card.series}
+              report={report}
+              color={colorOf(card.key)}
+              title={
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate font-mono">{card.name}</span>
+                  {card.incarnation ? (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {card.incarnation}
+                    </span>
+                  ) : null}
+                  {card.kind ? (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {card.kind}
+                    </span>
+                  ) : null}
+                </span>
+              }
+              activity={own}
+              markers={markersOf(own, report)}
+              now={now}
+            />
+          );
+        })}
       </CardGrid>
     </div>
   ) : (

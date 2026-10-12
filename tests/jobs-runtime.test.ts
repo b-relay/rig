@@ -234,6 +234,26 @@ test("a scheduled time starts a run, a time while it goes is skipped, and the ne
   ]);
 });
 
+test("rig run files its Activity entry under the job it started", async () => {
+  const f = await fixture();
+  await f.runtime.command({
+    action: "run",
+    repoPath: f.world.repo,
+    target: "working",
+    job: "link-resolver",
+    operationId: "run-now",
+  });
+  expect(
+    (await f.world.store.read()).activity.find(
+      (entry) => entry.id === "run-now",
+    ),
+  ).toMatchObject({
+    action: "run",
+    outcome: "started",
+    component: { kind: "job", name: "link-resolver" },
+  });
+});
+
 test("a time is passed over, and recorded so under the lease, when the Target is stopped, turned off in rig.yaml, or reached past the late limit", async () => {
   const f = await fixture();
   const lastScheduled = async () => (await f.record())?.lastScheduled;

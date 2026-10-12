@@ -92,7 +92,7 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   (`pantry / stable`; `working`, a Preview's name, or `all targets`), with the
   Project's Doctor checks (one line on a phone while all pass) and its Activity
   beside the Target's charts and a card per configured Service and Job, sampled
-  or not. The old `/deploy` address redirects to Deployments, and `/doctor` to
+  or not, each listing its own latest Activity and marking it on its charts. The old `/deploy` address redirects to Deployments, and `/doctor` to
   Monitor; `/activity` keeps the Project's full history.
 - **A Target** (`/projects/<name>/targets/<target>`): its state, hostname,
   revision and actions, then Overview (each Service's state, cached health,

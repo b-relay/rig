@@ -11,6 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Tag } from "../web/components/usage-chart";
 import { advancesOf } from "./support/font-advances";
 import {
+  cardActivity,
   cardsOf,
   chartReport,
   currentOf,
@@ -451,4 +452,46 @@ test("points, markers and inspection share one mapping of time to x", () => {
     expect(layout.indexAt(layout.pointX(point))).toBe(point);
   expect(layout.indexAt(-50)).toBe(0);
   expect(layout.indexAt(10_000)).toBe(2);
+});
+
+test("a Monitor card lists and marks only its own Activity: a Target's with all Targets, else its Service's or Job's", () => {
+  const record = (
+    id: string,
+    target: string,
+    component?: { kind: "service" | "job"; name: string },
+  ) => ({
+    id,
+    action: "restart",
+    outcome: "started",
+    occurredAt: "2026-10-10T00:00:00Z",
+    target,
+    ...(component && { component }),
+  });
+  const operations = [
+    record("deploy", "stable"),
+    record("web", "stable", { kind: "service", name: "web" }),
+    record("job", "stable", { kind: "job", name: "web" }),
+    record("preview", "feat-1", { kind: "service", name: "web" }),
+  ];
+  const ids = (each: { id: string }[]) => each.map((operation) => operation.id);
+  expect(ids(cardActivity({ name: "stable" }, operations, "all"))).toEqual([
+    "deploy",
+    "web",
+    "job",
+  ]);
+  // The tab narrows to its Target before cards are matched; a Service and a Job of one name stay apart.
+  const stable = operations.filter((each) => each.target === "stable");
+  expect(
+    ids(cardActivity({ name: "web", kind: "service" }, stable, "stable")),
+  ).toEqual(["web"]);
+  expect(
+    ids(cardActivity({ name: "web", kind: "job" }, stable, "stable")),
+  ).toEqual(["job"]);
+  expect(
+    cardActivity(
+      { name: "web", kind: "service", incarnation: "earlier" },
+      stable,
+      "stable",
+    ),
+  ).toEqual([]);
 });

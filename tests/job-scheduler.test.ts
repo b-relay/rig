@@ -288,6 +288,7 @@ test("a due time starts one run, which is recorded as it ends with its exit, and
       id: "id1",
       project: "melody",
       target: "stable",
+      component: { kind: "job", name: "link-resolver" },
       action: "job",
       outcome: "succeeded",
       message: "link-resolver: succeeded in 3m12s",
@@ -320,6 +321,10 @@ test("a time due while the run before it still goes is skipped and recorded once
   expect(w.started.length).toBe(1);
   expect(w.record("artist-images")!.running).toMatchObject({ skipped: 2 });
   expect(w.store.state.activity.map((a) => a.outcome)).toEqual(["skipped"]);
+  expect(w.store.state.activity[0]!.component).toEqual({
+    kind: "job",
+    name: "artist-images",
+  });
   expect(w.store.state.activity[0]!.message).toContain(
     "skipped the run scheduled for 2026-10-10T17:20:00.000Z",
   );

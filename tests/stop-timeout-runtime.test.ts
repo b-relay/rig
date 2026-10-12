@@ -1128,6 +1128,7 @@ test("a health restart stops the Service within its stop_timeout under its Targe
     action: "health-restart",
     outcome: "started",
     target: "working",
+    component: { kind: "service", name: "web" },
     message:
       "web was restarted because it is unhealthy: 3 health checks in a row failed (last output: HTTP 503) (health restart 2).",
   });

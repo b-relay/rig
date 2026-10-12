@@ -65,7 +65,7 @@ async function fixture(usage?: UsageMonitor) {
 
 /** A Monitor that records what it is asked and answers with an empty report. */
 function recordingMonitor(options: { failForget?: boolean } = {}) {
-  const asked: unknown[] = [];
+  const asked: Parameters<UsageMonitor["report"]>[0][] = [];
   const forgotten: string[] = [];
   const monitor: UsageMonitor = {
     async report(request) {

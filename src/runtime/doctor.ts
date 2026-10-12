@@ -215,7 +215,9 @@ async function orphanedToolsCheck(
         ? "Nothing needs doing to keep using them: a deploy or rig up that publishes a Tool of the same name replaces one. Delete one you no longer want."
         : "",
       changed.length
-        ? "Move or delete a changed one to keep or discard that change; a Target can then publish there."
+        ? changed.some((tool) => rigOwn.includes(tool.destination))
+          ? "Move or delete a changed one to keep or discard that change, except rig and rigd: replace a changed one of those by copying the bytes you want to a temporary name beside it and renaming that over it. A Target can then publish there."
+          : "Move or delete a changed one to keep or discard that change; a Target can then publish there."
         : "",
       rigOwn.length
         ? `Never delete ${rigOwn.join(" or ")}: ${rigOwn.length === 1 ? "it is" : "they are"} Rig itself, and rigd's system job runs ${join(deps.root, "bin", "rigd")}. Only the repository that published ${rigOwn.length === 1 ? "it" : "them"} takes ${rigOwn.length === 1 ? "it" : "them"} over: register it (any clone) again and deploy its stable Target. One published before Rig recorded its repository goes to no one; upgrade with the manual steps of the rig:rigd skill's upgrade reference.`

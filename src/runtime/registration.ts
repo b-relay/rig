@@ -166,9 +166,8 @@ async function forgottenWarnings(
   // rigd's system job runs <RIG_ROOT>/bin/rigd: forgetting Rig's own Project must never lead anyone to delete it, and only
   // this Project registered again takes rig and rigd over.
   const daemon = join(deps.root, "bin", "rigd");
-  const rigItself = tools.some((path) =>
-    [daemon, join(deps.root, "bin", "rig")].includes(path),
-  );
+  const rigBinaries = [join(deps.root, "bin", "rig"), daemon];
+  const rigItself = tools.some((path) => rigBinaries.includes(path));
   return [
     ...targets
       .filter((t) => t.kind === "stable")
@@ -186,9 +185,23 @@ async function forgottenWarnings(
         ]
       : []),
     ...(changed.length
-      ? [
-          `Its Tools ${changed.join(", ")} changed since Rig published them and stay as they are: Rig never replaces or removes them, so publishing a Tool there is refused (ARTIFACT_CHANGED) until you move or delete ${changed.length === 1 ? "it" : "them"}.`,
-        ]
+      ? (() => {
+          // rig and rigd are never to be moved or deleted (launchd runs bin/rigd): only replaced atomically, in place.
+          const own = changed.filter((path) => rigBinaries.includes(path));
+          const other = changed.filter((path) => !rigBinaries.includes(path));
+          return [
+            ...(other.length
+              ? [
+                  `Its Tools ${other.join(", ")} changed since Rig published them and stay as they are: Rig never replaces or removes them, so publishing a Tool there is refused (ARTIFACT_CHANGED) until you move or delete ${other.length === 1 ? "it" : "them"}.`,
+                ]
+              : []),
+            ...(own.length
+              ? [
+                  `${own.join(" and ")} changed since Rig published ${own.length === 1 ? "it" : "them"} and ${own.length === 1 ? "stays" : "stay"} as ${own.length === 1 ? "it is" : "they are"}. Never move or delete ${own.length === 1 ? "it" : "them"}: rigd's system job runs ${daemon}. To publish Rig there again, replace ${own.length === 1 ? "it" : "each"} with the bytes you want by copying them to a temporary name beside it and renaming that over it (the rig:rigd skill's upgrade reference), then deploy.`,
+                ]
+              : []),
+          ];
+        })()
       : []),
   ];
 }

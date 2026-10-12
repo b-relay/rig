@@ -185,7 +185,9 @@ export function createArtifactOwnership(
         throw new RigError(
           "ARTIFACT_CHANGED",
           `The installed executable ${identity.destination} changed since Rig published it for ${describeOwner(saved)}, whose Target no longer exists.`,
-          `Rig never replaces or removes an executable that changed. Move or delete ${identity.destination} to keep or discard that change, then retry.`,
+          rigItself.has(identity.destination)
+            ? `Rig never replaces or removes an executable that changed. Never move or delete ${identity.destination}: rigd's system job runs bin/rigd. Replace it with the bytes you want by copying them to a temporary name beside it and renaming that over it (the rig:rigd skill's upgrade reference), then retry.`
+            : `Rig never replaces or removes an executable that changed. Move or delete ${identity.destination} to keep or discard that change, then retry.`,
           {
             destination: identity.destination,
             owner: ownerDetails(saved),

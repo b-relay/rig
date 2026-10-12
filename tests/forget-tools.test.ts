@@ -647,6 +647,46 @@ test("forget names a Tool edited since Rig published it apart: it stays, and pub
   expect(await w.tool("ledger")).toBe("#!/bin/sh\necho edited\n");
 });
 
+test("a hand-edited rigd is never to be moved or deleted: forget, the refused takeover and doctor all say to replace it in place", async () => {
+  const w = await rigWorld();
+  await w.registerAndDeploy("rig");
+  await w.stop("rig");
+  const daemon = w.bin("rigd");
+  const edited = "#!/bin/sh\necho rigd edited by hand\n";
+  await writeFile(daemon, edited);
+  const forgotten = (await w.runtime.command({
+    action: "forget",
+    project: "rig",
+  })) as { warnings: string[] };
+  const warning = forgotten.warnings.find((line) =>
+    line.startsWith(`${daemon} changed since Rig published it`),
+  );
+  expect(warning).toContain("Never move or delete it");
+  expect(warning).toContain("renaming that over it");
+  expect(forgotten.warnings).not.toContainEqual(
+    expect.stringContaining("until you move or delete"),
+  );
+  expect((await w.doctor()).checks).toContainEqual(
+    expect.objectContaining({
+      name: "tool-owners",
+      reason: "tool-changed",
+      hint: expect.stringContaining(
+        "except rig and rigd: replace a changed one of those by copying the bytes you want to a temporary name beside it and renaming that over it",
+      ),
+    }),
+  );
+  w.rebuild("v2");
+  const refused = w.registerAndDeploy("rig");
+  await expect(refused).rejects.toMatchObject({
+    code: "ARTIFACT_CHANGED",
+    hint: expect.stringContaining(`Never move or delete ${daemon}`),
+  });
+  await expect(refused).rejects.not.toMatchObject({
+    hint: expect.stringContaining(`Move or delete ${daemon}`),
+  });
+  expect(await w.tool("rigd")).toBe(edited);
+});
+
 test("two repositories both named rig: once Rig is forgotten, only a clone of the repository that published rigd takes it over", async () => {
   const w = await rigWorld();
   await w.registerAndDeploy("rig");

@@ -84,45 +84,65 @@ const projectReport: MonitorResult = {
   ],
 };
 
-/** A terminal that understands what the monitor writes: the alternate screen, drawing from the top-left corner, and
- * text that wraps at the width and scrolls past the last row, so a test sees what a person would. The main screen
- * starts with earlier output, which nothing should disturb. */
+/** A terminal that understands what the CLI writes: the alternate screen, cursor home, up and return, and erasing to
+ * the end of the screen or all of it, on whichever screen is showing. Text wraps at the width and scrolls past the last
+ * row, so a test sees what a person would; any other control sequence fails the test. The main screen starts with
+ * earlier output, which nothing should disturb. */
 function screenOf(size: { columns?: number; rows?: number }) {
-  const main = ["$ earlier output"];
-  let alternate: string[] | undefined;
-  let column = 0;
+  type Screen = { rows: string[]; row: number; column: number };
+  const main: Screen = { rows: ["$ earlier output", ""], row: 1, column: 0 };
+  let alternate: Screen | undefined;
   let wrapped = false;
   let scrolled = false;
-  const put = (screen: string[], text: string) => {
-    for (const [index, piece] of text.split("\n").entries()) {
-      if (index > 0) {
-        screen.push("");
-        column = 0;
+  const showing = () => alternate ?? main;
+  const put = (text: string) => {
+    const screen = showing();
+    for (const character of text) {
+      if (character === "\n") {
+        screen.row++;
+        screen.column = 0;
+        screen.rows[screen.row] ??= "";
+      } else if (character === "\r") screen.column = 0;
+      else {
+        screen.rows[screen.row] += character;
+        screen.column += Bun.stringWidth(character);
+        if (size.columns !== undefined && screen.column > size.columns)
+          wrapped = true;
       }
-      screen[screen.length - 1] += piece;
-      column += Bun.stringWidth(piece);
-      if (size.columns !== undefined && column > size.columns) wrapped = true;
     }
-    if (screen === alternate && screen.length > (size.rows ?? Infinity))
+    if (alternate && alternate.rows.length > (size.rows ?? Infinity))
       scrolled = true;
   };
-  main.push("");
+  const control = (sequence: string) => {
+    const screen = showing();
+    if (sequence === "\x1b[?1049h")
+      alternate = { rows: [""], row: 0, column: 0 };
+    else if (sequence === "\x1b[?1049l") alternate = undefined;
+    else if (sequence === "\x1b[H")
+      Object.assign(screen, { row: 0, column: 0 });
+    else if (sequence === "\x1b[J")
+      screen.rows = [
+        ...screen.rows.slice(0, screen.row),
+        screen.rows[screen.row]!.slice(0, screen.column),
+      ];
+    else if (sequence === "\x1b[2J") screen.rows = screen.rows.map(() => "");
+    else if (/^\x1b\[\d+A$/.test(sequence))
+      screen.row = Math.max(0, screen.row - Number(sequence.slice(2, -1)));
+    else
+      throw new Error(
+        `unexpected control sequence ${JSON.stringify(sequence)}`,
+      );
+  };
   return {
     write(text: string) {
-      for (const part of text.split(/(\x1b\[\?1049[hl]|\x1b\[H\x1b\[J)/)) {
-        if (part === "\x1b[?1049h" || part === "\x1b[?1049l") {
-          alternate = part.endsWith("h") ? [""] : undefined;
-          column = 0;
-        } else if (part === "\x1b[H\x1b[J") {
-          if (alternate) alternate = [""];
-          column = 0;
-        } else if (part) put(alternate ?? main, part);
-      }
+      for (const part of text.split(/(\x1b\[[0-9;?]*[A-Za-z])/))
+        if (part.startsWith("\x1b")) control(part);
+        else if (part) put(part);
     },
     /** The rows of the screen showing now, without the empty row the cursor waits on. */
     lines: () => {
-      const screen = alternate ?? main;
-      return screen.at(-1) === "" ? screen.slice(0, -1) : screen;
+      const { rows } = showing();
+      return rows.at(-1) === "" ? rows.slice(0, -1) : rows;
     },
     alternate: () => alternate !== undefined,
     wrapped: () => wrapped,
@@ -141,6 +161,7 @@ function harness(
   let err = "";
   const stop = new AbortController();
   let waits = 0;
+  const delays: number[] = [];
   const deps = {
     root: "/isolated/.rig",
     cwd: "/workspace/fletcher",
@@ -168,7 +189,8 @@ function harness(
     newOperationId: () => "op-1",
     signal: stop.signal,
     /** Three redraws a second apart, then Ctrl-C. */
-    wait: async () => {
+    wait: async (ms: number) => {
+      delays.push(ms);
       if (++waits === 3) stop.abort();
     },
     now: () => new Date(Date.UTC(2026, 9, 12, 10, 0, waits)),
@@ -183,6 +205,7 @@ function harness(
     out: () => out,
     err: () => err,
     screen: shown,
+    delays,
   };
 }
 
@@ -452,6 +475,9 @@ test("a line is cut by display width, so wide characters never push it past the 
   expect(fitted("abc", 2)).toBe("…");
   expect(fitted("abc", 1)).toBe("");
   expect(fitted("ab", 3)).toBe("ab");
+  // An emoji with its variation selector is one character two cells wide, never split from its selector.
+  expect(fitted("❤️❤️❤️❤️❤️", 7)).toBe("❤️❤️…");
+  expect(Bun.stringWidth(fitted("❤️❤️❤️❤️❤️", 4))).toBeLessThan(4);
 });
 
 test("a read that fails while watching ends the watch with that failure", async () => {
@@ -469,6 +495,32 @@ test("a read that fails while watching ends the watch with that failure", async 
   );
   expect(await runRigCli(["monitor"], h.deps)).toBe(1);
   expect(h.err()).toContain("rigd is not answering.");
+  // The watch left the alternate screen and kept the last table below the earlier output.
+  expect(h.screen.alternate()).toBe(false);
+  expect(h.screen.lines()[0]).toBe("$ earlier output");
+  expect(h.screen.lines()[1]).toStartWith("fletcher · the last 1h");
+});
+
+test("with --until on a terminal the table is printed once, on the main screen", async () => {
+  const h = harness(() => projectReport, { columns: 100, rows: 40 });
+  expect(
+    await runRigCli(["monitor", "--since", "2h", "--until", "1h"], h.deps),
+  ).toBe(0);
+  expect(h.requests.length).toBe(1);
+  expect(h.out()).not.toContain("\x1b[?1049h");
+  expect(h.screen.lines()[1]).toStartWith("fletcher · from 2h ago to 1h ago");
+});
+
+test("the watch reads again at the pace rigd samples: every second, or every five on the fallback reader", async () => {
+  const native = harness(() => projectReport, { columns: 100, rows: 40 });
+  await runRigCli(["monitor"], native.deps);
+  expect(native.delays).toEqual([1000, 1000, 1000]);
+  const fallback = harness(() => ({ ...projectReport, sampledEvery: 5 }), {
+    columns: 100,
+    rows: 40,
+  });
+  await runRigCli(["monitor"], fallback.deps);
+  expect(fallback.delays).toEqual([5000, 5000, 5000]);
 });
 
 test("--json prints the report once, even on a terminal", async () => {

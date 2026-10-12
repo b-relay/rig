@@ -68,16 +68,19 @@ export function screenView(
   };
 }
 
-/** Pure: `text` cut to take fewer than `width` terminal cells (so it never wraps), ending in `…` when cut. */
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** Pure: `text` cut to take fewer than `width` terminal cells (so it never wraps), ending in `…` when cut. It is cut
+ * between whole characters as the terminal draws them, so an emoji with its modifiers is measured as one. */
 export function fitted(text: string, width: number): string {
   if (Bun.stringWidth(text) < width) return text;
   if (width < 2) return "";
   let kept = "";
   let used = 0;
-  for (const character of text) {
-    used += Bun.stringWidth(character);
+  for (const { segment } of graphemes.segment(text)) {
+    used += Bun.stringWidth(segment);
     if (used > width - 2) break;
-    kept += character;
+    kept += segment;
   }
   return `${kept}…`;
 }

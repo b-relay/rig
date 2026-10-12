@@ -2,14 +2,13 @@ import type { MonitorResult } from "../daemon/protocol";
 import { formatBytes } from "../domain/bytes";
 import { formatCpu as percent } from "../domain/usage-sample";
 import { fitted, padded } from "./live-region";
+import { isDuration } from "./log-window";
 import { terminalText } from "./terminal-text";
 
 type ReportedSeries = MonitorResult["series"][number];
 type Stats = NonNullable<ReportedSeries["summary"]["cpu"]>;
 
 const HEADINGS = ["CPU", "median", "peak", "Memory", "median", "peak"];
-/** One or more `<count><unit>` parts, as `--since` and `--until` accept a duration. */
-const DURATION = /^(\d+[smhdw])+$/;
 
 /** The narrowest the name column is cut to, however narrow the terminal. */
 const NAME_FLOOR = 12;
@@ -23,9 +22,9 @@ export function windowWords(input: {
 }): string {
   const since = input.since ?? "1h";
   const time = (value: string) =>
-    DURATION.test(value) ? `${value} ago` : terminalText(value);
+    isDuration(value) ? `${value} ago` : terminalText(value);
   if (input.until === undefined)
-    return DURATION.test(since)
+    return isDuration(since)
       ? `the last ${since}`
       : `since ${terminalText(since)}`;
   return `from ${time(since)} to ${time(input.until)}`;

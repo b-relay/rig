@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import type { MonitorResult } from "../src/daemon/protocol";
+import { chartLayout } from "../web/lib/chart-layout";
 import {
+  cardsOf,
   chartReport,
   markersOf,
   peakOf,
@@ -32,14 +34,70 @@ const report: MonitorResult = {
   ],
 };
 
-test("the browser gets each point's average and highest sample, null where nothing was sampled", () => {
+test("the browser gets each point's average, null where nothing was sampled, where the peak fell and the median", () => {
   const charted = chartReport(report, "1h");
   expect(charted.series[0]!.key).toBe("project:p");
   expect(charted.series[0]!.cpu).toEqual({
     average: [4, null, 6],
-    high: [9, null, 12],
-    stats,
+    peak: { index: 2, value: 12 },
+    median: 3,
   });
+});
+
+test("a Project's report keeps only the chosen Target's Components, and none for all", () => {
+  const component = (target: string) => ({
+    series: {
+      scope: "component" as const,
+      projectId: "p",
+      project: "pantry",
+      targetId: target,
+      target,
+      targetKind: "stable" as const,
+      component: "web",
+      componentKind: "service" as const,
+    },
+    summary: {},
+    points: [],
+  });
+  const both = {
+    ...report,
+    series: [...report.series, component("stable"), component("working")],
+  };
+  const scopes = (target?: string) =>
+    chartReport(both, "1h", target).series.map(
+      (each) => `${each.series.scope}:${each.series.target ?? ""}`,
+    );
+  expect(scopes("stable")).toEqual(["project:", "component:stable"]);
+  expect(scopes("all")).toEqual(["project:"]);
+  expect(scopes()).toHaveLength(3);
+});
+
+test("cards follow the inventory, with an empty card for what was never sampled and one for what it no longer names", () => {
+  const sampled = chartReport(report, "1h").series;
+  const cards = cardsOf(
+    [{ name: "pantry" }, { name: "fletcher" }],
+    [
+      ...sampled,
+      { ...sampled[0]!, series: { ...sampled[0]!.series, project: "gone" } },
+    ],
+    (each) => ({ name: each.series.project! }),
+  );
+  expect(cards.map((card) => [card.name, card.series !== undefined])).toEqual([
+    ["pantry", true],
+    ["fletcher", false],
+    ["gone", true],
+  ]);
+  // A Service and a Job of the same name are different cards.
+  expect(
+    cardsOf(
+      [
+        { name: "web", kind: "service" },
+        { name: "web", kind: "job" },
+      ],
+      [],
+      () => ({ name: "" }),
+    ).map((card) => card.key),
+  ).toEqual(["service:web", "job:web"]);
 });
 
 test("stacked layers keep running totals, treat a silent layer as zero, and leave a gap only where every layer is silent", () => {
@@ -100,4 +158,68 @@ test("a preset reads the window that ends now and reaches back its length", () =
   expect(presetWindow("7d", now)).toEqual({
     since: "2026-10-05T12:00:00.000Z",
   });
+});
+
+const box = {
+  width: 400,
+  height: 140,
+  pad: { top: 22, right: 6, bottom: 18, left: 40 },
+};
+const label = (layer: number) => `layer ${layer}`;
+
+test("a stacked layer's peak sits on the layers below it, and the scale reaches above it", () => {
+  const layout = chartLayout({
+    ...box,
+    layers: [
+      { average: [90, 90, 90] },
+      { average: [10, 10, 10], peak: { index: 1, value: 150 } },
+    ],
+    from: 0,
+    step: 10,
+    floor: 25,
+    labelOf: label,
+  });
+  expect(layout.top).toBe(500);
+  const flag = layout.flags[0]!;
+  expect(flag.y).toBeCloseTo(layout.y(240));
+  expect(flag.y).toBeGreaterThanOrEqual(layout.plot.top);
+});
+
+test("every layer's peak is flagged, and crowded labels are moved apart, never dropped", () => {
+  const layout = chartLayout({
+    ...box,
+    layers: [0, 1, 2, 3].map((index) => ({
+      average: [1, 1, 1, 1],
+      peak: { index: 2, value: 100 - index },
+    })),
+    from: 0,
+    step: 10,
+    floor: 25,
+    labelOf: label,
+  });
+  expect(layout.flags.map((flag) => flag.layer).sort()).toEqual([0, 1, 2, 3]);
+  const baselines = layout.flags.map((flag) => flag.labelY);
+  for (const [index, each] of baselines.entries())
+    for (const other of baselines.slice(index + 1))
+      expect(Math.abs(each - other)).toBeGreaterThanOrEqual(11);
+  expect(layout.flags.filter((flag) => flag.moved).length).toBe(3);
+});
+
+test("points, markers and inspection share one mapping of time to x", () => {
+  const layout = chartLayout({
+    ...box,
+    layers: [{ average: [1, 2, 3] }],
+    from: 1000,
+    step: 60,
+    floor: 25,
+    labelOf: label,
+  });
+  // An Operation half way through the middle point's minute lands on that point, and that point is the one inspected.
+  expect(layout.timeX(1090)).toBeCloseTo(layout.pointX(1));
+  expect(layout.timeX(1000)).toBe(layout.plot.left);
+  expect(layout.timeX(1180)).toBe(layout.plot.right);
+  for (const point of [0, 1, 2])
+    expect(layout.indexAt(layout.pointX(point))).toBe(point);
+  expect(layout.indexAt(-50)).toBe(0);
+  expect(layout.indexAt(10_000)).toBe(2);
 });

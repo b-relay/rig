@@ -1,31 +1,41 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { Outcome } from "@/lib/outcome";
+import { useEffect, useRef, useState } from "react";
+import { describeFailure, type Failure, type Outcome } from "@/lib/outcome";
 import type { ChartReport } from "@/lib/usage";
 
-/** The query a Monitor page polls: one Project's, or with `host` the whole Host's, CPU and memory over `range`. */
-export interface UsageQuery {
-  readonly project?: string;
-  readonly host?: true;
-  readonly range: ChartReport["range"];
-}
+/** The query a Monitor page polls: the whole Host's CPU and memory, or one Project's with only `target`'s Components
+ * (none for `all`), over `range`. */
+export type UsageQuery =
+  | { readonly host: true; readonly range: ChartReport["range"] }
+  | {
+      readonly project: string;
+      readonly target: string;
+      readonly range: ChartReport["range"];
+    };
 
-/** The newest report of `query`, starting from the one the page was rendered with and read again after every sample
- * (`/usage`). Polling pauses while the tab is hidden. A failed read keeps the last report and says why, until a read
- * succeeds again. */
+/** The newest report of `query`, starting from the one the page was rendered with (absent when that read failed, with
+ * `initialFailure` saying why) and read again after every sample (`/usage`), at the pace of the newest report. Polling
+ * pauses while the tab is hidden. A failed read keeps the last report and says why, until a read succeeds again. */
 export function useUsage(
-  initial: ChartReport,
+  initial: ChartReport | undefined,
   query: UsageQuery,
-): { report: ChartReport; failure?: string } {
+  initialFailure?: Failure,
+): { report?: ChartReport; failure?: Failure } {
   const [report, setReport] = useState(initial);
-  const [failure, setFailure] = useState<string | undefined>();
+  const [failure, setFailure] = useState(initialFailure);
+  // rigd may restart with another reader mid-watch, so the pace follows each report rather than the first.
+  const sampledEvery = useRef(initial?.sampledEvery ?? 1);
   const q = JSON.stringify(query);
-  useEffect(() => setReport(initial), [initial]);
+  useEffect(() => {
+    setReport(initial);
+    setFailure(initialFailure);
+    if (initial) sampledEvery.current = initial.sampledEvery;
+  }, [initial, initialFailure]);
   useEffect(() => {
     const stop = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const delay = () => Math.max(report.sampledEvery, 1) * 1000;
+    const delay = () => Math.max(sampledEvery.current, 1) * 1000;
     const poll = async () => {
       if (document.visibilityState === "visible") {
         try {
@@ -35,14 +45,13 @@ export function useUsage(
           });
           const outcome = (await response.json()) as Outcome<ChartReport>;
           if (outcome.ok) {
+            sampledEvery.current = outcome.value.sampledEvery;
             setReport(outcome.value);
             setFailure(undefined);
-          } else setFailure(outcome.failure.message);
+          } else setFailure(outcome.failure);
         } catch (error) {
           if (stop.signal.aborted) return;
-          setFailure(
-            error instanceof Error ? error.message : "The dashboard lost rigd.",
-          );
+          setFailure(describeFailure(error));
         }
       }
       if (!stop.signal.aborted) timer = setTimeout(poll, delay());
@@ -52,8 +61,9 @@ export function useUsage(
       stop.abort();
       clearTimeout(timer);
     };
-    // The poll restarts only when what it asks for changes, not with every report it receives.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
-  return failure === undefined ? { report } : { report, failure };
+  return {
+    ...(report && { report }),
+    ...(failure !== undefined && { failure }),
+  };
 }

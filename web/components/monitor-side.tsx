@@ -2,52 +2,53 @@ import Link from "next/link";
 import { Activity, CircleCheck, CircleX } from "lucide-react";
 import type { ActivityResult, DoctorReport } from "@/lib/types";
 import { ago } from "@/lib/present";
+import type { Failure as ReadFailure } from "@/lib/outcome";
 import { cn } from "@/lib/utils";
-import { CARD, Dot } from "./bits";
+import { Dot, Failure, Panel } from "./bits";
 
 type Operation = ActivityResult["operations"][number];
 
-/** A card of the Monitor pages' side column, with its title, a word on the right, and its content. */
+/** A card of the Monitor pages' side column: a compact panel with its title, a word on the right, and its content. */
 export function SideCard({
   title,
   aside,
   children,
-  className,
 }: {
   title: React.ReactNode;
   aside?: React.ReactNode;
   children: React.ReactNode;
-  className?: string;
 }) {
   return (
-    <section className={cn(CARD, "flex min-w-0 flex-col gap-2 p-4", className)}>
-      <header className="flex items-baseline justify-between gap-2">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        {aside ? (
+    <Panel
+      title={title}
+      actions={
+        aside ? (
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             {aside}
           </span>
-        ) : null}
-      </header>
-      {children}
-    </section>
+        ) : undefined
+      }
+    >
+      <div className="flex flex-col gap-2">{children}</div>
+    </Panel>
   );
 }
 
+/** One labelled fact of a side card. */
+export interface Fact {
+  readonly label: string;
+  readonly value: string;
+  /** Shown from the large layout up, so a half-width card on a phone keeps to the essentials. */
+  readonly wide?: boolean;
+  /** A path or identifier, set in monospace. */
+  readonly mono?: boolean;
+}
+
 /** Label and value rows, quiet labels on the left. */
-export function FactRows({
-  rows,
-}: {
-  /** `wide` rows show from the large layout up, so a half-width card on a phone keeps to the essentials. */
-  rows: readonly {
-    readonly label: string;
-    readonly value: React.ReactNode;
-    readonly wide?: boolean;
-  }[];
-}) {
+export function FactRows({ rows }: { rows: readonly Fact[] }) {
   return (
     <dl className="flex flex-col text-sm">
-      {rows.map(({ label, value, wide }) => (
+      {rows.map(({ label, value, wide, mono }) => (
         <div
           key={label}
           className={cn(
@@ -56,46 +57,46 @@ export function FactRows({
           )}
         >
           <dt className="text-muted-foreground">{label}</dt>
-          <dd className="min-w-0 truncate text-right tabular-nums">{value}</dd>
+          <dd
+            className={cn(
+              "min-w-0 truncate text-right tabular-nums",
+              mono && "font-mono text-xs",
+            )}
+          >
+            {value}
+          </dd>
         </div>
       ))}
     </dl>
   );
 }
 
-/** Doctor's checks as a compact list, failed ones first with their reason and hint. With `fold`, a report where every
- * check passed is one line on a phone; the list shows from the large layout up. */
-export function DoctorList({
-  report,
-  fold = false,
-}: {
-  report: DoctorReport;
-  fold?: boolean;
-}) {
+/** Doctor's checks as a compact list, failed ones first with their reason and hint. On a phone only the failed checks
+ * are listed, with a line counting the rest, so a report where every check passed is just its title; the large layout
+ * lists them all. */
+export function DoctorList({ report }: { report: DoctorReport }) {
   const failed = report.checks.filter((check) => !check.ok);
   const checks = [...failed, ...report.checks.filter((check) => check.ok)];
   return (
     <SideCard
       title="Doctor"
       aside={
+        // Elements, not fragments: a fragment from the server reaches the client page as an unkeyed list.
         report.ok ? (
-          <>
+          <span className="contents">
             <CircleCheck className="size-3.5 text-good" aria-hidden />
             all {report.checks.length} pass
-          </>
+          </span>
         ) : (
-          <>
+          <span className="contents">
             <CircleX className="size-3.5 text-bad" aria-hidden />
             {failed.length} failing
-          </>
+          </span>
         )
       }
     >
       <ul
-        className={cn(
-          "flex flex-col text-sm",
-          fold && report.ok && "hidden lg:flex",
-        )}
+        className={cn("flex flex-col text-sm", report.ok && "hidden lg:flex")}
       >
         {checks.map((check) => (
           <li
@@ -104,7 +105,7 @@ export function DoctorList({
               "flex flex-col gap-0.5 border-t py-1.5 first:border-t-0 [overflow-wrap:anywhere]",
               !check.ok && "-mx-2 rounded-lg border-t-0 bg-bad-fill px-2 py-2",
               // On a phone the passing checks are one line below; the large layout lists them all.
-              check.ok && !report.ok && "hidden lg:flex",
+              check.ok && "hidden lg:flex",
             )}
           >
             <span className="flex items-center justify-between gap-2">
@@ -122,12 +123,10 @@ export function DoctorList({
               />
             </span>
             {!check.ok ? (
-              <>
-                <span className="text-xs">{check.reason ?? check.message}</span>
-                {check.hint ? (
-                  <span className="text-xs">{check.hint}</span>
-                ) : null}
-              </>
+              <span className="text-xs">{check.reason ?? check.message}</span>
+            ) : null}
+            {!check.ok && check.hint ? (
+              <span className="text-xs">{check.hint}</span>
             ) : null}
           </li>
         ))}
@@ -155,6 +154,7 @@ export function ActivityFeed({
   limit = 8,
   scope,
   allHref = "/activity",
+  failure,
 }: {
   operations: readonly Operation[];
   showProject: boolean;
@@ -165,13 +165,17 @@ export function ActivityFeed({
   scope?: React.ReactNode;
   /** Where the full history is: the Host's Activity, or a Project's. */
   allHref?: string;
+  /** Why rigd's Activity could not be read, shown instead of the feed. */
+  failure?: ReadFailure;
 }) {
   const latest = [...operations]
     .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
     .slice(0, limit);
   return (
     <SideCard title="Activity" aside={scope}>
-      {latest.length === 0 ? (
+      {failure ? (
+        <Failure failure={failure} />
+      ) : latest.length === 0 ? (
         <p className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
           <Activity className="size-4" aria-hidden />
           Nothing has happened yet.
@@ -222,5 +226,52 @@ export function ActivityFeed({
         All activity →
       </Link>
     </SideCard>
+  );
+}
+
+/** What rigd is running now, each Operation with what it works on and since when, linking to its record. */
+export function RunningOperations({
+  operations,
+  now,
+}: {
+  operations: readonly {
+    readonly operationId: string;
+    readonly action: string;
+    readonly project?: string;
+    readonly target?: string;
+    readonly startedAt: string;
+  }[];
+  /** The instant "ago" is counted from, so a render is stable. */
+  now: number;
+}) {
+  if (operations.length === 0) return null;
+  return (
+    <ol className="flex flex-col border-t pt-1.5">
+      {operations.map((operation) => (
+        <li key={operation.operationId}>
+          <Link
+            href={`/activity?operation=${encodeURIComponent(operation.operationId)}`}
+            className="-mx-2 flex items-baseline gap-2 rounded-lg px-2 py-1 text-xs hover:bg-accent"
+          >
+            <span
+              aria-hidden
+              className="busy-dot size-1.5 shrink-0 self-center rounded-full bg-warn"
+            />
+            <span className="min-w-0 flex-1 truncate">
+              {operation.action}
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {[operation.project, operation.target]
+                  .filter(Boolean)
+                  .map((part) => ` ${part}`)
+                  .join("")}
+              </span>
+            </span>
+            <span className="shrink-0 text-muted-foreground">
+              {ago(operation.startedAt, now)}
+            </span>
+          </Link>
+        </li>
+      ))}
+    </ol>
   );
 }

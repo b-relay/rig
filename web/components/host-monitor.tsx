@@ -3,22 +3,30 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { projectColor } from "@/lib/health";
-import type { ActivityResult } from "@/lib/types";
+import type { ActivityResult, DoctorReport } from "@/lib/types";
 import {
   bytes,
+  cardsOf,
+  markersOf,
   percent,
   type ChartReport,
   type ChartSeries,
+  type UsageRange,
 } from "@/lib/usage";
+import type { Failure as ReadFailure, Outcome } from "@/lib/outcome";
 import { projectHref } from "@/lib/target";
-import { cn } from "@/lib/utils";
-import { CARD, EYEBROW } from "./bits";
+import { Failure } from "./bits";
 import { ProjectIcon } from "./project-icon";
-import { UsageChart, type ChartLayer } from "./usage-chart";
-import { CPU_FLOOR, MEMORY_FLOOR, SeriesCard } from "./usage-cards";
+import {
+  DoctorList,
+  FactRows,
+  RunningOperations,
+  SideCard,
+  type Fact,
+} from "./monitor-side";
+import { UsageChart } from "./usage-chart";
+import { CardGrid, CombinedCharts, CPU_FLOOR, SeriesCard } from "./usage-cards";
 import { useUsage } from "./usage-live";
-import { markersOf } from "@/lib/usage";
-import { SideCard } from "./monitor-side";
 
 type Operation = ActivityResult["operations"][number];
 const RIG_COLOR = "var(--idle)";
@@ -26,124 +34,100 @@ const RIG_COLOR = "var(--idle)";
 /** The Monitor page below its header. The side column holds rigd (with what Rig itself uses), Doctor, and Activity for
  * all Projects; on a phone rigd and Doctor sit side by side above the charts and Activity follows them. The main
  * column stacks every Project in one CPU and one memory chart, each Project's peak flagged where it happened and
- * Activity marked on the time axis, then a card per Project with its own charts and latest Activity; an odd last card
- * spans the row. Live: it reads the Host's report again after every sample. */
+ * Activity marked on the time axis, then a card per registered Project with its own charts and latest Activity. Live:
+ * it reads the Host's report again after every sample; the side column stands even while that read fails. */
 export function HostMonitor({
   initial,
+  initialFailure,
+  range,
+  projects,
   operations,
+  now,
   rigd,
   doctor,
   activity,
   controls,
 }: {
-  initial: ChartReport;
+  /** The report the page was rendered with; absent when that read failed, with `initialFailure` saying why. */
+  initial?: ChartReport;
+  initialFailure?: ReadFailure;
+  range: UsageRange;
+  /** Every registered Project, so one that never ran still has its card. */
+  projects: readonly string[];
   operations: readonly Operation[];
-  /** rigd's facts: version, uptime, queue. */
-  rigd: ReactNode;
-  doctor: ReactNode;
+  /** The page's render instant, for Activity's "ago". */
+  now: number;
+  /** rigd's facts (version, process, root, queue) and what it runs now; or why they could not be read. Data, not
+   * elements, so the card renders them here. */
+  rigd:
+    | {
+        readonly facts: readonly Fact[];
+        readonly running: Parameters<typeof RunningOperations>[0]["operations"];
+      }
+    | { readonly failure: ReadFailure };
+  /** Doctor's Host checks, or why they could not be read: data, so the card renders here. */
+  doctor: Outcome<DoctorReport>;
   activity: ReactNode;
   /** rigd's own controls, under Activity. */
   controls?: ReactNode;
 }) {
-  const { report, failure } = useUsage(initial, {
-    host: true,
-    range: initial.range,
-  });
-  const projects = report.series.filter(
-    (each) => each.series.scope === "project",
+  const { report, failure } = useUsage(
+    initial,
+    { host: true, range },
+    initialFailure,
   );
-  const rig = report.series.find((each) => each.series.scope === "rig");
-  const parts = [...projects, ...(rig ? [rig] : [])];
-  const layer = (each: ChartSeries, measure: "cpu" | "memory"): ChartLayer => ({
-    key: each.key,
-    label: each.series.project ?? "Rig itself",
-    color: colorOf(each),
-    ...each[measure],
-  });
-  const markers = markersOf(operations, report);
-  const main = (
+  const sampled =
+    report?.series.filter((each) => each.series.scope === "project") ?? [];
+  const rig = report?.series.find((each) => each.series.scope === "rig");
+  const main = report ? (
     <div className="flex min-w-0 flex-col gap-4">
-      <section className={cn(CARD, "flex flex-col gap-2 p-4 sm:p-5")}>
-        <header className="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 className="text-sm font-semibold">All Projects</h2>
-          {failure ? (
-            <span className="text-xs text-warn">Not updating: {failure}</span>
-          ) : null}
-        </header>
-        {parts.length === 0 ? (
-          <p className="rounded-lg border border-dashed px-3 py-10 text-center text-sm text-muted-foreground">
-            Nothing has been sampled yet. Charts fill in within a few seconds of
-            rigd starting.
-          </p>
-        ) : (
-          <>
-            <div className={EYEBROW}>CPU · 100% is one core</div>
-            <UsageChart
+      <CombinedCharts
+        title="All Projects"
+        {...(failure && { failure: failure.message })}
+        parts={[...sampled, ...(rig ? [rig] : [])].map((series) => ({
+          series,
+          label: series.series.project ?? "Rig itself",
+          color: colorOf(series),
+        }))}
+        report={report}
+        markers={markersOf(operations, report)}
+        empty="Nothing has been sampled yet. Charts fill in within a few seconds of rigd starting."
+      />
+      <CardGrid>
+        {cardsOf(
+          projects.map((name) => ({ name })),
+          sampled,
+          (each) => ({ name: each.series.project! }),
+        ).map((card) => {
+          const own = operations.filter(
+            (operation) => operation.project === card.name,
+          );
+          return (
+            <SeriesCard
+              key={card.key}
+              series={card.series}
               report={report}
-              layers={parts.map((each) => layer(each, "cpu"))}
-              format={percent}
-              floor={CPU_FLOOR}
-              markers={markers}
-              height={170}
+              color={`var(--chart-${projectColor(card.name)})`}
+              title={
+                <Link
+                  href={`${projectHref(card.name)}/monitor`}
+                  className="flex min-w-0 items-center gap-2 hover:underline"
+                >
+                  <ProjectIcon project={card.name} size="sm" />
+                  <span className="truncate">{card.name}</span>
+                </Link>
+              }
+              activity={own}
+              markers={markersOf(own, report)}
+              now={now}
             />
-            <div className={EYEBROW}>Memory</div>
-            <UsageChart
-              report={report}
-              layers={parts.map((each) => layer(each, "memory"))}
-              format={bytes}
-              floor={MEMORY_FLOOR}
-              markers={markers}
-              height={130}
-            />
-            <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              {parts.map((each) => (
-                <li key={each.key} className="flex items-center gap-1.5">
-                  <span
-                    aria-hidden
-                    className="size-2.5 rounded-[3px]"
-                    style={{ background: colorOf(each) }}
-                  />
-                  {each.series.project ?? "Rig itself"}
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-      </section>
-      <div className="grid gap-4 sm:grid-cols-2">
-        {projects.map((each, index) => (
-          <SeriesCard
-            key={each.key}
-            series={each}
-            report={report}
-            color={colorOf(each)}
-            title={
-              <Link
-                href={`${projectHref(each.series.project!)}/monitor`}
-                className="flex min-w-0 items-center gap-2 hover:underline"
-              >
-                <ProjectIcon project={each.series.project!} size="sm" />
-                <span className="truncate">{each.series.project}</span>
-              </Link>
-            }
-            activity={operations.filter(
-              (operation) => operation.project === each.series.project,
-            )}
-            markers={markersOf(
-              operations.filter(
-                (operation) => operation.project === each.series.project,
-              ),
-              report,
-            )}
-            className={
-              index === projects.length - 1 && projects.length % 2 === 1
-                ? "sm:col-span-2"
-                : undefined
-            }
-          />
-        ))}
-      </div>
+          );
+        })}
+      </CardGrid>
     </div>
+  ) : (
+    // Read again every second: the charts appear as soon as a read succeeds.
+    <Failure failure={failure} />
   );
   return (
     <div className="grid items-start gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
@@ -157,34 +141,49 @@ export function HostMonitor({
             </>
           }
         >
-          {rigd}
-          <div className="flex flex-wrap items-baseline justify-between gap-x-2 border-t pt-1.5 text-sm">
-            <span className="text-muted-foreground">Rig itself</span>
-            <span className="font-display tabular-nums">
-              {rig?.now
-                ? `${percent(rig.now.cpuPercent)} · ${bytes(rig.now.memoryBytes)}`
-                : "–"}
-            </span>
+          <div className="flex flex-col gap-2">
+            {"failure" in rigd ? (
+              <Failure failure={rigd.failure} />
+            ) : (
+              <>
+                <FactRows rows={rigd.facts} />
+                <RunningOperations operations={rigd.running} now={now} />
+              </>
+            )}
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2 border-t pt-1.5 text-sm">
+              <span className="text-muted-foreground">Rig itself</span>
+              <span className="font-display tabular-nums">
+                {rig?.now
+                  ? `${percent(rig.now.cpuPercent)} · ${bytes(rig.now.memoryBytes)}`
+                  : "–"}
+              </span>
+            </div>
+            {report && rig?.cpu.peak ? (
+              <UsageChart
+                report={report}
+                layers={[
+                  {
+                    key: rig.key,
+                    label: "Rig itself",
+                    color: RIG_COLOR,
+                    ...rig.cpu,
+                  },
+                ]}
+                format={percent}
+                floor={CPU_FLOOR}
+                height={44}
+                axis={false}
+              />
+            ) : null}
           </div>
-          {rig?.cpu.stats ? (
-            <UsageChart
-              report={report}
-              layers={[
-                {
-                  key: rig.key,
-                  label: "Rig itself",
-                  color: RIG_COLOR,
-                  ...rig.cpu,
-                },
-              ]}
-              format={percent}
-              floor={CPU_FLOOR}
-              height={44}
-              axis={false}
-            />
-          ) : null}
         </SideCard>
-        {doctor}
+        {doctor.ok ? (
+          <DoctorList report={doctor.value} />
+        ) : (
+          <SideCard title="Doctor">
+            <Failure failure={doctor.failure} />
+          </SideCard>
+        )}
       </div>
       <div className="min-w-0 lg:col-start-2 lg:row-span-2 lg:row-start-1">
         {main}

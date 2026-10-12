@@ -4,6 +4,7 @@ import {
   USAGE_RANGES,
   type UsageRange,
 } from "../../src/domain/usage-summary";
+import type { Peak } from "./chart-layout";
 import { healthOf } from "./health";
 import type { ActivityResult } from "./types";
 
@@ -11,14 +12,13 @@ type Operation = ActivityResult["operations"][number];
 
 type ReportedSeries = MonitorResult["series"][number];
 export type UsageSeriesId = ReportedSeries["series"];
-type Stats = NonNullable<ReportedSeries["summary"]["cpu"]>;
 
-/** One measure of one series, as a chart draws it: per point the average and the highest sample, `null` where nothing
- * was sampled; and over the whole range, the stats the chart labels. */
+/** One measure of one series, as a chart draws it: per point the average, `null` where nothing was sampled; and over
+ * the whole range, where the highest sample fell and the median. Both are absent when nothing was sampled. */
 export interface ChartMeasure {
   readonly average: readonly (number | null)[];
-  readonly high: readonly (number | null)[];
-  readonly stats?: Stats;
+  readonly peak?: Peak;
+  readonly median?: number;
 }
 
 /** One series of a Monitor page: what it is, its newest sample, and both measures. */
@@ -62,34 +62,48 @@ export function presetWindow(
   return { since: new Date(now - RANGE_SECONDS[range] * 1000).toISOString() };
 }
 
-/** Pure: a `monitor` reply as the Monitor pages draw it, for the preset it was read for. */
+/** Pure: a `monitor` reply as the Monitor pages draw it, for the preset it was read for. With `target`, a Project's
+ * Components are kept only for that Target (none for `all`), since the page charts no others. */
 export function chartReport(
   report: MonitorResult,
   range: UsageRange,
+  target?: string,
 ): ChartReport {
+  const measure = (
+    each: ReportedSeries,
+    of: "cpu" | "memory",
+  ): ChartMeasure => {
+    const peak = peakOf(each.points.map((point) => point[of]?.high ?? null));
+    const median = each.summary[of]?.median;
+    return {
+      average: each.points.map((point) => point[of]?.average ?? null),
+      ...(peak && { peak }),
+      ...(median !== undefined && { median }),
+    };
+  };
   return {
     range,
     from: report.from,
     step: report.step,
     sampledEvery: report.sampledEvery,
-    series: report.series.map((each) => ({
-      key: seriesKeyOf(each.series),
-      series: each.series,
-      ...(each.now && { now: each.now }),
-      cpu: {
-        average: each.points.map((point) => point.cpu?.average ?? null),
-        high: each.points.map((point) => point.cpu?.high ?? null),
-        ...(each.summary.cpu && { stats: each.summary.cpu }),
-      },
-      memory: {
-        average: each.points.map((point) => point.memory?.average ?? null),
-        high: each.points.map((point) => point.memory?.high ?? null),
-        ...(each.summary.memory && { stats: each.summary.memory }),
-      },
-    })),
+    series: report.series
+      .filter(
+        (each) =>
+          target === undefined ||
+          each.series.scope !== "component" ||
+          each.series.target === target,
+      )
+      .map((each) => ({
+        key: seriesKeyOf(each.series),
+        series: each.series,
+        ...(each.now && { now: each.now }),
+        cpu: measure(each, "cpu"),
+        memory: measure(each, "memory"),
+      })),
   };
 }
 
+export type { UsageRange };
 export { formatBytes as bytes } from "../../src/domain/bytes";
 export { formatCpu as percent } from "../../src/domain/usage-sample";
 
@@ -203,4 +217,48 @@ export function markersOf(
       },
     ];
   });
+}
+
+/** One card of a Monitor page: a Project, Target, Service or Job, with its series once something of it was sampled. */
+export interface UsageCard {
+  readonly key: string;
+  readonly name: string;
+  /** `service` or `job`, on a Component's card. */
+  readonly kind?: string;
+  readonly series?: ChartSeries;
+}
+
+/** Pure: a card per thing the inventory names, in its order, with its series where one was sampled; then a card per
+ * sampled series it no longer names, such as a destroyed Preview still in the range. `identify` names a series as the
+ * inventory does. */
+export function cardsOf(
+  inventory: readonly { readonly name: string; readonly kind?: string }[],
+  sampled: readonly ChartSeries[],
+  identify: (series: ChartSeries) => { name: string; kind?: string },
+): UsageCard[] {
+  const idOf = (each: { name: string; kind?: string }) =>
+    `${each.kind ?? ""}:${each.name}`;
+  const bySeries = new Map(sampled.map((each) => [idOf(identify(each)), each]));
+  const named = inventory.map((each) => {
+    const series = bySeries.get(idOf(each));
+    return {
+      key: idOf(each),
+      name: each.name,
+      ...(each.kind && { kind: each.kind }),
+      ...(series && { series }),
+    };
+  });
+  const known = new Set(inventory.map(idOf));
+  const gone = sampled
+    .filter((each) => !known.has(idOf(identify(each))))
+    .map((each) => {
+      const { name, kind } = identify(each);
+      return {
+        key: idOf({ name, kind }),
+        name,
+        ...(kind && { kind }),
+        series: each,
+      };
+    });
+  return [...named, ...gone];
 }

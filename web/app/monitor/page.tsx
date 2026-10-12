@@ -9,15 +9,11 @@ import type {
 } from "@/lib/types";
 import { bytes, chartReport, presetWindow, rangeOf } from "@/lib/usage";
 import { daemon, read } from "@/server/daemon";
+import { projectList } from "@/server/status";
 import { site } from "@/server/site";
-import { Failure, PageHeader } from "@/components/bits";
+import { PageHeader } from "@/components/bits";
 import { HostMonitor } from "@/components/host-monitor";
-import {
-  ActivityFeed,
-  DoctorList,
-  FactRows,
-  SideCard,
-} from "@/components/monitor-side";
+import { ActivityFeed } from "@/components/monitor-side";
 import { RigdControls } from "@/components/rigd-controls";
 import { RangeTabs } from "@/components/usage-range";
 
@@ -30,7 +26,7 @@ export default async function MonitorPage({
   searchParams: Promise<{ range?: string }>;
 }) {
   const range = rangeOf((await searchParams).range);
-  const [health, queue, doctor, activity, usage] = await Promise.all([
+  const [health, queue, doctor, activity, usage, list] = await Promise.all([
     attempt(daemon().then((client) => client.health())),
     attempt(read({ action: "queue" })),
     attempt(read({ action: "doctor" })),
@@ -42,7 +38,9 @@ export default async function MonitorPage({
         window: presetWindow(range, Date.now()),
       }),
     ),
+    projectList(),
   ]);
+  const now = Date.now();
   const operations = activity.ok
     ? (activity.value as ActivityResult).operations
     : [];
@@ -60,29 +58,32 @@ export default async function MonitorPage({
         description={`${hostname().replace(/\.local$/, "")} · ${availableParallelism()} cores · ${bytes(totalmem())} memory`}
         actions={<RangeTabs current={range} />}
       />
-      {usage.ok ? (
-        <HostMonitor
-          initial={chartReport(usage.value, range)}
-          operations={operations}
-          rigd={
-            health.ok ? (
-              <FactRows
-                rows={[
+      <HostMonitor
+        {...(usage.ok
+          ? { initial: chartReport(usage.value, range) }
+          : { initialFailure: usage.failure })}
+        range={range}
+        projects={list.ok ? list.value.projects.map((each) => each.name) : []}
+        operations={operations}
+        now={now}
+        rigd={
+          health.ok
+            ? {
+                facts: [
                   {
                     label: "Version",
                     value: (health.value as DaemonHealth).version ?? "unknown",
                   },
                   {
                     label: "Process",
-                    value: (health.value as DaemonHealth).pid,
+                    value: String((health.value as DaemonHealth).pid),
                     wide: true,
                   },
                   {
                     label: "Rig root",
+                    value: site().root,
                     wide: true,
-                    value: (
-                      <code className="font-mono text-xs">{site().root}</code>
-                    ),
+                    mono: true,
                   },
                   {
                     label: "Queue",
@@ -92,43 +93,34 @@ export default async function MonitorPage({
                         ? `idle · ${queued.waiting} waiting`
                         : "unknown",
                   },
-                ]}
-              />
-            ) : (
-              <Failure failure={health.failure} />
-            )
-          }
-          doctor={
-            doctor.ok ? (
-              <DoctorList report={doctor.value as DoctorReport} />
-            ) : (
-              <SideCard title="Doctor">
-                <Failure failure={doctor.failure} />
-              </SideCard>
-            )
-          }
-          activity={
-            <ActivityFeed
-              operations={operations}
-              showProject
-              now={Date.now()}
-              scope="all Projects"
-            />
-          }
-          controls={
-            <details className="group text-sm">
-              <summary className="cursor-pointer list-none text-xs text-muted-foreground hover:text-foreground">
-                Uninstall readiness…
-              </summary>
-              <div className="mt-3">
-                <RigdControls />
-              </div>
-            </details>
-          }
-        />
-      ) : (
-        <Failure failure={usage.failure} />
-      )}
+                ],
+                running,
+              }
+            : { failure: health.failure }
+        }
+        doctor={
+          doctor.ok ? { ok: true, value: doctor.value as DoctorReport } : doctor
+        }
+        activity={
+          <ActivityFeed
+            operations={operations}
+            showProject
+            now={now}
+            scope="all Projects"
+            {...(!activity.ok && { failure: activity.failure })}
+          />
+        }
+        controls={
+          <details className="group text-sm">
+            <summary className="cursor-pointer list-none text-xs text-muted-foreground hover:text-foreground">
+              Uninstall readiness…
+            </summary>
+            <div className="mt-3">
+              <RigdControls />
+            </div>
+          </details>
+        }
+      />
     </>
   );
 }

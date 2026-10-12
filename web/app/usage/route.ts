@@ -5,15 +5,20 @@ import { attempt, refused } from "@/lib/outcome";
 import { chartReport, presetWindow } from "@/lib/usage";
 import { read } from "@/server/daemon";
 
-/** What a Monitor page polls: one Project, or the whole Host, over a preset. */
+/** What a Monitor page polls: the whole Host, or one Project with the Target whose Components it charts (`all` for
+ * none), over a preset. */
 const usageQuery = z.union([
-  z.strictObject({ project: z.string(), range: z.enum(USAGE_RANGES) }),
   z.strictObject({ host: z.literal(true), range: z.enum(USAGE_RANGES) }),
+  z.strictObject({
+    project: z.string(),
+    target: z.string(),
+    range: z.enum(USAGE_RANGES),
+  }),
 ]);
 
 /** The Monitor pages' poll: one Project's or the whole Host's CPU and memory, cut to what the charts draw. A plain GET,
  * as the log viewer's follow is, so it never waits behind a Server Action; it sits behind the same admission as every
- * page (web/proxy.ts), reads only, and never caches. `q` is `{project, range}` or `{host: true, range}` as JSON; the
+ * page (web/proxy.ts), reads only, and never caches. `q` is `{host: true, range}` or `{project, target, range}` as JSON; the
  * preset is resolved to a window here, at every poll, so the chart always ends now. */
 export const dynamic = "force-dynamic";
 export async function GET(request: Request): Promise<Response> {
@@ -49,7 +54,14 @@ export async function GET(request: Request): Promise<Response> {
   );
   return Response.json(
     outcome.ok
-      ? { ok: true, value: chartReport(outcome.value, query.data.range) }
+      ? {
+          ok: true,
+          value: chartReport(
+            outcome.value,
+            query.data.range,
+            "target" in query.data ? query.data.target : undefined,
+          ),
+        }
       : outcome,
     { headers },
   );

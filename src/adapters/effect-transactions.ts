@@ -113,7 +113,15 @@ const unfinishedSchema = z
     project: z.string().optional(),
     target: z.string().optional(),
     phase: z.unknown(),
-    files: z.array(z.object({ path: z.string() }).loose()),
+    files: z.array(
+      z
+        .object({
+          path: z.string(),
+          // What the path held when the checkpoint was taken, when this rigd can read it.
+          before: z.string().nullable().optional().catch(undefined),
+        })
+        .loose(),
+    ),
   })
   .loose();
 const versionSchema = z.object({ version: z.number().optional() }).loose();
@@ -177,7 +185,10 @@ export function createEffectTransactions(options: {
   const seedClaims = async (): Promise<void> => {
     for (const journal of await unfinishedJournals())
       for (const path of executables(journal.paths))
-        if (!claims.has(path) && !(await heldElsewhere(path, journal.owner)))
+        if (
+          !claims.has(path) &&
+          !(await heldElsewhere(path, journal.owner, journal.before))
+        )
           claims.set(path, journal.owner);
   };
   /** The installed executables among a journal's `paths`. A claim names an executable only: its ownership record and a
@@ -192,7 +203,11 @@ export function createEffectTransactions(options: {
    * Target's directory, cannot be recovered by anyone and is left out. Rejects EFFECTS_CHECKPOINT when a file cannot be
    * read, so no path is handed out on a guess. */
   const unfinishedJournals = async (): Promise<
-    { owner: ClaimOwner; paths: string[] }[]
+    {
+      owner: ClaimOwner;
+      paths: string[];
+      before: ReadonlyMap<string, string | null>;
+    }[]
   > => {
     const root = join(options.root, CHECKPOINTS);
     const unreadable = (path: string, error: unknown) =>
@@ -210,7 +225,11 @@ export function createEffectTransactions(options: {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw unreadable(root, error);
     }
-    const journals: { owner: ClaimOwner; paths: string[] }[] = [];
+    const journals: {
+      owner: ClaimOwner;
+      paths: string[];
+      before: ReadonlyMap<string, string | null>;
+    }[] = [];
     for (const name of names) {
       const entry = classify(name);
       if (entry?.kind !== "directory") continue;
@@ -234,18 +253,31 @@ export function createEffectTransactions(options: {
       journals.push({
         owner: claimOwner(parsed.data),
         paths: parsed.data.files.map((file) => file.path),
+        before: new Map(
+          parsed.data.files.flatMap((file) =>
+            file.before === undefined ? [] : [[file.path, file.before]],
+          ),
+        ),
       });
     }
     return journals;
   };
   /** Whether executable `path` must not be claimed for `owner`: its ownership record names another Target, whose executable
    * `owner`'s recovery would refuse to touch, or is invalid, so its owner is unknown. Claiming it would only stop that
-   * Target from moving or removing its executable; recovery claims the path itself when it runs. Rejects ARTIFACT_OWNER
-   * when the record cannot be read, so no path is handed out on a guess. */
-  const heldElsewhere = async (path: string, owner: ClaimOwner) => {
+   * Target from moving or removing its executable; recovery claims the path itself when it runs. A record still exactly as
+   * the journal captured it (`before`, by path) is the journal's own starting point, not a later owner: a takeover of a
+   * released Tool interrupted before it wrote its record, which only its recovery may undo. Rejects ARTIFACT_OWNER when the
+   * record cannot be read, so no path is handed out on a guess. */
+  const heldElsewhere = async (
+    path: string,
+    owner: ClaimOwner,
+    before: ReadonlyMap<string, string | null>,
+  ) => {
     try {
       const recorded = await options.ownership.owner(path);
-      return recorded !== undefined && recorded.targetId !== owner.targetId;
+      if (recorded === undefined || recorded.targetId === owner.targetId)
+        return false;
+      return !(await asCaptured(options.ownership.ownerPath(path), before));
     } catch (error) {
       if (error instanceof RigError && error.code === "ARTIFACT_OWNER")
         return true;
@@ -431,9 +463,17 @@ export function createEffectTransactions(options: {
     });
     await preparation.release(targetId);
   };
+  /** Whether the file at `path` still holds what a journal captured there before its change (`before`, by path; null for
+   * absence). False when the journal captured nothing for it. */
+  const asCaptured = async (
+    path: string,
+    before: ReadonlyMap<string, string | null>,
+  ) =>
+    before.has(path) && ((await fileDigest(path)) ?? null) === before.get(path);
   /** The first executable `journal` was still writing, itself or its ownership record, that an ownership record now gives to
    * another Target. That Target published there after this change was interrupted, so undoing the change would remove or
-   * replace its executable. Rejects ARTIFACT_OWNER when a record is invalid. */
+   * replace its executable. An ownership record still as the journal captured it names the owner this change started from
+   * (a released Tool it was taking over), not a later one. Rejects ARTIFACT_OWNER when a record is invalid. */
   const takenOverExecutable = async (
     journal: Journal,
   ): Promise<{ path: string; owner: ArtifactOwner } | undefined> => {
@@ -449,7 +489,15 @@ export function createEffectTransactions(options: {
       )
         continue;
       const owner = await options.ownership.owner(path);
-      if (owner && owner.targetId !== journal.targetId) return { path, owner };
+      if (
+        owner &&
+        owner.targetId !== journal.targetId &&
+        !(await asCaptured(
+          options.ownership.ownerPath(path),
+          new Map(journal.files.map((file) => [file.path, file.before])),
+        ))
+      )
+        return { path, owner };
     }
     return undefined;
   };
@@ -607,7 +655,7 @@ export function createEffectTransactions(options: {
           ...new Set(
             artifacts.flatMap((artifact) => [
               artifact.destination,
-              options.ownership.ownerPath(artifact.destination),
+              ...options.ownership.ownedPaths(artifact.destination),
               artifact.receiptPath,
             ]),
           ),

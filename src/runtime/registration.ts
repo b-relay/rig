@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
@@ -61,8 +61,10 @@ function projectActive(): RigError {
  * Every route its Targets own is withdrawn first, confirmed in the proxy: a route left behind would be keyed by a Target
  * nothing records any more and would hold its hostnames from every later owner (#336). When a route cannot be withdrawn
  * (Caddy unreachable, a reload refused) the forget is refused with that failure and nothing changes; when the records
- * cannot be removed, the routes are published again. Returns a warning for every live workspace and data root left on
- * disk. */
+ * cannot be removed, the routes are published again. Its published Tools stay in `<RIG_ROOT>/bin` untouched (#343): the
+ * write that drops the records releases them, so the next Target that publishes a Tool of the same name takes it over
+ * while its bytes are the ones Rig published. Nothing else is changed for them, so nothing about them needs undoing when
+ * the write fails. Returns a warning for every live workspace, data root and Tool left on disk. */
 export async function forgetProject(
   project: ProjectRecord,
   targets: TargetRecord[],
@@ -107,14 +109,14 @@ export async function forgetProject(
       .catch(() => undefined);
     if (registered === false)
       return [
-        ...forgottenWarnings(targets, kept),
+        ...(await forgottenWarnings(targets, kept, deps)),
         `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${project.name} again.`,
       ];
     if (registered === undefined)
       throw new RigError(
         "FORGET_UNCERTAIN",
-        `Project '${project.name}' may or may not be forgotten: its routes (${withdrawal.hostnames.join(", ")}) were withdrawn, saving the forget failed, and the state could not be read back.`,
-        `Run rig list. If ${project.name} is still registered, run rig forget ${project.name} again; rig up or rig deploy of a Target publishes its route again otherwise.`,
+        `Project '${project.name}' may or may not be forgotten: ${withdrawal.hostnames.length ? `its routes (${withdrawal.hostnames.join(", ")}) were withdrawn, ` : ""}saving the forget failed, and the state could not be read back.`,
+        `Run rig list. If ${project.name} is still registered, run rig forget ${project.name} again${withdrawal.hostnames.length ? "; rig up or rig deploy of a Target publishes its route again otherwise" : ""}.`,
         { hostnames: [...withdrawal.hostnames] },
         failureCauses(error),
       );
@@ -137,13 +139,35 @@ export async function forgetProject(
     }
     throw error;
   }
-  return forgottenWarnings(targets, kept);
+  return await forgottenWarnings(targets, kept, deps);
 }
-/** What a forget leaves on disk: the stable Target's workspace and data, and the backup directories in `kept`. */
-function forgottenWarnings(
+/** What a forget leaves on disk: the stable Target's workspace and data, the backup directories in `kept`, and the Tools
+ * `targets` published, now released. Read after the forget was saved; a Tool that cannot be read is left unnamed. */
+async function forgottenWarnings(
   targets: readonly TargetRecord[],
   kept: ReadonlySet<string>,
-): string[] {
+  deps: Pick<RuntimeDependencies, "orphanedTools" | "store" | "root">,
+): Promise<string[]> {
+  const forgotten = new Set(targets.map((target) => target.id));
+  const left = (
+    (await deps
+      .orphanedTools?.(
+        async () =>
+          new Set((await deps.store.read()).targets.map((target) => target.id)),
+      )
+      .catch(() => undefined)) ?? []
+  ).filter((tool) => forgotten.has(tool.owner.targetId));
+  const tools = left
+    .filter((tool) => !tool.changed)
+    .map((tool) => tool.destination);
+  const changed = left
+    .filter((tool) => tool.changed)
+    .map((tool) => tool.destination);
+  // rigd's system job runs <RIG_ROOT>/bin/rigd: forgetting Rig's own Project must never lead anyone to delete it, and only
+  // this Project registered again takes rig and rigd over.
+  const daemon = join(deps.root, "bin", "rigd");
+  const rigBinaries = [join(deps.root, "bin", "rig"), daemon];
+  const rigItself = tools.some((path) => rigBinaries.includes(path));
   return [
     ...targets
       .filter((t) => t.kind === "stable")
@@ -155,6 +179,30 @@ function forgottenWarnings(
       (directory) =>
         `Its backups in ${directory} were kept on disk; Rig no longer lists them.`,
     ),
+    ...(tools.length
+      ? [
+          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}${rigItself ? " (rig and rigd only from a clone of this repository registered again)" : ""}, and you may delete any you no longer want${rigItself ? `, except ${rigBinaries.filter((path) => tools.includes(path)).join(" and ")}: Rig itself, and rigd's system job runs ${daemon}` : ""}.`,
+        ]
+      : []),
+    ...(changed.length
+      ? (() => {
+          // rig and rigd are never to be moved or deleted (launchd runs bin/rigd): only replaced atomically, in place.
+          const own = changed.filter((path) => rigBinaries.includes(path));
+          const other = changed.filter((path) => !rigBinaries.includes(path));
+          return [
+            ...(other.length
+              ? [
+                  `Its Tools ${other.join(", ")} changed since Rig published them and stay as they are: Rig never replaces or removes them, so publishing a Tool there is refused (ARTIFACT_CHANGED) until you move or delete ${other.length === 1 ? "it" : "them"}.`,
+                ]
+              : []),
+            ...(own.length
+              ? [
+                  `${own.join(" and ")} changed since Rig published ${own.length === 1 ? "it" : "them"} and ${own.length === 1 ? "stays" : "stay"} as ${own.length === 1 ? "it is" : "they are"}. Never move or delete ${own.length === 1 ? "it" : "them"}: rigd's system job runs ${daemon}. Rig publishes Rig there again only over the bytes it recorded: put back the bytes whose SHA-256 ${own.length === 1 ? "its" : "each one's"} ownership record in installed/owners names, by copying them to a temporary name beside it and renaming that over it, then deploy (the rig:rigd skill's upgrade reference).`,
+                ]
+              : []),
+          ];
+        })()
+      : []),
   ];
 }
 /** The refusal of a forget whose routes could not be withdrawn: the provider's failure, with its code and details kept, said

@@ -19,7 +19,9 @@ import type {
   PlanJob,
   PlanComponent,
 } from "../config/types";
-import { WORKING_TOOL_SUFFIX, isHealthUrl } from "../config/schema";
+import { isHealthUrl } from "../config/schema";
+import { installedPath } from "../domain/installed-path";
+import { isGitCommit } from "../domain/git";
 import { componentDirectory } from "../config/working-dir";
 import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
 import { composeEnvironment } from "../domain/process-environment";
@@ -61,7 +63,12 @@ import {
   failureCauses,
   failureReason as describedFailure,
 } from "../domain/errors";
-import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
+import {
+  atomicFile,
+  createArtifactOwnership,
+  type OrphanedArtifact,
+  type RepositoryIdentity,
+} from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { createEnvironmentDigest } from "./environment-digest";
@@ -81,33 +88,33 @@ export interface TargetAdapterOptions {
   environment: Readonly<Record<string, string>>;
   /** Reads how the Target log is rotated each time build, install and health lines are recorded; the default when absent. */
   logRetention?: () => Promise<LogRetention>;
+  /** The Target ids state records now. A Tool whose owner it does not name is released: the next Target that publishes
+   * there takes it over while its bytes are the ones Rig published (#343). Absent: no Tool is ever taken over. */
+  recordedTargets?: () => Promise<ReadonlySet<string>>;
+  /** The registered repository path of Project `projectId`, read from state now, or undefined when it is not registered.
+   * Rig's own Tools are identified by that repository's history (ADR 0019). Absent: no repository is ever identified. */
+  projectRepository?: (projectId: string) => Promise<string | undefined>;
 }
-export function installedPath(
-  root: string,
-  target: TargetRecord,
-  component: InstalledComponent,
-): string {
-  // The stable Target owns the plain command, the working Target <tool>-dev, and a Preview <tool>-<preview name>.
-  const suffix =
-    target.kind === "stable"
-      ? ""
-      : `-${target.kind === "working" ? WORKING_TOOL_SUFFIX : target.name}`;
-  return join(
-    root,
-    "bin",
-    component.publishedAs ??
-      `${component.installName ?? component.name}${suffix}`,
-  );
-}
+export { installedPath };
 /** Budget in seconds when the Project config declares none. */
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
   options: TargetAdapterOptions,
-): TargetEffects & { observations: ObservationEffects } {
+): TargetEffects & {
+  observations: ObservationEffects;
+  /** Every Tool in `<root>/bin` whose owner Target `recorded` does not name; see `OrphanedArtifact`. */
+  orphanedTools(
+    recorded: () => Promise<ReadonlySet<string>>,
+  ): Promise<OrphanedArtifact[]>;
+} {
   // Status hashes every installed Tool inside one short budget; remembering digests keeps that under it.
   const digestFile = rememberedDigests();
-  const ownership = createArtifactOwnership(options.root, digestFile);
+  const ownership = createArtifactOwnership(
+    options.root,
+    digestFile,
+    options.recordedTargets,
+  );
   const transactions = createEffectTransactions({
     root: options.root,
     ownership,
@@ -396,30 +403,78 @@ export function createTargetEffects(
         !retained.has(installedPath(options.root, previous, component)),
     );
   };
+  /** The identity of the repository `target` was deployed from: the root commits of its Commit (the Working copy's HEAD
+   * when it has none), read in the Project's own registered repository, sorted and joined by commas: the same in every full
+   * clone, whatever its remotes. Never read from Rig's mirror or a checkout, whose history Rig fetched piecemeal. A shallow
+   * Project repository is `shallow`: git reports where its history was cut as roots, which match nothing. Unknown when
+   * git cannot say: no registered repository, the Commit not in it, no git. Never fetches anything. */
+  const repositoryIdentity = async (
+    target: TargetRecord,
+  ): Promise<RepositoryIdentity> => {
+    try {
+      const repository = await options.projectRepository?.(target.projectId);
+      if (repository === undefined) return { kind: "unknown" };
+      if (target.commit !== undefined && !isGitCommit(target.commit))
+        return { kind: "unknown" };
+      const git = async (args: string[]) => {
+        const result = await options.run({
+          command: ["git", ...args],
+          cwd: repository,
+          env: options.environment,
+          timeoutMs: 30_000,
+        });
+        return result.exitCode === 0 ? result.stdout : undefined;
+      };
+      const shallow = (
+        await git(["rev-parse", "--is-shallow-repository"])
+      )?.trim();
+      if (shallow === "true") return { kind: "shallow" };
+      if (shallow !== "false") return { kind: "unknown" };
+      const roots = (
+        (await git(["rev-list", "--max-parents=0", target.commit ?? "HEAD"])) ??
+        ""
+      )
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^[0-9a-f]{40,64}$/.test(line))
+        .sort();
+      return roots.length
+        ? { kind: "known", roots: roots.join(",") }
+        : { kind: "unknown" };
+    } catch {
+      return { kind: "unknown" };
+    }
+  };
+  /** Who publishes `component` of `target`, as ownership records it. */
+  const artifactIdentity = (
+    target: TargetRecord,
+    component: InstalledComponent,
+  ) => ({
+    targetId: target.id,
+    componentName: component.name,
+    destination: installedPath(options.root, target, component),
+    project: target.plan.project,
+    target: target.name,
+    repository: () => repositoryIdentity(target),
+  });
   const retireComponents = async (
     target: TargetRecord,
     components: readonly InstalledComponent[],
   ) => {
     for (const component of components) {
       if (component.kind !== "installed") continue;
-      const destination = installedPath(options.root, target, component),
-        ownerFile = ownership.ownerPath(destination),
+      const identity = artifactIdentity(target, component),
+        destination = identity.destination,
         receiptFile = receiptPath(target, component);
-      await ownership.inspect({
-        targetId: target.id,
-        componentName: component.name,
-        destination,
-        project: target.plan.project,
-        target: target.name,
+      const owned = await ownership.inspect(identity);
+      // A released executable (its owner Target is gone) is not this Target's to retire: it stays, as a forget leaves it.
+      const retired = owned.released
+        ? [receiptFile]
+        : [destination, ...ownership.ownedPaths(destination), receiptFile];
+      // Only what it removes is journalled as changing, so a recovery never takes a released Tool for its own work.
+      await transactions.withArtifactChange(target.id, retired, async () => {
+        for (const path of retired) await rm(path, { force: true });
       });
-      await transactions.withArtifactChange(
-        target.id,
-        [destination, ownerFile, receiptFile],
-        async () => {
-          for (const path of [destination, ownerFile, receiptFile])
-            await rm(path, { force: true });
-        },
-      );
     }
   };
   const digest = createEnvironmentDigest(options.root);
@@ -459,12 +514,8 @@ export function createTargetEffects(
               }))
             : []),
         ].map(({ target: owner, component }) => ({
-          targetId: owner.id,
-          componentName: component.name,
-          destination: installedPath(options.root, owner, component),
+          ...artifactIdentity(owner, component),
           receiptPath: receiptPath(owner, component),
-          project: owner.plan.project,
-          target: owner.name,
         })),
       ),
     commitEffects: (target) => transactions.commit(target.id),
@@ -617,15 +668,9 @@ export function createTargetEffects(
         );
     },
     async install(component, target) {
-      const destination = installedPath(options.root, target, component),
+      const identity = artifactIdentity(target, component),
+        destination = identity.destination,
         source = resolve(target.plan.workspacePath, component.entrypoint);
-      const identity = {
-        targetId: target.id,
-        componentName: component.name,
-        destination,
-        project: target.plan.project,
-        target: target.name,
-      };
       await ownership.inspect(identity);
       const env = await environment(target, component);
       const key = installationPolicyKey(
@@ -646,10 +691,18 @@ export function createTargetEffects(
           digestFile,
           options.installer,
         )) === receipt!.sourceRevision;
-      if (await unchanged()) return { outcome: "unchanged" };
+      if (await unchanged()) {
+        // Rig's own executable published before its provenance was recorded gets it now, so a later forget can hand it on.
+        const owned = ownership.ownedPaths(destination).slice(1);
+        if (owned.length)
+          await transactions.withArtifactChange(target.id, owned, () =>
+            ownership.backfillProvenance(identity),
+          );
+        return { outcome: "unchanged" };
+      }
       await transactions.withArtifactChange(
         target.id,
-        [destination, ownership.ownerPath(destination), receiptFile],
+        [destination, ...ownership.ownedPaths(destination), receiptFile],
         async () => {
           await ownership.publish(identity, async () => {
             await options.installer.install({
@@ -789,6 +842,7 @@ export function createTargetEffects(
     },
     pruneRoutes: (owners, confinement) =>
       options.router.withdrawUnowned(owners, confinement),
+    orphanedTools: (recorded) => ownership.orphans(recorded),
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),

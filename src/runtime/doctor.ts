@@ -2,7 +2,8 @@ import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import { deploySelector, targetSelector } from "../domain/target-selector";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
-import type { RuntimeDependencies } from "./contracts";
+import type { OrphanedTool, RuntimeDependencies } from "./contracts";
+import { join } from "node:path";
 import { RigError } from "../domain/errors";
 import { observeTargets, OBSERVATION_EXPIRED } from "./status";
 import type { ComponentReport } from "../domain/project-status";
@@ -71,12 +72,20 @@ export async function hostDoctor(
 async function inspectRuntimeHost(
   deps: Pick<
     RuntimeDependencies,
-    "inspectHost" | "inspectProxy" | "routeFileInRoot" | "store" | "notices"
+    | "inspectHost"
+    | "inspectProxy"
+    | "routeFileInRoot"
+    | "orphanedTools"
+    | "store"
+    | "notices"
+    | "root"
   >,
 ) {
   const checks = await deps.inspectHost();
   const orphans = await orphanedRoutesCheck(deps);
   if (orphans) checks.push(orphans);
+  const tools = await orphanedToolsCheck(deps);
+  if (tools) checks.push(tools);
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
   for (const notice of deps.notices?.() ?? [])
     checks.push({
@@ -145,6 +154,77 @@ async function orphanedRoutesCheck(
     hint: inRoot
       ? "Run rig proxy reload to withdraw them now. rigd also withdraws them when it starts and before a deploy, up or restart publishes a route."
       : `If no other Rig root writes routes to ${publication.proxyFile}, run rig proxy reload to withdraw them.`,
+  };
+}
+/** A `tool-owners` check when `<RIG_ROOT>/bin` holds Tools whose owner Target no state record names (#343): a forgotten
+ * Project's, or a lost Target's. One whose bytes are still the ones Rig published is released, and the next Target that
+ * publishes there takes it over (`bin/rig` and `bin/rigd` only a Target of the Project that published them): reported,
+ * passing. One that changed since is never replaced or removed, so a Target that publishes there is refused
+ * (ARTIFACT_CHANGED) until it is moved: the check fails. Undefined when there is none, or when the Tools or the state cannot be read
+ * (other checks report that). The ownership records are read before the state, and every Target is recorded before it
+ * publishes a Tool, so a deploy in progress is never reported; a `rig forget` running meanwhile can be, once. */
+async function orphanedToolsCheck(
+  deps: Pick<RuntimeDependencies, "orphanedTools" | "store" | "root">,
+): Promise<DoctorCheck | undefined> {
+  if (!deps.orphanedTools) return undefined;
+  let orphans;
+  try {
+    orphans = await deps.orphanedTools(
+      async () =>
+        new Set((await deps.store.read()).targets.map((target) => target.id)),
+    );
+  } catch {
+    return undefined;
+  }
+  if (!orphans.length) return undefined;
+  const named = (tool: OrphanedTool) =>
+    `${tool.destination} (${
+      tool.owner.project && tool.owner.target
+        ? `Project '${tool.owner.project}' Target '${tool.owner.target}' `
+        : ""
+    }Tool '${tool.owner.componentName}')`;
+  const released = orphans.filter((tool) => !tool.changed);
+  const changed = orphans.filter((tool) => tool.changed);
+  const message = [
+    released.length
+      ? `${released.length === 1 ? "A Tool belongs" : `${released.length} Tools belong`} to a Target that no longer exists: ${released.map(named).join(", ")}. ${released.length === 1 ? "It stays" : "They stay"} installed as Rig published ${released.length === 1 ? "it" : "them"}, and the next Target that publishes a Tool of the same name takes ${released.length === 1 ? "it" : "each"} over.`
+      : "",
+    changed.length
+      ? `${changed.length === 1 ? "A Tool" : `${changed.length} Tools`} whose Target no longer exists changed since Rig published ${changed.length === 1 ? "it" : "them"}: ${changed.map(named).join(", ")}. Rig never replaces or removes ${changed.length === 1 ? "it" : "them"}, so a Target that publishes there is refused (ARTIFACT_CHANGED).`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  // rigd's system job runs <RIG_ROOT>/bin/rigd, and rig is the CLI that drives it: deleting either strands the Host.
+  const rigOwn = orphans
+    .map((tool) => tool.destination)
+    .filter((path) =>
+      [join(deps.root, "bin", "rigd"), join(deps.root, "bin", "rig")].includes(
+        path,
+      ),
+    );
+  return {
+    name: "tool-owners",
+    // A released Tool is reported, not failed: it keeps working and the next Target that publishes there takes it over. A
+    // changed one fails the check, since it refuses every publication there until it is moved.
+    ok: changed.length === 0,
+    message,
+    reason: changed.length ? "tool-changed" : "tool-orphaned",
+    hint: [
+      released.length
+        ? "Nothing needs doing to keep using them: a deploy or rig up that publishes a Tool of the same name replaces one. Delete one you no longer want."
+        : "",
+      changed.length
+        ? changed.some((tool) => rigOwn.includes(tool.destination))
+          ? "Move or delete a changed one to keep or discard that change, except rig and rigd: for those, put back the bytes whose SHA-256 the ownership record in installed/owners names, by copying them to a temporary name beside it and renaming that over it. A Target can then publish there."
+          : "Move or delete a changed one to keep or discard that change; a Target can then publish there."
+        : "",
+      rigOwn.length
+        ? `Never delete ${rigOwn.join(" or ")}: ${rigOwn.length === 1 ? "it is" : "they are"} Rig itself, and rigd's system job runs ${join(deps.root, "bin", "rigd")}. Only the repository that published ${rigOwn.length === 1 ? "it" : "them"} takes ${rigOwn.length === 1 ? "it" : "them"} over: register it (any clone) again and deploy its stable Target. One published before Rig recorded its repository goes to no one; upgrade with the manual steps of the rig:rigd skill's upgrade reference.`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
   };
 }
 export async function doctor(

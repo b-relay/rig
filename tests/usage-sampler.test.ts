@@ -409,7 +409,7 @@ describe("the usage sampler", () => {
     const sampled = sampler(host, {
       processes: () => [component("web", 10)],
       history: watched(() => failing).store,
-      detailHours: 1 / 60,
+      detailHours: 1,
     });
     // This rigd samples seconds 20–48 at 10%, but cannot write them.
     host.skip(20);
@@ -459,6 +459,70 @@ describe("the usage sampler", () => {
               ),
           ).toBe(true);
     }
+  });
+
+  test("a report reads between passes, flushes and forgets, so a forget asked for meanwhile waits for it", async () => {
+    const minute = Math.floor(START / 60_000);
+    // An earlier rigd stored seconds 0–19 at 100%; this one holds 21–48 at 10%, its writes failing.
+    await history.write([
+      {
+        series: component("web", 10).series,
+        minute,
+        slots: Array.from({ length: 20 }, () => ({ cpu: 1000, memory: 100 })),
+      },
+    ]);
+    let gate: Promise<void> | undefined;
+    let open!: () => void;
+    const store: UsageHistory = {
+      ...watched(() => true).store,
+      read: async (request) => {
+        // The report's read of stored seconds waits here, part way through the report.
+        if (request.detail && gate) await gate;
+        return history.read(request);
+      },
+    };
+    const host = scriptedHost({
+      10: [{ pid: 11, cores: 0.1, memoryBytes: 100 }],
+    });
+    const sampled = sampler(host, {
+      processes: () => [component("web", 10)],
+      history: store,
+    });
+    host.skip(20);
+    for (let i = 0; i < 29; i++)
+      (await sampled.pass().catch(() => {}), host.tick());
+
+    gate = new Promise((resolve) => (open = resolve));
+    const report = sampled.consistently((snapshot) =>
+      usageReport({
+        filter: PROJECT,
+        window: { since: START / 1000 + 49 - 86_400 },
+        detailSince: START / 1000 - 86_400,
+        now: START + 49_000,
+        sampledEvery: 1,
+        history: store,
+        snapshot,
+      }),
+    );
+    let forgotten = false;
+    const forget = sampled.forget("p-fletcher").then(() => (forgotten = true));
+    await Bun.sleep(5);
+    expect(forgotten).toBe(false);
+    open();
+    const web = (await report).series.find(
+      (each) => each.series.scope === "component",
+    )!;
+    // Both rigds' samples: 20 at 100% and 28 at 10%.
+    expect(web.summary.cpu).toMatchObject({ high: 100, average: 47.5 });
+    await forget;
+    expect(
+      await history.read({
+        filter: PROJECT,
+        from: 0,
+        to: START,
+        detail: false,
+      }),
+    ).toEqual([]);
   });
 
   test("while pruning fails every pass fails, until a retry a minute later succeeds", async () => {

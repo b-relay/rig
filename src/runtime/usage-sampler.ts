@@ -57,6 +57,9 @@ export interface UsageSampler {
   pass(): Promise<void>;
   /** What is sampled but not stored, as of the last pass. */
   snapshot(): UsageSnapshot;
+  /** Runs `read` with the snapshot between passes, flushes and forgets, so what it reads from the store matches what
+   * the sampler holds: nothing is written, pruned or forgotten until it finishes. Reports read this way. */
+  consistently<T>(read: (snapshot: UsageSnapshot) => Promise<T>): Promise<T>;
   /** Writes every changed minute now, as rigd does before it stops. */
   flush(): Promise<void>;
   /** Drops everything buffered for a Project and removes its stored history, as `rig forget` does. Waits for a pass in
@@ -270,6 +273,8 @@ export function createUsageSampler(deps: {
     snapshot() {
       return { latest, pending: minutes.pending() };
     },
+    consistently: (read) =>
+      exclusive(() => read({ latest, pending: minutes.pending() })),
     flush: () => exclusive(writeChanged),
     forget: (projectId) =>
       exclusive(async () => {

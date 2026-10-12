@@ -546,18 +546,21 @@ function composeUsage(input: {
     cores: availableParallelism(),
   });
   const monitor: UsageMonitor = {
-    report: async (request) => {
-      const now = Date.now();
-      return usageReport({
-        ...request,
-        now,
-        detailSince:
-          Math.floor(now / 1000) - (await retention()).detailHours * 3600,
-        sampledEvery: reader.intervalMs / 1000,
-        history,
-        snapshot: sampler.snapshot(),
-      });
-    },
+    // Between passes, flushes and forgets, so a report never mixes stored history from before a write or removal with
+    // held minutes from after it.
+    report: (request) =>
+      sampler.consistently(async (snapshot) => {
+        const now = Date.now();
+        return usageReport({
+          ...request,
+          now,
+          detailSince:
+            Math.floor(now / 1000) - (await retention()).detailHours * 3600,
+          sampledEvery: reader.intervalMs / 1000,
+          history,
+          snapshot,
+        });
+      }),
     forget: (projectId) => sampler.forget(projectId),
   };
   return {

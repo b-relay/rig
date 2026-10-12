@@ -1395,8 +1395,8 @@ failed. Each line ends with the record's Operation id and is followed by its
 message: the error code for a failed Operation, or `web exited with code 137.`
 for a crash. A record about one Service or Job (a crash, an automatic or
 health restart, a job run, skip or restore) names it as `component`
-(`{ "kind": "service", "name": "web" }`) in `rig activity --json`. A failure
-that prints `Operation: <id>` can be looked up with
+(`{ "kind": "service", "name": "web" }`) in rigd's `activity` reply, which the
+dashboard reads. A failure that prints `Operation: <id>` can be looked up with
 `rig activity <id>` (a unique prefix of the id also works), which shows only
 that record or reports that none was recorded, as happens when the request
 never reached rigd. A failure the user can correct (a bad argument, a config

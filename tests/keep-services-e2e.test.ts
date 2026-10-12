@@ -23,15 +23,11 @@ async function pids(f: Fixture): Promise<Record<string, number | undefined>> {
   const stable = await stableStatus(f);
   return Object.fromEntries(stable.components.map((c) => [c.name, c.pid]));
 }
-async function deploy(f: Fixture) {
-  const result = await f.rig(["deploy", "stable", "--json"]);
+/** Deploys stable and answers its result line, such as `demo stable deployed main@abc1234 (was 9f8e7d6), kept db`. */
+async function deploy(f: Fixture): Promise<string> {
+  const result = await f.rig(["deploy", "stable"]);
   expect(result).toMatchObject({ code: 0 });
-  return JSON.parse(result.stdout) as {
-    outcome: string;
-    commit: string;
-    kept: string[];
-    restarted: { service: string; reason: string }[];
-  };
+  return result.stdout;
 }
 
 test("Melody: a web-only change keeps db and search running with the same pids; a change to db's script restarts db and its dependents", async () => {
@@ -79,11 +75,9 @@ services:
     const first = await f.commit();
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init"])).toMatchObject({ code: 0 });
-    expect(await deploy(f)).toMatchObject({
-      outcome: "deployed",
-      commit: first,
-      kept: [],
-    });
+    const firstLine = await deploy(f);
+    expect(firstLine).toContain(`deployed main@${first.slice(0, 7)}`);
+    expect(firstLine).not.toContain("kept");
     const started = await pids(f);
     for (const service of ["db", "search", "api", "web"])
       expect(started[service]).toBeNumber();
@@ -91,15 +85,9 @@ services:
     // A web-only change: db and search keep their processes; api and web compare the whole checkout and restart.
     await writeFile(join(f.repo, "web.ts"), `// v2\n${SERVER}`);
     const second = await f.commit();
-    expect(await deploy(f)).toMatchObject({
-      outcome: "deployed",
-      commit: second,
-      kept: ["db", "search"],
-      restarted: [
-        { service: "api", reason: "files" },
-        { service: "web", reason: "files" },
-      ],
-    });
+    const secondLine = await deploy(f);
+    expect(secondLine).toContain(`deployed main@${second.slice(0, 7)}`);
+    expect(secondLine).toContain(", kept db, search");
     const afterWeb = await pids(f);
     expect(afterWeb.db).toBe(started.db);
     expect(afterWeb.search).toBe(started.search);
@@ -128,11 +116,9 @@ services:
       `# version 2\nexec '${bun}' '${join(outside, "server.ts")}'\n`,
     );
     const fourth = await f.commit();
-    expect(await deploy(f)).toMatchObject({
-      outcome: "deployed",
-      commit: fourth,
-      kept: ["search"],
-    });
+    const fourthLine = await deploy(f);
+    expect(fourthLine).toContain(`deployed main@${fourth.slice(0, 7)}`);
+    expect(fourthLine).toContain(", kept search\n");
     const afterScript = await pids(f);
     expect(afterScript.search).toBe(started.search);
     expect(afterScript.db).not.toBe(started.db);

@@ -449,6 +449,57 @@ function renderDoctor(report: Record<string, unknown>): string {
   if (note) lines.push(note);
   return `${lines.join("\n")}\n`;
 }
+/** The longest log line rig prints whole unless asked for --full. Rig records up to 64K characters per line, which would
+ * flood a terminal or an agent's context. */
+export const LONG_LINE_CHARS = 2000;
+/** Pure: a logs reply with every line longer than LONG_LINE_CHARS cut there, each such entry gaining `omitted`, the
+ * characters left out; the reply unchanged with `full`. */
+export function shortenedLogs(value: unknown, full: boolean): unknown {
+  const report = object(value);
+  if (full || !Array.isArray(report.entries)) return value;
+  return {
+    ...report,
+    entries: report.entries.map((entry: unknown) => {
+      const fields = object(entry);
+      if (
+        typeof fields.line !== "string" ||
+        fields.line.length <= LONG_LINE_CHARS
+      )
+        return entry;
+      // Cut by code point, so no character is split in half.
+      const characters = Array.from(fields.line);
+      if (characters.length <= LONG_LINE_CHARS) return entry;
+      return {
+        ...fields,
+        line: characters.slice(0, LONG_LINE_CHARS).join(""),
+        omitted: characters.length - LONG_LINE_CHARS,
+      };
+    }),
+  };
+}
+/** Pure: the records of a logs or activity reply as JSON Lines, one object per line, for a file a program reads
+ * record by record. */
+export function jsonLines(action: string, value: unknown): string {
+  const report = object(value);
+  const items = action === "logs" ? report.entries : report.operations;
+  return Array.isArray(items)
+    ? items.map((item) => `${JSON.stringify(item)}\n`).join("")
+    : "";
+}
+/** Pure: what a logs or activity read left out, for stderr, so a program reading stdout gets only the records:
+ * `showing 20 of 340 records; --lines to see more`. Undefined when nothing was left out. */
+export function readNotice(action: string, value: unknown): string | undefined {
+  const report = object(value);
+  if (action === "activity" && typeof report.total === "number") {
+    const shown = rows(report.operations).length;
+    return report.total > shown
+      ? `showing ${shown} of ${report.total} records; --lines to see more`
+      : undefined;
+  }
+  if (action === "logs" && report.more === true)
+    return `showing the latest ${rows(report.entries).length} entries; older ones match too, --lines or --since to see them`;
+  return undefined;
+}
 export function renderLogs(value: unknown, heading: boolean): string {
   const report = object(value);
   const lines = heading
@@ -470,8 +521,12 @@ export function renderLogs(value: unknown, heading: boolean): string {
           : entry.stream === "health"
             ? "~"
             : "?";
+    const omitted =
+      typeof entry.omitted === "number"
+        ? ` … (${entry.omitted.toLocaleString("en-US")} more characters)`
+        : "";
     lines.push(
-      `${time}  ${word(entry.component)}  ${marker} ${word(entry.line)}`,
+      `${time}  ${word(entry.component)}  ${marker} ${word(entry.line)}${omitted}`,
     );
   }
   if (heading && !rows(report.entries).length)

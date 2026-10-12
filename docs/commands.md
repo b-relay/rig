@@ -20,13 +20,22 @@ rig
 │    --tool <name>     --bin <path>     --tool-build <command>
 │
 ├─ list                             all Projects on this Host
+│    --json
 ├─ status                           all Targets of one Project
 │    --project <name>   --json
 ├─ doctor                           Host checks, plus Project checks when in one
-│    --project <name>
+│    --project <name>   --json
 ├─ config                           show the validated rig.yaml and its path
-│    --project <name>
-├─ activity [operation]             the latest 100 actions, or one Operation by id
+│    --project <name>   --json
+├─ activity [operation]             what Rig did, newest last, or one Operation by id
+│    --project <name>               another Project's (default: the one this directory is in)
+│    --all                          every Project's, and rigd's own administration
+│    --target <name>                only this Target's: working, stable or a Preview's name
+│    --action <action>              only this action, such as deploy, crash or job
+│    --outcome <outcome>            only this outcome, such as failed
+│    --since <time>  --until <time> 1h, 15m, 2d … back from now, or an ISO time with a zone
+│    --lines <count>                default 20, at most 1000, counted after filtering
+│    --json                         one record per line (JSON Lines)
 ├─ monitor                          CPU and memory of one Project, redrawn every sample on a terminal
 │    --project <name>
 │    --all                          every Project, Rig itself and the Host's total
@@ -39,18 +48,17 @@ rig
 │    --force                        redeploy the same Commit
 │    --no-up                        deploy without starting
 │    --deployment <name>            explicit Preview name
-│    --json
 │
 ├─ up      [target] [branch]        target: "working" (default), "stable" or "preview"
 ├─ restart [target] [branch]
 ├─ down    [target] [branch]
-│    --project <name>   --deployment <name>   --json
+│    --project <name>   --deployment <name>
 │    --destroy                      down only: delete a Preview and its own data
 │    --kill                         down and restart: skip stop_timeout (SIGTERM, SIGKILL after 1.5 s),
 │                                   and cut short a stop already running on the Target
 │
 ├─ run <job> [target] [branch]      start a scheduled job now; target: "stable" (default), "working" or "preview"
-│    --project <name>   --deployment <name>   --json
+│    --project <name>   --deployment <name>
 │
 ├─ backup
 │  ├─ list [job] [target] [branch]  kept backups, newest first: time, size, the run that made them;
@@ -59,7 +67,7 @@ rig
 │  └─ restore <job> <id|latest> [target] [branch]
 │                                   run the job's backup.restore once against a backup, then wait;
 │                                   target: "stable" (default), "working" or "preview"
-│       --project <name>   --deployment <name>   --json
+│       --project <name>   --deployment <name>
 │       --yes                       restore without asking
 │
 ├─ logs [target] [branch]
@@ -70,6 +78,8 @@ rig
 │    --stream stdout|stderr         only this stream
 │    --since <time>  --until <time> 1h, 15m, 2d … back from now, or an ISO time with a zone;
 │                                   --until cannot be combined with --follow
+│    --full                         print every line whole (default: shortened past 2,000 characters)
+│    --json                         one entry per line (JSON Lines)
 │
 ├─ rename <name>                    new identity; the Project must be stopped
 │    --project <name>               current identity
@@ -145,8 +155,18 @@ status` takes no Target.
   Production branch; `preview` refuses it.
 - Deploying the Commit that is already deployed does nothing without `--force`.
 - `--project` is needed only outside the Project's repository.
-- `--json` exists on `status`, `deploy`, `up`, `down`, `restart`, `run`,
-  `backup list`, `backup restore`, `proxy` and `dns list` only.
+- Reads take `--json`; actions do not. `list`, `status`, `doctor`, `config`,
+  `monitor`, `proxy`, `dns list` and `backup list` print one JSON document;
+  `activity` and `logs` print JSON Lines, one record per line, for a file a
+  program reads record by record. An action (`deploy`, `up`, `down`,
+  `restart`, `run`, `backup restore` and the rest) answers with its exit code
+  and a line saying what it did.
+- `activity` and `logs` print a bounded number of records (20 and 50 by
+  default) and say on stderr when they left matching ones out, such as
+  `showing 20 of 340 records; --lines to see more`, so stdout redirected to a
+  file holds only the records. `logs` shortens a line past 2,000 characters,
+  ending it `… (61,440 more characters)` (in JSON, the entry's `omitted`);
+  `--full` prints it whole.
 - `run` starts one run of a job from `jobs` in `rig.yaml` and answers once it
   started; it never waits for the run to end. Without a Target it means
   `stable`, where jobs are scheduled by default; it runs the job in any Target

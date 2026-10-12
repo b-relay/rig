@@ -10,15 +10,34 @@ async function runs(counts: string): Promise<string[]> {
     .filter(Boolean);
 }
 
-test("deploy --no-up builds every unit once and starts nothing; up and restart reuse that preparation; force builds a fresh scope", async () => {
-  const f = await rigFixture();
-  const counts = join(f.base, "counts");
-  const json = async (args: string[]) => {
+/** A read's JSON report; or an action's outcome and warnings, read from its result line (`demo stable started`) and the
+ * `Warning:` lines after it. An action's stderr may name what it does (`Deploying demo …`), so only its exit is checked. */
+async function report(
+  f: Awaited<ReturnType<typeof rigFixture>>,
+  args: string[],
+): Promise<any> {
+  if (args[0] === "status") {
     const result = await f.rig([...args, "--json"]);
     expect(result.stderr).toBe("");
     expect(result.code).toBe(0);
     return JSON.parse(result.stdout);
+  }
+  const result = await f.rig(args);
+  expect(result.code).toBe(0);
+  const lines = result.stdout.split("\n");
+  const warnings = lines
+    .filter((line) => line.startsWith("Warning: "))
+    .map((line) => line.slice("Warning: ".length));
+  return {
+    outcome: lines[0]!.split(" ")[2],
+    ...(warnings.length ? { warnings } : {}),
   };
+}
+
+test("deploy --no-up builds every unit once and starts nothing; up and restart reuse that preparation; force builds a fresh scope", async () => {
+  const f = await rigFixture();
+  const counts = join(f.base, "counts");
+  const json = (args: string[]) => report(f, args);
   const live = async () =>
     (await json(["status"])).targets.find(
       (target: { name: string }) => target.name === "stable",
@@ -106,12 +125,7 @@ test("a deployed Production Branch reaches the stable Target with the plain Tool
   const f = await rigFixture();
   const counts = join(f.base, "counts"),
     secrets = join(f.base, "secrets.env");
-  const ok = async (args: string[]) => {
-    const result = await f.rig([...args, "--json"]);
-    expect(result.stderr).toBe("");
-    expect(result.code).toBe(0);
-    return JSON.parse(result.stdout);
-  };
+  const ok = (args: string[]) => report(f, args);
   const config = (run: string) => `name: demo
 env_file: ['${secrets}']
 targets:

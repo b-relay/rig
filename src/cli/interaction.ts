@@ -29,7 +29,7 @@ const deployment = z.object({
 export async function prepareInteractiveRequest(
   request: RuntimeCommand,
   deps: Pick<CliDependencies, "signal" | "interaction" | "client" | "output">,
-  options: { json?: boolean; yes?: boolean } = {},
+  options: { yes?: boolean } = {},
 ): Promise<RuntimeCommand> {
   assertActive(deps.signal);
   const interaction = deps.interaction;
@@ -81,16 +81,15 @@ export async function prepareInteractiveRequest(
       }),
     );
     assertActive(deps.signal);
-    // A deploy resolved from the working directory must be visible before it acts, not only in its final line; structured callers get only the result.
+    // A deploy resolved from the working directory must be visible before it acts, not only in its final line.
     const branch =
       request.branch ??
       (info.selected === "stable" ? info.productionBranch : info.currentBranch);
-    if (!options.json)
-      deps.output.error(
-        `Deploying ${terminalText(info.project)} (${terminalText(info.repoPath)}) to ${terminalText(
-          request.deployment ?? request.target ?? "preview",
-        )} from ${branch === null ? "a detached HEAD" : terminalText(branch)}.\n`,
-      );
+    deps.output.error(
+      `Deploying ${terminalText(info.project)} (${terminalText(info.repoPath)}) to ${terminalText(
+        request.deployment ?? request.target ?? "preview",
+      )} from ${branch === null ? "a detached HEAD" : terminalText(branch)}.\n`,
+    );
     if (info.selected !== "stable" || request.branch) return request;
     if (
       info.currentBranch !== null &&

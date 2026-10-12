@@ -112,9 +112,9 @@ test("with the compiled rigd and no bun on the installing shell's PATH, installi
   try {
     // The install itself succeeds, since built Tools and Services need no bun, but says what will fail.
     expect(await project(f)).toContain("Warning: rigd install found no bun");
-    const up = await f.rig(["up", "working", "--json"]);
+    const up = await f.rig(["up", "working"]);
     expect(up.code).toBe(1);
-    expect(up.stdout + up.stderr).toContain("BUN_NOT_FOUND");
+    expect(up.stdout + up.stderr).toContain("rigd has no recorded bun");
     expect(up.stdout + up.stderr).toContain("rigd install");
     expect(await readdir(join(f.root, "bin")).catch(() => [])).toEqual([]);
     await f.rig(["down", "working"]);

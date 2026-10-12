@@ -14,6 +14,7 @@ import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";
 import { addLogsCommand } from "./logs-command";
+import { addActivityCommand } from "./activity-command";
 import { addDnsCommands, type DnsCommandDependencies } from "./dns-command";
 
 export type ExecuteCommand = (
@@ -22,6 +23,8 @@ export type ExecuteCommand = (
    * was given as typed, which a watch resolves again at every refresh so a duration moves with the clock. */
   options?: {
     json?: boolean;
+    /** rig logs: print long lines whole instead of shortened. */
+    full?: boolean;
     follow?: boolean;
     yes?: boolean;
     window?: MonitorWindowInput;
@@ -49,51 +52,34 @@ export function createRigCommand(
   const command = terminalCommand("rig", output).description(
     "Manage Projects and their Targets on this Host.",
   );
-  for (const action of [
-    "list",
-    "status",
-    "doctor",
-    "config",
-    "activity",
-  ] as const) {
+  for (const action of ["list", "status", "doctor", "config"] as const) {
     const child = command.command(action).description(
       {
         list: "List registered Projects.",
         status: "Observe all Targets for one Project.",
         doctor: "Check Host and optional Project health.",
         config: "Inspect validated Project configuration.",
-        activity: "Read recent Rig activity.",
       }[action],
     );
-    if (!["list", "activity"].includes(action))
+    if (action !== "list")
       child.option("--project <name>", "Registered Project identity");
-    if (action === "status")
-      child.option("--json", "Render the observed report as JSON");
-    if (action === "activity")
-      child
-        .argument(
-          "[operation]",
-          "Show one Operation by the id a failed command printed",
-        )
-        .action(async (operation: string | undefined, options: ScopeOptions) =>
-          execute(
-            {
-              action,
-              repoPath: cwd,
-              ...projectScope(options),
-              ...(operation ? { operation } : {}),
-            },
-            { json: options.json },
-          ),
-        );
-    else
-      child.action(async (options: ScopeOptions) =>
+    child
+      .option("--json", "Print the report as JSON")
+      .action(async (options: ScopeOptions) =>
         execute(
           { action, repoPath: cwd, ...projectScope(options) },
           { json: options.json },
         ),
       );
   }
+  addActivityCommand(command, {
+    cwd,
+    execute,
+    now,
+    projectScope,
+    positiveInteger,
+    nonEmpty,
+  });
   addLifecycleCommands(command, cwd, execute);
   addDeployCommands(command, cwd, execute);
   addRunCommand(command, cwd, execute);
@@ -354,7 +340,6 @@ function addLifecycleCommands(
       )
       .argument("[branch]", "Preview Branch or name", nonEmpty)
       .option("--project <name>", "Registered Project identity")
-      .option("--json", "Render the final domain result as JSON")
       .option("--deployment <name>", "Explicit Preview name");
     if (action === "down")
       child.option(
@@ -379,14 +364,11 @@ function addLifecycleCommands(
             "Use rig down preview <branch> --destroy.",
           );
         const request = targetRequest(action, target, branch, cwd, options);
-        await execute(
-          {
-            ...request,
-            ...(options.destroy ? { action: "destroy" as const } : {}),
-            ...(options.kill ? { kill: true } : {}),
-          },
-          { json: options.json },
-        );
+        await execute({
+          ...request,
+          ...(options.destroy ? { action: "destroy" as const } : {}),
+          ...(options.kill ? { kill: true } : {}),
+        });
       },
     );
   }
@@ -413,8 +395,7 @@ function addDeployCommands(
       "--no-up",
       "Deploy without starting; a running Target is stopped until rig up",
     )
-    .option("--deployment <name>", "Explicit Preview name")
-    .option("--json", "Render the final domain result as JSON");
+    .option("--deployment <name>", "Explicit Preview name");
   deploy.action(
     async (
       target: string | undefined,
@@ -428,20 +409,17 @@ function addDeployCommands(
           "Only a Preview takes --deployment.",
           "Use rig deploy preview --deployment <name>.",
         );
-      await execute(
-        {
-          action: "deploy",
-          repoPath: cwd,
-          // In a checkout a deploy means the stable Target unless it names a Preview.
-          target: target ?? "stable",
-          ...projectScope(options),
-          ...(branch ? { branch } : {}),
-          ...(options.force ? { force: true } : {}),
-          ...(options.up === false ? { noUp: true } : {}),
-          ...previewScope(options),
-        },
-        { json: options.json },
-      );
+      await execute({
+        action: "deploy",
+        repoPath: cwd,
+        // In a checkout a deploy means the stable Target unless it names a Preview.
+        target: target ?? "stable",
+        ...projectScope(options),
+        ...(branch ? { branch } : {}),
+        ...(options.force ? { force: true } : {}),
+        ...(options.up === false ? { noUp: true } : {}),
+        ...previewScope(options),
+      });
     },
   );
 }
@@ -463,7 +441,6 @@ function addRunCommand(
     .argument("[branch]", "Preview Branch or name", nonEmpty)
     .option("--project <name>", "Registered Project identity")
     .option("--deployment <name>", "Explicit Preview name")
-    .option("--json", "Render the final domain result as JSON")
     .action(
       async (
         job: string,
@@ -485,7 +462,7 @@ function addRunCommand(
           cwd,
           options,
         );
-        await execute({ ...request, job }, { json: options.json });
+        await execute({ ...request, job });
       },
     );
 }
@@ -566,7 +543,6 @@ function addBackupCommands(
     .option("--project <name>", "Registered Project identity")
     .option("--deployment <name>", "Explicit Preview name")
     .option("--yes", "Restore without asking for confirmation")
-    .option("--json", "Render the final result as JSON")
     .action(
       async (
         job: string,
@@ -592,7 +568,7 @@ function addBackupCommands(
         );
         await execute(
           { ...request, job, backup: id },
-          { json: options.json, yes: options.yes === true },
+          { yes: options.yes === true },
         );
       },
     );

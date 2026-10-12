@@ -7,7 +7,15 @@ import {
 } from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
-import { renderResult, renderStatus, object, renderLogs } from "./output";
+import {
+  jsonLines,
+  object,
+  readNotice,
+  renderLogs,
+  renderResult,
+  renderStatus,
+  shortenedLogs,
+} from "./output";
 import { waitStatus } from "./wait-notice";
 import {
   liveDisplay,
@@ -203,7 +211,6 @@ export async function runRigCli(
     // Assigned before preflight so a failure while gathering answers still names the Operation.
     operationId = dependencies.newOperationId();
     request = await prepareInteractiveRequest(request, dependencies, {
-      json,
       yes: options.yes === true,
     });
     const correlated = { ...request, operationId };
@@ -227,6 +234,8 @@ export async function runRigCli(
     // A restore answers once its run started; rig waits for it to end, so the command says how the restore went.
     if (request.action === "restore")
       result = await restoreOutcome(request, result, operationId, dependencies);
+    if (request.action === "logs")
+      result = shortenedLogs(result, options.full === true);
     const watching =
       request.action === "monitor" &&
       options.follow === true &&
@@ -236,13 +245,18 @@ export async function runRigCli(
     else
       dependencies.output.write(
         json
-          ? `${JSON.stringify(result)}\n`
+          ? ["logs", "activity"].includes(request.action)
+            ? jsonLines(request.action, result)
+            : `${JSON.stringify(result)}\n`
           : status
             ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
             : request.action === "monitor"
               ? `${monitorLines(result as MonitorResult, options.window ? { window: options.window } : {}).join("\n")}\n`
               : renderResult(request.action, result),
       );
+    // What a read left out goes to stderr, so a file stdout is redirected to holds only the records.
+    const notice = readNotice(request.action, result);
+    if (notice) dependencies.output.error(`${notice}\n`);
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
       event: "command.completed",
       operationId,
@@ -254,7 +268,10 @@ export async function runRigCli(
     if (request.action === "doctor" && object(result).ok === false)
       exitCode = 1;
     if (options.follow && request.action === "logs")
-      await followLogs(correlated, result, dependencies);
+      await followLogs(correlated, result, dependencies, {
+        json,
+        full: options.full === true,
+      });
   };
   const command = createRigCommand(
     dependencies.cwd,
@@ -387,6 +404,7 @@ async function followLogs(
   request: RuntimeCommand,
   initial: unknown,
   dependencies: CliDependencies,
+  print: { readonly json: boolean; readonly full: boolean },
 ): Promise<void> {
   let cursor = object(initial).cursor;
   while (!dependencies.signal?.aborted) {
@@ -400,18 +418,33 @@ async function followLogs(
       },
       dependencies.signal,
     );
-    dependencies.output.write(renderLogs(result, false));
+    const page = shortenedLogs(result, print.full);
+    dependencies.output.write(
+      print.json ? jsonLines("logs", page) : renderLogs(page, false),
+    );
     cursor = object(result).cursor;
   }
 }
+/** The reads that take --json, by their words: `backup list`, not `backup restore`. */
+const STRUCTURED_READS = [
+  "list",
+  "status",
+  "doctor",
+  "config",
+  "activity",
+  "logs",
+  "monitor",
+  "proxy",
+  "dns list",
+  "backup list",
+];
 /** Error rendering follows the same scoped flag even when argument validation fails before execution. */
 function requestsStructuredOutput(args: readonly string[]): boolean {
   const end = args.indexOf("--");
   const options = end < 0 ? args : args.slice(0, end);
   return (
     options.includes("--json") &&
-    ["status", "up", "down", "restart", "deploy", "monitor"].includes(
-      args[0] ?? "",
-    )
+    (STRUCTURED_READS.includes(args[0] ?? "") ||
+      STRUCTURED_READS.includes(args.slice(0, 2).join(" ")))
   );
 }

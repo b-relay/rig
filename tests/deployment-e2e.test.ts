@@ -27,13 +27,11 @@ services:
     let commit = await f.commit();
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["init"])).toMatchObject({ code: 0 });
-    const deployed = await f.rig(["deploy", "stable", "--json"]);
+    const deployed = await f.rig(["deploy", "stable"]);
     expect(deployed).toMatchObject({ code: 0 });
-    expect(JSON.parse(deployed.stdout)).toMatchObject({
-      outcome: "deployed",
-      branch: "main",
-      commit,
-    });
+    expect(deployed.stdout).toContain(
+      `demo stable deployed main@${commit.slice(0, 7)}`,
+    );
     const state = JSON.parse(
         await readFile(join(f.root, "runtime", "state.json"), "utf8"),
       ),
@@ -50,7 +48,7 @@ services:
       `Bun.serve({hostname:'127.0.0.1',port:Number(process.env.PORT),fetch:()=>new Response('second')});`,
     );
     commit = await f.commit();
-    const replacement = await f.rig(["deploy", "stable", "--json"]);
+    const replacement = await f.rig(["deploy", "stable"]);
     expect(replacement).toMatchObject({ code: 0 });
     const replaced = JSON.parse(
       await readFile(join(f.root, "runtime", "state.json"), "utf8"),
@@ -58,11 +56,11 @@ services:
     expect(
       replaced.plan.components.find((c: any) => c.name === "web").port,
     ).toBe(target.plan.components.find((c: any) => c.name === "web").port);
-    expect(await f.rig(["down", "stable", "--json"])).toMatchObject({
+    expect(await f.rig(["down", "stable"])).toMatchObject({
       code: 0,
     });
-    const noop = await f.rig(["deploy", "stable", "--json"]);
-    expect(JSON.parse(noop.stdout).outcome).toBe("unchanged");
+    const noop = await f.rig(["deploy", "stable"]);
+    expect(noop.stdout).toContain("demo stable unchanged");
     const status = JSON.parse((await f.rig(["status", "--json"])).stdout);
     expect(status.targets.find((t: any) => t.name === "stable").state).toBe(
       "stopped",
@@ -78,7 +76,7 @@ services:
     ports: { http: 19999 }
 `,
     );
-    expect(await f.rig(["up", "stable", "--json"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["up", "stable"])).toMatchObject({ code: 0 });
     const after = JSON.parse(
       (await f.rig(["status", "--json"])).stdout,
     ).targets.find((t: any) => t.name === "stable");
@@ -86,10 +84,10 @@ services:
     expect(await readFile(persistent, "utf8")).toBe("precious database bytes");
     await rename(f.repo, `${f.repo}-moved`);
     expect(
-      await f.rig(["down", "stable", "--project", "demo", "--json"], f.base),
+      await f.rig(["down", "stable", "--project", "demo"], f.base),
     ).toMatchObject({ code: 0 });
     expect(
-      await f.rig(["up", "stable", "--project", "demo", "--json"], f.base),
+      await f.rig(["up", "stable", "--project", "demo"], f.base),
     ).toMatchObject({ code: 0 });
     const verified = await f.run(
       ["git", "fsck", "--full"],

@@ -63,6 +63,14 @@ export function ownerDetails(owner: ArtifactOwner) {
     ...(owner.target ? { target: owner.target } : {}),
   };
 }
+/** What git says about the repository a checkout comes from: its identity (its root commits, sorted and joined by commas,
+ * the same in every full clone), or that it is a shallow clone, whose oldest commits are only where its history was cut and
+ * so prove nothing, or that git could not say. */
+export type RepositoryIdentity =
+  | { readonly kind: "known"; readonly roots: string }
+  | { readonly kind: "shallow" }
+  | { readonly kind: "unknown" };
+const unknownRepository: RepositoryIdentity = { kind: "unknown" };
 export interface ArtifactIdentity {
   targetId: string;
   componentName: string;
@@ -70,10 +78,9 @@ export interface ArtifactIdentity {
   /** The owning Project and Target names, recorded so a later conflict can name them. */
   project?: string;
   target?: string;
-  /** The identity of the repository the Target's workspace comes from (its root commits), or undefined when git cannot
-   * say. Asked only for Rig's own executables: recorded when one is published, and compared before a released one is
-   * taken over. */
-  repository?: () => Promise<string | undefined>;
+  /** The identity of the repository the Target's workspace comes from. Asked only for Rig's own executables: recorded
+   * when one is published (never a shallow one's), and compared before a released one is taken over. */
+  repository?: () => Promise<RepositoryIdentity>;
 }
 /** An installed executable whose ownership record names a Target no state record names (one a `rig forget` left, #343, or a
  * state that lost its Target). */
@@ -234,16 +241,23 @@ export function createArtifactOwnership(
         `Keep it: rigd's system job runs ${daemon}. Rename this Tool in its rig.yaml if it is not Rig. To upgrade Rig on this Host, follow the manual steps in the rig:rigd skill's upgrade reference (a new file renamed over the old one, never a copy in place).`,
         { ...details, reason: "provenance-missing" },
       );
-    const claimant = await identity.repository?.().catch(() => undefined);
-    if (claimant !== published)
+    const claimant = await repositoryOf(identity);
+    if (claimant.kind === "shallow")
       throw new RigError(
         "ARTIFACT_CONFLICT",
-        `${identity.destination} is Rig itself, published by ${describeOwner(saved)} from another repository${claimant === undefined ? " (this Target's repository could not be identified)" : ""}; only that repository registered again takes it over.`,
+        `${identity.destination} is Rig itself, published by ${describeOwner(saved)}, whose Target no longer exists. This checkout is a shallow clone, so its history can't be matched with the repository that published it.`,
+        `Keep it: rigd's system job runs ${daemon}. Run git fetch --unshallow in the Project's repository, then deploy again.`,
+        { ...details, reason: "repository-shallow" },
+      );
+    if (claimant.kind === "unknown" || claimant.roots !== published)
+      throw new RigError(
+        "ARTIFACT_CONFLICT",
+        `${identity.destination} is Rig itself, published by ${describeOwner(saved)} from another repository${claimant.kind === "unknown" ? " (this Target's repository could not be identified)" : ""}; only that repository registered again takes it over.`,
         `Keep it: rigd's system job runs ${daemon}. Rename this Tool in its rig.yaml if it is not Rig; otherwise register the repository that published it (any clone of it) and run rig deploy stable for it.`,
         {
           ...details,
           reason:
-            claimant === undefined
+            claimant.kind === "unknown"
               ? "repository-unknown"
               : "repository-different",
         },
@@ -295,23 +309,30 @@ export function createArtifactOwnership(
     }
     return found;
   };
-  /** Records which repository published Rig's own executable at `identity.destination` as `revision`, when `repository`
-   * is known; removes a record that would otherwise describe an earlier publication. Nothing for any other Tool. */
+  /** `identity`'s repository; unknown when it names none or asking fails. */
+  const repositoryOf = async (
+    identity: ArtifactIdentity,
+  ): Promise<RepositoryIdentity> =>
+    (await identity.repository?.().catch(() => unknownRepository)) ??
+    unknownRepository;
+  /** Records which repository published Rig's own executable at `identity.destination` as `revision`, when it is known
+   * (never from a shallow clone, whose roots prove nothing); otherwise removes a record that would describe an earlier
+   * publication. Nothing for any other Tool. */
   const recordProvenance = async (
     identity: ArtifactIdentity,
     revision: string,
-    repository: string | undefined,
+    repository: RepositoryIdentity,
   ) => {
     if (!rigItself.has(identity.destination)) return;
     const path = provenancePath(identity.destination);
-    if (repository === undefined) await rm(path, { force: true });
+    if (repository.kind !== "known") await rm(path, { force: true });
     else
       await atomicFile(
         path,
         JSON.stringify({
           targetId: identity.targetId,
           revision,
-          repository,
+          repository: repository.roots,
         }),
       );
   };
@@ -331,8 +352,8 @@ export function createArtifactOwnership(
         if (saved?.targetId !== identity.targetId) return;
         if ((await provenance(identity.destination, saved)) !== undefined)
           return;
-        const repository = await identity.repository?.().catch(() => undefined);
-        if (repository !== undefined)
+        const repository = await repositoryOf(identity);
+        if (repository.kind === "known")
           await recordProvenance(identity, saved.revision, repository);
       });
     },
@@ -341,8 +362,8 @@ export function createArtifactOwnership(
         await inspect(identity);
         // Asked before the write, so nothing slow runs between the executable and its records.
         const repository = rigItself.has(identity.destination)
-          ? await identity.repository?.().catch(() => undefined)
-          : undefined;
+          ? await repositoryOf(identity)
+          : unknownRepository;
         await write();
         const published = await digest(identity.destination);
         if (!published)

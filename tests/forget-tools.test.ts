@@ -117,16 +117,20 @@ async function rigWorld() {
     recordingTime: () => new Date().toISOString(),
     // Tool-only Projects run no Service: the supervisor is only asked what runs.
     supervisors: new Map([["rigd", idle]]),
-    // Only git asks the command runner anything here: which root commits a checkout's history starts from.
+    // Only git asks the command runner anything here: whether a checkout is shallow (never), and which root commits its
+    // history starts from.
     run: async ({ command, cwd }) => {
       const repository = cwd === undefined ? undefined : checkouts.get(cwd);
       if (
         !gitWorks ||
-        command.join(" ") !== "git rev-list --max-parents=0 HEAD" ||
         repository === undefined ||
         rootCommits[repository] === undefined
       )
         return { exitCode: 128, stdout: "", stderr: "not a git repository" };
+      if (command.join(" ") === "git rev-parse --is-shallow-repository")
+        return { exitCode: 0, stdout: "false\n", stderr: "" };
+      if (command.join(" ") !== "git rev-list --max-parents=0 HEAD")
+        return { exitCode: 1, stdout: "", stderr: "unexpected" };
       return {
         exitCode: 0,
         stdout: `${rootCommits[repository]}\n`,

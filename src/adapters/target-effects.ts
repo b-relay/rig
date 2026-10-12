@@ -66,6 +66,7 @@ import {
   atomicFile,
   createArtifactOwnership,
   type OrphanedArtifact,
+  type RepositoryIdentity,
 } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
@@ -399,26 +400,37 @@ export function createTargetEffects(
     );
   };
   /** The identity of the repository `target`'s workspace was checked out from: its root commits, sorted and joined by
-   * commas, the same in every clone and whatever its remotes. Undefined when git cannot say (no repository, no commit). */
+   * commas, the same in every full clone and whatever its remotes. A shallow checkout (a deployed one shares its mirror's
+   * history) is `shallow`: git reports where its history was cut as roots, which match nothing. Unknown when git cannot
+   * say (no repository, no commit). Never fetches anything. */
   const repositoryIdentity = async (
     target: TargetRecord,
-  ): Promise<string | undefined> => {
-    try {
+  ): Promise<RepositoryIdentity> => {
+    const git = async (args: string[]) => {
       const result = await options.run({
-        command: ["git", "rev-list", "--max-parents=0", "HEAD"],
+        command: ["git", ...args],
         cwd: target.plan.workspacePath,
         env: options.environment,
         timeoutMs: 30_000,
       });
-      if (result.exitCode !== 0) return undefined;
-      const roots = result.stdout
+      return result.exitCode === 0 ? result.stdout : undefined;
+    };
+    try {
+      const shallow = (
+        await git(["rev-parse", "--is-shallow-repository"])
+      )?.trim();
+      if (shallow === "true") return { kind: "shallow" };
+      if (shallow !== "false") return { kind: "unknown" };
+      const roots = ((await git(["rev-list", "--max-parents=0", "HEAD"])) ?? "")
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => /^[0-9a-f]{40,64}$/.test(line))
         .sort();
-      return roots.length ? roots.join(",") : undefined;
+      return roots.length
+        ? { kind: "known", roots: roots.join(",") }
+        : { kind: "unknown" };
     } catch {
-      return undefined;
+      return { kind: "unknown" };
     }
   };
   /** Who publishes `component` of `target`, as ownership records it. */

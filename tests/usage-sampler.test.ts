@@ -508,10 +508,10 @@ describe("stored usage history", () => {
       high: 20,
     });
 
-    // Detail now starts at the oldest second kept; a later prune with an earlier cutoff cannot bring older seconds back.
-    expect(await history.detailFrom()).toBe(200 * 60);
+    // Detail starts after minute 170, the newest kept only as history; a later prune with an earlier cutoff changes nothing.
+    expect(await history.detailFrom()).toBe(171 * 60);
     await history.prune({ detailBefore: 120 * 60 + 30, historyBefore: 0 });
-    expect(await history.detailFrom()).toBe(200 * 60);
+    expect(await history.detailFrom()).toBe(171 * 60);
 
     await history.forget("p-fletcher");
     expect(await read(false)).toEqual([]);
@@ -524,21 +524,22 @@ describe("stored usage history", () => {
     expect(hostRead.map((each) => each.series.scope)).toEqual(["host"]);
   });
 
-  test("where detail starts is read from what is stored: the oldest second, or after the newest minute once none is left", async () => {
+  test("where detail starts is read from what is stored: just after the newest minute that lost its seconds", async () => {
     expect(await history.detailFrom()).toBe(0);
     await history.write([
       { series: web, minute: 300, slots: slots(10) },
       { series: web, minute: 310, slots: slots(10) },
     ]);
-    expect(await history.detailFrom()).toBe(300 * 60);
+    // Nothing has lost its seconds: a new store has detail from the start.
+    expect(await history.detailFrom()).toBe(0);
     await history.prune({ detailBefore: 305 * 60 + 45, historyBefore: 0 });
-    expect(await history.detailFrom()).toBe(310 * 60);
-    // A store written before this was asked still answers, from its rows alone.
+    expect(await history.detailFrom()).toBe(301 * 60);
+    // A store pruned before this was asked still answers, from its rows alone.
     await history.close();
     history = openSqliteUsageHistory(
       join(directory, "monitor", "usage.sqlite"),
     );
-    expect(await history.detailFrom()).toBe(310 * 60);
+    expect(await history.detailFrom()).toBe(301 * 60);
     await history.prune({ detailBefore: 400 * 60, historyBefore: 0 });
     expect(await history.detailFrom()).toBe(311 * 60);
   });
@@ -819,6 +820,50 @@ describe("usage report windows", () => {
     )!;
     expect(web_.summary.cpu).toMatchObject({ low: 10, high: 10 });
     expect(web_.points.filter((point) => point.cpu)).toHaveLength(2);
+  });
+
+  test("writing the samples a report already showed from memory changes nothing in it, on a new store or after a long gap", async () => {
+    const reportOf = (pending: RecordedMinute[]) =>
+      usageReport({
+        filter: PROJECT,
+        window: { since: START / 1000 + 3600 - 3600 },
+        detailSince: START / 1000 - 86_400,
+        now: START + 3_600_000 + 30_000,
+        sampledEvery: 1,
+        history,
+        snapshot: { latest: [], pending },
+      });
+    const held = [
+      {
+        series: web,
+        minute: minute + 60,
+        slots: full(100).map((slot, index) => (index < 30 ? slot : undefined)),
+      },
+    ] as RecordedMinute[];
+    const shown = (report: Awaited<ReturnType<typeof reportOf>>) => ({
+      step: report.step,
+      points: report.series.find((each) => each.series.scope === "component")!
+        .points,
+    });
+    const check = async () => {
+      const before = shown(await reportOf(held));
+      await history.write(held);
+      expect(shown(await reportOf(held))).toEqual(before);
+      expect(shown(await reportOf([]))).toEqual(before);
+      expect(before.step).toBe(15);
+    };
+    await check();
+
+    // After a long gap: minutes from two days ago kept only as history, then sampling resumes.
+    await history.forget("p-fletcher");
+    await history.write([
+      { series: web, minute: minute - 2880, slots: full(100) },
+    ]);
+    await history.prune({
+      detailBefore: START / 1000 - 86_400,
+      historyBefore: START / 1000 - 7 * 86_400,
+    });
+    await check();
   });
 
   test("a window wholly in the future is one empty step, never an inverted one", async () => {

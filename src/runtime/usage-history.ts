@@ -84,9 +84,8 @@ export interface UsageHistory {
     readonly detailBefore: number;
     readonly historyBefore: number;
   }): Promise<void>;
-  /** Unix seconds from which 1-second detail is stored: the oldest second kept. Before it there is only minute history,
-   * however far detail retention reaches now. With no detail stored, the end of the newest stored minute; 0 for an
-   * empty store. */
+  /** Unix seconds from which every stored minute still has its 1-second detail: just after the newest minute kept only
+   * as history, however far detail retention reaches now; 0 when no minute has lost its seconds. */
   detailFrom(): Promise<number>;
   /** Removes all history of a Project, as `rig forget` does. */
   forget(projectId: string): Promise<void>;

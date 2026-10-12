@@ -133,20 +133,20 @@ export function openSqliteUsageHistory(path: string): UsageHistory {
       })();
     },
     async detailFrom() {
-      // Detail and history are written together and detail is pruned by time alone, so the oldest second kept is where
-      // detail starts for every series; with none kept, it starts after the newest minute.
+      // Detail and history are written together and detail is pruned by time alone, so a minute kept only as history
+      // is older than the oldest second kept. Detail starts after the newest such minute: a store that never lost any
+      // (a new one, or one whose older minutes all still have their seconds) has it from the start.
       const oldest = db
         .query<{ minute: number | null }, []>(
           "SELECT MIN(minute) AS minute FROM detail",
         )
         .get()!.minute;
-      if (oldest !== null) return oldest * 60;
-      const newest = db
-        .query<{ minute: number | null }, []>(
-          "SELECT MAX(minute) AS minute FROM history",
+      const pruned = db
+        .query<{ minute: number | null }, [number]>(
+          "SELECT MAX(minute) AS minute FROM history WHERE minute < ?",
         )
-        .get()!.minute;
-      return newest === null ? 0 : (newest + 1) * 60;
+        .get(oldest ?? Number.MAX_SAFE_INTEGER)!.minute;
+      return pruned === null ? 0 : (pruned + 1) * 60;
     },
     async forget(projectId) {
       db.transaction(() => {

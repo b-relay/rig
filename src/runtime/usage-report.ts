@@ -81,7 +81,7 @@ export async function usageReport(input: {
 }): Promise<UsageReport> {
   const nowSecond = Math.floor(input.now / 1000);
   const { since } = input.window;
-  // Detail retention may have grown since the last prune; the seconds before the oldest one kept are gone all the same.
+  // Detail retention may have grown since the last prune; the minutes that lost their seconds have lost them all the same.
   const detailSince = Math.max(
     input.detailSince,
     await input.history.detailFrom(),

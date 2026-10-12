@@ -163,13 +163,9 @@ export function chartLayout({
       const right = inside(x + 4);
       const left = inside(x - 4 - wide);
       const sides = x + 4 + wide <= width ? [right, left] : [left, right];
-      const boxAt = (x0: number, baseline: number) => ({
-        x0,
-        x1: x0 + wide,
-        y0: baseline - LABEL_HEIGHT + 2,
-        y1: baseline + 2,
-      });
-      const clear = (box: ReturnType<typeof boxAt>) =>
+      const boxAt = (x0: number, baseline: number) =>
+        labelBox(x0, baseline, text);
+      const clear = (box: ReturnType<typeof labelBox>) =>
         boxes.every(
           (other) =>
             other.x1 <= box.x0 ||

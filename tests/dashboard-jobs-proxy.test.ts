@@ -79,9 +79,12 @@ test("Run now sends rig run's command for the Target, and is offered unless a ru
     state: "idle" as const,
     scheduled: false,
   };
-  expect(canRunNow(job)).toBe(true);
-  expect(canRunNow({ ...job, state: "running" })).toBe(false);
-  expect(canRunNow({ ...job, removed: true })).toBe(false);
+  const stable = { state: "running" as const };
+  expect(canRunNow(job, stable)).toBe(true);
+  expect(canRunNow({ ...job, state: "running" }, stable)).toBe(false);
+  expect(canRunNow({ ...job, removed: true }, stable)).toBe(false);
+  // rig run refuses a Target only rig.yaml names until it is up or deployed.
+  expect(canRunNow(job, { state: "configured" })).toBe(false);
 });
 
 test("every hostname and path on the Host leads to its Target's Service, by host then longest prefix", () => {

@@ -1,4 +1,5 @@
 import type {
+  JobReport,
   ProjectStatusReport,
   StatusSelection,
 } from "../domain/project-status";
@@ -24,7 +25,9 @@ import {
 import { roleHostname, roleServiceDomains } from "../config/hostnames";
 import { previewName, selectTarget } from "./targets";
 import {
+  DEFAULT_JOB_TARGETS,
   PREVIEW_SELECTOR,
+  durationSeconds,
   patchedSettings,
   proxyUpstream,
   defaultProxy,
@@ -103,9 +106,10 @@ export async function projectStatus(
     deps.healthResults,
   );
   if (configWarning) warnings.push(configWarning);
+  const clock = { timeZone: deps.timeZone ?? hostTimeZone };
   if (document) {
     for (const role of ["working", "stable"] as const) {
-      const configured = configuredTarget(document.config, role);
+      const configured = configuredTarget(document.config, role, clock);
       const definitions = configured.components;
       const report = reports.find((t) => t.kind === role);
       if (report) {
@@ -131,6 +135,7 @@ export async function projectStatus(
             ? { hostnames: configured.hostnames }
             : {}),
           components: definitions,
+          ...(configured.jobs.length ? { jobs: configured.jobs } : {}),
         });
     }
   }
@@ -144,7 +149,7 @@ export async function projectStatus(
       target,
       deps.jobRecords,
       now,
-      { timeZone: deps.timeZone ?? hostTimeZone },
+      clock,
       document ? targetOn(document.config, target.kind) : undefined,
       deps.backupRecords,
     );
@@ -224,12 +229,13 @@ async function markUnpublishedRoutes(
     ];
   }
 }
-/** What rig.yaml gives a working or stable Target nothing has recorded: its Services and Tools, and every hostname it
- * would serve, by the same per-role rule planning uses. */
+/** What rig.yaml gives a working or stable Target nothing has recorded: its Services and Tools, every hostname it
+ * would serve, and its jobs, by the same per-role rules planning uses. */
 function configuredTarget(
   config: ProjectConfig,
   role: "working" | "stable",
-): { components: ComponentReport[]; hostnames: string[] } {
+  clock: { timeZone(): string },
+): { components: ComponentReport[]; hostnames: string[]; jobs: JobReport[] } {
   const settings = patchedSettings(config, role);
   const named = (pattern: string) => pattern.replaceAll("${rig.target}", role);
   const routed = roleHostname(
@@ -262,6 +268,9 @@ function configuredTarget(
       ...own.filter((entry) => entry.service === name).map((e) => e.hostname),
     ]),
   ];
+  // A Target nothing has recorded has no runs, and rig run refuses it until it exists.
+  const [made, command] =
+    role === "working" ? ["up", "rig up"] : ["deployed", "rig deploy"];
   return {
     components: [
       ...Object.entries(settings.services ?? {}).map(
@@ -288,6 +297,33 @@ function configuredTarget(
         ...own.map((entry) => entry.hostname),
       ]),
     ],
+    // Every role plans every job, in name order; none is scheduled until the Target exists, and then only where its
+    // targets name the role.
+    jobs: Object.entries(settings.jobs ?? {})
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([name, job]): JobReport => ({
+        name,
+        schedule: job.schedule,
+        timeZone: job.timezone ?? clock.timeZone(),
+        state: "idle",
+        scheduled: false,
+        ...(job.timeout !== undefined
+          ? { timeout: durationSeconds(job.timeout) }
+          : {}),
+        reason: (job.targets ?? DEFAULT_JOB_TARGETS).includes(role)
+          ? `${role} is not ${made} yet, so its jobs are not scheduled; ${command} schedules them.`
+          : `jobs.${name}.targets does not name ${role}, so its schedule never runs it here; once ${role} is ${made}, rig run runs it.`,
+        ...(job.backup
+          ? {
+              backup: {
+                keep: job.backup.keep,
+                restore: job.backup.restore !== undefined,
+                count: 0,
+                bytes: 0,
+              },
+            }
+          : {}),
+      })),
   };
 }
 

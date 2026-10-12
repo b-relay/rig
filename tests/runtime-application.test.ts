@@ -1749,6 +1749,90 @@ test("status includes configured-only components and reports bad current config 
   expect(report.warnings.length).toBe(1);
 });
 
+test("status lists the jobs rig.yaml gives a working or stable Target nothing has recorded, unscheduled and saying why", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const config = parseProjectConfig({
+    name: "demo",
+    services: {
+      web: { command: "serve --host 127.0.0.1", ports: { http: 4567 } },
+    },
+    jobs: {
+      nightly: {
+        command: "./import",
+        schedule: "30 3 * * *",
+        timezone: "America/Chicago",
+        timeout: "2h",
+      },
+      backup: {
+        command: "./dump",
+        schedule: "0 3 * * *",
+        targets: ["working"],
+        backup: { keep: 7 },
+      },
+    },
+    targets: { working: true, stable: true },
+  });
+  deps.documents.read = async (path) => ({
+    path: `${path}/rig.yaml`,
+    revision: "abc",
+    config,
+  });
+  deps.timeZone = () => "Europe/London";
+  const report = (await runtime.command({
+    action: "status",
+    project: "demo",
+  })) as { targets: { name: string; state: string; jobs?: unknown[] }[] };
+  expect(
+    report.targets.map((target) => [target.name, target.state, target.jobs]),
+  ).toEqual([
+    [
+      "working",
+      "configured",
+      [
+        {
+          name: "backup",
+          schedule: "0 3 * * *",
+          timeZone: "Europe/London",
+          state: "idle",
+          scheduled: false,
+          reason:
+            "working is not up yet, so its jobs are not scheduled; rig up schedules them.",
+          backup: { keep: 7, restore: false, count: 0, bytes: 0 },
+        },
+        {
+          name: "nightly",
+          schedule: "30 3 * * *",
+          timeZone: "America/Chicago",
+          state: "idle",
+          scheduled: false,
+          timeout: 7200,
+          reason:
+            "jobs.nightly.targets does not name working, so its schedule never runs it here; once working is up, rig run runs it.",
+        },
+      ],
+    ],
+    [
+      "stable",
+      "configured",
+      [
+        expect.objectContaining({
+          name: "backup",
+          scheduled: false,
+          reason:
+            "jobs.backup.targets does not name stable, so its schedule never runs it here; once stable is deployed, rig run runs it.",
+        }),
+        expect.objectContaining({
+          name: "nightly",
+          scheduled: false,
+          reason:
+            "stable is not deployed yet, so its jobs are not scheduled; rig deploy schedules them.",
+        }),
+      ],
+    ],
+  ]);
+});
+
 test("Preview names cannot overwrite or destroy the working and stable Target identities, nor take the working Tools' dev suffix", async () => {
   const { runtime, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });

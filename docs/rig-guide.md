@@ -2189,6 +2189,9 @@ stable  running  main@b8986d0
     mb-mirror  0 7 * * 3,6 America/Chicago · running since Sat, 07:00 CDT (1h)
 ```
 
+A working or stable Target that rig.yaml turns on but that is not up or
+deployed yet lists the jobs it would have, none of them scheduled, each with
+the reason; `rig run` and the dashboard's Run now wait until it exists.
 A last run that failed, timed out or could not start is listed under
 Failures. `rig status --json` (and the dashboard's protocol) has each job's
 `schedule`, `timeZone`, `state`, `scheduled` (and a `reason` when not),

@@ -18,10 +18,16 @@ export type JobRunView = JobRunReport;
 export function targetJobs(target: TargetReport): JobView[] {
   return target.jobs ?? [];
 }
-/** Pure: whether "Run now" can start `job`: not while a run of it goes (runs never overlap), and not for a job the
- * Target's plan no longer has. The schedule's own `scheduled` does not matter: rig run runs a job in any Target. */
-export function canRunNow(job: JobView): boolean {
-  return job.state !== "running" && !job.removed;
+/** Pure: whether "Run now" can start `job`: not while a run of it goes (runs never overlap), not for a job the
+ * Target's plan no longer has, and not in a Target only rig.yaml names yet, which rig run refuses until it exists. The
+ * schedule's own `scheduled` does not matter otherwise: rig run runs a job in any Target. */
+export function canRunNow(
+  job: JobView,
+  target: Pick<TargetReport, "state">,
+): boolean {
+  return (
+    target.state !== "configured" && job.state !== "running" && !job.removed
+  );
 }
 /** Pure: the command that runs one job of a Target now, as `rig run <job> <target>` sends it. */
 export function runJobCommand(

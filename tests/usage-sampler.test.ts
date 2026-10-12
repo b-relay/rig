@@ -165,7 +165,7 @@ function watched(failing: () => boolean = () => false) {
     },
     read: (request) => history.read(request),
     prune: (input) => history.prune(input),
-    detailPrunedBefore: () => history.detailPrunedBefore(),
+    detailFrom: () => history.detailFrom(),
     forget: (id) => history.forget(id),
     close: async () => {},
   };
@@ -508,10 +508,10 @@ describe("stored usage history", () => {
       high: 20,
     });
 
-    // How far detail was pruned is kept, and only ever moves forward.
-    expect(await history.detailPrunedBefore()).toBe(200 * 60);
+    // Detail now starts at the oldest second kept; a later prune with an earlier cutoff cannot bring older seconds back.
+    expect(await history.detailFrom()).toBe(200 * 60);
     await history.prune({ detailBefore: 120 * 60 + 30, historyBefore: 0 });
-    expect(await history.detailPrunedBefore()).toBe(200 * 60);
+    expect(await history.detailFrom()).toBe(200 * 60);
 
     await history.forget("p-fletcher");
     expect(await read(false)).toEqual([]);
@@ -524,14 +524,23 @@ describe("stored usage history", () => {
     expect(hostRead.map((each) => each.series.scope)).toEqual(["host"]);
   });
 
-  test("how far detail was pruned survives reopening the database", async () => {
-    expect(await history.detailPrunedBefore()).toBe(0);
-    await history.prune({ detailBefore: 300 * 60 + 45, historyBefore: 0 });
+  test("where detail starts is read from what is stored: the oldest second, or after the newest minute once none is left", async () => {
+    expect(await history.detailFrom()).toBe(0);
+    await history.write([
+      { series: web, minute: 300, slots: slots(10) },
+      { series: web, minute: 310, slots: slots(10) },
+    ]);
+    expect(await history.detailFrom()).toBe(300 * 60);
+    await history.prune({ detailBefore: 305 * 60 + 45, historyBefore: 0 });
+    expect(await history.detailFrom()).toBe(310 * 60);
+    // A store written before this was asked still answers, from its rows alone.
     await history.close();
     history = openSqliteUsageHistory(
       join(directory, "monitor", "usage.sqlite"),
     );
-    expect(await history.detailPrunedBefore()).toBe(300 * 60);
+    expect(await history.detailFrom()).toBe(310 * 60);
+    await history.prune({ detailBefore: 400 * 60, historyBefore: 0 });
+    expect(await history.detailFrom()).toBe(311 * 60);
   });
 
   test("history survives reopening the database", async () => {

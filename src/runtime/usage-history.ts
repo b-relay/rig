@@ -84,9 +84,10 @@ export interface UsageHistory {
     readonly detailBefore: number;
     readonly historyBefore: number;
   }): Promise<void>;
-  /** Unix seconds before which detail has been pruned: the latest cutoff any prune applied, kept across restarts; 0 when
-   * none has. Detail before it is gone, however far detail retention reaches now. */
-  detailPrunedBefore(): Promise<number>;
+  /** Unix seconds from which 1-second detail is stored: the oldest second kept. Before it there is only minute history,
+   * however far detail retention reaches now. With no detail stored, the end of the newest stored minute; 0 for an
+   * empty store. */
+  detailFrom(): Promise<number>;
   /** Removes all history of a Project, as `rig forget` does. */
   forget(projectId: string): Promise<void>;
   /** Closes the store once every call in progress has finished; a later call fails. */

@@ -396,7 +396,8 @@ function Tag({
       y={y}
       textAnchor={anchor}
       className={cn(
-        "stroke-card text-[10px] tabular-nums [paint-order:stroke]",
+        // Monospace, so the layout knows each label's width exactly (LABEL_FONT_SIZE, LABEL_ADVANCE_EM).
+        "stroke-card font-mono text-[10px] tabular-nums [paint-order:stroke]",
         // Ink, not the series' colour: chart colours are too light to read as text; the point beside it carries the colour.
         quiet ? "fill-muted-foreground" : "fill-foreground font-semibold",
       )}

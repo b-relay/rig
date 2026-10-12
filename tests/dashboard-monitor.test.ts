@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import type { MonitorResult } from "../src/daemon/protocol";
-import { chartLayout, fittedLabel } from "../web/lib/chart-layout";
+import { readFileSync } from "node:fs";
+import {
+  chartLayout,
+  fittedLabel,
+  LABEL_ADVANCE_EM,
+  LABEL_FONT_SIZE,
+} from "../web/lib/chart-layout";
+import { advancesOf } from "./support/font-advances";
 import {
   cardsOf,
   chartReport,
@@ -353,6 +360,42 @@ test("a name too long for the chart is cut so its label fits, keeping the value"
   expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(300);
   expect(fittedLabel({ name: "web", value: "3%" }, 300)).toBe("web 3%");
   expect(fittedLabel({ name, value: "100%" }, 40)).toBe("100%");
+});
+
+test("a peak label's width is known exactly: the dashboard's monospace font advances every character a label holds 0.6 em", () => {
+  // The font the dashboard loads for font-mono, which peak labels are set in.
+  const font =
+    "node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2";
+  expect(readFileSync("web/app/layout.tsx", "utf8")).toContain(
+    font.replace("node_modules/", "../../node_modules/"),
+  );
+  // Project, Target and Component names are ASCII letters, digits, '_' and '-'; values are digits, units and '%'.
+  const characters =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-. %…";
+  expect(new Set(advancesOf(font, characters).values())).toEqual(
+    new Set([LABEL_ADVANCE_EM]),
+  );
+  // So a long name of the widest letter is cut to fit, by the font's own measure.
+  const layout = chartLayout({
+    ...box,
+    width: 300,
+    layers: [
+      { average: [1, 1, 1], peak: { index: 1, value: 100 } },
+      { average: [1, 1, 1], peak: { index: 2, value: 3 } },
+    ],
+    from: 0,
+    step: 10,
+    floor: 25,
+    labelOf: (layer) => ({
+      name: layer === 0 ? "m".repeat(60) : "Rig itself",
+      value: layer === 0 ? "100%" : "3.0%",
+    }),
+  });
+  for (const flag of layout.flags) {
+    const rendered = flag.text.length * LABEL_ADVANCE_EM * LABEL_FONT_SIZE;
+    expect(flag.labelX).toBeGreaterThanOrEqual(0);
+    expect(flag.labelX + rendered).toBeLessThanOrEqual(300);
+  }
 });
 
 test("points, markers and inspection share one mapping of time to x", () => {

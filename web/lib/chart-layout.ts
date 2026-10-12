@@ -50,8 +50,12 @@ export interface ChartLayout {
   y(value: number): number;
 }
 
-/** Roughly how wide a label is: the chart's labels are 10px semibold digits and short names. */
-const LABEL_CHARACTER = 6;
+/** A peak label's type size, in pixels. Labels are set in JetBrains Mono, whose every character a label can hold (the
+ * ASCII of Project, Target and Component names, values and `…`) advances 0.6 em, so a label is exactly 6 px a
+ * character wide; the dashboard's tests check this against the shipped font. */
+export const LABEL_FONT_SIZE = 10;
+export const LABEL_ADVANCE_EM = 0.6;
+const LABEL_CHARACTER = LABEL_FONT_SIZE * LABEL_ADVANCE_EM;
 const LABEL_HEIGHT = 11;
 
 /** Pure: the geometry of a chart of `layers` over `count` points of `step` seconds from `from`, in a `width` by

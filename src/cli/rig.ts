@@ -17,6 +17,8 @@ import {
 import { formatClock } from "./stop-display";
 import { liveRegion } from "./live-region";
 import { monitorLines } from "./monitor-output";
+import type { MonitorWindowInput } from "./monitor-command";
+import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
 import { awaitRestore } from "./restore-wait";
 import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
@@ -229,14 +231,17 @@ export async function runRigCli(
       request.action === "monitor" &&
       options.follow === true &&
       dependencies.outputTerminal !== undefined;
-    if (watching) await watchMonitor(correlated, result, dependencies);
+    if (watching)
+      await watchMonitor(correlated, result, options.window, dependencies);
     else
       dependencies.output.write(
         json
           ? `${JSON.stringify(result)}\n`
           : status
             ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
-            : renderResult(request.action, result),
+            : request.action === "monitor"
+              ? `${monitorLines(result as MonitorResult, options.window ? { window: options.window } : {}).join("\n")}\n`
+              : renderResult(request.action, result),
       );
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
       event: "command.completed",
@@ -342,6 +347,7 @@ function json(value: unknown): value is Record<string, unknown> {
 async function watchMonitor(
   request: RuntimeCommand,
   first: unknown,
+  window: MonitorWindowInput | undefined,
   dependencies: CliDependencies,
 ): Promise<void> {
   const size = dependencies.outputTerminal!;
@@ -350,14 +356,18 @@ async function watchMonitor(
   let result = first as MonitorResult;
   while (!dependencies.signal?.aborted) {
     region.draw([
-      ...monitorLines(result, size().columns),
+      ...monitorLines(result, {
+        columns: size().columns,
+        ...(window ? { window } : {}),
+      }),
       "",
       `Updated ${clock().toLocaleTimeString()} · Ctrl-C to stop`,
     ]);
     await dependencies.wait(result.sampledEvery * 1000, dependencies.signal);
     if (dependencies.signal?.aborted) return;
+    // A duration is resolved again, so the window moves with the clock; an ISO time stays where it was.
     result = (await dependencies.client.command(
-      request,
+      window ? { ...request, window: logTimeWindow(window, clock()) } : request,
       dependencies.signal,
     )) as MonitorResult;
   }

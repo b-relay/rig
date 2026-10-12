@@ -12,14 +12,20 @@ import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
-import { addMonitorCommand } from "./monitor-command";
+import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";
 import { addLogsCommand } from "./logs-command";
 import { addDnsCommands, type DnsCommandDependencies } from "./dns-command";
 
 export type ExecuteCommand = (
   request: RuntimeCommand,
-  /** `yes` answers a confirmation the command would ask for (rig backup restore). */
-  options?: { json?: boolean; follow?: boolean; yes?: boolean },
+  /** `yes` answers a confirmation the command would ask for (rig backup restore). `window` is the window `rig monitor`
+   * was given as typed, which a watch resolves again at every refresh so a duration moves with the clock. */
+  options?: {
+    json?: boolean;
+    follow?: boolean;
+    yes?: boolean;
+    window?: MonitorWindowInput;
+  },
 ) => Promise<void>;
 interface ScopeOptions {
   project?: string;
@@ -34,7 +40,7 @@ export function createRigCommand(
   cwd: string,
   output: UserOutput,
   execute: ExecuteCommand,
-  /** The clock relative `rig logs` times count back from. */
+  /** The clock relative `rig logs` and `rig monitor` times count back from. */
   now: () => Date = () => new Date(),
   local?: LocalCommands,
   /** What `rig dns set` and `delete` plan with: rigd's DNS read, and the terminal to confirm at. */
@@ -93,7 +99,7 @@ export function createRigCommand(
   addRunCommand(command, cwd, execute);
   addBackupCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
-  addMonitorCommand(command, { execute, projectScope }, cwd);
+  addMonitorCommand(command, { execute, projectScope, now }, cwd);
   addLogsCommand(command, {
     execute,
     now,

@@ -27,7 +27,7 @@ const working = {
 };
 const projectReport: MonitorResult = {
   project: "fletcher",
-  range: "1h",
+  since: 0,
   from: 0,
   to: 3600,
   step: 15,
@@ -150,11 +150,11 @@ function harness(
     },
     newOperationId: () => "op-1",
     signal: stop.signal,
-    /** Three redraws, then Ctrl-C. */
+    /** Three redraws a second apart, then Ctrl-C. */
     wait: async () => {
       if (++waits === 3) stop.abort();
     },
-    now: () => new Date(Date.UTC(2026, 9, 12, 10, 0, 0)),
+    now: () => new Date(Date.UTC(2026, 9, 12, 10, 0, waits)),
     ...(terminal
       ? { outputTerminal: () => size as TerminalSize, terminalColumns: 80 }
       : {}),
@@ -171,7 +171,7 @@ function harness(
 
 test("the table shows each Target's total with its own Services and Jobs under it, now, median and peak, and – where nothing runs", () => {
   expect(monitorLines(projectReport)).toEqual([
-    "fletcher · the last hour · sampled every 1 s",
+    "fletcher · the last 1h · sampled every 1 s",
     "",
     "                CPU  median  peak  Memory  median    peak",
     "all Targets     96%     43%  297%  1.5 GB  1.5 GB  2.8 GB",
@@ -194,7 +194,7 @@ test("on a narrow terminal a long name is cut, not the numbers", () => {
           : each,
       ),
     },
-    72,
+    { columns: 72 },
   );
   for (const line of lines.slice(2))
     expect(line.length).toBeLessThanOrEqual(72);
@@ -202,44 +202,77 @@ test("on a narrow terminal a long name is cut, not the numbers", () => {
 });
 
 test("with nothing sampled, the table says so instead of showing an empty grid", () => {
-  expect(monitorLines({ ...projectReport, range: "7d", series: [] })[1]).toBe(
-    "No CPU or memory was sampled in the last 7 days: nothing ran, or rigd only just started sampling.",
+  expect(
+    monitorLines(
+      { ...projectReport, series: [] },
+      { window: { since: "7d" } },
+    )[1],
+  ).toBe(
+    "No CPU or memory was sampled in the last 7d: nothing ran, or rigd was not sampling then.",
   );
 });
 
-test("rig monitor asks for the Project in the current directory, and --all for the whole Host, over the range given", async () => {
+test("rig monitor asks for the Project in the current directory, and --all for the whole Host, over the window given", async () => {
   const h = harness(() => projectReport);
   expect(await runRigCli(["monitor"], h.deps)).toBe(0);
-  expect(await runRigCli(["monitor", "--all", "--range", "24h"], h.deps)).toBe(
+  expect(await runRigCli(["monitor", "--all", "--since", "24h"], h.deps)).toBe(
     0,
   );
   expect(
     await runRigCli(
-      ["monitor", "--project", "fletcher", "--range", "7d"],
+      [
+        "monitor",
+        "--project",
+        "fletcher",
+        "--since",
+        "2026-10-11T02:00:00Z",
+        "--until",
+        "2026-10-11T04:30:00+02:00",
+      ],
       h.deps,
     ),
   ).toBe(0);
   expect(h.requests.map(({ operationId: _id, ...request }) => request)).toEqual(
     [
-      { action: "monitor", range: "1h", repoPath: "/workspace/fletcher" },
-      { action: "monitor", range: "24h", host: true },
       {
         action: "monitor",
-        range: "7d",
+        window: { since: "2026-10-12T09:00:00.000Z" },
+        repoPath: "/workspace/fletcher",
+      },
+      {
+        action: "monitor",
+        window: { since: "2026-10-11T10:00:00.000Z" },
+        host: true,
+      },
+      {
+        action: "monitor",
+        window: {
+          since: "2026-10-11T02:00:00.000Z",
+          until: "2026-10-11T02:30:00.000Z",
+        },
         repoPath: "/workspace/fletcher",
         project: "fletcher",
       },
     ],
   );
+  // A window with an end is closed, so it is printed once, worded as given.
+  expect(h.out()).toContain(
+    "fletcher · from 2026-10-11T02:00:00Z to 2026-10-11T04:30:00+02:00 ·",
+  );
 });
 
-test("--all with --project, or a range rig does not keep, is refused before rigd is asked, as JSON with --json", async () => {
+test("--all with --project, a time that is neither a duration nor an ISO time, or a since after the until, is refused before rigd is asked, as JSON with --json", async () => {
   const h = harness(() => projectReport);
   expect(
     await runRigCli(["monitor", "--all", "--project", "fletcher"], h.deps),
   ).toBe(1);
   expect(h.err()).toContain("--all covers every Project");
-  expect(await runRigCli(["monitor", "--range", "30d"], h.deps)).toBe(1);
+  expect(await runRigCli(["monitor", "--since", "yesterday"], h.deps)).toBe(1);
+  expect(h.err()).toContain("neither a duration nor an ISO time");
+  expect(
+    await runRigCli(["monitor", "--since", "1h", "--until", "2h"], h.deps),
+  ).toBe(1);
+  expect(h.err()).toContain("is later than --until");
   const json = harness(() => projectReport);
   expect(
     await runRigCli(
@@ -256,16 +289,34 @@ test("rig monitor -h and --help describe the command and its flags", async () =>
   for (const flag of ["-h", "--help"]) {
     const h = harness(() => projectReport);
     expect(await runRigCli(["monitor", flag], h.deps)).toBe(0);
-    expect(h.out()).toContain("--range <span>");
+    expect(h.out()).toContain("--since <time>");
+    expect(h.out()).toContain("--until <time>");
     expect(h.out()).toContain("--all");
   }
+});
+
+test("while watching, a --since duration moves with the clock and an ISO --since stays put", async () => {
+  const sliding = harness(() => projectReport, { columns: 100, rows: 40 });
+  await runRigCli(["monitor", "--since", "10m"], sliding.deps);
+  expect(sliding.requests.map((request) => request.window?.since)).toEqual([
+    "2026-10-12T09:50:00.000Z",
+    "2026-10-12T09:50:01.000Z",
+    "2026-10-12T09:50:02.000Z",
+  ]);
+  const fixed = harness(() => projectReport, { columns: 100, rows: 40 });
+  await runRigCli(["monitor", "--since", "2026-10-12T08:00:00Z"], fixed.deps);
+  expect(
+    new Set(fixed.requests.map((request) => request.window?.since)),
+  ).toEqual(new Set(["2026-10-12T08:00:00.000Z"]));
 });
 
 test("piped, the table is printed once; on a terminal it is redrawn in place every sample until Ctrl-C", async () => {
   const piped = harness(() => projectReport);
   expect(await runRigCli(["monitor"], piped.deps)).toBe(0);
   expect(piped.requests.length).toBe(1);
-  expect(piped.out()).toBe(`${monitorLines(projectReport).join("\n")}\n`);
+  expect(piped.out()).toBe(
+    `${monitorLines(projectReport, { window: { since: "1h" } }).join("\n")}\n`,
+  );
 
   const live = harness(
     (_request, count) => ({
@@ -289,7 +340,7 @@ test("piped, the table is printed once; on a terminal it is redrawn in place eve
           each.now ? { ...each, now: { ...each.now, cpuPercent: 103 } } : each,
         ),
       },
-      100,
+      { columns: 100, window: { since: "1h" } },
     ),
     "",
     expect.stringContaining("Ctrl-C to stop"),

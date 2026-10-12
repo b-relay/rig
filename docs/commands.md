@@ -30,7 +30,8 @@ rig
 ├─ monitor                          CPU and memory of one Project, redrawn every sample on a terminal
 │    --project <name>
 │    --all                          every Project, Rig itself and the Host's total
-│    --range <span>                 1h (default), 24h or 7d: what the median and peak cover
+│    --since <time>  --until <time> the window the median and peak cover (default: the last 1h);
+│                                   a duration back from now or an ISO time; with --until it prints once
 │    --json                         print the report once
 │
 ├─ deploy [target] [branch]         target: "stable" (default) or "preview"

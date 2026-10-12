@@ -8,31 +8,49 @@ type ReportedSeries = MonitorResult["series"][number];
 type Stats = NonNullable<ReportedSeries["summary"]["cpu"]>;
 
 const HEADINGS = ["CPU", "median", "peak", "Memory", "median", "peak"];
-const RANGE_WORDS: Record<MonitorResult["range"], string> = {
-  "1h": "the last hour",
-  "24h": "the last 24 hours",
-  "7d": "the last 7 days",
-};
+/** One or more `<count><unit>` parts, as `--since` and `--until` accept a duration. */
+const DURATION = /^(\d+[smhdw])+$/;
 
 /** The narrowest the name column is cut to, however narrow the terminal. */
 const NAME_FLOOR = 12;
 const GAP = "  ";
 
+/** Pure: the window as the user gave it, in words: `the last 1h`, `since 2026-10-12T02:00:00Z`, or `from 2d ago to
+ * 1d ago`. No input reads as the last hour, as rigd reads it. */
+export function windowWords(input: {
+  readonly since?: string;
+  readonly until?: string;
+}): string {
+  const since = input.since ?? "1h";
+  const time = (value: string) =>
+    DURATION.test(value) ? `${value} ago` : terminalText(value);
+  if (input.until === undefined)
+    return DURATION.test(since)
+      ? `the last ${since}`
+      : `since ${terminalText(since)}`;
+  return `from ${time(since)} to ${time(input.until)}`;
+}
+
 /** Pure: a `monitor` reply as the lines of a table: one row per series, CPU and memory now, then the median and peak over
- * the range. For a Project: its total over every Target, then each Target's total with its Services and Jobs indented
- * below it. For the Host: the Host's total, Rig itself, then each Project. A value with no sample reads `–`. With
- * `columns`, long names are cut so the numbers still fit that width. */
+ * the window. For a Project: its total over every Target, then each Target's total with its Services and Jobs indented
+ * below it. For the Host: the Host's total, Rig itself, then each Project. A value with no sample reads `–`. `window`
+ * is the window as the user gave it, for the heading; with `columns`, long names are cut so the numbers still fit. */
 export function monitorLines(
   result: MonitorResult,
-  columns?: number,
+  options: {
+    readonly window?: { readonly since?: string; readonly until?: string };
+    readonly columns?: number;
+  } = {},
 ): string[] {
+  const columns = options.columns;
+  const words = windowWords(options.window ?? {});
   const rows =
     result.project === undefined ? hostRows(result) : projectRows(result);
-  const heading = `${result.project === undefined ? "This Host" : terminalText(result.project)} · ${RANGE_WORDS[result.range]} · sampled every ${result.sampledEvery} s`;
+  const heading = `${result.project === undefined ? "This Host" : terminalText(result.project)} · ${words} · sampled every ${result.sampledEvery} s`;
   if (rows.length === 0)
     return [
       heading,
-      `No CPU or memory was sampled in ${RANGE_WORDS[result.range]}: nothing ran, or rigd only just started sampling.`,
+      `No CPU or memory was sampled ${words.startsWith("the last") ? "in " : ""}${words}: nothing ran, or rigd was not sampling then.`,
     ];
   const values = rows.map(([, series]) => cells(series));
   const widths = HEADINGS.map((heading, column) =>

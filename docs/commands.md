@@ -183,9 +183,10 @@ status` takes no Target.
 - `forget` leaves the Project's Tools in `<RIG_ROOT>/bin`, where they keep
   running, and names them in a warning. Dropping the registration releases
   them: the next `deploy`, `up` or `restart` that publishes a Tool of the same
-  name, from any Project, replaces it, unless its bytes changed since Rig
-  published it (`ARTIFACT_CHANGED`; move or delete the file). `doctor` names a
-  Tool whose Target no longer exists as `tool-owners`.
+  name, from any Project (`rig` and `rigd`: only Rig's own), replaces it,
+  unless its bytes changed since Rig published it (`ARTIFACT_CHANGED`; move or
+  delete the file). `doctor` names a Tool whose Target no longer exists as
+  `tool-owners`, failing only for a changed one.
 - `logs --service` takes a Service, Tool or job name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the
   Target's names. `--since` and `--until` are inclusive, and leave out lines

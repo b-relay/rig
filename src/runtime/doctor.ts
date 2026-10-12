@@ -156,10 +156,11 @@ async function orphanedRoutesCheck(
       : `If no other Rig root writes routes to ${publication.proxyFile}, run rig proxy reload to withdraw them.`,
   };
 }
-/** A failing `tool-owners` check when `<RIG_ROOT>/bin` holds Tools whose owner Target no state record names (#343): a
- * forgotten Project's, or a lost Target's. One whose bytes are still the ones Rig published is released, and the next Target
- * that publishes there takes it over; one that changed since is never replaced or removed, so a Target that publishes there
- * is refused (ARTIFACT_CHANGED) until it is moved. Undefined when there is none, or when the Tools or the state cannot be read
+/** A `tool-owners` check when `<RIG_ROOT>/bin` holds Tools whose owner Target no state record names (#343): a forgotten
+ * Project's, or a lost Target's. One whose bytes are still the ones Rig published is released, and the next Target that
+ * publishes there takes it over (`bin/rig` and `bin/rigd` only a Target of the Project that published them): reported,
+ * passing. One that changed since is never replaced or removed, so a Target that publishes there is refused
+ * (ARTIFACT_CHANGED) until it is moved: the check fails. Undefined when there is none, or when the Tools or the state cannot be read
  * (other checks report that). The ownership records are read before the state, and every Target is recorded before it
  * publishes a Tool, so a deploy in progress is never reported; a `rig forget` running meanwhile can be, once. */
 async function orphanedToolsCheck(
@@ -204,9 +205,11 @@ async function orphanedToolsCheck(
     );
   return {
     name: "tool-owners",
-    ok: false,
+    // A released Tool is reported, not failed: it keeps working and the next Target that publishes there takes it over. A
+    // changed one fails the check, since it refuses every publication there until it is moved.
+    ok: changed.length === 0,
     message,
-    reason: "tool-orphaned",
+    reason: changed.length ? "tool-changed" : "tool-orphaned",
     hint: [
       released.length
         ? "Nothing needs doing to keep using them: a deploy or rig up that publishes a Tool of the same name replaces one. Delete one you no longer want."
@@ -215,7 +218,7 @@ async function orphanedToolsCheck(
         ? "Move or delete a changed one to keep or discard that change; a Target can then publish there."
         : "",
       rigOwn.length
-        ? `Never delete ${rigOwn.join(" or ")}: ${rigOwn.length === 1 ? "it is" : "they are"} Rig itself, and rigd's system job runs ${join(deps.root, "bin", "rigd")}. Register Rig's repository again and deploy its stable Target to take ${rigOwn.length === 1 ? "it" : "them"} over.`
+        ? `Never delete ${rigOwn.join(" or ")}: ${rigOwn.length === 1 ? "it is" : "they are"} Rig itself, and rigd's system job runs ${join(deps.root, "bin", "rigd")}. Only Rig's own Project takes ${rigOwn.length === 1 ? "it" : "them"} over: register its repository again and deploy its stable Target.`
         : "",
     ]
       .filter(Boolean)

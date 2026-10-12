@@ -2407,8 +2407,9 @@ name>` for a Preview. Two Projects that both install `cli` on
    rename one of the Tools. A Tool whose owning Target no longer exists (a
    `rig forget` left it, or the Target's record was lost) is no conflict: the
    Target that publishes there next takes it over, as long as its bytes are
-   still the ones Rig published. `rig doctor` names such Tools
-   (`tool-owners`) until then.
+   still the ones Rig published. `bin/rig` and `bin/rigd` go only to a Target
+   of the Project that published them, Rig's own. `rig doctor` names such
+   Tools (`tool-owners`) until then.
    An executable Rig did not install is never overwritten
    (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
@@ -2612,11 +2613,13 @@ to be forgotten.
 `PATH` keeps working, and a warning names them. Rig no longer owns them: the
 next deploy, `rig up` or `rig restart` that publishes a Tool of the same name,
 from the same repository registered again or from another Project, replaces
-it by atomic rename, as an upgrade does. Delete one you no longer want; never
-delete `<RIG_ROOT>/bin/rigd`, which rigd's system job runs. Until a Target takes
-one over, `rig doctor` names it (`tool-owners`). A Tool that was edited after
-Rig published it is never replaced or removed: publishing there fails as
-`ARTIFACT_CHANGED` until you move or delete the file. The same holds for a Tool
+it by atomic rename, as an upgrade does. `rig` and `rigd` are the exception:
+only Rig's own Project, registered again, takes them over. Delete a Tool you no
+longer want; never delete `<RIG_ROOT>/bin/rigd`, which rigd's system job runs.
+Until a Target takes one over, `rig doctor` names it (`tool-owners`, passing).
+A Tool that was edited after Rig published it is never replaced or removed:
+publishing there fails as `ARTIFACT_CHANGED` until you move or delete the
+file, and `tool-owners` fails while it is there. The same holds for a Tool
 an earlier `rig forget` left with its old owner, so a Host that had one
 recovers without any step of its own.
 

@@ -418,13 +418,10 @@ export function createTargetEffects(
       const retired = owned.released
         ? [receiptFile]
         : [destination, ownerFile, receiptFile];
-      await transactions.withArtifactChange(
-        target.id,
-        [destination, ownerFile, receiptFile],
-        async () => {
-          for (const path of retired) await rm(path, { force: true });
-        },
-      );
+      // Only what it removes is journalled as changing, so a recovery never takes a released Tool for its own work.
+      await transactions.withArtifactChange(target.id, retired, async () => {
+        for (const path of retired) await rm(path, { force: true });
+      });
     }
   };
   const digest = createEnvironmentDigest(options.root);

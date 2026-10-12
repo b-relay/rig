@@ -425,7 +425,8 @@ test("a Tool a forget left before #343 was fixed is named by doctor and taken ov
   expect(report.checks).toContainEqual(
     expect.objectContaining({
       name: "tool-owners",
-      ok: false,
+      // Reported, not failed: it keeps working and the next publication takes it over.
+      ok: true,
       reason: "tool-orphaned",
       message: expect.stringContaining(
         `${w.bin("ledger")} (Project 'ledger' Target 'stable' Tool 'ledger')`,
@@ -466,6 +467,7 @@ test("an orphaned Tool changed since Rig published it is never replaced: ARTIFAC
     expect.objectContaining({
       name: "tool-owners",
       ok: false,
+      reason: "tool-changed",
       message: expect.stringContaining(
         "changed since Rig published it: " + w.bin("ledger"),
       ),
@@ -541,6 +543,19 @@ test("Rig's own rig and rigd Tools are never taken while their Target is recorde
     expect(await w.tool("rigd")).toBe(before.bytes);
     expect((await stat(daemon)).ino).toBe(before.ino);
     expect(await w.tool("rig")).toBe("#!/bin/sh\necho rig.sh v1\n");
+    // Released, rigd still goes to no other Project: launchd must never start another Project's binary as the daemon.
+    await expect(
+      w.runtime.command({
+        action: "deploy",
+        project: "other",
+        target: "stable",
+      }),
+    ).rejects.toMatchObject({
+      code: "ARTIFACT_CONFLICT",
+      message: expect.stringContaining(`${daemon} is Rig itself`),
+    });
+    expect(await w.tool("rigd")).toBe(before.bytes);
+    expect((await stat(daemon)).ino).toBe(before.ino);
     expect((await w.doctor()).checks).toContainEqual(
       expect.objectContaining({
         name: "tool-owners",
@@ -561,4 +576,24 @@ test("Rig's own rig and rigd Tools are never taken while their Target is recorde
   } finally {
     await running.close();
   }
+});
+
+test("forget names a Tool edited since Rig published it apart: it stays, and publishing there is refused until it is moved", async () => {
+  const w = await rigWorld();
+  await w.registerAndDeploy();
+  await w.stop();
+  await writeFile(w.bin("ledger"), "#!/bin/sh\necho edited\n");
+  const forgotten = (await w.runtime.command({
+    action: "forget",
+    project: "ledger",
+  })) as { warnings: string[] };
+  expect(forgotten.warnings).toContainEqual(
+    expect.stringContaining(
+      `Its Tools ${w.bin("ledger")} changed since Rig published them and stay as they are`,
+    ),
+  );
+  expect(forgotten.warnings).not.toContainEqual(
+    expect.stringContaining("Its Tools stay installed"),
+  );
+  expect(await w.tool("ledger")).toBe("#!/bin/sh\necho edited\n");
 });

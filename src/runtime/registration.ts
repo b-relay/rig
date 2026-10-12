@@ -149,18 +149,26 @@ async function forgottenWarnings(
   deps: Pick<RuntimeDependencies, "orphanedTools" | "store" | "root">,
 ): Promise<string[]> {
   const forgotten = new Set(targets.map((target) => target.id));
-  const tools = (
+  const left = (
     (await deps
       .orphanedTools?.(
         async () =>
           new Set((await deps.store.read()).targets.map((target) => target.id)),
       )
       .catch(() => undefined)) ?? []
-  )
-    .filter((tool) => forgotten.has(tool.owner.targetId))
+  ).filter((tool) => forgotten.has(tool.owner.targetId));
+  const tools = left
+    .filter((tool) => !tool.changed)
     .map((tool) => tool.destination);
-  // rigd's system job runs <RIG_ROOT>/bin/rigd: forgetting Rig's own Project must never lead anyone to delete it.
+  const changed = left
+    .filter((tool) => tool.changed)
+    .map((tool) => tool.destination);
+  // rigd's system job runs <RIG_ROOT>/bin/rigd: forgetting Rig's own Project must never lead anyone to delete it, and only
+  // this Project registered again takes rig and rigd over.
   const daemon = join(deps.root, "bin", "rigd");
+  const rigItself = tools.some((path) =>
+    [daemon, join(deps.root, "bin", "rig")].includes(path),
+  );
   return [
     ...targets
       .filter((t) => t.kind === "stable")
@@ -174,7 +182,12 @@ async function forgottenWarnings(
     ),
     ...(tools.length
       ? [
-          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}, and you may delete any you no longer want${tools.includes(daemon) ? `, except ${daemon}, which rigd's system job runs` : ""}.`,
+          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}${rigItself ? " (rig and rigd only from this Project registered again)" : ""}, and you may delete any you no longer want${tools.includes(daemon) ? `, except ${daemon}, which rigd's system job runs` : ""}.`,
+        ]
+      : []),
+    ...(changed.length
+      ? [
+          `Its Tools ${changed.join(", ")} changed since Rig published them and stay as they are: Rig never replaces or removes them, so publishing a Tool there is refused (ARTIFACT_CHANGED) until you move or delete ${changed.length === 1 ? "it" : "them"}.`,
         ]
       : []),
   ];

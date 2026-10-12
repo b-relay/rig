@@ -98,9 +98,16 @@ export function createArtifactOwnership(
   const released = async (saved: ArtifactOwner) =>
     recordedTargets !== undefined &&
     !(await recordedTargets()).has(saved.targetId);
+  /** Rig's own executables: rigd's system job runs `<root>/bin/rigd`, and `rig` drives it. Released, they go only to a
+   * Target of the Project that published them, so no other Project's Tool of that name becomes the daemon launchd starts. */
+  const rigItself = new Set([
+    join(root, "bin", "rig"),
+    join(root, "bin", "rigd"),
+  ]);
   /** Who may publish at `identity.destination` now. Resolves with its recorded owner and current digest; `released` is set,
    * and `owner` left out, when the owner is a Target state no longer records and the bytes are still the ones Rig published
-   * for it (or gone), so `identity` takes it over. Rejects ARTIFACT_CONFLICT for another recorded owner, ARTIFACT_UNOWNED
+   * for it (or gone), so `identity` takes it over. Rejects ARTIFACT_CONFLICT for another recorded owner (and for a released
+   * `bin/rig` or `bin/rigd` asked for by another Project than the one that published it), ARTIFACT_UNOWNED
    * for a file Rig did not install, ARTIFACT_CHANGED for bytes that differ from the recorded revision, released or not. */
   const inspect = async (
     identity: ArtifactIdentity,
@@ -122,6 +129,20 @@ export function createArtifactOwnership(
           "ARTIFACT_CHANGED",
           `The installed executable ${identity.destination} changed since Rig published it for ${describeOwner(saved)}, whose Target no longer exists.`,
           `Rig never replaces or removes an executable that changed. Move or delete ${identity.destination} to keep or discard that change, then retry.`,
+          {
+            destination: identity.destination,
+            owner: ownerDetails(saved),
+            released: true,
+          },
+        );
+      if (
+        rigItself.has(identity.destination) &&
+        (saved.project === undefined || saved.project !== identity.project)
+      )
+        throw new RigError(
+          "ARTIFACT_CONFLICT",
+          `${identity.destination} is Rig itself, published by ${describeOwner(saved)}, whose Target no longer exists; only a Target of ${saved.project ? `Project '${saved.project}'` : "the Project that published it"} takes it over.`,
+          `Rename the Tool in its rig.yaml; rigd's system job runs ${join(root, "bin", "rigd")}, so no other Project's Tool replaces it. Register Rig's own repository again and deploy its stable Target to publish it again.`,
           {
             destination: identity.destination,
             owner: ownerDetails(saved),

@@ -78,7 +78,7 @@ function DaemonMark({
 }) {
   return (
     <Link
-      href="/rigd"
+      href="/monitor"
       className="flex h-8 items-center gap-2 rounded-lg px-2 text-xs text-muted-foreground no-underline hover:bg-muted hover:text-foreground"
       title={detail ?? (state === "down" ? "rigd is not reachable" : "rigd")}
     >

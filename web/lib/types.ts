@@ -131,6 +131,7 @@ export interface Replies {
   status: import("../../src/domain/project-status").ProjectStatusReport;
   logs: import("../../src/daemon/protocol").LogsResult;
   activity: import("../../src/daemon/protocol").ActivityResult;
+  monitor: import("../../src/daemon/protocol").MonitorResult;
   doctor: DoctorReport;
   config: ConfigReport;
   queue: QueueResult;

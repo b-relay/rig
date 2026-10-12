@@ -10,11 +10,10 @@ const PROJECT_TABS = [
   ["", "Overview"],
   ["deployments", "Deployments"],
   ["logs", "Logs"],
+  ["monitor", "Monitor"],
   ["environment", "Environment"],
   ["jobs", "Jobs"],
   ["config", "Config"],
-  ["activity", "Activity"],
-  ["doctor", "Doctor"],
   ["settings", "Settings"],
 ] as const;
 const TARGET_TABS = [

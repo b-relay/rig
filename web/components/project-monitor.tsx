@@ -5,6 +5,7 @@ import type { Failure as ReadFailure } from "@/lib/outcome";
 import type { ActivityResult } from "@/lib/types";
 import {
   cardsOf,
+  currentOf,
   markersOf,
   type ChartReport,
   type ChartSeries,
@@ -56,13 +57,14 @@ export function ProjectMonitor({
     initialFailure,
   );
   const series = report?.series ?? [];
-  const total =
+  const total = currentOf(
     target === "all"
-      ? series.find((each) => each.series.scope === "project")
-      : series.find(
+      ? series.filter((each) => each.series.scope === "project")
+      : series.filter(
           (each) =>
             each.series.scope === "target" && each.series.target === target,
-        );
+        ),
+  );
   const sampled =
     target === "all"
       ? series.filter((each) => each.series.scope === "target")
@@ -98,7 +100,9 @@ export function ProjectMonitor({
           .filter((card) => card.series)
           .map((card) => ({
             series: card.series as ChartSeries,
-            label: card.earlier ? `${card.name} (earlier)` : card.name,
+            label: card.incarnation
+              ? `${card.name} (${card.incarnation})`
+              : card.name,
             color: colorOf(card.key),
           }))}
         report={report}
@@ -115,9 +119,9 @@ export function ProjectMonitor({
             title={
               <span className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-mono">{card.name}</span>
-                {card.earlier ? (
+                {card.incarnation ? (
                   <span className="text-xs font-normal text-muted-foreground">
-                    earlier
+                    {card.incarnation}
                   </span>
                 ) : null}
                 {card.kind ? (
@@ -129,8 +133,8 @@ export function ProjectMonitor({
             }
             // Activity names Targets, not Services, so only a Target's card lists its own; a Service's is in the feed.
             activity={
-              // An earlier incarnation's Activity cannot be told apart from the current one's by name.
-              target === "all" && !card.earlier
+              // Activity names a Target or Project, not its incarnation, so only the current one's card lists it.
+              target === "all" && !card.incarnation
                 ? relevant.filter((operation) => operation.target === card.name)
                 : []
             }

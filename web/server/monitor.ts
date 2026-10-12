@@ -6,6 +6,7 @@ import {
   bytes,
   chartReport,
   componentsOf,
+  currentOf,
   percent,
   presetWindow,
   type ChartReport,
@@ -65,7 +66,9 @@ export const projectMonitor = cache(
             ?.name ??
           targets[0]?.name ??
           "all");
-    const total = whole?.series.find((each) => each.series.scope === "project");
+    const total = currentOf(
+      whole?.series.filter((each) => each.series.scope === "project") ?? [],
+    );
     return {
       usage: monitored.ok
         ? { ok: true, value: componentsOf(whole!, target) }
@@ -88,10 +91,12 @@ function chipTargets(
   current: ProjectStatusReport["targets"],
   hrefOf: (target: string) => string,
 ): ChipTarget[] {
+  const byName = Map.groupBy(
+    (report?.series ?? []).filter((each) => each.series.scope === "target"),
+    (each) => each.series.target!,
+  );
   const now = new Map(
-    (report?.series ?? [])
-      .filter((each) => each.series.scope === "target")
-      .map((each) => [each.series.target!, each.now]),
+    [...byName].map(([name, group]) => [name, currentOf(group)?.now]),
   );
   const names = [
     ...current.map((target) => target.name),

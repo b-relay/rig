@@ -243,13 +243,33 @@ export interface UsageCard {
   /** `service` or `job`, on a Component's card. */
   readonly kind?: string;
   readonly series?: ChartSeries;
-  /** An earlier incarnation of a name another card shows, such as a Preview destroyed and created again. */
-  readonly earlier?: boolean;
+  /** Which incarnation of its name this card shows when the name was sampled under several identities, such as a
+   * Preview destroyed and created again: `earlier` beside the current one, or `2 of 3` when none can be told current. */
+  readonly incarnation?: string;
 }
 
-/** Pure: a card per thing the inventory names, in its order, with the most recently sampled of the series of that name;
- * then a card per other sampled series, such as a destroyed Preview still in the range or an earlier incarnation of
- * one created again, keyed by its own identity. `identify` names a series as the inventory does. */
+/** Pure: of the series sampled under one name, the current one: the one running now; else the one sampled latest.
+ * `undefined` when none was sampled, or when several tie and none can be told current. Every Monitor view picks the
+ * current incarnation this way. */
+export function currentOf(
+  group: readonly ChartSeries[],
+): ChartSeries | undefined {
+  const live = group.filter((each) => each.now);
+  const pool = live.length > 0 ? live : group;
+  const lastSampled = (each: ChartSeries) =>
+    Math.max(
+      each.cpu.average.findLastIndex((value) => value !== null),
+      each.memory.average.findLastIndex((value) => value !== null),
+    );
+  const latest = Math.max(...pool.map(lastSampled));
+  const newest = pool.filter((each) => lastSampled(each) === latest);
+  return newest.length === 1 ? newest[0] : undefined;
+}
+
+/** Pure: a card per thing the inventory names, in its order, then one per name sampled that it no longer names (a
+ * destroyed Preview still in the range). A name sampled under several identities keeps them all: the current one on
+ * the name's card and each other on its own card marked `earlier`; when none is current, each on its own card marked
+ * `1 of 2` and so on. `identify` names a series as the inventory does. */
 export function cardsOf(
   inventory: readonly { readonly name: string; readonly kind?: string }[],
   sampled: readonly ChartSeries[],
@@ -257,36 +277,38 @@ export function cardsOf(
 ): UsageCard[] {
   const idOf = (each: { name: string; kind?: string }) =>
     `${each.kind ?? ""}:${each.name}`;
-  const lastSampled = (each: ChartSeries) =>
-    each.cpu.average.findLastIndex((value) => value !== null);
-  const newest = new Map<string, ChartSeries>();
+  const groups = new Map<
+    string,
+    { name: string; kind?: string; series: ChartSeries[] }
+  >();
+  for (const each of inventory) groups.set(idOf(each), { ...each, series: [] });
   for (const each of sampled) {
-    const id = idOf(identify(each));
-    const found = newest.get(id);
-    if (!found || lastSampled(each) >= lastSampled(found)) newest.set(id, each);
+    const named = identify(each);
+    const id = idOf(named);
+    const group = groups.get(id) ?? { ...named, series: [] };
+    group.series.push(each);
+    groups.set(id, group);
   }
-  const named = inventory.map((each) => {
-    const series = newest.get(idOf(each));
-    return {
-      key: idOf(each),
-      name: each.name,
-      ...(each.kind && { kind: each.kind }),
-      ...(series && { series }),
-    };
+  return [...groups.entries()].flatMap(([id, group]): UsageCard[] => {
+    const base = { name: group.name, ...(group.kind && { kind: group.kind }) };
+    const current = currentOf(group.series);
+    if (group.series.length > 1 && !current)
+      return group.series.map((series, index) => ({
+        ...base,
+        key: series.key,
+        series,
+        incarnation: `${index + 1} of ${group.series.length}`,
+      }));
+    return [
+      { ...base, key: id, ...(current && { series: current }) },
+      ...group.series
+        .filter((series) => series !== current)
+        .map((series) => ({
+          ...base,
+          key: series.key,
+          series,
+          incarnation: "earlier",
+        })),
+    ];
   });
-  const shown = new Set(named.flatMap((card) => card.series ?? []));
-  const gone = sampled
-    .filter((each) => !shown.has(each))
-    .map((each) => {
-      const { name, kind } = identify(each);
-      const id = idOf({ name, kind });
-      return {
-        key: each.key,
-        name,
-        ...(kind && { kind }),
-        series: each,
-        ...(newest.get(id) !== each && { earlier: true }),
-      };
-    });
-  return [...named, ...gone];
 }

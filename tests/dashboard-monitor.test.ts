@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import type { MonitorResult } from "../src/daemon/protocol";
-import { chartLayout } from "../web/lib/chart-layout";
+import { chartLayout, fittedLabel } from "../web/lib/chart-layout";
 import {
   cardsOf,
   chartReport,
+  currentOf,
+  type ChartSeries,
   markersOf,
   peakOf,
   presetWindow,
@@ -87,31 +89,6 @@ test("cards follow the inventory, with an empty card for what was never sampled 
     ["fletcher", false],
     ["gone", true],
   ]);
-  // A Preview destroyed and created again: both incarnations keep their charts, the newest on the named card.
-  const preview = (targetId: string, sampledLast: boolean) => ({
-    ...sampled[0]!,
-    key: `target:p:${targetId}`,
-    series: {
-      ...sampled[0]!.series,
-      scope: "target" as const,
-      targetId,
-      target: "feature",
-    },
-    cpu: {
-      average: sampledLast ? [null, null, 5] : [4, null, null],
-    },
-  });
-  const incarnations = cardsOf(
-    [{ name: "feature" }],
-    [preview("new", true), preview("old", false)],
-    (each) => ({ name: each.series.target! }),
-  );
-  expect(
-    incarnations.map((card) => [card.key, card.series?.key, !!card.earlier]),
-  ).toEqual([
-    [":feature", "target:p:new", false],
-    ["target:p:old", "target:p:old", true],
-  ]);
   // A Service and a Job of the same name are different cards.
   expect(
     cardsOf(
@@ -123,6 +100,60 @@ test("cards follow the inventory, with an empty card for what was never sampled 
       () => ({ name: "" }),
     ).map((card) => card.key),
   ).toEqual(["service:web", "job:web"]);
+});
+
+test("a Preview created again keeps every incarnation: the running or latest on its card, each other marked, a tie shown apart", () => {
+  const preview = (
+    targetId: string,
+    average: (number | null)[],
+    live = false,
+  ): ChartSeries => ({
+    key: `target:p:${targetId}`,
+    series: {
+      scope: "target",
+      projectId: "p",
+      project: "pantry",
+      targetId,
+      target: "feature",
+      targetKind: "preview",
+    },
+    ...(live && { now: { cpuPercent: 1, memoryBytes: 1 } }),
+    cpu: { average },
+    memory: { average },
+  });
+  const shown = (series: ChartSeries[]) =>
+    cardsOf([{ name: "feature" }], series, (each) => ({
+      name: each.series.target!,
+    })).map((card) => [card.key, card.series?.key, card.incarnation]);
+  const older = preview("old", [4, null, null]);
+  const newer = preview("new", [null, null, 5]);
+  // The one sampled latest is current, whichever order rigd lists them in.
+  for (const order of [
+    [newer, older],
+    [older, newer],
+  ])
+    expect(shown(order)).toEqual([
+      [":feature", "target:p:new", undefined],
+      ["target:p:old", "target:p:old", "earlier"],
+    ]);
+  // In one step (both last sampled at the same point), the running one is current, in either order.
+  const stopped = preview("old", [null, null, 4]);
+  const running = preview("new", [null, null, 5], true);
+  for (const order of [
+    [running, stopped],
+    [stopped, running],
+  ])
+    expect(shown(order)).toEqual([
+      [":feature", "target:p:new", undefined],
+      ["target:p:old", "target:p:old", "earlier"],
+    ]);
+  // Neither running and tied: neither is called current; each gets its own card.
+  expect(shown([stopped, preview("new", [null, null, 5])])).toEqual([
+    ["target:p:old", "target:p:old", "1 of 2"],
+    ["target:p:new", "target:p:new", "2 of 2"],
+  ]);
+  expect(currentOf([stopped, running])).toBe(running);
+  expect(currentOf([])).toBeUndefined();
 });
 
 test("stacked layers keep running totals, treat a silent layer as zero, and leave a gap only where every layer is silent", () => {
@@ -192,7 +223,7 @@ const box = {
   height: 140,
   pad: { top: 22, right: 6, bottom: 18, left: 40 },
 };
-const label = (layer: number) => `layer ${layer}`;
+const label = (layer: number) => ({ name: `layer ${layer}`, value: "1%" });
 
 test("a stacked layer's peak sits on the layers below it, and the scale reaches above it", () => {
   const layout = chartLayout({
@@ -248,7 +279,7 @@ test("every layer's peak is flagged, and crowded labels are moved apart inside t
     from: 0,
     step: 10,
     floor: 25,
-    labelOf: (layer) => `project-${layer} 99%`,
+    labelOf: (layer) => ({ name: `project-${layer}`, value: "99%" }),
   });
   expect(layout.flags.map((flag) => flag.layer).sort((a, b) => a - b)).toEqual(
     Array.from({ length: 12 }, (_, index) => index),
@@ -275,12 +306,53 @@ test("on a phone-narrow chart a long label beside a late peak turns to the left 
     from: 0,
     step: 10,
     floor: 25,
-    labelOf: () => "b-relay-dashboard 100%",
+    labelOf: () => ({ name: "b-relay-dashboard", value: "100%" }),
   });
   const flag = layout.flags[0]!;
   expect(flag.labelX).toBeGreaterThanOrEqual(0);
   expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(300);
   expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(flag.x);
+});
+
+test("labels find room between ones already placed, on a narrow chart with peaks at different heights", () => {
+  const values = [63, 83, 45, 54, 24, 33];
+  const layout = chartLayout({
+    ...box,
+    width: 300,
+    height: 130,
+    layers: values.map((value) => ({
+      average: [0, 0, 0],
+      peak: { index: 2, value: value * 1e6 },
+    })),
+    from: 0,
+    step: 10,
+    floor: 64e6,
+    labelOf: (layer, peak) => ({
+      name: `production-dashboard-project-${layer}`,
+      value: `${peak.value / 1e6} MB`,
+    }),
+  });
+  expect(layout.flags).toHaveLength(6);
+  expect(overlapping(layout)).toEqual([]);
+});
+
+test("a name too long for the chart is cut so its label fits, keeping the value", () => {
+  const name = "a".repeat(60);
+  const layout = chartLayout({
+    ...box,
+    width: 300,
+    layers: [{ average: [1, 1, 1], peak: { index: 1, value: 100 } }],
+    from: 0,
+    step: 10,
+    floor: 25,
+    labelOf: () => ({ name, value: "100%" }),
+  });
+  const flag = layout.flags[0]!;
+  expect(flag.text).toEndWith("… 100%");
+  expect(flag.labelX).toBeGreaterThanOrEqual(0);
+  expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(300);
+  expect(fittedLabel({ name: "web", value: "3%" }, 300)).toBe("web 3%");
+  expect(fittedLabel({ name, value: "100%" }, 40)).toBe("100%");
 });
 
 test("points, markers and inspection share one mapping of time to x", () => {

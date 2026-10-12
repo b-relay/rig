@@ -81,7 +81,11 @@ export function chartLayout({
     readonly left: number;
   };
   floor: number;
-  labelOf: (layer: number, peak: Peak) => string;
+  /** A peak's label: what it is (a Project's name, or `peak`) and its value. A name too long for the chart is cut. */
+  labelOf: (
+    layer: number,
+    peak: Peak,
+  ) => { readonly name: string; readonly value: string };
 }): ChartLayout {
   const count = layers[0]?.average.length ?? 0;
   const plot = {
@@ -115,7 +119,7 @@ export function chartLayout({
     .map(({ layer, peak }): PeakFlag => {
       const x = timeX(from + (peak.index + 0.5) * step);
       const py = y(peakHeight(layer, peak));
-      const text = labelOf(layer, peak);
+      const text = fittedLabel(labelOf(layer, peak), width);
       const wide = text.length * LABEL_CHARACTER;
       // Right of the point where the label fits there, else left of it; either way kept inside the chart.
       const inside = (left: number) =>
@@ -130,8 +134,6 @@ export function chartLayout({
         y1: baseline + 2,
       });
       const clear = (box: ReturnType<typeof boxAt>) =>
-        box.y0 >= 0 &&
-        box.y1 <= height &&
         boxes.every(
           (other) =>
             other.x1 <= box.x0 ||
@@ -139,22 +141,23 @@ export function chartLayout({
             other.y1 <= box.y0 ||
             box.y1 <= other.y0,
         );
-      // Rows nearest the point first, through the chart's whole height, each tried on both sides of the point.
+      // Every baseline that keeps the label inside the chart, nearest the point first, each on both sides of it.
       const natural = py - 10;
-      const rows = Math.ceil(height / (LABEL_HEIGHT + 1));
-      const candidates = Array.from({ length: 2 * rows + 1 }, (_, index) =>
-        index === 0
-          ? 0
-          : (index % 2 === 1 ? -1 : 1) *
-            Math.ceil(index / 2) *
-            (LABEL_HEIGHT + 1),
-      ).flatMap((offset) =>
-        sides.map((x0) => ({ x0, baseline: natural + offset })),
-      );
+      const highest = LABEL_HEIGHT - 2;
+      const lowest = height - 2;
+      const candidates = Array.from(
+        { length: Math.max(lowest - highest + 1, 0) },
+        (_, index) => highest + index,
+      )
+        .sort((a, b) => Math.abs(a - natural) - Math.abs(b - natural))
+        .flatMap((baseline) => sides.map((x0) => ({ x0, baseline })));
       // A chart with more peaks than room for labels overlaps the last ones rather than hide a peak.
       const chosen = candidates.find(({ x0, baseline }) =>
         clear(boxAt(x0, baseline)),
-      ) ?? { x0: sides[0]!, baseline: natural };
+      ) ?? {
+        x0: sides[0]!,
+        baseline: Math.min(Math.max(natural, highest), lowest),
+      };
       boxes.push(boxAt(chosen.x0, chosen.baseline));
       return {
         layer,
@@ -164,7 +167,7 @@ export function chartLayout({
         labelX: chosen.x0,
         labelWidth: wide,
         labelY: chosen.baseline,
-        moved: chosen.baseline !== natural,
+        moved: Math.abs(chosen.baseline - natural) > 2,
       };
     });
 
@@ -182,4 +185,19 @@ export function chartLayout({
       ),
     y,
   };
+}
+
+/** Pure: a peak's label, `name value`, with the name cut (ending in `…`) so the whole fits `width`; just the value when
+ * no part of the name fits. */
+export function fittedLabel(
+  label: { readonly name: string; readonly value: string },
+  width: number,
+): string {
+  const whole = `${label.name} ${label.value}`;
+  const room = Math.floor((width - 4) / LABEL_CHARACTER);
+  if (whole.length <= room) return whole;
+  const kept = room - label.value.length - 2;
+  return kept < 1
+    ? label.value
+    : `${label.name.slice(0, kept)}… ${label.value}`;
 }

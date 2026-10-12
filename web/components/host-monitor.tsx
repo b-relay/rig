@@ -95,7 +95,9 @@ export function HostMonitor({
               ? [
                   {
                     series: card.series,
-                    label: card.earlier ? `${card.name} (earlier)` : card.name,
+                    label: card.incarnation
+                      ? `${card.name} (${card.incarnation})`
+                      : card.name,
                     color: colorOf(card.series),
                   },
                 ]
@@ -111,8 +113,8 @@ export function HostMonitor({
       />
       <CardGrid>
         {cards.map((card) => {
-          // An earlier incarnation's Activity cannot be told apart from the current one's by name.
-          const own = card.earlier
+          // Activity names a Target or Project, not its incarnation, so only the current one's card lists it.
+          const own = card.incarnation
             ? []
             : operations.filter((operation) => operation.project === card.name);
           return (
@@ -128,9 +130,9 @@ export function HostMonitor({
                 >
                   <ProjectIcon project={card.name} size="sm" />
                   <span className="truncate">{card.name}</span>
-                  {card.earlier ? (
+                  {card.incarnation ? (
                     <span className="text-xs font-normal text-muted-foreground">
-                      earlier
+                      {card.incarnation}
                     </span>
                   ) : null}
                 </Link>

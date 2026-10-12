@@ -79,8 +79,10 @@ export function UsageChart({
         height,
         pad: axis ? PAD : { ...PAD, left: 2, bottom: 2 },
         floor,
-        labelOf: (index, peak) =>
-          `${layers.length > 1 ? `${layers[index]!.label} ` : "peak "}${format(peak.value)}`,
+        labelOf: (index, peak) => ({
+          name: layers.length > 1 ? layers[index]!.label : "peak",
+          value: format(peak.value),
+        }),
       }),
     [layers, report.from, report.step, width, height, axis, floor, format],
   );

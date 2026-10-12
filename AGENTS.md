@@ -85,6 +85,14 @@ suite, `bun run build`, and `bun run format:check`.
 
 ## Git Workflow
 
+- Every change lands through a pull request. Never push directly to `main`.
+- Before a PR merges, independent review agents read it, and the author and
+  reviewers go back and forth until they agree on every finding. Merge only
+  after they converge and the full pre-merge checks above pass.
+- Reviewers also judge whether the PR's tests are worth having: they should
+  cover the changed behaviour and catch its regressions.
+- Keep a PR within its agreed scope. When a review finds a problem outside it,
+  file a new GitHub issue for it instead of fixing it in the same PR.
 - Use conventional commit messages: `feat:`, `fix:`, `test:`, `docs:`,
   `refactor:`, etc.
 - Do not revert user changes unless explicitly asked.

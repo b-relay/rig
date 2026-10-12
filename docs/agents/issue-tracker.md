@@ -51,11 +51,10 @@ ticket is blocked while `issue_dependencies_summary.blocked_by > 0`.
 
 ## Linking PRs to issues
 
-Rig's git workflow pushes directly to `main`, so most work has no PR. Put
-`Closes #<n>` (or `Fixes #<n>`) in the commit message so GitHub links the commit
-to the issue and closes it when it lands on `main`. When a PR is opened, put the
-same line in the PR body. `in-review` therefore only applies to work that does
-go through a PR.
+All work reaches `main` through a pull request (see the Git Workflow section
+of `AGENTS.md`). Put `Closes #<n>` (or `Fixes #<n>`) in the PR body so GitHub
+links the PR to the issue and closes it when the PR merges. Move the issue to
+`in-review` when its PR is ready for review.
 
 ## Sub-issues and dependencies
 

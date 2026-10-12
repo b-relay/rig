@@ -15,11 +15,11 @@ export function RunJobButton({
   job,
 }: {
   project: string;
-  target: Pick<TargetReport, "kind" | "name">;
+  target: Pick<TargetReport, "kind" | "name" | "state">;
   job: JobView;
 }) {
   const act = useRun();
-  const allowed = canRunNow(job);
+  const allowed = canRunNow(job, target);
   return (
     <div className="flex flex-col items-end gap-1">
       <Button
@@ -28,13 +28,15 @@ export function RunJobButton({
         className="h-7 px-2 text-xs"
         disabled={!allowed || act.busy}
         title={
-          job.removed
-            ? "This job is no longer in rig.yaml; its last run finishes on its own"
-            : job.state === "running"
-              ? `${job.name} is running; runs never overlap`
-              : job.backup
-                ? `Back up ${job.name} now in ${target.name}: a fresh backup, kept if the run succeeds`
-                : `Run ${job.name} now in ${target.name}`
+          target.state === "configured"
+            ? `${target.name} does not exist yet, so no job runs in it`
+            : job.removed
+              ? "This job is no longer in rig.yaml; its last run finishes on its own"
+              : job.state === "running"
+                ? `${job.name} is running; runs never overlap`
+                : job.backup
+                  ? `Back up ${job.name} now in ${target.name}: a fresh backup, kept if the run succeeds`
+                  : `Run ${job.name} now in ${target.name}`
         }
         onClick={() => void act.run(runJobCommand(project, target, job.name))}
       >

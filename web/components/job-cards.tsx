@@ -21,7 +21,7 @@ export function JobCards({
   now,
 }: {
   project: string;
-  target: Pick<TargetReport, "kind" | "name">;
+  target: Pick<TargetReport, "kind" | "name" | "state">;
   jobs: readonly JobView[];
   /** The Project's kept backups, as the backups read lists them; a backup job shows its own in this Target. */
   backups?: readonly BackupView[];

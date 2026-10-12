@@ -33,10 +33,7 @@ export function liveDisplay(
   output: Pick<UserOutput, "error">,
   columns = 80,
 ): ProgressDisplay {
-  const region = liveRegion(
-    (text) => output.error(text),
-    () => ({ columns }),
-  );
+  const region = liveRegion((text) => output.error(text), columns);
   const draw = region.draw;
   let project: string | undefined;
   let stops: readonly ServiceStop[] = [];

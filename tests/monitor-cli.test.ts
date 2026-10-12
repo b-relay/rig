@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { MonitorResult, RuntimeCommand } from "../src/daemon/protocol";
 import { RigError } from "../src/domain/errors";
-import type { TerminalSize } from "../src/cli/live-region";
+import { fitted, type TerminalSize } from "../src/cli/live-region";
 import { runRigCli } from "../src/cli/rig";
 import { monitorLines } from "../src/cli/monitor-output";
 
@@ -84,46 +84,63 @@ const projectReport: MonitorResult = {
   ],
 };
 
-/** A screen that understands what the live region writes: moving up and clearing to the end, and clearing it all. */
-function screen() {
-  let lines: string[] = [];
-  let cursor = 0;
+/** A terminal that understands what the monitor writes: the alternate screen, drawing from the top-left corner, and
+ * text that wraps at the width and scrolls past the last row, so a test sees what a person would. The main screen
+ * starts with earlier output, which nothing should disturb. */
+function screenOf(size: { columns?: number; rows?: number }) {
+  const main = ["$ earlier output"];
+  let alternate: string[] | undefined;
+  let column = 0;
+  let wrapped = false;
+  let scrolled = false;
+  const put = (screen: string[], text: string) => {
+    for (const [index, piece] of text.split("\n").entries()) {
+      if (index > 0) {
+        screen.push("");
+        column = 0;
+      }
+      screen[screen.length - 1] += piece;
+      column += Bun.stringWidth(piece);
+      if (size.columns !== undefined && column > size.columns) wrapped = true;
+    }
+    if (screen === alternate && screen.length > (size.rows ?? Infinity))
+      scrolled = true;
+  };
+  main.push("");
   return {
     write(text: string) {
-      let rest = text;
-      while (rest.length) {
-        const up = /^\x1b\[(\d+)A\r\x1b\[J/.exec(rest);
-        const clear = /^\x1b\[H\x1b\[2J/.exec(rest);
-        if (up) {
-          cursor = Math.max(0, cursor - Number(up[1]));
-          lines = lines.slice(0, cursor);
-          rest = rest.slice(up[0].length);
-        } else if (clear) {
-          lines = [];
-          cursor = 0;
-          rest = rest.slice(clear[0].length);
-        } else {
-          const end = rest.indexOf("\n");
-          lines[cursor++] = rest.slice(0, end);
-          rest = rest.slice(end + 1);
-        }
+      for (const part of text.split(/(\x1b\[\?1049[hl]|\x1b\[H\x1b\[J)/)) {
+        if (part === "\x1b[?1049h" || part === "\x1b[?1049l") {
+          alternate = part.endsWith("h") ? [""] : undefined;
+          column = 0;
+        } else if (part === "\x1b[H\x1b[J") {
+          if (alternate) alternate = [""];
+          column = 0;
+        } else if (part) put(alternate ?? main, part);
       }
     },
-    lines: () => lines,
+    /** The rows of the screen showing now, without the empty row the cursor waits on. */
+    lines: () => {
+      const screen = alternate ?? main;
+      return screen.at(-1) === "" ? screen.slice(0, -1) : screen;
+    },
+    alternate: () => alternate !== undefined,
+    wrapped: () => wrapped,
+    scrolled: () => scrolled,
   };
 }
 
 function harness(
   reply: (request: RuntimeCommand, count: number) => unknown,
-  terminal?: TerminalSize,
+  terminal?: Partial<TerminalSize>,
 ) {
   const requests: RuntimeCommand[] = [];
-  const shown = screen();
+  const size = { ...terminal };
+  const shown = screenOf(size);
   let out = "";
   let err = "";
   const stop = new AbortController();
   let waits = 0;
-  const size = { ...terminal };
   const deps = {
     root: "/isolated/.rig",
     cwd: "/workspace/fletcher",
@@ -165,7 +182,7 @@ function harness(
     size,
     out: () => out,
     err: () => err,
-    screen: shown.lines,
+    screen: shown,
   };
 }
 
@@ -181,6 +198,51 @@ test("the table shows each Target's total with its own Services and Jobs under i
     "working           –    2.0%  5.0%       –  200 MB  300 MB",
     "  web             –    2.0%  5.0%       –  200 MB  300 MB",
   ]);
+});
+
+const hostReport: MonitorResult = {
+  since: 0,
+  from: 0,
+  to: 3600,
+  step: 15,
+  sampledEvery: 1,
+  series: [
+    {
+      series: { scope: "host" },
+      now: { cpuPercent: 120, memoryBytes: 2e9 },
+      summary: { cpu: stats(50, 300), memory: stats(1.8e9, 3e9) },
+      points: [],
+    },
+    {
+      series: { scope: "rig" },
+      now: { cpuPercent: 1.2, memoryBytes: 90e6 },
+      summary: { cpu: stats(1, 4), memory: stats(88e6, 95e6) },
+      points: [],
+    },
+    projectReport.series[0]!,
+    {
+      series: { scope: "project", projectId: "p2", project: "pantry" },
+      summary: { cpu: stats(6, 20), memory: stats(3e8, 4e8) },
+      points: [],
+    },
+  ],
+};
+
+test("--all shows the Host's total, then Rig itself, then each Project", async () => {
+  const h = harness(() => hostReport);
+  expect(await runRigCli(["monitor", "--all"], h.deps)).toBe(0);
+  expect(h.out()).toBe(
+    [
+      "This Host · the last 1h · sampled every 1 s",
+      "",
+      "             CPU  median  peak  Memory  median    peak",
+      "Host        120%     50%  300%  2.0 GB  1.8 GB  3.0 GB",
+      "Rig itself  1.2%    1.0%  4.0%   90 MB   88 MB   95 MB",
+      "fletcher     96%     43%  297%  1.5 GB  1.5 GB  2.8 GB",
+      "pantry         –    6.0%   20%       –  300 MB  400 MB",
+      "",
+    ].join("\n"),
+  );
 });
 
 test("on a narrow terminal a long name is cut, not the numbers", () => {
@@ -331,8 +393,7 @@ test("piped, the table is printed once; on a terminal it is redrawn in place eve
   );
   expect(await runRigCli(["monitor"], live.deps)).toBe(0);
   expect(live.requests.length).toBe(3);
-  // The screen holds one table, the newest, and nothing left over from the earlier draws.
-  expect(live.screen()).toEqual([
+  const newest = [
     ...monitorLines(
       {
         ...projectReport,
@@ -344,17 +405,22 @@ test("piped, the table is printed once; on a terminal it is redrawn in place eve
     ),
     "",
     expect.stringContaining("Ctrl-C to stop"),
-  ]);
+  ];
+  // The watch drew on the alternate screen; after Ctrl-C the main screen is as it was, with the newest table below.
+  expect(live.screen.alternate()).toBe(false);
+  expect(live.screen.lines()).toEqual(["$ earlier output", ...newest]);
 });
 
-test("a table taller than the terminal keeps its first rows and says how many it left out", async () => {
+test("a table taller than the terminal keeps its first rows and says how many it left out, without scrolling", async () => {
   const h = harness(() => projectReport, { columns: 100, rows: 6 });
   await runRigCli(["monitor"], h.deps);
-  expect(h.screen().length).toBe(5);
-  expect(h.screen().at(-1)).toMatch(/^… \d+ more rows/);
+  expect(h.screen.scrolled()).toBe(false);
+  // The whole table is left on the main screen once the watch ends.
+  expect(h.screen.lines().at(-1)).toContain("Ctrl-C to stop");
+  expect(h.out()).toMatch(/… \d+ more rows; enlarge the window/);
 });
 
-test("after the terminal is resized the screen is cleared and the table drawn again to the new width", async () => {
+test("after the terminal is resized the table is drawn again to the new width, leaving earlier output alone", async () => {
   let resize: (() => void) | undefined;
   const h = harness(
     (_request, count) => {
@@ -367,8 +433,25 @@ test("after the terminal is resized the screen is cleared and the table drawn ag
     h.size.columns = 50;
   };
   await runRigCli(["monitor"], h.deps);
-  expect(h.out()).toContain("\x1b[H\x1b[2J");
-  for (const line of h.screen()) expect(Bun.stringWidth(line)).toBeLessThan(50);
+  expect(h.screen.wrapped()).toBe(false);
+  expect(h.screen.lines()[0]).toBe("$ earlier output");
+  for (const line of h.screen.lines())
+    expect(Bun.stringWidth(line)).toBeLessThan(50);
+});
+
+test("on a terminal one cell wide and one row tall nothing wraps or scrolls", async () => {
+  const h = harness(() => projectReport, { columns: 1, rows: 1 });
+  expect(await runRigCli(["monitor"], h.deps)).toBe(0);
+  expect(h.screen.wrapped()).toBe(false);
+  expect(h.screen.scrolled()).toBe(false);
+});
+
+test("a line is cut by display width, so wide characters never push it past the edge", () => {
+  expect(fitted("日本語のサービス", 7)).toBe("日本…");
+  expect(Bun.stringWidth(fitted("日本語のサービス", 6))).toBeLessThan(6);
+  expect(fitted("abc", 2)).toBe("…");
+  expect(fitted("abc", 1)).toBe("");
+  expect(fitted("ab", 3)).toBe("ab");
 });
 
 test("a read that fails while watching ends the watch with that failure", async () => {

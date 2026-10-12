@@ -15,7 +15,7 @@ import {
   type ProgressDisplay,
 } from "./progress-display";
 import { formatClock } from "./stop-display";
-import { liveRegion } from "./live-region";
+import { screenView } from "./live-region";
 import { monitorLines } from "./monitor-output";
 import type { MonitorWindowInput } from "./monitor-command";
 import { logTimeWindow } from "./log-window";
@@ -342,8 +342,9 @@ async function restoreOutcome(
 function json(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
-/** `rig monitor` on a terminal: the table redrawn in place after every sample, with the time it was read, until
- * cancellation. A read that fails ends the watch with that failure. */
+/** `rig monitor` on a terminal: the table redrawn on the alternate screen after every sample, with the time it was
+ * read, until cancellation; then the last table is left on the main screen. A read that fails ends the watch with that
+ * failure, written below it. */
 async function watchMonitor(
   request: RuntimeCommand,
   first: unknown,
@@ -351,25 +352,31 @@ async function watchMonitor(
   dependencies: CliDependencies,
 ): Promise<void> {
   const size = dependencies.outputTerminal!;
-  const region = liveRegion((text) => dependencies.output.write(text), size);
+  const view = screenView((text) => dependencies.output.write(text), size);
   const clock = dependencies.now ?? (() => new Date());
   let result = first as MonitorResult;
-  while (!dependencies.signal?.aborted) {
-    region.draw([
-      ...monitorLines(result, {
-        columns: size().columns,
-        ...(window ? { window } : {}),
-      }),
-      "",
-      `Updated ${clock().toLocaleTimeString()} · Ctrl-C to stop`,
-    ]);
-    await dependencies.wait(result.sampledEvery * 1000, dependencies.signal);
-    if (dependencies.signal?.aborted) return;
-    // A duration is resolved again, so the window moves with the clock; an ISO time stays where it was.
-    result = (await dependencies.client.command(
-      window ? { ...request, window: logTimeWindow(window, clock()) } : request,
-      dependencies.signal,
-    )) as MonitorResult;
+  try {
+    while (!dependencies.signal?.aborted) {
+      view.draw([
+        ...monitorLines(result, {
+          columns: size().columns,
+          ...(window ? { window } : {}),
+        }),
+        "",
+        `Updated ${clock().toLocaleTimeString()} · Ctrl-C to stop`,
+      ]);
+      await dependencies.wait(result.sampledEvery * 1000, dependencies.signal);
+      if (dependencies.signal?.aborted) return;
+      // A duration is resolved again, so the window moves with the clock; an ISO time stays where it was.
+      result = (await dependencies.client.command(
+        window
+          ? { ...request, window: logTimeWindow(window, clock()) }
+          : request,
+        dependencies.signal,
+      )) as MonitorResult;
+    }
+  } finally {
+    view.close();
   }
 }
 /** Entries fetched per follow poll: --lines sizes the first page only, so a busy Target is not throttled to it. */

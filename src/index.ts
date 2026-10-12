@@ -56,8 +56,9 @@ export async function main(args: readonly string[]): Promise<number> {
       ...(process.stdout.isTTY
         ? {
             outputTerminal: () => ({
-              columns: process.stdout.columns ?? 80,
-              rows: process.stdout.rows ?? 24,
+              // A terminal that reports no size, or zero, is taken to be the classic 80 by 24.
+              columns: process.stdout.columns || 80,
+              rows: process.stdout.rows || 24,
             }),
           }
         : {}),

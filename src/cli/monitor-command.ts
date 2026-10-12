@@ -24,9 +24,10 @@ ps). Median and peak cover the window from --since to --until.
 
 Times are a duration back from now, such as 90s, 15m, 1h, 2d or 1w (parts
 combine, as in 1h30m), or an ISO time with a zone, such as 2026-10-12T03:00:00Z.
-Without --until the window ends now: on a terminal the table is redrawn every
-sample until you press Ctrl-C, and a duration moves with the clock. With
---until, piped, or with --json, it is printed once.
+Without --until the window ends now: on a terminal the table fills the screen
+and is redrawn every sample until you press Ctrl-C, which leaves the last table
+below your earlier output; a duration moves with the clock. With --until,
+piped, or with --json, it is printed once.
 
 Examples:
   rig monitor

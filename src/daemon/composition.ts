@@ -88,7 +88,7 @@ import { createDeploymentSources } from "../adapters/deployment-sources";
 import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
-import { createFileDiagnosticLog } from "../diagnostics/file-log";
+import { configuredDiagnosticLog } from "../diagnostics/host-log";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
 import { guardedUsageHistory } from "../adapters/guarded-usage-history";
 import { createNativeProcessUsageReader } from "../providers/native-process-usage";
@@ -126,12 +126,10 @@ export async function composeDaemon(
   mode: DaemonMode = "launchd",
 ): Promise<Omit<DaemonHostOptions, "root" | "port">> {
   const host = await readHostConfig(root);
-  const diagnostic = createFileDiagnosticLog({
-    root,
-    source: "rigd",
-    now: () => new Date(),
-    ...host.diagnostics,
-  });
+  const diagnostic = configuredDiagnosticLog(
+    { root, source: "rigd", now: () => new Date() },
+    host,
+  );
   /** Aborted as the runtime begins to drain for shutdown: the stop a supervisor makes on its own (of what a start that never
    * reported left behind) stops waiting then, instead of holding the drain for the Service's whole grace. */
   const shuttingDown = new AbortController();

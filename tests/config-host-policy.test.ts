@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseHostConfig, parseProjectConfig } from "../src/config";
 import { inspectHost } from "../src/adapters/host-inspection";
+import { configuredDiagnosticLog } from "../src/diagnostics/host-log";
 
 test("an empty Host config resolves every default, in snake_case like rig.yaml", () => {
   expect(parseHostConfig({})).toEqual({
@@ -249,4 +250,29 @@ test("Caddy reload is manual or an explicit nonblank command", () => {
   expect(() =>
     parseHostConfig({ providers: { caddy: { reload: { mode: "disabled" } } } }),
   ).toThrow("Invalid Host configuration");
+});
+
+test("rig's and rigd's diagnostic logs keep the days diagnostics.retention_days asks for", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-diagnostic-retention-"));
+  try {
+    const host = parseHostConfig({ diagnostics: { retention_days: 2 } });
+    for (const source of ["rig", "rigd"] as const) {
+      const directory = join(root, "logs", source);
+      await mkdir(directory, { recursive: true });
+      for (const day of ["2026-09-07", "2026-09-08", "2026-09-09"])
+        await writeFile(join(directory, `${source}-${day}.jsonl`), "{}\n");
+      const log = configuredDiagnosticLog(
+        { root, source, now: () => new Date("2026-09-10T12:00:00Z") },
+        host,
+      );
+      expect(await log.record({ event: "test" })).toHaveProperty("path");
+      expect(
+        (await readdir(directory))
+          .filter((name) => name.endsWith(".jsonl"))
+          .sort(),
+      ).toEqual([`${source}-2026-09-09.jsonl`, `${source}.jsonl`]);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

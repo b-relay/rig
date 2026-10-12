@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
+import { ownedRouteBlocks, routeOwnerToken } from "../domain/proxy-publication";
 import { bareHostname } from "../domain/managed-proxy";
 import { checkCaddyValue } from "../domain/caddy-value";
 
@@ -44,6 +44,18 @@ export interface Router {
   check?(route: RouteRequest): Promise<void>;
   /** Lets go of the hostnames `check` reserved for `key`, once the deployment that asked is decided. */
   release?(key: string): Promise<void>;
+  /** Withdraws, as one change published like any other, every owned block whose key `owners` does not hold: a route whose
+   * Target no longer exists, which would otherwise hold its hostnames from every new owner. `owners` is asked inside the
+   * router's queue, after every change queued before this one, so a block published for a Target recorded meanwhile is
+   * never taken for an orphan (every Target is recorded before its route is published). Resolves with the hostnames
+   * withdrawn; with none to withdraw it publishes nothing and asks nothing of the proxy. Fails as `remove` fails (such as
+   * PROXY_UNREACHABLE), with the route file as it was. With `confinement`, the route file's real path is resolved once,
+   * inside the queue, and nothing is withdrawn unless it lies inside `confinement.within`; that resolved file is the one
+   * read and written, and the write is refused (ROUTE_CHANGED) when the route file stops resolving to it meanwhile. */
+  withdrawUnowned(
+    owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
+  ): Promise<string[]>;
 }
 
 /** One change to the route file, worked out from its text alone. */
@@ -92,13 +104,23 @@ export function editRouteFile(input: {
   const taken = route?.sites.find((site) =>
     hostnamePresent(without, site.hostname),
   );
-  if (taken)
+  if (taken) {
+    // The Target block that holds it, when one does, so a caller holding Target state can tell one whose Target is gone.
+    const holder = ownedRouteBlocks(without).find((block) =>
+      block.hostnames.some(
+        (hostname) => siteAddress(hostname) === siteAddress(taken.hostname),
+      ),
+    );
     throw new RigError(
       "ROUTE_CONFLICT",
       "This hostname is already owned by another route.",
       "Choose a different hostname or explicitly migrate its existing owner.",
-      { hostname: taken.hostname },
+      {
+        hostname: taken.hostname,
+        ...(holder ? { routeTokens: [holder.token] } : {}),
+      },
     );
+  }
   // By bare hostname: Caddy merges two blocks for one name written with different schemes or ports, so a port does not set
   // them apart.
   const reserved = route?.sites.find((site) =>
@@ -294,8 +316,11 @@ export function assertSingleOwners(
   identity: (address: string) => string,
   outside?: { readonly sites: readonly string[]; readonly owner: string },
 ): void {
-  const owners = new Map<string, { owner: string; address: string }>();
-  const claim = (address: string, owner: string) => {
+  const owners = new Map<
+    string,
+    { owner: string; address: string; token?: string }
+  >();
+  const claim = (address: string, owner: string, token?: string) => {
     const id = identity(address);
     const held = owners.get(id);
     if (held && held.owner !== owner)
@@ -303,15 +328,27 @@ export function assertSingleOwners(
         "ROUTE_CONFLICT",
         `The hostname ${address} would belong to two owners: ${held.owner} and ${owner}.`,
         "Each hostname has one owner. Remove one: rig down or rig destroy the Target that should not serve it, or take it out of proxy.routes in config.yaml and run rig proxy reload. Nothing changed.",
-        { hostname: address, owners: [held.owner, owner] },
+        {
+          hostname: address,
+          owners: [held.owner, owner],
+          // The Target blocks involved, by their markers' token, so a caller holding Target state can tell one whose
+          // Target no longer exists.
+          routeTokens: [held.token, token].filter(
+            (value): value is string => value !== undefined,
+          ),
+        },
       );
-    owners.set(id, { owner, address });
+    owners.set(id, { owner, address, ...(token ? { token } : {}) });
   };
   for (const match of text.matchAll(
     /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g,
   ))
     for (const site of parseOwnedSites(match[2]!))
-      claim(site.hostname, `the Target route ${match[1]!.slice(0, 12)}`);
+      claim(
+        site.hostname,
+        `the Target route ${match[1]!.slice(0, 12)}`,
+        match[1]!,
+      );
   for (const address of outside?.sites ?? []) claim(address, outside!.owner);
 }
 /** Every hostname the owned blocks of a route file serve. */
@@ -341,8 +378,40 @@ function hostnamePresent(text: string, hostname: string): boolean {
   });
 }
 function routeMarkers(key: string): { begin: string; end: string } {
-  const token = createHash("sha256").update(key).digest("hex");
+  const token = routeOwnerToken(key);
   return { begin: `# rig begin ${token}`, end: `# rig end ${token}` };
+}
+/** The refusal of a write whose route file no longer resolves to the file the change read (`resolved`): something swapped
+ * it for a link mid-operation. A best-effort guard against mistakes, not a boundary (ADR 0014, Threat model), so it claims
+ * nothing about what was already applied. */
+export function routeFileChanged(
+  caddyfile: string,
+  resolved: string,
+): RigError {
+  return new RigError(
+    "ROUTE_CHANGED",
+    `The route file ${caddyfile} changed under Rig mid-operation (it no longer resolves to ${resolved}); routes may be partly applied.`,
+    `Run rig doctor, then rig proxy reload, and rig up or rig deploy of each Target whose route is missing, before retrying.`,
+    { caddyfile, resolved },
+  );
+}
+/** `text` without the owned blocks whose key is not in `owners`, everything else left as it is, and the hostnames those
+ * blocks served. A block is matched by its markers' token, the sha256 of its key; incomplete markers are left alone. */
+export function withoutUnownedBlocks(
+  text: string,
+  owners: ReadonlySet<string>,
+): { text: string; hostnames: string[] } {
+  const owned = new Set([...owners].map(routeOwnerToken));
+  const hostnames: string[] = [];
+  const kept = text.replace(
+    /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(?:\r?\n)?/g,
+    (whole, token: string, body: string) => {
+      if (owned.has(token)) return whole;
+      hostnames.push(...parseOwnedSites(body).map((site) => site.hostname));
+      return "";
+    },
+  );
+  return { text: kept, hostnames };
 }
 /** Reads the complete owned block, including its newline, or rejects incomplete markers. */
 export function ownedBlock(text: string, key: string): string | null {

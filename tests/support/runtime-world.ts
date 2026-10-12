@@ -108,6 +108,7 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
       return {
         proxyFile: join(root, "Caddyfile"),
         routes: 0,
+        blocks: [],
         state: "unpublished" as const,
       };
     },

@@ -127,6 +127,7 @@ async function fixture(host: Record<string, unknown> = {}) {
       return {
         proxyFile: join(root, "proxy", "Caddyfile"),
         routes: 0,
+        blocks: [],
         state: "direct" as const,
       };
     },
@@ -203,6 +204,12 @@ async function fixture(host: Record<string, unknown> = {}) {
     lifecycle: {
       async checkRoute() {},
       async releaseRoute() {},
+      async withdrawRoutes() {
+        return { hostnames: [], async restore() {} };
+      },
+      async pruneRoutes() {
+        return [];
+      },
       async startJob() {},
       async observeJob() {
         return { state: "stopped" as const };

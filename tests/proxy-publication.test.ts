@@ -47,6 +47,7 @@ test("a host Caddyfile that imports the proxy file publishes its routes", async 
     expect(publication).toEqual({
       proxyFile,
       routes: 1,
+      blocks: [],
       hostCaddyfile: "/etc/caddy/Caddyfile",
       state: "imported",
     });
@@ -67,6 +68,7 @@ test("routes are unpublished when no host Caddyfile imports the proxy file", asy
   expect(unpublished).toEqual({
     proxyFile,
     routes: 2,
+    blocks: [],
     hostCaddyfile: "/etc/caddy/Caddyfile",
     state: "unpublished",
   });
@@ -86,7 +88,12 @@ test("routes are unpublished when no host Caddyfile imports the proxy file", asy
     environment: {},
     read: files({ [proxyFile]: block }),
   });
-  expect(missing).toEqual({ proxyFile, routes: 1, state: "unpublished" });
+  expect(missing).toEqual({
+    proxyFile,
+    routes: 1,
+    blocks: [],
+    state: "unpublished",
+  });
   expect(proxyCheck(missing)).toMatchObject({
     ok: false,
     reason: "proxy-unpublished",
@@ -104,6 +111,7 @@ test("writing routes straight into the host Caddyfile, or having no routes, is n
   expect(direct).toEqual({
     proxyFile: "/etc/caddy/Caddyfile",
     routes: 1,
+    blocks: [],
     hostCaddyfile: "/etc/caddy/Caddyfile",
     state: "direct",
   });
@@ -114,7 +122,12 @@ test("writing routes straight into the host Caddyfile, or having no routes, is n
     environment: {},
     read: files({}),
   });
-  expect(unused).toEqual({ proxyFile, routes: 0, state: "unpublished" });
+  expect(unused).toEqual({
+    proxyFile,
+    routes: 0,
+    blocks: [],
+    state: "unpublished",
+  });
   expect(proxyCheck(unused)).toMatchObject({ name: "caddy-proxy", ok: true });
 });
 
@@ -212,6 +225,7 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
           return {
             proxyFile,
             routes: 1,
+            blocks: [],
             hostCaddyfile: "/etc/caddy/Caddyfile",
             state,
           };

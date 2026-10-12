@@ -14,7 +14,12 @@ import type {
 } from "../providers/contracts";
 import { isStopDetached, serviceGraceMs } from "../domain/stop-budget";
 import type { ListenerEvidence } from "../providers/listener-inspection";
-import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
+import {
+  RigError,
+  failureCauses,
+  failureReason,
+  retainFailureCauses,
+} from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
 import { componentDirectory, jobDirectory } from "../config/working-dir";
 import { randomUUID } from "node:crypto";
@@ -101,10 +106,29 @@ export interface TargetEffects {
    * `withhold` adds Services to the ones the published route already withholds, `verified` releases them. */
   route(target: TargetRecord, change: RouteChange): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
+  /** Withdraws the Target's route, confirmed in the proxy before it resolves, and says how to publish it again exactly as it
+   * was; undefined when the Target has no route, and then nothing is asked of the proxy. Fails as removing a route fails
+   * (PROXY_UNREACHABLE, ROUTE_RELOAD, …) with the route as it was. */
+  withdrawRoute(target: TargetRecord): Promise<RouteWithdrawal | undefined>;
+  /** Withdraws every route whose Target `owners` does not name; see `Router.withdrawUnowned`. Resolves with the hostnames
+   * withdrawn. */
+  pruneRoutes(
+    owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
+  ): Promise<string[]>;
   /** Refuses the Target's route map as publishing it would (ROUTE_INVALID, ROUTE_CONFLICT), changing nothing. */
   checkRoute?(target: TargetRecord): Promise<void>;
   /** Lets go of what `checkRoute` reserved for the Target. */
   releaseRoute?(target: TargetRecord): Promise<void>;
+}
+/** Routes taken out of the proxy, and the way to publish them again. */
+export interface RouteWithdrawal {
+  /** Every hostname the withdrawn routes served, in the order the Targets were given. */
+  readonly hostnames: readonly string[];
+  /** Publishes the withdrawn routes again as they were, confirmed in the proxy. A route that changed since it was withdrawn
+   * (ROUTE_CHANGED) or cannot be published fails it; every route is still tried, and the failure (ROUTE_RESTORE from a
+   * lifecycle) names in `details.hostnames` those not published again. */
+  restore(): Promise<void>;
 }
 export type RouteChange =
   | { readonly withhold: ReadonlySet<string> }
@@ -207,6 +231,16 @@ export interface TargetLifecycle {
   checkRoute(target: TargetRecord): Promise<void>;
   /** Lets go of the hostnames `checkRoute` reserved for the Target; required, so a wrapper cannot drop it. */
   releaseRoute(target: TargetRecord): Promise<void>;
+  /** Withdraws the route of each of `targets` in turn, each confirmed in the proxy before the next; a Target without one is
+   * skipped. When one cannot be withdrawn, those already withdrawn are published again and its failure is rethrown, so the
+   * proxy serves what it served; WITHDRAW_ROLLBACK when publishing them again fails too. Changes no Target record. */
+  withdrawRoutes(targets: readonly TargetRecord[]): Promise<RouteWithdrawal>;
+  /** Withdraws every route whose Target `owners` does not name, reading `owners` after every route change queued before
+   * it; resolves with the hostnames withdrawn. */
+  pruneRoutes(
+    owners: () => Promise<ReadonlySet<string>>,
+    confinement?: { readonly within: string },
+  ): Promise<string[]>;
   /** The keyed digest of the environment `service` of `target` would start with now (its env files read now), as a start
    * records it, the checkout path normalized. Fails as composing that environment fails (an unreadable env file, say), or
    * ENV_DIGEST when no digest can be taken. A deploy compares it with the running process's. */
@@ -313,6 +347,9 @@ export function withStops(
     pruneCheckpoints: (live) => lifecycle.pruneCheckpoints(live),
     checkRoute: (target) => lifecycle.checkRoute(target),
     releaseRoute: (target) => lifecycle.releaseRoute(target),
+    withdrawRoutes: (targets) => lifecycle.withdrawRoutes(targets),
+    pruneRoutes: (owners, confinement) =>
+      lifecycle.pruneRoutes(owners, confinement),
     checkpoint: (target, previous) => lifecycle.checkpoint(target, previous),
     restoreEffects: (target) => lifecycle.restoreEffects(target),
     commitEffects: (target) => lifecycle.commitEffects(target),
@@ -365,6 +402,62 @@ export function createTargetLifecycle(
     async releaseRoute(target) {
       await effects.releaseRoute?.(target);
     },
+    async withdrawRoutes(targets) {
+      const withdrawn: RouteWithdrawal[] = [];
+      /** Publishes again, in the order they were withdrawn, every route this call took out; each is its own block, so
+       * the order only keeps the route file as it was. Every route is tried; ROUTE_RESTORE names the hostnames of those
+       * that could not be published again. */
+      const restore = async () => {
+        const failed: string[] = [];
+        let first: unknown;
+        for (const withdrawal of withdrawn)
+          try {
+            await withdrawal.restore();
+          } catch (error) {
+            first ??= error;
+            failed.push(...withdrawal.hostnames);
+          }
+        if (failed.length)
+          throw new RigError(
+            "ROUTE_RESTORE",
+            `The routes for ${failed.join(", ")} could not be published again.`,
+            "Their Targets are stopped; rig up or rig deploy of each publishes its route again. Run rig doctor before retrying.",
+            { hostnames: failed },
+            failureCauses(first),
+          );
+      };
+      try {
+        for (const target of targets) {
+          const withdrawal = await effects.withdrawRoute(target);
+          if (withdrawal) withdrawn.push(withdrawal);
+        }
+      } catch (error) {
+        /** The hostnames a failure names as withdrawn and not published again (WITHDRAW_ROLLBACK, ROUTE_RESTORE). */
+        const missing = (failure: unknown): string[] =>
+          failure instanceof RigError &&
+          Array.isArray(failure.details.hostnames)
+            ? failure.details.hostnames.map(String)
+            : [];
+        try {
+          await restore();
+        } catch (recovery) {
+          throw new RigError(
+            "WITHDRAW_ROLLBACK",
+            `A route could not be withdrawn (${failureReason(error)}), and the routes for ${[...missing(error), ...missing(recovery)].join(", ")} withdrawn meanwhile could not be published again.`,
+            "Their Targets are stopped, so nothing was served through them; rig up or rig deploy of each publishes its route again. Run rig doctor before retrying.",
+            { hostnames: [...missing(error), ...missing(recovery)] },
+            failureCauses(error, recovery),
+          );
+        }
+        throw error;
+      }
+      return {
+        hostnames: withdrawn.flatMap((withdrawal) => withdrawal.hostnames),
+        restore,
+      };
+    },
+    pruneRoutes: (owners, confinement) =>
+      effects.pruneRoutes(owners, confinement),
     async checkpoint(target, previous) {
       return await effects.checkpoint(target, previous);
     },

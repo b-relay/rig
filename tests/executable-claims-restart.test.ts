@@ -119,6 +119,9 @@ function effects(
         return { key, value: null };
       },
       async restore() {},
+      async withdrawUnowned() {
+        return [];
+      },
     },
     environment: { PATH: process.env.PATH! },
   });

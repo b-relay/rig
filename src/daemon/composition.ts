@@ -19,7 +19,10 @@ import {
 } from "../runtime/job-scheduler";
 import { hostTimeZone } from "../domain/cron";
 import { inspectHost } from "../adapters/host-inspection";
-import { inspectHostProxy } from "../adapters/proxy-publication";
+import {
+  inspectHostProxy,
+  routeFileInRoot,
+} from "../adapters/proxy-publication";
 import { randomUUID } from "node:crypto";
 import { executionBaseline, inheritedEnvironment } from "./environment";
 import { homedir, userInfo } from "node:os";
@@ -213,6 +216,7 @@ export async function composeDaemon(
     readAdminActivity: adminActivity.read,
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
+    routeFileInRoot: () => routeFileInRoot(root, host),
     ...(managed ? { proxy: managed.control } : {}),
     // Host config and the token are read at every request, so DNS needs no restart after rig proxy token or an edit.
     dns: createDnsControl({
@@ -342,6 +346,10 @@ export async function composeDaemon(
           }),
       );
       await runtime.reconcile();
+      // Queued behind the republish, beside everything else: a route block no recorded Target owns (one an earlier rig
+      // forget left, #336) is withdrawn so its hostnames can be published again, unless the route file lies outside the
+      // Rig root. A failure is recorded, and doctor names the blocks.
+      void runtime.withdrawOrphanedRoutes();
       if (stopped) return;
       // Restart policy is applied here, never by a supervisor: every pass records exits and makes the attempts that are due.
       stopMonitor = startFailureMonitor({

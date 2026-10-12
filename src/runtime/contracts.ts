@@ -237,6 +237,10 @@ export interface RuntimeDependencies {
     }[]
   >;
   inspectProxy(): Promise<ProxyPublication>;
+  /** Whether the route file lies inside the Rig root (through any symlink), so no other Rig root can own a block in it;
+   * doctor says otherwise that another root may own its orphans. (The automatic sweep makes the same check itself, in the
+   * router, where it reads and writes the file.) Absent: inside. */
+  routeFileInRoot?(): Promise<boolean>;
   /** Rig's own Caddy, when Host config has a proxy section (ADR 0014); absent otherwise. */
   proxy?: ProxyControl;
   /** DNS record management (ADR 0018); absent where rigd offers none, as in most tests. */

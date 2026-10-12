@@ -130,6 +130,8 @@ export async function managedCaddyWorld(
     restarts: 0,
     /** Set to make a reload succeed without Caddy loading anything. */
     ignoreReload: false,
+    /** Runs each time the router reads Host config's proxy settings, before it gets them. */
+    beforeSettings: undefined as undefined | (() => Promise<void>),
     loaded: {} as unknown,
   };
   const run: CommandRunner = async ({ command }) => {
@@ -152,7 +154,10 @@ export async function managedCaddyWorld(
   let id = 0;
   const caddy = createManagedCaddy({
     root,
-    settings: async () => settings,
+    settings: async () => {
+      await control.beforeSettings?.();
+      return settings;
+    },
     run,
     job: {
       state: async () => control.state,

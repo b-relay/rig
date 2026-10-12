@@ -35,6 +35,7 @@ import { isSourceEntrypoint } from "../providers/artifact-installer";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
+import { parseOwnedSites } from "../providers/route-file";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
@@ -55,7 +56,11 @@ function failureReason(error: unknown): string {
   return String(error);
 }
 import type { ObservationEffects } from "../runtime/status";
-import { RigError, failureCauses } from "../domain/errors";
+import {
+  RigError,
+  failureCauses,
+  failureReason as describedFailure,
+} from "../domain/errors";
 import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
@@ -734,6 +739,56 @@ export function createTargetEffects(
         options.router.remove(target.id),
       );
     },
+    async withdrawRoute(target) {
+      const saved = await options.router.checkpoint(target.id);
+      // A Target that publishes nothing asks nothing of the proxy.
+      if (saved.value === null) return undefined;
+      // Once removed, the route as it is is known without reading it again: absent.
+      const expected = { key: target.id, value: null };
+      const hostnames = parseOwnedSites(saved.value).map(
+        (site) => site.hostname,
+      );
+      try {
+        await transactions.withRouteChange(target.id, () =>
+          options.router.remove(target.id),
+        );
+      } catch (error) {
+        // ROUTE_CHANGED: the route file was swapped for another file meanwhile, which a compensation reading it now
+        // would write into. It is not compensated; its error says routes may be partly applied (ADR 0014, Threat model).
+        if (error instanceof RigError && error.code === "ROUTE_CHANGED")
+          throw error;
+        // A failure after the removal took effect (recording it in an active effect journal, say) must not leave it
+        // uncompensated: when the block is gone, or that cannot be read, it is published again before the failure is.
+        const inPlace = async () =>
+          (
+            await options.router
+              .checkpoint(target.id)
+              .catch(() => ({ value: undefined }))
+          ).value === saved.value;
+        if (await inPlace()) throw error;
+        try {
+          await options.router.restore(saved, expected);
+        } catch (recovery) {
+          // Refused because the removal never happened after all (ROUTE_CHANGED): the route is where it was.
+          if (await inPlace()) throw error;
+          throw new RigError(
+            "WITHDRAW_ROLLBACK",
+            `The route for ${hostnames.join(", ")} was withdrawn, a failure followed (${describedFailure(error)}), and it could not be published again.`,
+            `Its Target is stopped, so nothing was served through it; rig up or rig deploy of ${target.name} publishes its route again.`,
+            { hostnames, target: target.name },
+            failureCauses(error, recovery),
+          );
+        }
+        throw error;
+      }
+      // Nothing that can fail runs between the confirmed removal and the handle that puts it back.
+      return {
+        hostnames,
+        restore: () => options.router.restore(saved, expected),
+      };
+    },
+    pruneRoutes: (owners, confinement) =>
+      options.router.withdrawUnowned(owners, confinement),
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),

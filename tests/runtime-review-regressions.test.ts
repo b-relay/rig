@@ -50,6 +50,7 @@ function fixture() {
       return {
         proxyFile: "/tmp/proxy/Caddyfile",
         routes: 0,
+        blocks: [],
         state: "unpublished" as const,
       };
     },

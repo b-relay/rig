@@ -106,6 +106,12 @@ test("readiness expires even when a health provider ignores cancellation, then r
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   let watchdog: ReturnType<typeof setTimeout> | undefined;
@@ -180,6 +186,12 @@ test("a start whose clean-up rigd's shutdown detached is left as a crash leaves 
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(effects, {
@@ -256,6 +268,12 @@ test("up preserves running components and rollback stops only newly started comp
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   const record = structuredClone(target);
@@ -308,6 +326,12 @@ test("down uses recorded plan and reports no-op only when every process was stop
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   expect(await lifecycle.down(target)).toEqual({ outcome: "stopped" });
@@ -356,6 +380,12 @@ test("down attempts every process even when one process stop fails", async () =>
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   await expect(lifecycle.down(target)).rejects.toThrow();
@@ -504,6 +534,12 @@ test("port contention after selection fails startup and preserves an already run
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(effects);
@@ -613,6 +649,12 @@ test("up prepares the workspace, publishes Tools in plan order, and starts only 
     },
     async route() {},
     async removeRoute() {},
+    async withdrawRoute() {
+      return undefined;
+    },
+    async pruneRoutes() {
+      return [];
+    },
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   };
   const lifecycle = createTargetLifecycle(effects, {

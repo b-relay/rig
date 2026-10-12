@@ -1,10 +1,20 @@
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
+/** One marked route block of the route file: the owner it is keyed by, as the token its markers carry, and the hostnames
+ * it serves. */
+export interface OwnedRouteBlock {
+  /** sha256 of the owner's route key (a Target id), hex: what `# rig begin` and `# rig end` name. */
+  readonly token: string;
+  readonly hostnames: readonly string[];
+}
 /** Whether the host Caddy loads the file Rig writes routes into, decided from configuration files alone. */
 export interface ProxyPublication {
   /** File that receives Rig's marked route blocks. */
   readonly proxyFile: string;
   /** Rig-owned route blocks currently in the proxy file. */
   readonly routes: number;
+  /** Each complete Rig-owned block of the proxy file, with its owner's token and hostnames. */
+  readonly blocks: readonly OwnedRouteBlock[];
   /** Host Caddyfile that loads the proxy file, or the first host Caddyfile found when none does. */
   readonly hostCaddyfile?: string;
   /** direct: the proxy file is a host Caddyfile; imported: a host Caddyfile imports it; unpublished: nothing loads it;
@@ -32,7 +42,9 @@ export async function inspectProxyPublication(
   input: ProxyPublicationInput,
 ): Promise<ProxyPublication> {
   const proxyFile = resolve(input.proxyFile);
-  const routes = countOwnedRoutes((await input.read(proxyFile)) ?? "");
+  const proxyText = (await input.read(proxyFile)) ?? "";
+  const routes = countOwnedRoutes(proxyText);
+  const blocks = ownedRouteBlocks(proxyText);
   let first: string | undefined;
   for (const candidate of input.hostCaddyfiles) {
     const hostCaddyfile = resolve(candidate);
@@ -45,17 +57,18 @@ export async function inspectProxyPublication(
     if (text === undefined) continue;
     first ??= hostCaddyfile;
     if (hostCaddyfile === proxyFile)
-      return { proxyFile, routes, hostCaddyfile, state: "direct" };
+      return { proxyFile, routes, blocks, hostCaddyfile, state: "direct" };
     if (
       caddyfileImports(text, dirname(hostCaddyfile), input.environment).some(
         (pattern) => importMatches(pattern, proxyFile),
       )
     )
-      return { proxyFile, routes, hostCaddyfile, state: "imported" };
+      return { proxyFile, routes, blocks, hostCaddyfile, state: "imported" };
   }
   return {
     proxyFile,
     routes,
+    blocks,
     ...(first ? { hostCaddyfile: first } : {}),
     state: "unpublished",
   };
@@ -96,6 +109,22 @@ export function proxyCheck(publication: ProxyPublication): ProxyCheck {
     reason: "proxy-unpublished",
     hint: `Add "import ${proxyFile}" to the Caddyfile the running Caddy loads and reload Caddy, or set providers.caddy.host_caddyfile to that Caddyfile.`,
   };
+}
+/** The token a route block's markers carry for the owner keyed `key` (a Target id). */
+export function routeOwnerToken(key: string): string {
+  return createHash("sha256").update(key).digest("hex");
+}
+/** Every complete marked block of a route file, in order: its token and the hostnames of its site headers (the lines of the
+ * block that start at column 0 and end with `{`, as Rig renders them). Incomplete markers are not a block. */
+export function ownedRouteBlocks(text: string): OwnedRouteBlock[] {
+  return [
+    ...text.matchAll(/# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g),
+  ].map((match) => ({
+    token: match[1]!,
+    hostnames: [...match[2]!.matchAll(/^(\S+) \{\r?$/gm)].map(
+      (header) => header[1]!,
+    ),
+  }));
 }
 export function countOwnedRoutes(text: string): number {
   return text

@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import { RigError, failureCauses } from "../domain/errors";
+import { RigError, failureCauses, failureReason } from "../domain/errors";
 import { observeTargets } from "./status";
 import { keepPublishedNames, planTarget } from "./targets";
 /** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
@@ -58,7 +58,11 @@ function projectActive(): RigError {
   );
 }
 /** Removes the registration and its stopped working and stable records; Previews own data and must be destroyed first.
- * Returns a warning for every live workspace and data root left on disk. */
+ * Every route its Targets own is withdrawn first, confirmed in the proxy: a route left behind would be keyed by a Target
+ * nothing records any more and would hold its hostnames from every later owner (#336). When a route cannot be withdrawn
+ * (Caddy unreachable, a reload refused) the forget is refused with that failure and nothing changes; when the records
+ * cannot be removed, the routes are published again. Returns a warning for every live workspace and data root left on
+ * disk. */
 export async function forgetProject(
   project: ProjectRecord,
   targets: TargetRecord[],
@@ -73,19 +77,73 @@ export async function forgetProject(
       `Run rig down preview <branch> --destroy for each Preview, then rig forget ${project.name}.`,
       { previews: previews.map((t) => t.name) },
     );
+  let withdrawal;
+  try {
+    withdrawal = await deps.lifecycle.withdrawRoutes(targets);
+  } catch (error) {
+    throw notForgotten(project, error);
+  }
   // Its backups stay on disk, as its data does; their records go, since nothing could reach them by a forgotten Project.
   const kept = new Set<string>();
-  await deps.store.update((state) => {
-    state.projects = state.projects.filter((p) => p.id !== project.id);
-    state.targets = state.targets.filter((t) => t.projectId !== project.id);
-    for (const backup of state.backups ?? [])
-      if (backup.project === project.id)
-        kept.add(dirname(dirname(dirname(backup.path))));
-    if (kept.size)
-      state.backups = state.backups!.filter(
-        (backup) => backup.project !== project.id,
+  try {
+    await deps.store.update((state) => {
+      state.projects = state.projects.filter((p) => p.id !== project.id);
+      state.targets = state.targets.filter((t) => t.projectId !== project.id);
+      for (const backup of state.backups ?? [])
+        if (backup.project === project.id)
+          kept.add(dirname(dirname(dirname(backup.path))));
+      if (kept.size)
+        state.backups = state.backups!.filter(
+          (backup) => backup.project !== project.id,
+        );
+    });
+  } catch (error) {
+    // A write can fail after it committed (the state file renamed into place, then its directory not synced): the
+    // registration is gone then, and its routes must stay withdrawn, or they would be orphans again. Read back, the state
+    // says which; routes are published again only while their Project is still registered.
+    const registered = await deps.store
+      .read()
+      .then((state) => state.projects.some((p) => p.id === project.id))
+      .catch(() => undefined);
+    if (registered === false)
+      return [
+        ...forgottenWarnings(targets, kept),
+        `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${project.name} again.`,
+      ];
+    if (registered === undefined)
+      throw new RigError(
+        "FORGET_UNCERTAIN",
+        `Project '${project.name}' may or may not be forgotten: its routes (${withdrawal.hostnames.join(", ")}) were withdrawn, saving the forget failed, and the state could not be read back.`,
+        `Run rig list. If ${project.name} is still registered, run rig forget ${project.name} again; rig up or rig deploy of a Target publishes its route again otherwise.`,
+        { hostnames: [...withdrawal.hostnames] },
+        failureCauses(error),
       );
-  });
+    try {
+      await withdrawal.restore();
+    } catch (recovery) {
+      // Only the routes the restore could not publish again are named; the others serve as they did.
+      const unpublished =
+        recovery instanceof RigError &&
+        Array.isArray(recovery.details.hostnames)
+          ? recovery.details.hostnames.map(String)
+          : [...withdrawal.hostnames];
+      throw new RigError(
+        "FORGET_ROLLBACK",
+        `Project '${project.name}' is still registered, but the routes for ${unpublished.join(", ")} were withdrawn and could not be published again.`,
+        `Its Targets are stopped, so nothing was served through them; rig up or rig deploy of a Target publishes its route again. Run rig forget ${project.name} to retry.`,
+        { hostnames: unpublished },
+        failureCauses(error, recovery),
+      );
+    }
+    throw error;
+  }
+  return forgottenWarnings(targets, kept);
+}
+/** What a forget leaves on disk: the stable Target's workspace and data, and the backup directories in `kept`. */
+function forgottenWarnings(
+  targets: readonly TargetRecord[],
+  kept: ReadonlySet<string>,
+): string[] {
   return [
     ...targets
       .filter((t) => t.kind === "stable")
@@ -98,6 +156,44 @@ export async function forgetProject(
         `Its backups in ${directory} were kept on disk; Rig no longer lists them.`,
     ),
   ];
+}
+/** The refusal of a forget whose routes could not be withdrawn: the provider's failure, with its code and details kept, said
+ * as a forget that changed nothing and can be run again. A failure that is no RigError becomes ROUTE_WITHDRAW, keeping
+ * only its category. */
+function notForgotten(project: ProjectRecord, error: unknown): RigError {
+  if (!(error instanceof RigError))
+    return new RigError(
+      "ROUTE_WITHDRAW",
+      `Project '${project.name}' was not forgotten: its routes could not be withdrawn.`,
+      `Its registration and routes are unchanged. Run rig doctor and read the diagnostic log, then run rig forget ${project.name} again.`,
+      {},
+      failureCauses(error),
+    );
+  // Routes were withdrawn and could not all be put back: a failed rollback, which names the hostnames still missing.
+  if (error.code === "WITHDRAW_ROLLBACK")
+    return new RigError(
+      "FORGET_ROLLBACK",
+      `Project '${project.name}' was not forgotten, and its routes could not all be put back. ${error.message}`,
+      `${error.hint} Or run rig forget ${project.name} again to finish forgetting it.`,
+      error.details,
+      error.causes,
+    );
+  // The route file changed under Rig: what was applied is unknown, so nothing is claimed about the routes.
+  if (error.code === "ROUTE_CHANGED")
+    return new RigError(
+      error.code,
+      `Project '${project.name}' was not forgotten. ${error.message}`,
+      `${error.hint} Its registration is unchanged; run rig forget ${project.name} again once rig doctor is clean.`,
+      error.details,
+      error.causes,
+    );
+  return new RigError(
+    error.code,
+    `Project '${project.name}' was not forgotten: its routes could not be withdrawn. ${error.message}`,
+    `${error.hint} Its registration and routes are unchanged: fix that, then run rig forget ${project.name} again.`,
+    error.details,
+    error.causes,
+  );
 }
 /** What a registration change left behind; `project` is the record as stored, never the argument mutated. */
 export interface RegistrationUpdate {

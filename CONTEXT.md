@@ -181,7 +181,9 @@ _Relationship_: `rig forget` is not Project deletion. It removes a stopped
 Project's registration and leaves the repository, data, and Activity history
 in place. Previews must be destroyed first. It withdraws the Project's routes
 before the registration goes, and is refused when a route cannot be withdrawn,
-so no route outlives the Target that owns it.
+so no route outlives the Target that owns it. Its Tools stay installed, released:
+the next Target that publishes a Tool of the same name takes it over while its
+bytes are the ones Rig published (ADR 0019).
 
 ### Expert surface
 

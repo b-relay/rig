@@ -19,7 +19,8 @@ import type {
   PlanJob,
   PlanComponent,
 } from "../config/types";
-import { WORKING_TOOL_SUFFIX, isHealthUrl } from "../config/schema";
+import { isHealthUrl } from "../config/schema";
+import { installedPath } from "../domain/installed-path";
 import { componentDirectory } from "../config/working-dir";
 import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
 import { composeEnvironment } from "../domain/process-environment";
@@ -61,7 +62,11 @@ import {
   failureCauses,
   failureReason as describedFailure,
 } from "../domain/errors";
-import { atomicFile, createArtifactOwnership } from "./artifact-ownership";
+import {
+  atomicFile,
+  createArtifactOwnership,
+  type OrphanedArtifact,
+} from "./artifact-ownership";
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { createEnvironmentDigest } from "./environment-digest";
@@ -81,33 +86,30 @@ export interface TargetAdapterOptions {
   environment: Readonly<Record<string, string>>;
   /** Reads how the Target log is rotated each time build, install and health lines are recorded; the default when absent. */
   logRetention?: () => Promise<LogRetention>;
+  /** The Target ids state records now. A Tool whose owner it does not name is released: the next Target that publishes
+   * there takes it over while its bytes are the ones Rig published (#343). Absent: no Tool is ever taken over. */
+  recordedTargets?: () => Promise<ReadonlySet<string>>;
 }
-export function installedPath(
-  root: string,
-  target: TargetRecord,
-  component: InstalledComponent,
-): string {
-  // The stable Target owns the plain command, the working Target <tool>-dev, and a Preview <tool>-<preview name>.
-  const suffix =
-    target.kind === "stable"
-      ? ""
-      : `-${target.kind === "working" ? WORKING_TOOL_SUFFIX : target.name}`;
-  return join(
-    root,
-    "bin",
-    component.publishedAs ??
-      `${component.installName ?? component.name}${suffix}`,
-  );
-}
+export { installedPath };
 /** Budget in seconds when the Project config declares none. */
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
   options: TargetAdapterOptions,
-): TargetEffects & { observations: ObservationEffects } {
+): TargetEffects & {
+  observations: ObservationEffects;
+  /** Every Tool in `<root>/bin` whose owner Target `recorded` does not name; see `OrphanedArtifact`. */
+  orphanedTools(
+    recorded: () => Promise<ReadonlySet<string>>,
+  ): Promise<OrphanedArtifact[]>;
+} {
   // Status hashes every installed Tool inside one short budget; remembering digests keeps that under it.
   const digestFile = rememberedDigests();
-  const ownership = createArtifactOwnership(options.root, digestFile);
+  const ownership = createArtifactOwnership(
+    options.root,
+    digestFile,
+    options.recordedTargets,
+  );
   const transactions = createEffectTransactions({
     root: options.root,
     ownership,
@@ -405,19 +407,22 @@ export function createTargetEffects(
       const destination = installedPath(options.root, target, component),
         ownerFile = ownership.ownerPath(destination),
         receiptFile = receiptPath(target, component);
-      await ownership.inspect({
+      const owned = await ownership.inspect({
         targetId: target.id,
         componentName: component.name,
         destination,
         project: target.plan.project,
         target: target.name,
       });
+      // A released executable (its owner Target is gone) is not this Target's to retire: it stays, as a forget leaves it.
+      const retired = owned.released
+        ? [receiptFile]
+        : [destination, ownerFile, receiptFile];
       await transactions.withArtifactChange(
         target.id,
         [destination, ownerFile, receiptFile],
         async () => {
-          for (const path of [destination, ownerFile, receiptFile])
-            await rm(path, { force: true });
+          for (const path of retired) await rm(path, { force: true });
         },
       );
     }
@@ -789,6 +794,7 @@ export function createTargetEffects(
     },
     pruneRoutes: (owners, confinement) =>
       options.router.withdrawUnowned(owners, confinement),
+    orphanedTools: (recorded) => ownership.orphans(recorded),
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),

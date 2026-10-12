@@ -212,6 +212,20 @@ export interface BackupStorage {
    * already gone; `skipped`, touching nothing, when a directory on the way is a symlink. Fails BACKUP_REMOVE. */
   remove(path: string): Promise<"removed" | "skipped">;
 }
+/** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */
+export interface OrphanedTool {
+  /** The executable's path in `<RIG_ROOT>/bin`. */
+  destination: string;
+  /** Who published it, as its ownership record names them. */
+  owner: {
+    targetId: string;
+    componentName: string;
+    project?: string;
+    target?: string;
+  };
+  /** Its bytes differ from the ones Rig published: Rig never replaces or removes it. */
+  changed: boolean;
+}
 /** Bounded evidence of a background channel that is failing inside the daemon. */
 export interface RuntimeNotice {
   channel: string;
@@ -241,6 +255,11 @@ export interface RuntimeDependencies {
    * doctor says otherwise that another root may own its orphans. (The automatic sweep makes the same check itself, in the
    * router, where it reads and writes the file.) Absent: inside. */
   routeFileInRoot?(): Promise<boolean>;
+  /** Every Tool in `<RIG_ROOT>/bin` whose ownership record names a Target `recorded` does not (#343), read before
+   * `recorded`. Changes nothing. Absent: doctor reports none. */
+  orphanedTools?(
+    recorded: () => Promise<ReadonlySet<string>>,
+  ): Promise<OrphanedTool[]>;
   /** Rig's own Caddy, when Host config has a proxy section (ADR 0014); absent otherwise. */
   proxy?: ProxyControl;
   /** DNS record management (ADR 0018); absent where rigd offers none, as in most tests. */

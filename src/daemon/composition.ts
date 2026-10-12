@@ -176,7 +176,12 @@ export async function composeDaemon(
             }
           : {}),
       });
+  const store = new FileStateStore(root);
+  const recordedTargets = async () =>
+    new Set((await store.read()).targets.map((target) => target.id));
   const effects = createTargetEffects({
+    // A Tool whose owner Target state no longer records is released to the next Target that publishes there (#343).
+    recordedTargets,
     recordingTime: () => new Date().toISOString(),
     logRetention,
     root,
@@ -191,7 +196,6 @@ export async function composeDaemon(
     router: managed?.caddy.router ?? external!,
     environment: executionBaseline(process.env),
   });
-  const store = new FileStateStore(root);
   const notices = createNoticeBoard(() => new Date().toISOString());
   const adminActivity = createAdminActivityJournal({
     root,
@@ -217,6 +221,7 @@ export async function composeDaemon(
     inspectHost: () => inspectHost(root),
     inspectProxy: () => inspectHostProxy(root, host, environment),
     routeFileInRoot: () => routeFileInRoot(root, host),
+    orphanedTools: (recorded) => effects.orphanedTools(recorded),
     ...(managed ? { proxy: managed.control } : {}),
     // Host config and the token are read at every request, so DNS needs no restart after rig proxy token or an edit.
     dns: createDnsControl({

@@ -2404,7 +2404,11 @@ current file.
 name>` for a Preview. Two Projects that both install `cli` on
    their stable Target therefore collide, and the second is refused with
    `ARTIFACT_CONFLICT`, which names the owning Project, Target, and Tool;
-   rename one of the Tools.
+   rename one of the Tools. A Tool whose owning Target no longer exists (a
+   `rig forget` left it, or the Target's record was lost) is no conflict: the
+   Target that publishes there next takes it over, as long as its bytes are
+   still the ones Rig published. `rig doctor` names such Tools
+   (`tool-owners`) until then.
    An executable Rig did not install is never overwritten
    (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
@@ -2603,6 +2607,18 @@ the forget is refused with that code and nothing changes: the Project stays
 registered and its routes stay as they were. Fix what the hint names and run
 `rig forget` again. A Project whose Targets publish no route never needs Caddy
 to be forgotten.
+
+`forget` leaves the Project's Tools in `<RIG_ROOT>/bin`, so a command on your
+`PATH` keeps working, and a warning names them. Rig no longer owns them: the
+next deploy, `rig up` or `rig restart` that publishes a Tool of the same name,
+from the same repository registered again or from another Project, replaces
+it by atomic rename, as an upgrade does. Delete one you no longer want; never
+delete `<RIG_ROOT>/bin/rigd`, which rigd's system job runs. Until a Target takes
+one over, `rig doctor` names it (`tool-owners`). A Tool that was edited after
+Rig published it is never replaced or removed: publishing there fails as
+`ARTIFACT_CHANGED` until you move or delete the file. The same holds for a Tool
+an earlier `rig forget` left with its old owner, so a Host that had one
+recovers without any step of its own.
 
 A moved repository is recovered from inside it: `cd <new path> && rig repoint .`
 selects the Project by the config's name, so the registered path may differ.

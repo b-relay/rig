@@ -146,7 +146,7 @@ export function createRigCommand(
   command
     .command("forget")
     .description(
-      "Remove a stopped Project's registration and withdraw its routes; its repository is untouched. Refused, changing nothing, when a route cannot be withdrawn.",
+      "Remove a stopped Project's registration and withdraw its routes; its repository is untouched, and its Tools stay installed for the next Target that publishes the same name. Refused, changing nothing, when a route cannot be withdrawn.",
     )
     .argument("<name>", "Registered Project identity", nonEmpty)
     .action(async (project: string) =>

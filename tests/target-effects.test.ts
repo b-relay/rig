@@ -917,6 +917,81 @@ test("a renamed Component takes over its own Target's installed executable, whil
     ),
   ).toBe("missing");
 });
+test("a Tool whose owner Target is no longer recorded is taken over by the next install, never retired by another Target, and never taken without a reader of recorded Targets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-install-released-"));
+  roots.push(root);
+  const record = target(root);
+  const tool = {
+    name: "tool",
+    kind: "installed" as const,
+    entrypoint: "tool",
+    env: {},
+    dependsOn: [],
+  };
+  await writeFile(join(root, "tool"), "#!/bin/sh\necho first\n");
+  await effects(root).install(tool, record);
+  const destination = join(root, "bin", "tool-dev");
+  const next = {
+    ...record,
+    id: "next",
+    plan: { ...record.plan, components: [tool] },
+  };
+  // Without a reader of recorded Targets nothing is released: the old behaviour.
+  await expect(effects(root).install(tool, next)).rejects.toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+  });
+  let recorded = new Set(["t"]);
+  const adapter = createTargetEffects({
+    ...localActivation(),
+    root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map(),
+    run: runCommand,
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: noRoutes(),
+    environment: { PATH: process.env.PATH! },
+    recordedTargets: async () => recorded,
+  });
+  // Its owner is still recorded: refused, and listed as no orphan.
+  await expect(adapter.install(tool, next)).rejects.toMatchObject({
+    code: "ARTIFACT_CONFLICT",
+  });
+  expect(await adapter.orphanedTools(async () => recorded)).toEqual([]);
+  recorded = new Set(["next"]);
+  expect(await adapter.orphanedTools(async () => recorded)).toEqual([
+    {
+      destination,
+      owner: expect.objectContaining({ targetId: "t", project: "demo" }),
+      changed: false,
+    },
+  ]);
+  // Status of the Target that would take it over does not call it its own, and a retire of that Target leaves it alone.
+  expect(
+    await adapter.observations.artifact(
+      next,
+      tool,
+      new AbortController().signal,
+    ),
+  ).toBe("unknown");
+  await adapter.retireArtifacts(next);
+  expect(await readFile(destination, "utf8")).toBe("#!/bin/sh\necho first\n");
+  expect(await adapter.orphanedTools(async () => recorded)).toHaveLength(1);
+  // The next install takes it over.
+  await writeFile(join(root, "tool"), "#!/bin/sh\necho second\n");
+  expect(await adapter.install(tool, next)).toEqual({ outcome: "installed" });
+  expect(await readFile(destination, "utf8")).toBe("#!/bin/sh\necho second\n");
+  expect(await adapter.orphanedTools(async () => recorded)).toEqual([]);
+  expect(
+    await adapter.observations.artifact(
+      next,
+      tool,
+      new AbortController().signal,
+    ),
+  ).toBe("installed");
+});
 
 test("a missing initdb names the tool instead of a generic start failure, and an initialised cluster is UTF8", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-postgres-missing-"));

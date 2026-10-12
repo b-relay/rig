@@ -69,7 +69,7 @@ rig
 │    --project <name>               current identity
 ├─ repoint <path>                   new repository path; the Project must be stopped
 │    --project <name>
-├─ forget <name>                    drop a stopped Project's registration and withdraw its routes
+├─ forget <name>                    drop a stopped Project's registration and withdraw its routes; its Tools stay
 │
 ├─ proxy                            Rig's own Caddy: its job and every served hostname, proxy.routes included
 │    --json
@@ -180,6 +180,12 @@ status` takes no Target.
   route, and by `rig proxy reload`; `doctor` names one as `route-owners`. When
   `providers.caddy.caddyfile` puts the route file outside `RIG_ROOT`, where
   another root may write too, only `rig proxy reload` withdraws them.
+- `forget` leaves the Project's Tools in `<RIG_ROOT>/bin`, where they keep
+  running, and names them in a warning. Dropping the registration releases
+  them: the next `deploy`, `up` or `restart` that publishes a Tool of the same
+  name, from any Project, replaces it, unless its bytes changed since Rig
+  published it (`ARTIFACT_CHANGED`; move or delete the file). `doctor` names a
+  Tool whose Target no longer exists as `tool-owners`.
 - `logs --service` takes a Service, Tool or job name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the
   Target's names. `--since` and `--until` are inclusive, and leave out lines

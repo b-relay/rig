@@ -18,11 +18,12 @@ export interface PeakFlag {
   readonly x: number;
   readonly y: number;
   readonly text: string;
+  /** The label's left edge and its estimated width, inside the chart. */
   readonly labelX: number;
+  readonly labelWidth: number;
   /** The label's baseline. */
   readonly labelY: number;
-  readonly anchor: "start" | "end";
-  /** The label was moved off its point, so a leader line joins them. */
+  /** The label was moved off its point's row, so a leader line joins them. */
   readonly moved: boolean;
 }
 
@@ -56,7 +57,8 @@ const LABEL_HEIGHT = 11;
 /** Pure: the geometry of a chart of `layers` over `count` points of `step` seconds from `from`, in a `width` by
  * `height` box with `pad` around the plot. Point `i` covers `from + i * step` up to the next, and is drawn in the
  * middle of it. The scale reaches above the highest stack and every stacked peak, never below `floor`. Every layer
- * with a peak is flagged, highest first, each label moved up or down clear of the ones before it. */
+ * with a peak is flagged, highest first, each label kept inside the chart and put in the nearest row, on either side
+ * of its point, clear of the labels before it. */
 export function chartLayout({
   layers,
   from,
@@ -115,10 +117,13 @@ export function chartLayout({
       const py = y(peakHeight(layer, peak));
       const text = labelOf(layer, peak);
       const wide = text.length * LABEL_CHARACTER;
-      const anchor = x > plot.left + plotWidth * 0.62 ? "end" : "start";
-      const labelX = anchor === "end" ? x - 4 : x + 4;
-      const x0 = anchor === "end" ? labelX - wide : labelX;
-      const boxAt = (baseline: number) => ({
+      // Right of the point where the label fits there, else left of it; either way kept inside the chart.
+      const inside = (left: number) =>
+        Math.max(0, Math.min(left, width - wide));
+      const right = inside(x + 4);
+      const left = inside(x - 4 - wide);
+      const sides = x + 4 + wide <= width ? [right, left] : [left, right];
+      const boxAt = (x0: number, baseline: number) => ({
         x0,
         x1: x0 + wide,
         y0: baseline - LABEL_HEIGHT + 2,
@@ -134,21 +139,32 @@ export function chartLayout({
             other.y1 <= box.y0 ||
             box.y1 <= other.y0,
         );
+      // Rows nearest the point first, through the chart's whole height, each tried on both sides of the point.
       const natural = py - 10;
-      const shift = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6]
-        .map((step) => -step * (LABEL_HEIGHT + 1))
-        .find((offset) => clear(boxAt(natural + offset)));
-      const labelY = natural + (shift ?? 0);
-      boxes.push(boxAt(labelY));
+      const rows = Math.ceil(height / (LABEL_HEIGHT + 1));
+      const candidates = Array.from({ length: 2 * rows + 1 }, (_, index) =>
+        index === 0
+          ? 0
+          : (index % 2 === 1 ? -1 : 1) *
+            Math.ceil(index / 2) *
+            (LABEL_HEIGHT + 1),
+      ).flatMap((offset) =>
+        sides.map((x0) => ({ x0, baseline: natural + offset })),
+      );
+      // A chart with more peaks than room for labels overlaps the last ones rather than hide a peak.
+      const chosen = candidates.find(({ x0, baseline }) =>
+        clear(boxAt(x0, baseline)),
+      ) ?? { x0: sides[0]!, baseline: natural };
+      boxes.push(boxAt(chosen.x0, chosen.baseline));
       return {
         layer,
         x,
         y: py,
         text,
-        labelX,
-        labelY,
-        anchor,
-        moved: labelY !== natural,
+        labelX: chosen.x0,
+        labelWidth: wide,
+        labelY: chosen.baseline,
+        moved: chosen.baseline !== natural,
       };
     });
 

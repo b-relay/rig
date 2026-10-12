@@ -5,6 +5,7 @@ import { projectHref } from "../lib/target";
 import {
   bytes,
   chartReport,
+  componentsOf,
   percent,
   presetWindow,
   type ChartReport,
@@ -67,7 +68,7 @@ export const projectMonitor = cache(
     const total = whole?.series.find((each) => each.series.scope === "project");
     return {
       usage: monitored.ok
-        ? { ok: true, value: chartReport(monitored.value, range, target) }
+        ? { ok: true, value: componentsOf(whole!, target) }
         : monitored,
       targets,
       target,

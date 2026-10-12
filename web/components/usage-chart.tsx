@@ -263,11 +263,16 @@ export function UsageChart({
           ) : null}
           {layout.flags.map((flag) => {
             const layer = layers[flag.layer]!;
+            // A moved label's leader meets the edge nearer its point.
+            const reach =
+              flag.labelX >= flag.x
+                ? flag.labelX
+                : flag.labelX + flag.labelWidth;
             return (
               <g key={`peak-${layer.key}`}>
                 <line
                   x1={flag.x}
-                  x2={flag.moved ? flag.labelX : flag.x}
+                  x2={flag.moved ? reach : flag.x}
                   y1={flag.y}
                   y2={flag.moved ? flag.labelY - 3 : flag.y - 8}
                   stroke={layer.color}
@@ -284,7 +289,7 @@ export function UsageChart({
                 <Tag
                   x={flag.labelX}
                   y={flag.labelY}
-                  anchor={flag.anchor}
+                  anchor="start"
                   text={flag.text}
                 />
               </g>

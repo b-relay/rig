@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import type { ReactNode } from "react";
 import { projectColor } from "@/lib/health";
 import type { ActivityResult, DoctorReport } from "@/lib/types";
 import {
@@ -17,7 +16,9 @@ import type { Failure as ReadFailure, Outcome } from "@/lib/outcome";
 import { projectHref } from "@/lib/target";
 import { Failure } from "./bits";
 import { ProjectIcon } from "./project-icon";
+import { RigdControls } from "./rigd-controls";
 import {
+  ActivityFeed,
   DoctorList,
   FactRows,
   RunningOperations,
@@ -31,7 +32,8 @@ import { useUsage } from "./usage-live";
 type Operation = ActivityResult["operations"][number];
 const RIG_COLOR = "var(--idle)";
 
-/** The Monitor page below its header. The side column holds rigd (with what Rig itself uses), Doctor, and Activity for
+/** The Monitor page below its header. Everything it shows arrives as data, not server-rendered elements, so its lists
+ * render here with their keys. The side column holds rigd (with what Rig itself uses), Doctor, and Activity for
  * all Projects; on a phone rigd and Doctor sit side by side above the charts and Activity follows them. The main
  * column stacks every Project in one CPU and one memory chart, each Project's peak flagged where it happened and
  * Activity marked on the time axis, then a card per registered Project with its own charts and latest Activity. Live:
@@ -45,8 +47,7 @@ export function HostMonitor({
   now,
   rigd,
   doctor,
-  activity,
-  controls,
+  activityFailure,
 }: {
   /** The report the page was rendered with; absent when that read failed, with `initialFailure` saying why. */
   initial?: ChartReport;
@@ -67,9 +68,8 @@ export function HostMonitor({
     | { readonly failure: ReadFailure };
   /** Doctor's Host checks, or why they could not be read: data, so the card renders here. */
   doctor: Outcome<DoctorReport>;
-  activity: ReactNode;
-  /** rigd's own controls, under Activity. */
-  controls?: ReactNode;
+  /** Why Activity could not be read, shown in its card instead of an empty feed. */
+  activityFailure?: ReadFailure;
 }) {
   const { report, failure } = useUsage(
     initial,
@@ -79,29 +79,42 @@ export function HostMonitor({
   const sampled =
     report?.series.filter((each) => each.series.scope === "project") ?? [];
   const rig = report?.series.find((each) => each.series.scope === "rig");
+  const cards = cardsOf(
+    projects.map((name) => ({ name })),
+    sampled,
+    (each) => ({ name: each.series.project! }),
+  );
   const main = report ? (
     <div className="flex min-w-0 flex-col gap-4">
       <CombinedCharts
         title="All Projects"
         {...(failure && { failure: failure.message })}
-        parts={[...sampled, ...(rig ? [rig] : [])].map((series) => ({
-          series,
-          label: series.series.project ?? "Rig itself",
-          color: colorOf(series),
-        }))}
+        parts={[
+          ...cards.flatMap((card) =>
+            card.series
+              ? [
+                  {
+                    series: card.series,
+                    label: card.earlier ? `${card.name} (earlier)` : card.name,
+                    color: colorOf(card.series),
+                  },
+                ]
+              : [],
+          ),
+          ...(rig
+            ? [{ series: rig, label: "Rig itself", color: RIG_COLOR }]
+            : []),
+        ]}
         report={report}
         markers={markersOf(operations, report)}
         empty="Nothing has been sampled yet. Charts fill in within a few seconds of rigd starting."
       />
       <CardGrid>
-        {cardsOf(
-          projects.map((name) => ({ name })),
-          sampled,
-          (each) => ({ name: each.series.project! }),
-        ).map((card) => {
-          const own = operations.filter(
-            (operation) => operation.project === card.name,
-          );
+        {cards.map((card) => {
+          // An earlier incarnation's Activity cannot be told apart from the current one's by name.
+          const own = card.earlier
+            ? []
+            : operations.filter((operation) => operation.project === card.name);
           return (
             <SeriesCard
               key={card.key}
@@ -115,6 +128,11 @@ export function HostMonitor({
                 >
                   <ProjectIcon project={card.name} size="sm" />
                   <span className="truncate">{card.name}</span>
+                  {card.earlier ? (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      earlier
+                    </span>
+                  ) : null}
                 </Link>
               }
               activity={own}
@@ -135,10 +153,17 @@ export function HostMonitor({
         <SideCard
           title="rigd"
           aside={
-            <>
-              <span aria-hidden className="size-1.5 rounded-full bg-good" />
-              running
-            </>
+            "failure" in rigd ? (
+              <>
+                <span aria-hidden className="size-1.5 rounded-full bg-bad" />
+                not answering
+              </>
+            ) : (
+              <>
+                <span aria-hidden className="size-1.5 rounded-full bg-good" />
+                running
+              </>
+            )
           }
         >
           <div className="flex flex-col gap-2">
@@ -189,8 +214,21 @@ export function HostMonitor({
         {main}
       </div>
       <div className="flex min-w-0 flex-col gap-4 lg:col-start-1 lg:row-start-2">
-        {activity}
-        {controls}
+        <ActivityFeed
+          operations={operations}
+          showProject
+          now={now}
+          scope="all Projects"
+          {...(activityFailure && { failure: activityFailure })}
+        />
+        <details className="group text-sm">
+          <summary className="cursor-pointer list-none text-xs text-muted-foreground hover:text-foreground">
+            Uninstall readiness…
+          </summary>
+          <div className="mt-3">
+            <RigdControls />
+          </div>
+        </details>
       </div>
     </div>
   );

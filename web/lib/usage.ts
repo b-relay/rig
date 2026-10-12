@@ -69,6 +69,30 @@ export function chartReport(
   range: UsageRange,
   target?: string,
 ): ChartReport {
+  return componentsOf(wholeChartReport(report, range), target);
+}
+
+/** Pure: a chart report with a Project's Components kept only for `target` (none for `all`); every series with no
+ * `target`. */
+export function componentsOf(
+  report: ChartReport,
+  target: string | undefined,
+): ChartReport {
+  return target === undefined
+    ? report
+    : {
+        ...report,
+        series: report.series.filter(
+          (each) =>
+            each.series.scope !== "component" || each.series.target === target,
+        ),
+      };
+}
+
+function wholeChartReport(
+  report: MonitorResult,
+  range: UsageRange,
+): ChartReport {
   const measure = (
     each: ReportedSeries,
     of: "cpu" | "memory",
@@ -86,20 +110,13 @@ export function chartReport(
     from: report.from,
     step: report.step,
     sampledEvery: report.sampledEvery,
-    series: report.series
-      .filter(
-        (each) =>
-          target === undefined ||
-          each.series.scope !== "component" ||
-          each.series.target === target,
-      )
-      .map((each) => ({
-        key: seriesKeyOf(each.series),
-        series: each.series,
-        ...(each.now && { now: each.now }),
-        cpu: measure(each, "cpu"),
-        memory: measure(each, "memory"),
-      })),
+    series: report.series.map((each) => ({
+      key: seriesKeyOf(each.series),
+      series: each.series,
+      ...(each.now && { now: each.now }),
+      cpu: measure(each, "cpu"),
+      memory: measure(each, "memory"),
+    })),
   };
 }
 
@@ -226,11 +243,13 @@ export interface UsageCard {
   /** `service` or `job`, on a Component's card. */
   readonly kind?: string;
   readonly series?: ChartSeries;
+  /** An earlier incarnation of a name another card shows, such as a Preview destroyed and created again. */
+  readonly earlier?: boolean;
 }
 
-/** Pure: a card per thing the inventory names, in its order, with its series where one was sampled; then a card per
- * sampled series it no longer names, such as a destroyed Preview still in the range. `identify` names a series as the
- * inventory does. */
+/** Pure: a card per thing the inventory names, in its order, with the most recently sampled of the series of that name;
+ * then a card per other sampled series, such as a destroyed Preview still in the range or an earlier incarnation of
+ * one created again, keyed by its own identity. `identify` names a series as the inventory does. */
 export function cardsOf(
   inventory: readonly { readonly name: string; readonly kind?: string }[],
   sampled: readonly ChartSeries[],
@@ -238,9 +257,16 @@ export function cardsOf(
 ): UsageCard[] {
   const idOf = (each: { name: string; kind?: string }) =>
     `${each.kind ?? ""}:${each.name}`;
-  const bySeries = new Map(sampled.map((each) => [idOf(identify(each)), each]));
+  const lastSampled = (each: ChartSeries) =>
+    each.cpu.average.findLastIndex((value) => value !== null);
+  const newest = new Map<string, ChartSeries>();
+  for (const each of sampled) {
+    const id = idOf(identify(each));
+    const found = newest.get(id);
+    if (!found || lastSampled(each) >= lastSampled(found)) newest.set(id, each);
+  }
   const named = inventory.map((each) => {
-    const series = bySeries.get(idOf(each));
+    const series = newest.get(idOf(each));
     return {
       key: idOf(each),
       name: each.name,
@@ -248,16 +274,18 @@ export function cardsOf(
       ...(series && { series }),
     };
   });
-  const known = new Set(inventory.map(idOf));
+  const shown = new Set(named.flatMap((card) => card.series ?? []));
   const gone = sampled
-    .filter((each) => !known.has(idOf(identify(each))))
+    .filter((each) => !shown.has(each))
     .map((each) => {
       const { name, kind } = identify(each);
+      const id = idOf({ name, kind });
       return {
-        key: idOf({ name, kind }),
+        key: each.key,
         name,
         ...(kind && { kind }),
         series: each,
+        ...(newest.get(id) !== each && { earlier: true }),
       };
     });
   return [...named, ...gone];

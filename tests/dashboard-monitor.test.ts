@@ -87,6 +87,31 @@ test("cards follow the inventory, with an empty card for what was never sampled 
     ["fletcher", false],
     ["gone", true],
   ]);
+  // A Preview destroyed and created again: both incarnations keep their charts, the newest on the named card.
+  const preview = (targetId: string, sampledLast: boolean) => ({
+    ...sampled[0]!,
+    key: `target:p:${targetId}`,
+    series: {
+      ...sampled[0]!.series,
+      scope: "target" as const,
+      targetId,
+      target: "feature",
+    },
+    cpu: {
+      average: sampledLast ? [null, null, 5] : [4, null, null],
+    },
+  });
+  const incarnations = cardsOf(
+    [{ name: "feature" }],
+    [preview("new", true), preview("old", false)],
+    (each) => ({ name: each.series.target! }),
+  );
+  expect(
+    incarnations.map((card) => [card.key, card.series?.key, !!card.earlier]),
+  ).toEqual([
+    [":feature", "target:p:new", false],
+    ["target:p:old", "target:p:old", true],
+  ]);
   // A Service and a Job of the same name are different cards.
   expect(
     cardsOf(
@@ -136,12 +161,14 @@ test("Operations in a chart's range become markers toned like their dots; ones o
     },
     { id: "2", action: "up", outcome: "failed", occurredAt: at(1040) },
     { id: "3", action: "up", outcome: "failed", occurredAt: at(900) },
+    { id: "4", action: "down", outcome: "stopped", occurredAt: at(1020) },
   ];
   expect(markersOf(operations, chartReport(report, "1h"))).toEqual([
     { at: 1010, tone: "good", label: "deploy · pantry · deployed" },
     { at: 1040, tone: "bad", label: "up · failed" },
   ]);
   expect(toneOfOutcome("deployed")).toBe("good");
+  expect(toneOfOutcome("stopped")).toBeUndefined();
 });
 
 test("a range the page does not keep reads as the last hour", () => {
@@ -185,24 +212,75 @@ test("a stacked layer's peak sits on the layers below it, and the scale reaches 
   expect(flag.y).toBeGreaterThanOrEqual(layout.plot.top);
 });
 
-test("every layer's peak is flagged, and crowded labels are moved apart, never dropped", () => {
+/** Pure: whether two label boxes, as the layout estimates them, share any pixel. */
+function overlapping(
+  layout: ReturnType<typeof chartLayout>,
+): [number, number][] {
+  const boxes = layout.flags.map((flag) => ({
+    x0: flag.labelX,
+    x1: flag.labelX + flag.labelWidth,
+    y0: flag.labelY - 9,
+    y1: flag.labelY + 2,
+  }));
+  return boxes.flatMap((each, index) =>
+    boxes
+      .slice(index + 1)
+      .flatMap((other, offset): [number, number][] =>
+        each.x0 < other.x1 &&
+        other.x0 < each.x1 &&
+        each.y0 < other.y1 &&
+        other.y0 < each.y1
+          ? [[index, index + 1 + offset]]
+          : [],
+      ),
+  );
+}
+
+test("every layer's peak is flagged, and crowded labels are moved apart inside the chart, never dropped", () => {
+  // Twelve Projects peaking together, in the memory chart's 130 pixels.
   const layout = chartLayout({
     ...box,
-    layers: [0, 1, 2, 3].map((index) => ({
+    height: 130,
+    layers: Array.from({ length: 12 }, (_, index) => ({
       average: [1, 1, 1, 1],
       peak: { index: 2, value: 100 - index },
     })),
     from: 0,
     step: 10,
     floor: 25,
-    labelOf: label,
+    labelOf: (layer) => `project-${layer} 99%`,
   });
-  expect(layout.flags.map((flag) => flag.layer).sort()).toEqual([0, 1, 2, 3]);
-  const baselines = layout.flags.map((flag) => flag.labelY);
-  for (const [index, each] of baselines.entries())
-    for (const other of baselines.slice(index + 1))
-      expect(Math.abs(each - other)).toBeGreaterThanOrEqual(11);
-  expect(layout.flags.filter((flag) => flag.moved).length).toBe(3);
+  expect(layout.flags.map((flag) => flag.layer).sort((a, b) => a - b)).toEqual(
+    Array.from({ length: 12 }, (_, index) => index),
+  );
+  expect(overlapping(layout)).toEqual([]);
+  for (const flag of layout.flags) {
+    expect(flag.labelX).toBeGreaterThanOrEqual(0);
+    expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(box.width);
+    expect(flag.labelY - 9).toBeGreaterThanOrEqual(0);
+    expect(flag.labelY + 2).toBeLessThanOrEqual(130);
+  }
+});
+
+test("on a phone-narrow chart a long label beside a late peak turns to the left and stays inside", () => {
+  const layout = chartLayout({
+    ...box,
+    width: 300,
+    layers: [
+      {
+        average: Array.from({ length: 9 }, () => 1),
+        peak: { index: 5, value: 100 },
+      },
+    ],
+    from: 0,
+    step: 10,
+    floor: 25,
+    labelOf: () => "b-relay-dashboard 100%",
+  });
+  const flag = layout.flags[0]!;
+  expect(flag.labelX).toBeGreaterThanOrEqual(0);
+  expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(300);
+  expect(flag.labelX + flag.labelWidth).toBeLessThanOrEqual(flag.x);
 });
 
 test("points, markers and inspection share one mapping of time to x", () => {

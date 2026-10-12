@@ -13,8 +13,6 @@ import { projectList } from "@/server/status";
 import { site } from "@/server/site";
 import { PageHeader } from "@/components/bits";
 import { HostMonitor } from "@/components/host-monitor";
-import { ActivityFeed } from "@/components/monitor-side";
-import { RigdControls } from "@/components/rigd-controls";
 import { RangeTabs } from "@/components/usage-range";
 
 export const metadata: Metadata = { title: "Monitor" };
@@ -101,25 +99,7 @@ export default async function MonitorPage({
         doctor={
           doctor.ok ? { ok: true, value: doctor.value as DoctorReport } : doctor
         }
-        activity={
-          <ActivityFeed
-            operations={operations}
-            showProject
-            now={now}
-            scope="all Projects"
-            {...(!activity.ok && { failure: activity.failure })}
-          />
-        }
-        controls={
-          <details className="group text-sm">
-            <summary className="cursor-pointer list-none text-xs text-muted-foreground hover:text-foreground">
-              Uninstall readiness…
-            </summary>
-            <div className="mt-3">
-              <RigdControls />
-            </div>
-          </details>
-        }
+        {...(!activity.ok && { activityFailure: activity.failure })}
       />
     </>
   );

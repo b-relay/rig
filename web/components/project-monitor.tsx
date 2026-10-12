@@ -98,7 +98,7 @@ export function ProjectMonitor({
           .filter((card) => card.series)
           .map((card) => ({
             series: card.series as ChartSeries,
-            label: card.name,
+            label: card.earlier ? `${card.name} (earlier)` : card.name,
             color: colorOf(card.key),
           }))}
         report={report}
@@ -115,6 +115,11 @@ export function ProjectMonitor({
             title={
               <span className="flex min-w-0 items-center gap-2">
                 <span className="truncate font-mono">{card.name}</span>
+                {card.earlier ? (
+                  <span className="text-xs font-normal text-muted-foreground">
+                    earlier
+                  </span>
+                ) : null}
                 {card.kind ? (
                   <span className="text-xs font-normal text-muted-foreground">
                     {card.kind}
@@ -124,7 +129,8 @@ export function ProjectMonitor({
             }
             // Activity names Targets, not Services, so only a Target's card lists its own; a Service's is in the feed.
             activity={
-              target === "all"
+              // An earlier incarnation's Activity cannot be told apart from the current one's by name.
+              target === "all" && !card.earlier
                 ? relevant.filter((operation) => operation.target === card.name)
                 : []
             }

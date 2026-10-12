@@ -415,7 +415,7 @@ describe("the usage sampler", () => {
     host.skip(20);
     for (let i = 0; i < 29; i++)
       (await sampled.pass().catch(() => {}), host.tick());
-    // Two hours on, detail retention (one minute) has long passed the minute, and pruning runs.
+    // Two hours on, detail retention (one hour) has passed the minute, and pruning runs.
     host.skip(7200);
     await sampled.pass().catch(() => {});
     host.tick();

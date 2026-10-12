@@ -115,8 +115,8 @@ export function CardGrid({ children }: { children: readonly ReactNode[] }) {
   );
 }
 
-/** One series' card: its name, what it uses now in large type, its CPU and memory charts with median and peak, and the
- * latest things that happened to it. A series with nothing sampled in the range, or none yet, says so. */
+/** One series' card: its name, what it uses now in large type, its CPU and memory charts with median and peak and
+ * `markers` on both, and the latest things that happened to it. A series with nothing sampled in the range, or none yet, says so. */
 export function SeriesCard({
   series,
   report,
@@ -168,6 +168,7 @@ export function SeriesCard({
             median={series.memory.median}
             format={bytes}
             floor={MEMORY_FLOOR}
+            markers={markers}
             height={56}
             axis={false}
           />

@@ -222,9 +222,6 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
           ...(request.scope.role && request.scope.role !== "preview"
             ? { target: request.scope.role }
             : {}),
-          ...(request.scope.service
-            ? { component: { kind: "service", name: request.scope.service } }
-            : {}),
           action: "env",
           outcome: "updated",
           occurredAt: dependencies.now(),

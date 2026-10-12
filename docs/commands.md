@@ -27,6 +27,11 @@ rig
 ├─ config                           show the validated rig.yaml and its path
 │    --project <name>
 ├─ activity [operation]             the latest 100 actions, or one Operation by id
+├─ monitor                          CPU and memory of one Project, redrawn every sample on a terminal
+│    --project <name>
+│    --all                          every Project, Rig itself and the Host's total
+│    --range <span>                 1h (default), 24h or 7d: what the median and peak cover
+│    --json                         print the report once
 │
 ├─ deploy [target] [branch]         target: "stable" (default) or "preview"
 │    --project <name>

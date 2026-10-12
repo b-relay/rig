@@ -45,6 +45,8 @@ export interface CliDependencies {
   liveOutput?: boolean;
   /** The terminal's width, to which live progress lines are cut; 80 when absent. */
   terminalColumns?: number;
+  /** stdout is a terminal: `rig monitor` redraws its table in place there. Without one, it prints the table once. */
+  outputTerminal?: boolean;
 }
 export interface DaemonAdmin {
   install(operationId?: string): Promise<unknown>;

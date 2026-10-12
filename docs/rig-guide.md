@@ -1117,6 +1117,20 @@ recorded again.
 
 ## Monitor
 
+```bash
+rig monitor
+rig monitor --range 24h
+rig monitor --all
+rig monitor --project fletcher --json
+```
+
+`rig monitor` shows the Project's CPU and memory: the total over all its
+Targets, then each Target with its Services and Jobs under it. Each row shows
+CPU and memory now, then the median and peak over `--range` (`1h` by default,
+`24h` or `7d`). `--all` shows the whole Host instead: its total, Rig itself,
+and each Project. On a terminal the table is redrawn every sample until Ctrl-C;
+piped, or with `--json`, it prints once.
+
 `rigd` samples the CPU and memory of every running Service and Job run on every
 Target once a second, and keeps the history under `<RIG_ROOT>/monitor/`.
 

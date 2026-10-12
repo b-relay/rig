@@ -1,6 +1,10 @@
 import { RigError, cancelled } from "../domain/errors";
 import { prepareInteractiveRequest } from "./interaction";
-import { readActions, type RuntimeCommand } from "../daemon/protocol";
+import {
+  readActions,
+  type MonitorResult,
+  type RuntimeCommand,
+} from "../daemon/protocol";
 import type { CliDependencies } from "./types";
 import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
 import { renderResult, renderStatus, object, renderLogs } from "./output";
@@ -11,6 +15,8 @@ import {
   type ProgressDisplay,
 } from "./progress-display";
 import { formatClock } from "./stop-display";
+import { liveRegion } from "./live-region";
+import { monitorLines } from "./monitor-output";
 import { terminalText } from "./terminal-text";
 import { awaitRestore } from "./restore-wait";
 import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
@@ -219,13 +225,19 @@ export async function runRigCli(
     // A restore answers once its run started; rig waits for it to end, so the command says how the restore went.
     if (request.action === "restore")
       result = await restoreOutcome(request, result, operationId, dependencies);
-    dependencies.output.write(
-      json
-        ? `${JSON.stringify(result)}\n`
-        : status
-          ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
-          : renderResult(request.action, result),
-    );
+    const watching =
+      request.action === "monitor" &&
+      options.follow === true &&
+      dependencies.outputTerminal === true;
+    if (watching) await watchMonitor(correlated, result, dependencies);
+    else
+      dependencies.output.write(
+        json
+          ? `${JSON.stringify(result)}\n`
+          : status
+            ? renderStatus(status, (dependencies.now ?? (() => new Date()))())
+            : renderResult(request.action, result),
+      );
     const evidence = await recordDiagnostic(dependencies.diagnostics, {
       event: "command.completed",
       operationId,
@@ -236,7 +248,8 @@ export async function runRigCli(
     if (evidence.error) dependencies.output.error(`${evidence.error}\n`);
     if (request.action === "doctor" && object(result).ok === false)
       exitCode = 1;
-    if (options.follow) await followLogs(correlated, result, dependencies);
+    if (options.follow && request.action === "logs")
+      await followLogs(correlated, result, dependencies);
   };
   const command = createRigCommand(
     dependencies.cwd,
@@ -323,6 +336,33 @@ async function restoreOutcome(
 }
 function json(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+/** `rig monitor` on a terminal: the table redrawn in place after every sample, with the time it was read, until
+ * cancellation. A read that fails ends the watch with that failure. */
+async function watchMonitor(
+  request: RuntimeCommand,
+  first: unknown,
+  dependencies: CliDependencies,
+): Promise<void> {
+  const region = liveRegion(
+    (text) => dependencies.output.write(text),
+    dependencies.terminalColumns,
+  );
+  const clock = dependencies.now ?? (() => new Date());
+  let result = first as MonitorResult;
+  while (!dependencies.signal?.aborted) {
+    region.draw([
+      ...monitorLines(result),
+      "",
+      `Updated ${clock().toLocaleTimeString()} · Ctrl-C to stop`,
+    ]);
+    await dependencies.wait(result.sampledEvery * 1000, dependencies.signal);
+    if (dependencies.signal?.aborted) return;
+    result = (await dependencies.client.command(
+      request,
+      dependencies.signal,
+    )) as MonitorResult;
+  }
 }
 /** Entries fetched per follow poll: --lines sizes the first page only, so a busy Target is not throttled to it. */
 const FOLLOW_BATCH_LINES = 1000;

@@ -5,6 +5,8 @@ import {
 } from "../domain/project-status";
 import { formatBytes } from "../domain/bytes";
 import { killingText } from "./stop-display";
+import { monitorLines } from "./monitor-output";
+import type { MonitorResult } from "../daemon/protocol";
 import { terminalText } from "./terminal-text";
 /** Human presenters consume the same domain report returned by structured commands. */
 export function renderResult(action: string, value: unknown): string {
@@ -17,6 +19,8 @@ export function renderResult(action: string, value: unknown): string {
   if (action === "activity") return renderActivity(report);
   if (action === "proxy") return renderProxy(report);
   if (action === "backups") return renderBackups(report);
+  if (action === "monitor")
+    return `${monitorLines(report as MonitorResult).join("\n")}\n`;
   if (action === "dns") return renderDns(report);
   if (["dns-create", "dns-update", "dns-delete"].includes(action))
     return `${capitalized(word(report.summary)) || "DNS record changed"}.\n`;

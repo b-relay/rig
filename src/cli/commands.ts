@@ -12,6 +12,7 @@ import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
+import { addMonitorCommand } from "./monitor-command";
 import { addLogsCommand } from "./logs-command";
 import { addDnsCommands, type DnsCommandDependencies } from "./dns-command";
 
@@ -92,6 +93,7 @@ export function createRigCommand(
   addRunCommand(command, cwd, execute);
   addBackupCommands(command, cwd, execute);
   addInitCommand(command, cwd, execute);
+  addMonitorCommand(command, { execute, projectScope }, cwd);
   addLogsCommand(command, {
     execute,
     now,

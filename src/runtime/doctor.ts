@@ -216,7 +216,7 @@ async function orphanedToolsCheck(
         : "",
       changed.length
         ? changed.some((tool) => rigOwn.includes(tool.destination))
-          ? "Move or delete a changed one to keep or discard that change, except rig and rigd: replace a changed one of those by copying the bytes you want to a temporary name beside it and renaming that over it. A Target can then publish there."
+          ? "Move or delete a changed one to keep or discard that change, except rig and rigd: for those, put back the bytes whose SHA-256 the ownership record in installed/owners names, by copying them to a temporary name beside it and renaming that over it. A Target can then publish there."
           : "Move or delete a changed one to keep or discard that change; a Target can then publish there."
         : "",
       rigOwn.length

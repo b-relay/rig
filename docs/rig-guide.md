@@ -2631,7 +2631,11 @@ delete `<RIG_ROOT>/bin/rigd`.
 Until a Target takes one over, `rig doctor` names it (`tool-owners`, passing).
 A Tool that was edited after Rig published it is never replaced or removed:
 publishing there fails as `ARTIFACT_CHANGED` until you move or delete the
-file, and `tool-owners` fails while it is there. The same holds for a Tool
+file, and `tool-owners` fails while it is there. Never move or delete a changed
+`rig` or `rigd`: put back the bytes Rig recorded (the SHA-256 in its ownership
+record under `<RIG_ROOT>/installed/owners`) by copying them to a temporary name
+beside it and renaming that over it, then deploy, as the rig:rigd skill's
+upgrade reference says. The same holds for a Tool
 an earlier `rig forget` left with its old owner, so a Host that had one
 recovers without any step of its own.
 

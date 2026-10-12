@@ -181,7 +181,7 @@ async function forgottenWarnings(
     ),
     ...(tools.length
       ? [
-          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}${rigItself ? " (rig and rigd only from a clone of this repository registered again)" : ""}, and you may delete any you no longer want${tools.includes(daemon) ? `, except ${daemon}, which rigd's system job runs` : ""}.`,
+          `Its Tools stay installed: ${tools.join(", ")}. Rig no longer owns them: the next Target that publishes a Tool of the same name replaces ${tools.length === 1 ? "it" : "each"}${rigItself ? " (rig and rigd only from a clone of this repository registered again)" : ""}, and you may delete any you no longer want${rigItself ? `, except ${rigBinaries.filter((path) => tools.includes(path)).join(" and ")}: Rig itself, and rigd's system job runs ${daemon}` : ""}.`,
         ]
       : []),
     ...(changed.length
@@ -197,7 +197,7 @@ async function forgottenWarnings(
               : []),
             ...(own.length
               ? [
-                  `${own.join(" and ")} changed since Rig published ${own.length === 1 ? "it" : "them"} and ${own.length === 1 ? "stays" : "stay"} as ${own.length === 1 ? "it is" : "they are"}. Never move or delete ${own.length === 1 ? "it" : "them"}: rigd's system job runs ${daemon}. To publish Rig there again, replace ${own.length === 1 ? "it" : "each"} with the bytes you want by copying them to a temporary name beside it and renaming that over it (the rig:rigd skill's upgrade reference), then deploy.`,
+                  `${own.join(" and ")} changed since Rig published ${own.length === 1 ? "it" : "them"} and ${own.length === 1 ? "stays" : "stay"} as ${own.length === 1 ? "it is" : "they are"}. Never move or delete ${own.length === 1 ? "it" : "them"}: rigd's system job runs ${daemon}. Rig publishes Rig there again only over the bytes it recorded: put back the bytes whose SHA-256 ${own.length === 1 ? "its" : "each one's"} ownership record in installed/owners names, by copying them to a temporary name beside it and renaming that over it, then deploy (the rig:rigd skill's upgrade reference).`,
                 ]
               : []),
           ];

@@ -586,8 +586,11 @@ test("Rig's own rig and rigd Tools are never taken while their Target is recorde
       action: "forget",
       project: "rig",
     })) as { warnings: string[] };
-    expect(forgotten.warnings).toContainEqual(
-      expect.stringContaining(`except ${daemon}, which rigd's system job runs`),
+    const kept = forgotten.warnings
+      .find((line) => line.startsWith("Its Tools stay installed"))!
+      .split(", except ")[1]!;
+    expect(kept).toBe(
+      `${w.bin("rig")} and ${daemon}: Rig itself, and rigd's system job runs ${daemon}.`,
     );
     expect(await w.tool("rigd")).toBe(before.bytes);
     expect((await stat(daemon)).ino).toBe(before.ino);
@@ -662,7 +665,9 @@ test("a hand-edited rigd is never to be moved or deleted: forget, the refused ta
     line.startsWith(`${daemon} changed since Rig published it`),
   );
   expect(warning).toContain("Never move or delete it");
-  expect(warning).toContain("renaming that over it");
+  expect(warning).toContain(
+    "put back the bytes whose SHA-256 its ownership record in installed/owners names",
+  );
   expect(forgotten.warnings).not.toContainEqual(
     expect.stringContaining("until you move or delete"),
   );
@@ -671,19 +676,38 @@ test("a hand-edited rigd is never to be moved or deleted: forget, the refused ta
       name: "tool-owners",
       reason: "tool-changed",
       hint: expect.stringContaining(
-        "except rig and rigd: replace a changed one of those by copying the bytes you want to a temporary name beside it and renaming that over it",
+        "except rig and rigd: for those, put back the bytes whose SHA-256 the ownership record in installed/owners names",
       ),
     }),
   );
   w.rebuild("v2");
-  const refused = w.registerAndDeploy("rig");
-  await expect(refused).rejects.toMatchObject({
-    code: "ARTIFACT_CHANGED",
-    hint: expect.stringContaining(`Never move or delete ${daemon}`),
-  });
-  await expect(refused).rejects.not.toMatchObject({
-    hint: expect.stringContaining(`Move or delete ${daemon}`),
-  });
+  const refused = await w.registerAndDeploy("rig").then(
+    () => undefined,
+    (error: RigError) => error,
+  );
+  expect(refused).toMatchObject({ code: "ARTIFACT_CHANGED" });
+  expect(refused!.hint).toContain(`Never move or delete ${daemon}`);
+  expect(refused!.hint).toContain("Put back the bytes whose SHA-256");
+  expect(refused!.hint).not.toContain(`Move or delete ${daemon}`);
+  expect(await w.tool("rigd")).toBe(edited);
+});
+
+test("a hand-edited rigd its Target still owns is refused the same way on rig up: put the recorded bytes back, never move it", async () => {
+  const w = await rigWorld();
+  await w.registerAndDeploy("rig");
+  await w.stop("rig");
+  const edited = "#!/bin/sh\necho rigd copied by hand\n";
+  await writeFile(w.bin("rigd"), edited);
+  w.rebuild("v2");
+  const refused = await w.runtime
+    .command({ action: "up", project: "rig", target: "stable" })
+    .then(
+      () => undefined,
+      (error: RigError) => error,
+    );
+  expect(refused).toMatchObject({ code: "ARTIFACT_CHANGED" });
+  expect(refused!.hint).toContain(`Never move or delete ${w.bin("rigd")}`);
+  expect(refused!.hint).toContain("Put back the bytes whose SHA-256");
   expect(await w.tool("rigd")).toBe(edited);
 });
 

@@ -117,6 +117,12 @@ export function createArtifactOwnership(
     join(root, "bin", "rig"),
     join(root, "bin", "rigd"),
   ]);
+  /** How to clear ARTIFACT_CHANGED at `destination`. Rig's own executables are never moved or deleted (launchd runs bin/rigd,
+   * and a missing published file fails a deploy's rollback): only the recorded bytes, renamed back over them, clear it. */
+  const changedAdvice = (destination: string) =>
+    rigItself.has(destination)
+      ? `Never move or delete ${destination}: rigd's system job runs bin/rigd, and Rig publishes Rig here again only over the bytes it recorded. Put back the bytes whose SHA-256 its ownership record in installed/owners names, by copying them to a temporary name beside it and renaming that over it, then retry (the rig:rigd skill's upgrade reference).`
+      : `Move or delete ${destination} to keep or discard that change, then retry.`;
   /** Every file a publication at `destination` writes besides the executable and its receipt: the ownership record, and for
    * Rig's own executables its provenance. An effect checkpoint covers all of them. */
   const ownedPaths = (destination: string) =>
@@ -185,9 +191,7 @@ export function createArtifactOwnership(
         throw new RigError(
           "ARTIFACT_CHANGED",
           `The installed executable ${identity.destination} changed since Rig published it for ${describeOwner(saved)}, whose Target no longer exists.`,
-          rigItself.has(identity.destination)
-            ? `Rig never replaces or removes an executable that changed. Never move or delete ${identity.destination}: rigd's system job runs bin/rigd. Replace it with the bytes you want by copying them to a temporary name beside it and renaming that over it (the rig:rigd skill's upgrade reference), then retry.`
-            : `Rig never replaces or removes an executable that changed. Move or delete ${identity.destination} to keep or discard that change, then retry.`,
+          `Rig never replaces or removes an executable that changed. ${changedAdvice(identity.destination)}`,
           {
             destination: identity.destination,
             owner: ownerDetails(saved),
@@ -217,7 +221,7 @@ export function createArtifactOwnership(
       throw new RigError(
         "ARTIFACT_CHANGED",
         `The installed executable ${identity.destination} changed outside its owning Component ${saved.componentName}.`,
-        `Move or delete ${identity.destination} to keep or discard that change, then retry.`,
+        changedAdvice(identity.destination),
         { destination: identity.destination },
       );
     return { owner: saved, revision: current };

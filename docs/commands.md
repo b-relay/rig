@@ -186,7 +186,8 @@ status` takes no Target.
   name, from any Project (`rig` and `rigd`: only the repository that published
   them, identified by its root commits), replaces it,
   unless its bytes changed since Rig published it (`ARTIFACT_CHANGED`; move or
-  delete the file). `doctor` names a Tool whose Target no longer exists as
+  delete the file, except `rig` and `rigd`: never move or delete those, but put
+  back the bytes Rig recorded by renaming a copy over them). `doctor` names a Tool whose Target no longer exists as
   `tool-owners`, failing only for a changed one.
 - `logs --service` takes a Service, Tool or job name from `rig.yaml`, or `setup`
   for dependency installation; an unknown name fails as `USAGE` and lists the

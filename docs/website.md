@@ -54,7 +54,7 @@ screen.
 ## Pages
 
 A sidebar (`web/components/shell/sidebar.tsx`) lists the Host-wide sections
-(Overview, Activity, Proxy, Doctor, rigd) and every Project with its icon,
+(Overview, Monitor, Proxy) and every Project with its icon,
 health and Targets, each with a state dot, streamed in as `rigd` answers. Below the width where it
 stays open it is a drawer the top bar opens, and a phone keeps the sections as
 tabs along the bottom. Status reads are shared per request
@@ -69,9 +69,31 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   not running: Start, or Restart and Stop, and Deploy latest for the stable
   Target and Previews, which deploys the head of the Production Branch or of
   the Preview's own Branch after a confirmation.
+- **Monitor** (`/monitor`): this Mac at a glance. The side column holds rigd
+  (version, queue, what it is running now, and what Rig itself uses, live),
+  Doctor's Host checks (failed checks first with their reason and hint), and
+  Activity for every Project; uninstall readiness folds under it. These stand
+  even when the usage read fails. The main column stacks every Project's CPU
+  and memory in one chart each, coloured like their monograms, with every
+  Project's peak flagged where it happened (labels move apart rather than
+  hide) and Activity marked on the time axis; then a card per registered
+  Project, sampled or not, with its own charts (median dashed, peak flagged)
+  and latest Activity. `1h`, `24h` and `7d` are presets: each reads the window
+  that ends now. Charts read `/usage` again after every sample, at the pace of
+  the newest report, a plain GET as the log follow is. Pointing at a chart,
+  tapping it on a phone, or focusing it and using the arrow keys shows a
+  moment's values; Escape hides them. On a phone, rigd and Doctor sit side by
+  side above the charts, and Doctor lists only failed checks. `/doctor` and
+  `/rigd` redirect here; `/activity` keeps the full history and each
+  Operation's record.
 - **A Project** (`/projects/<name>`): Overview (the Project's matrix), Deployments,
-  Logs, Environment, Jobs, Config, Activity, Doctor and Settings. The old
-  `/deploy` address redirects to Deployments.
+  Logs, Monitor, Environment, Jobs, Config and Settings. Monitor shows one Target
+  at a time, picked from a monospace chip beside the Project's name
+  (`pantry / stable`; `working`, a Preview's name, or `all targets`), with the
+  Project's Doctor checks (one line on a phone while all pass) and its Activity
+  beside the Target's charts and a card per configured Service and Job, sampled
+  or not. The old `/deploy` address redirects to Deployments, and `/doctor` to
+  Monitor; `/activity` keeps the Project's full history.
 - **A Target** (`/projects/<name>/targets/<target>`): its state, hostname,
   revision and actions, then Overview (each Service's state, cached health,
   named ports, pid, automatic restarts and how a stopped one ended; the paths
@@ -106,10 +128,9 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   own, `runRestore`, which checks what was typed on the server; the generic
   command action refuses `restore`. It is offered only for a job
   with a `restore` command, while no run of it goes, for a backup still on disk.
-- **Activity**: Operations as a timeline grouped by local day, newest first,
-  each linking to its own record (`?operation=<id>`).
-- **Doctor**: each check as a tinted tile, failed checks first with their
-  reason and hint.
+- **Activity** (`/activity`, linked from Monitor): Operations as a timeline
+  grouped by local day, newest first, each linking to its own record
+  (`?operation=<id>`).
 - **Proxy** reads through one module, `web/lib/proxy.ts`. With Rig's own Caddy
   (ADR 0014), rigd's `proxy` read lists every hostname served, each Target's
   paths with their upstream or `withheld (503)` and the owner's `proxy.routes`,
@@ -306,16 +327,16 @@ runs its commands as you.
 
 ## Layout
 
-| Path                  | Responsibility                                                                                                                                                                                                                                                                                                                   |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/activity`, `/proxy`, `/doctor`, `/rigd`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon.                                                   |
-| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                      |
-| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts` and `env.ts` (per-request reads), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server).                                        |
-| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `operations.tsx` owns in-flight actions and reconciliation.                                                                 |
-| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                               |
-| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-detail.ts`, `logs.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
-| `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                    |
-| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                                                                              |
+| Path                  | Responsibility                                                                                                                                                                                                                                                                                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/monitor`, `/activity`, `/proxy`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon; `/usage` and `/log-lines` the polled reads.                                              |
+| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                                                     |
+| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts` and `env.ts` (per-request reads), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server).                                                                       |
+| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `operations.tsx` owns in-flight actions and reconciliation.                                                                                                |
+| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                                                              |
+| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-detail.ts`, `logs.ts`, `usage.ts`, `chart-layout.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
+| `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                                                   |
+| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                                                                                                             |
 
 Radix primitives set inline styles, so the Content-Security-Policy allows
 `style-src 'unsafe-inline'`; scripts need the per-request nonce.

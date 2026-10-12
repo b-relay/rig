@@ -18,13 +18,16 @@ export async function generateMetadata({
 }) {
   return { title: (await params).name };
 }
-/** A Project's own sections, under its icon, name and repository, with the tabs that move between them. */
+/** A Project's own sections, under its icon, name and repository, with the tabs that move between them. `chip` is
+ * what a section puts beside the name: Monitor's Target chip. */
 export default async function ProjectLayout({
   params,
   children,
+  chip,
 }: {
   params: Promise<{ name: string }>;
   children: ReactNode;
+  chip: ReactNode;
 }) {
   const read = await settled(project(params));
   if (!read.ok)
@@ -49,7 +52,12 @@ export default async function ProjectLayout({
             Projects
           </Link>
         }
-        title={found.name}
+        title={
+          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            {found.name}
+            {chip}
+          </span>
+        }
         description={
           <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
             <Mono className="truncate break-normal text-muted-foreground">

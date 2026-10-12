@@ -157,7 +157,8 @@ export default async function ProxyPage() {
       {unpublished ? (
         <Warning className="text-sm">
           The Host&apos;s Caddy does not load Rig&apos;s route file, so some
-          routes are inert. <Link href="/doctor">Doctor</Link> names the fix.
+          routes are inert. <Link href="/monitor">Doctor, on Monitor,</Link>{" "}
+          names the fix.
         </Warning>
       ) : null}
       <section className="flex flex-col gap-3">

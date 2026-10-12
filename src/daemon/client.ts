@@ -149,7 +149,7 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         command,
-        ["status", "list", "doctor"].includes(command.action)
+        ["status", "list", "doctor", "monitor"].includes(command.action)
           ? { ms: this.readDeadlineMs, subject: `${command.action} read` }
           : undefined,
         signal,

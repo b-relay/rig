@@ -12,7 +12,8 @@ interface MonitorOptions {
 
 const HELP = `
 CPU reads as Activity Monitor shows it: 100% is one full core. Memory is each
-process's physical footprint. Median and peak cover the range.
+process's physical footprint (its resident size on a Mac where rigd samples with
+ps). Median and peak cover the range.
 
 On a terminal the table is redrawn every sample until you press Ctrl-C;
 piped, or with --json, it is printed once.

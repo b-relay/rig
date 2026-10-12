@@ -3,6 +3,7 @@ import type { CliInteraction } from "./interaction";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { DiagnosticLog } from "../diagnostics/types";
 import type { CertificateVerdict } from "../domain/certificate-check";
+import type { TerminalSize } from "./live-region";
 
 /** The only terminal effect; tests capture the same text a terminal receives. */
 export interface UserOutput {
@@ -45,8 +46,9 @@ export interface CliDependencies {
   liveOutput?: boolean;
   /** The terminal's width, to which live progress lines are cut; 80 when absent. */
   terminalColumns?: number;
-  /** stdout is a terminal: `rig monitor` redraws its table in place there. Without one, it prints the table once. */
-  outputTerminal?: boolean;
+  /** Present when stdout is a terminal, reading its size now: `rig monitor` redraws its table in place there, fitted to
+   * that size. Absent, it prints the table once. */
+  outputTerminal?: () => TerminalSize;
 }
 export interface DaemonAdmin {
   install(operationId?: string): Promise<unknown>;

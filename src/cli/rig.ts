@@ -228,7 +228,7 @@ export async function runRigCli(
     const watching =
       request.action === "monitor" &&
       options.follow === true &&
-      dependencies.outputTerminal === true;
+      dependencies.outputTerminal !== undefined;
     if (watching) await watchMonitor(correlated, result, dependencies);
     else
       dependencies.output.write(
@@ -344,15 +344,13 @@ async function watchMonitor(
   first: unknown,
   dependencies: CliDependencies,
 ): Promise<void> {
-  const region = liveRegion(
-    (text) => dependencies.output.write(text),
-    dependencies.terminalColumns,
-  );
+  const size = dependencies.outputTerminal!;
+  const region = liveRegion((text) => dependencies.output.write(text), size);
   const clock = dependencies.now ?? (() => new Date());
   let result = first as MonitorResult;
   while (!dependencies.signal?.aborted) {
     region.draw([
-      ...monitorLines(result),
+      ...monitorLines(result, size().columns),
       "",
       `Updated ${clock().toLocaleTimeString()} · Ctrl-C to stop`,
     ]);
@@ -395,6 +393,8 @@ function requestsStructuredOutput(args: readonly string[]): boolean {
   const options = end < 0 ? args : args.slice(0, end);
   return (
     options.includes("--json") &&
-    ["status", "up", "down", "restart", "deploy"].includes(args[0] ?? "")
+    ["status", "up", "down", "restart", "deploy", "monitor"].includes(
+      args[0] ?? "",
+    )
   );
 }

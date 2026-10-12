@@ -5,6 +5,7 @@ import {
 } from "../domain/usage-minute";
 import {
   cpuByProcess,
+  processKey,
   sumSamples,
   treeUsage,
   type ProcessReading,
@@ -109,6 +110,9 @@ export function createUsageSampler(deps: {
   const previous = new Map<string, { at: number; cpu: Map<string, number> }>();
   const minutes = createMinuteBuffer();
   let latest: LatestSample[] = [];
+  /** The processes the last pass counted as Rig itself (by `processKey`): a helper rigd keeps running, such as a
+   * healthcheck command, is new only once. */
+  let countedAsRig = new Set<string>();
   let flushDueAt: number | undefined;
   let pruneDueAt: number | undefined;
   let flushFailure: unknown;
@@ -167,7 +171,7 @@ export function createUsageSampler(deps: {
         // records again now rather than count it towards Rig itself until the next refresh.
         if (
           at - running.at >= NEWCOMER_REFRESH_MS &&
-          hasNewcomer(running, trees)
+          hasNewcomer(running, trees, countedAsRig)
         ) {
           running = await discover();
           trees = await deps.reader.read(rootsOf(running));
@@ -201,6 +205,7 @@ export function createUsageSampler(deps: {
         ])
           if (!inComponents.has(reading.pid))
             rigReadings.set(reading.pid, reading);
+        countedAsRig = new Set([...rigReadings.values()].map(processKey));
         const rig =
           rigReadings.size > 0
             ? measure(RIG, [...rigReadings.values()], at)
@@ -263,20 +268,25 @@ export function createUsageSampler(deps: {
   };
 }
 
-/** Whether a Rig tree holds a process that is not rigd, Caddy, a known wrapper, or in a known Component. */
+/** Whether a Rig tree holds a process that is new: not rigd or Caddy, not in a known Component tree, and not one the
+ * last pass already counted as Rig itself. */
 function hasNewcomer(
   known: {
     readonly processes: readonly MonitoredProcess[];
     readonly rig: readonly number[];
   },
   trees: ReadonlyMap<number, readonly ProcessReading[]>,
+  countedAsRig: ReadonlySet<string>,
 ): boolean {
   const familiar = new Set<number>(known.rig);
   for (const { wrapperPid } of known.processes)
     for (const reading of trees.get(wrapperPid) ?? [])
       familiar.add(reading.pid);
   return known.rig.some((pid) =>
-    (trees.get(pid) ?? []).some((reading) => !familiar.has(reading.pid)),
+    (trees.get(pid) ?? []).some(
+      (reading) =>
+        !familiar.has(reading.pid) && !countedAsRig.has(processKey(reading)),
+    ),
   );
 }
 

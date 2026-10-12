@@ -252,13 +252,48 @@ describe("the usage sampler", () => {
     expect(latest.rig!.memoryBytes).toBe(52);
   });
 
+  test("a helper rigd keeps running is looked into once, while a Job run that starts beside it is still found within a second", async () => {
+    const trees: Record<number, ScriptedProcess[]> = {
+      1: [
+        { pid: 1, cores: 0.1, memoryBytes: 50 },
+        // A command healthcheck that stays alive across passes.
+        { pid: 40, cores: 0.05, memoryBytes: 4 },
+      ],
+    };
+    const host = scriptedHost(trees);
+    let running: MonitoredProcess[] = [];
+    let discoveries = 0;
+    const sampled = sampler(host, {
+      processes: () => {
+        discoveries++;
+        return running;
+      },
+      rig: [1],
+    });
+    await run(host, sampled, 4);
+    // Only the first pass reads rigd's records: the helper, counted as Rig itself, never sends it back to them.
+    expect(discoveries).toBe(1);
+    const job = [
+      { pid: 30, cores: 0.01, memoryBytes: 2 },
+      { pid: 31, cores: 1, memoryBytes: 300 },
+    ];
+    trees[30] = job;
+    trees[1] = [...trees[1]!, ...job];
+    running = [component("backup", 30, "job")];
+    await run(host, sampled, 2);
+    expect(discoveries).toBe(2);
+    expect(latestBy(sampled).backup!.cpuPercent).toBeCloseTo(100);
+  });
+
   test("CPU is divided by the time between the reads that returned the counters, however long a read takes", async () => {
     const host = scriptedHost({ 10: [{ pid: 11, cores: 1, memoryBytes: 1 }] });
     const sampled = sampler(host, { processes: () => [component("web", 10)] });
     await run(host, sampled, 2);
     host.slowReads(400);
-    await run(host, sampled, 2);
-    expect(latestBy(sampled).web!.cpuPercent).toBeCloseTo(100);
+    for (let i = 0; i < 2; i++) {
+      await run(host, sampled, 1);
+      expect(latestBy(sampled).web!.cpuPercent).toBeCloseTo(100);
+    }
   });
 
   test("changed minutes are written every 30 seconds, every sample exactly once, and a minute that went quiet is not written again", async () => {
@@ -311,12 +346,42 @@ describe("the usage sampler", () => {
     expect(await storedSeconds(0, 60)).toEqual(seconds(1, 46));
   });
 
+  test("while pruning fails every pass fails, until a retry a minute later succeeds", async () => {
+    const host = scriptedHost({ 10: [{ pid: 11, cores: 1, memoryBytes: 10 }] });
+    let failing = true;
+    const store: UsageHistory = {
+      ...watched().store,
+      prune: async (input) => {
+        if (failing) throw new Error("database is locked");
+        return history.prune(input);
+      },
+    };
+    const sampled = sampler(host, {
+      processes: () => [component("web", 10)],
+      history: store,
+    });
+    const outcomes: string[] = [];
+    for (let i = 0; i < 70; i++) {
+      await sampled.pass().then(
+        () => outcomes.push("ok"),
+        () => outcomes.push("failed"),
+      );
+      host.tick();
+      if (i === 5) failing = false;
+    }
+    // The first pass prunes and fails; the retry is due a minute later.
+    expect(outcomes.slice(0, 60).every((each) => each === "failed")).toBe(true);
+    expect(outcomes.slice(60).every((each) => each === "ok")).toBe(true);
+  });
+
   test("a forget during a pass waits for it, and nothing that pass sampled comes back afterwards", async () => {
     const host = scriptedHost({ 10: [{ pid: 11, cores: 1, memoryBytes: 10 }] });
     let gate: Promise<void> | undefined;
+    let entered: (() => void) | undefined;
     const gated: ProcessUsageReader = {
       ...host.reader,
       read: async (roots) => {
+        entered?.();
         await gate;
         return host.reader.read(roots);
       },
@@ -329,7 +394,10 @@ describe("the usage sampler", () => {
     await sampled.flush();
     let open!: () => void;
     gate = new Promise((resolve) => (open = resolve));
+    const reading = new Promise<void>((resolve) => (entered = resolve));
     const pass = sampled.pass();
+    // The pass is inside its read when the forget arrives.
+    await reading;
     const forgotten = sampled.forget("p-fletcher");
     open();
     await pass;
@@ -381,6 +449,7 @@ describe("stored usage history", () => {
   test("pruning drops detail and history on their own schedules, and forgetting a Project drops all of its history", async () => {
     await history.write([
       { series: web, minute: 100, slots: slots(10) },
+      { series: web, minute: 170, slots: slots(20) },
       { series: web, minute: 200, slots: slots(10) },
       { series: { scope: "host" }, minute: 200, slots: slots(10) },
     ]);
@@ -398,9 +467,14 @@ describe("stored usage history", () => {
     expect(
       (await read(true))[0]!.spans.some((span) => span.at < 200 * 60),
     ).toBe(false);
-    expect((await read(false))[0]!.spans.map((span) => span.at)).toEqual([
-      200 * 60,
-    ]);
+    // Minute 170 has lost its seconds but keeps its distribution; minute 100 has lost both.
+    const minutes = (await read(false))[0]!.spans;
+    expect(minutes.map((span) => span.at)).toEqual([170 * 60, 200 * 60]);
+    expect(minutes[0]!.histograms.cpu).toMatchObject({
+      count: 60,
+      low: 20,
+      high: 20,
+    });
 
     await history.forget("p-fletcher");
     expect(await read(false)).toEqual([]);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ConfigError } from "./errors";
 import { validHostname } from "./hostname";
+import { parseTrustedClient } from "../domain/trusted-clients";
 import { proxyModeOf, proxySettingsSchema } from "./proxy-schema";
 import { referenceResolver } from "./references";
 import {
@@ -1359,11 +1360,37 @@ export const hostConfigSchema = z.strictObject({
           .describe(
             `The port on 127.0.0.1 rigd serves the dashboard on. Default ${DEFAULT_DASHBOARD_PORT}. A change applies when rigd next starts (rigd install).`,
           ),
+        domain: z
+          .string()
+          .refine(
+            (hostname) =>
+              validHostname(hostname) && hostname === hostname.toLowerCase(),
+            "must be a lowercase hostname such as rig.example.com; schemes, ports, paths and wildcards are not allowed",
+          )
+          .optional()
+          .describe(
+            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry while rigd runs the dashboard, so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
+          ),
+        trusted_clients: z
+          .array(
+            z.string().refine((entry) => {
+              try {
+                parseTrustedClient(entry);
+                return true;
+              } catch {
+                return false;
+              }
+            }, "must be an IP address or an IPv4 block such as 100.64.0.0/10"),
+          )
+          .default([])
+          .describe(
+            "Addresses that reach the published dashboard without the access key: IP addresses, or IPv4 blocks such as 100.64.0.0/10 for a tailnet. Everyone else signs in with the key. A change applies when rigd next starts (rigd install).",
+          ),
       }),
     ])
     .prefault({})
     .describe(
-      "The dashboard that comes with Rig: rigd starts it and keeps it running, on this Mac only, at http://127.0.0.1:<port>. false turns it off.",
+      "The dashboard that comes with Rig: rigd starts it and keeps it running at http://127.0.0.1:<port>, and with domain Rig's Caddy publishes it. false turns it off.",
     ),
   // Retired, not refused: rigd reads this file as it starts, so a refusal would keep it from starting at all.
   alerts: z.unknown().optional().meta({
@@ -1373,8 +1400,29 @@ export const hostConfigSchema = z.strictObject({
   }),
 });
 /** The parsed Host config plus how it publishes routes, which only the document as written can tell (see `proxyModeOf`). */
+/** Host config with the rules that span sections: the dashboard's domain is published by Rig's own Caddy, beside the
+ * owner's proxy.routes, so it needs a proxy section and a hostname no proxy.routes entry has. */
+const checkedHostConfigSchema = hostConfigSchema.superRefine(
+  (host, context) => {
+    if (host.dashboard === false || host.dashboard.domain === undefined) return;
+    if (!host.proxy)
+      context.addIssue({
+        code: "custom",
+        path: ["dashboard", "domain"],
+        message:
+          "needs a proxy section: Rig's own Caddy publishes the dashboard (see proxy in the guide's Setup)",
+      });
+    else if (Object.hasOwn(host.proxy.routes, host.dashboard.domain))
+      context.addIssue({
+        code: "custom",
+        path: ["dashboard", "domain"],
+        message:
+          "is also in proxy.routes; one hostname has one upstream, so remove it from one of them",
+      });
+  },
+);
 export function parseHostConfig(value: unknown) {
-  const result = hostConfigSchema.safeParse(value);
+  const result = checkedHostConfigSchema.safeParse(value);
   if (!result.success) throw validationError("Host", result.error.issues);
   const { mode, externalIgnored } = proxyModeOf(value);
   return { ...result.data, proxyMode: mode, externalIgnored };

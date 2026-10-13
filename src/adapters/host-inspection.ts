@@ -1,4 +1,9 @@
 import { access, constants, stat } from "node:fs/promises";
+import {
+  configuredDashboardRoute,
+  withDashboardRoute,
+  type DashboardRoute,
+} from "../daemon/dashboard";
 import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
@@ -7,7 +12,13 @@ import { inspectHostProxy, proxyCheck } from "./proxy-publication";
 import { readInstallationRecord } from "../daemon/installation";
 import { inspectManagedProxy } from "./proxy-inspection";
 /** Observe local prerequisites without running repairs, writing probes, or contacting remotes. */
-export async function inspectHost(root: string): Promise<DoctorCheck[]> {
+export async function inspectHost(
+  root: string,
+  /** In rigd: the dashboard route it publishes (none: undefined), which rig proxy reload keeps until rigd restarts; so a
+   * dashboard edit is reported by the dashboard check, never as a proxy setting reload would apply. Absent (offline),
+   * the route Host config asks for. */
+  served?: { readonly dashboardRoute: DashboardRoute | undefined },
+): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   // Rig runs its own copy of Caddy then, so the one on PATH does not matter.
   let managed = false;
@@ -44,7 +55,13 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
       checks.push(
         ...(await inspectManagedProxy(
           root,
-          host.proxy,
+          // What applying Host config would publish, the dashboard's route included (see rigd install).
+          withDashboardRoute(
+            host.proxy,
+            served
+              ? served.dashboardRoute
+              : await configuredDashboardRoute(root, host),
+          ),
           installation?.mode ?? (process.env.RIG_ROOT ? "process" : "launchd"),
         )),
       );

@@ -11,6 +11,9 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import type { HostConfig } from "../config/types";
+import { RigError } from "../domain/errors";
+import type { DoctorCheck } from "./offline-doctor";
+import type { ProxySettings } from "../config/proxy-schema";
 import type { LogRetention } from "../domain/log-retention";
 import { RIG_VERSION } from "../domain/version";
 import { rotateLogFile } from "../providers/target-log";
@@ -43,17 +46,131 @@ export function dashboardDirectory(
 ): string {
   return join(root, "dashboard", `v${release}`);
 }
-/** Where a rigd started now would serve the dashboard: Host config's port, when it is on and this release's dashboard is
- * installed; otherwise undefined, since that rigd serves none. `rigd install` compares it with what the running rigd
- * reports, so a changed setting starts a rigd that applies it. */
-export async function dashboardUrl(
+/** Where the dashboard is published beyond this Mac: Rig's Caddy serves `domain` at `authority`, and `trustedClients`
+ * reach it without the access key. */
+export interface DashboardPublication {
+  readonly domain: string;
+  /** What browsers address it as, `host[:port]`: the domain, with Caddy's HTTPS port when that is not 443. */
+  readonly authority: string;
+  readonly trustedClients: readonly string[];
+}
+/** Pure: how a dashboard is served, as rigd status shows it and rigd install compares it: `http://127.0.0.1:4280`, or
+ * `https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10`. */
+export function describeDashboard(
+  port: number,
+  published?: DashboardPublication,
+): string {
+  const local = `http://127.0.0.1:${port}`;
+  if (!published) return local;
+  const trusting = published.trustedClients.length
+    ? `, trusting ${published.trustedClients.join(", ")}`
+    : "";
+  return `https://${published.authority} via ${local}${trusting}`;
+}
+/** Pure: the publication Host config asks of the dashboard, if any. */
+export function dashboardPublication(
+  host: Pick<HostConfig, "dashboard" | "proxy">,
+): DashboardPublication | undefined {
+  if (host.dashboard === false || host.dashboard.domain === undefined)
+    return undefined;
+  const https = host.proxy?.ports.https ?? 443;
+  return {
+    domain: host.dashboard.domain,
+    authority:
+      https === 443
+        ? host.dashboard.domain
+        : `${host.dashboard.domain}:${https}`,
+    trustedClients: host.dashboard.trusted_clients,
+  };
+}
+/** The route Rig's Caddy serves for a published dashboard: its domain, to its port on 127.0.0.1; and Caddy's HTTPS port
+ * it was published on, which is part of the address the dashboard admits (see dashboardPublication). */
+export interface DashboardRoute {
+  readonly domain: string;
+  readonly port: number;
+  readonly https: number;
+}
+/** The route of the dashboard a rigd started now would publish: Host config's domain and port, when the dashboard is on,
+ * published, and installed for this release; otherwise none, so Caddy never sends visitors to a port nothing of Rig's
+ * serves. rigd reads it once as it starts, beside the dashboard it starts, so the two never disagree; doctor and rigd
+ * install read it to say what applying Host config would publish. */
+export async function configuredDashboardRoute(
   root: string,
-  host: Pick<HostConfig, "dashboard">,
+  host: Pick<HostConfig, "dashboard" | "proxy">,
+): Promise<DashboardRoute | undefined> {
+  if (host.dashboard === false || host.dashboard.domain === undefined)
+    return undefined;
+  const server = join(dashboardDirectory(root), "web", "server.js");
+  if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
+  return {
+    domain: host.dashboard.domain,
+    port: host.dashboard.port,
+    https: host.proxy?.ports.https ?? 443,
+  };
+}
+/** Pure: proxy settings with the dashboard's route beside the owner's proxy.routes, so publication, conflicts, rig proxy,
+ * DNS checks and verify serve and report it as one of them. Host config refuses a domain proxy.routes already has. */
+export function withDashboardRoute(
+  settings: ProxySettings,
+  route: DashboardRoute | undefined,
+): ProxySettings {
+  return route
+    ? {
+        ...settings,
+        routes: { ...settings.routes, [route.domain]: route.port },
+      }
+    : settings;
+}
+/** The proxy settings Rig's Caddy publishes while rigd serves the dashboard `route` (see withDashboardRoute). Settings that
+ * move Caddy's HTTPS port are refused, PROXY_CONFIG: the running dashboard admits only the address it was started with,
+ * so the move waits for rigd install, which starts both anew; Caddy keeps the settings it last accepted meanwhile. */
+export function publishedProxySettings(
+  settings: ProxySettings,
+  route: DashboardRoute | undefined,
+): ProxySettings {
+  if (route && settings.ports.https !== route.https)
+    throw new RigError(
+      "PROXY_CONFIG",
+      `proxy.ports.https is now ${settings.ports.https}, but the dashboard rigd serves at ${route.domain} was started for ${route.https}, so it would refuse the new address.`,
+      "Run rigd install to apply the new port to Caddy and the dashboard together. Caddy keeps the settings it last accepted until then.",
+      { https: settings.ports.https, published: route.https },
+    );
+  return withDashboardRoute(settings, route);
+}
+/** How a rigd started now would serve the dashboard (see describeDashboard): Host config's settings, when it is on and
+ * this release's dashboard is installed; otherwise undefined, since that rigd serves none. `rigd install` compares it
+ * with what the running rigd reports, so a changed setting starts a rigd that applies it. */
+export async function dashboardServing(
+  root: string,
+  host: Pick<HostConfig, "dashboard" | "proxy">,
 ): Promise<string | undefined> {
   if (host.dashboard === false) return undefined;
   const server = join(dashboardDirectory(root), "web", "server.js");
   if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
-  return `http://127.0.0.1:${host.dashboard.port}`;
+  return describeDashboard(host.dashboard.port, dashboardPublication(host));
+}
+
+/** Pure: the doctor check of the dashboard: passing while rigd serves it as Host config asks (or both serve none), and
+ * failing with how to apply an edit when they differ, since rigd reads the dashboard's settings only as it starts. */
+export function dashboardCheck(
+  asked: string | undefined,
+  serving: string | undefined,
+): DoctorCheck {
+  if (asked === serving)
+    return {
+      name: "dashboard",
+      ok: true,
+      message: serving
+        ? `rigd serves the dashboard at ${serving}.`
+        : "rigd serves no dashboard: it is off, or none is installed for this release.",
+    };
+  return {
+    name: "dashboard",
+    ok: false,
+    message: `Host config asks for the dashboard ${asked ? `at ${asked}` : "off"}, but rigd serves ${serving ? `it at ${serving}` : "none"}.`,
+    reason: "dashboard-pending",
+    hint: "Run rigd install: rigd reads the dashboard's settings as it starts, and rig proxy reload leaves its route as rigd started it.",
+  };
 }
 
 const recordPath = (root: string) => join(root, "dashboard", "process.json");
@@ -96,6 +213,8 @@ export interface DashboardDependencies {
   readonly directory: string;
   /** rigd's own executable, which runs the server as Bun (BUN_BE_BUN=1); from source, Bun itself. */
   readonly executable: string;
+  /** Where Rig's Caddy publishes it, when Host config names a domain. */
+  readonly published?: DashboardPublication;
   /** The Host's Target log sizes, which the dashboard's log follows too. */
   retention(): Promise<LogRetention>;
   readonly notices: Pick<NoticeBoard, "note" | "clear">;
@@ -108,6 +227,8 @@ export interface DashboardDependencies {
 export interface Dashboard {
   /** Where it is served: http://127.0.0.1:<port>. */
   readonly url: string;
+  /** How it is served, with where it is published (see describeDashboard). */
+  readonly serving: string;
   /** Starts it and keeps it running until `stop`. */
   start(): void;
   stop(): Promise<void>;
@@ -154,6 +275,15 @@ export async function openDashboard(
     HOSTNAME: "127.0.0.1",
     PORT: String(deps.port),
     RIG_ROOT: deps.root,
+    // Published, it is the dashboard at that host: browsers beyond this Mac sign in with the key, unless trusted.
+    ...(deps.published
+      ? {
+          RIG_WEB_HOST: deps.published.authority,
+          RIG_WEB_DASHBOARD_HOST: deps.published.authority,
+          RIG_WEB_KEY_FILE: join(deps.root, "auth", "dashboard.key"),
+          RIG_WEB_TRUSTED_CLIENTS: deps.published.trustedClients.join(","),
+        }
+      : {}),
   };
   const launch = (): Run => {
     const child = spawn(deps.executable, ["server.js"], {
@@ -226,6 +356,7 @@ export async function openDashboard(
   };
   return {
     url: `http://127.0.0.1:${deps.port}`,
+    serving: describeDashboard(deps.port, deps.published),
     start() {
       running ??= loop();
     },

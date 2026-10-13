@@ -57,6 +57,33 @@ dashboard that keeps exiting is a `rig doctor` finding. `rigd status` names
 where it is served (`Dashboard  http://127.0.0.1:4280`); a `rigd` run from
 source, or with `dashboard: false`, serves none.
 
+To reach the dashboard from elsewhere, name a hostname for it; Rig's own Caddy
+(a `proxy` section) publishes it there with a certificate like a Target's:
+
+```yaml
+# <RIG_ROOT>/config.yaml
+dashboard:
+  domain: rig.example.com
+  trusted_clients: [100.64.0.0/10] # your tailnet reaches it without the key
+```
+
+It is served like a `proxy.routes` entry, to the port of the dashboard `rigd`
+runs, and only while one runs: a Target or `proxy.routes` naming the same
+hostname is refused (`rigd install` refuses a domain a Target already serves
+before it restarts anything). The route follows the dashboard `rigd` started
+with, so an edit to the domain, port or trusted clients applies when
+`rigd install` restarts `rigd` (`rig proxy reload` leaves the route as it was);
+until then `rig doctor`'s `dashboard` check names the difference. With Caddy's
+HTTPS port other than 443 (`proxy.ports.https`), the dashboard is addressed as
+`https://rig.example.com:<port>`; while it is published, `rig proxy reload`
+refuses to move that port (`PROXY_CONFIG`), since the running dashboard admits
+only the address it started with, and `rigd install` moves both. A browser from anywhere else signs in with the
+access key in `<RIG_ROOT>/auth/dashboard.key`, which the dashboard creates on
+its first start. `rigd status` then reads
+`Dashboard  https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10`,
+and `rigd install` restarts `rigd` when the domain, the trusted clients or the
+port change.
+
 `rigd status` exits 0 only when the daemon is reachable; otherwise it exits 1
 and its last line says what to do (`rigd is not installed. Run rigd install.`,
 `rigd is installed but not running. Run rigd install to start it.`, or, for a
@@ -1479,8 +1506,10 @@ capability:
   how long `rigd` keeps every 1-second CPU and memory sample, and how long it
   keeps the per-minute history behind week-long charts (see Monitor)
 - `dashboard.port` (default 4280): where `rigd` serves the dashboard that comes
-  with Rig, at `http://127.0.0.1:<port>` on this Mac only; `dashboard: false`
-  turns it off. A change applies when `rigd` next starts (`rigd install`)
+  with Rig, at `http://127.0.0.1:<port>`; `dashboard: false` turns it off.
+  `dashboard.domain` publishes it through Rig's own Caddy at that hostname, and
+  `dashboard.trusted_clients` lists addresses that reach it there without the
+  access key. A change applies when `rigd` next starts (`rigd install`)
 
 Rig no longer sends alerts. An `alerts` section an earlier Rig read is ignored,
 so `rigd` still starts, and `rig doctor` asks you to delete it.

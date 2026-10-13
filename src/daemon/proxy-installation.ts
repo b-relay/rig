@@ -5,10 +5,13 @@ import type { ProxyMode, ProxySettings } from "../config/proxy-schema";
 import { inspectProxyToken } from "../adapters/proxy-token";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import {
+  bareHostname,
   proxyPaths,
   redactSecrets,
   type ProxyPaths,
 } from "../domain/managed-proxy";
+import { assertSingleOwners } from "../providers/route-file";
+import { configuredDashboardRoute, withDashboardRoute } from "./dashboard";
 import {
   createCaddyAdmin,
   type CaddyAdminClient,
@@ -111,7 +114,11 @@ export function createProxyInstallation(
         "Host config has both a proxy section and providers.caddy.",
         "Delete providers.caddy from config.yaml under the Rig root: the proxy section replaces it.",
       );
-    return host.proxy;
+    // The dashboard's route as the rigd this install starts will publish it.
+    return withDashboardRoute(
+      host.proxy,
+      await configuredDashboardRoute(options.root, host),
+    );
   }
   return {
     mode: async () => (await readHostConfig(options.root)).proxyMode,
@@ -201,6 +208,18 @@ export function createProxyInstallation(
     },
     async preflight() {
       const wanted = await settings();
+      // A dashboard.domain a Target already serves is refused while the running rigd still serves the dashboard as before,
+      // rather than by Caddy after the restart, when the new dashboard would expect a hostname Caddy kept from it.
+      const route = await configuredDashboardRoute(
+        options.root,
+        await readHostConfig(options.root),
+      );
+      const routes = await readFile(paths.routes, "utf8").catch(() => "");
+      if (route)
+        assertSingleOwners(routes, bareHostname, {
+          sites: [route.domain],
+          owner: "dashboard.domain in Host config",
+        });
       await requireToken(options.root, wanted);
       if (!(await stat(wanted.caddy).catch(() => undefined))?.isFile())
         throw new RigError(

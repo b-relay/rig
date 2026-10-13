@@ -29,8 +29,9 @@ export default function SignInPage() {
       </section>
       <p className="px-1 text-xs text-muted-foreground">
         On that Mac, the dashboard that comes with Rig keeps its key in{" "}
-        <code>~/.rig/auth/dashboard.key</code>; a working copy or Preview names
-        its own in its log (<code>rig logs</code>).
+        <code>&lt;RIG_ROOT&gt;/auth/dashboard.key</code> (
+        <code>~/.rig/auth/dashboard.key</code> by default); a working copy or
+        Preview names its own in its log (<code>rig logs</code>).
       </p>
     </div>
   );

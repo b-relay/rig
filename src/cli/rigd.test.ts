@@ -152,3 +152,51 @@ test("rigd capture is a documented command that needs its request file and retur
   expect(await runRigdCli(["status"], options)).toBe(0);
   expect(text).toBe("Installed  yes\nRunning    yes\nReachable  yes\n");
 });
+
+test("rigd upgrade passes the release asked for and --check, and prints what it found or did", async () => {
+  let text = "";
+  const asked: unknown[] = [];
+  const options = {
+    admin: {
+      async install() {
+        return {};
+      },
+      async status() {
+        return {};
+      },
+      async uninstall() {
+        return {};
+      },
+    },
+    output: {
+      write(value: string) {
+        text += value;
+      },
+      error(value: string) {
+        text += value;
+      },
+    },
+    diagnostics: {
+      async record() {
+        return {};
+      },
+    },
+    newOperationId: () => "upgrade-op",
+    capture: async () => 0,
+    upgrade: async (request: { version?: string; check?: boolean }) => {
+      asked.push(request);
+      return {
+        outcome: "available" as const,
+        release: "v0.2.0",
+        installed: "v0.1.0",
+        named: request.version !== undefined,
+      };
+    },
+  };
+  expect(await runRigdCli(["upgrade", "--check"], options)).toBe(0);
+  expect(await runRigdCli(["upgrade", "0.2.0", "--check"], options)).toBe(0);
+  expect(asked).toEqual([{ check: true }, { version: "0.2.0", check: true }]);
+  expect(text).toBe(
+    "Rig v0.2.0 is available; v0.1.0 is installed. Run rigd upgrade to install it.\nRig v0.2.0 is available; v0.1.0 is installed. Run rigd upgrade v0.2.0 to install it.\n",
+  );
+});

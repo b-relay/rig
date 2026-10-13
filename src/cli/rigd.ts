@@ -3,6 +3,8 @@ import type { DaemonAdmin, UserOutput } from "./types";
 import { addHelpCommand, commandPath, terminalCommand } from "./commands";
 import { isHelp, recordDiagnostic, reportFailure } from "./failure";
 import { object, renderResult } from "./output";
+import type { UpgradeRequest, UpgradeResult } from "../daemon/upgrade";
+import { RigError } from "../domain/errors";
 
 export interface RigdCliDependencies {
   admin: DaemonAdmin;
@@ -11,6 +13,8 @@ export interface RigdCliDependencies {
   newOperationId: () => string;
   /** Runs one managed Component from the request file rigd wrote; returns the wrapper's exit code. */
   capture(requestFile: string): Promise<number>;
+  /** Installs a release, or says whether one is newer (see daemon/upgrade); absent where rigd cannot reach releases. */
+  upgrade?(request: UpgradeRequest): Promise<UpgradeResult>;
 }
 /** Daemon administration is explicit and separate from normal Project requests. */
 export async function runRigdCli(
@@ -54,6 +58,45 @@ export async function runRigdCli(
         if (evidence.error) dependencies.output.error(`${evidence.error}\n`);
       });
   }
+  command
+    .command("upgrade")
+    .description(
+      "Install the latest release of Rig, or the one named: rig, rigd and the dashboard, through that release's own install script, then restart rigd.",
+    )
+    .argument(
+      "[version]",
+      "A release such as 0.2.0, to upgrade or roll back to; the latest when absent",
+    )
+    .option(
+      "--check",
+      "Only say whether that release differs from the one installed",
+    )
+    .action(
+      async (version: string | undefined, options: { check?: boolean }) => {
+        operationId = dependencies.newOperationId();
+        await recordDiagnostic(dependencies.diagnostics, {
+          event: "command.started",
+          action: "upgrade",
+          operationId,
+        });
+        if (!dependencies.upgrade)
+          throw new RigError(
+            "COMMAND_UNAVAILABLE",
+            "rigd upgrade is unavailable here.",
+            "Run it from a terminal on the Host.",
+          );
+        const result = await dependencies.upgrade({
+          ...(version !== undefined ? { version } : {}),
+          check: options.check === true,
+        });
+        dependencies.output.write(renderResult("daemon-upgrade", result));
+        await recordDiagnostic(dependencies.diagnostics, {
+          event: "command.completed",
+          action: "upgrade",
+          operationId,
+        });
+      },
+    );
   command
     .command("capture")
     .description(

@@ -20,6 +20,8 @@ import { runCommand } from "./providers/command-runner";
 import { createProxyInstallation } from "./daemon/proxy-installation";
 import { readHostConfig } from "./config";
 import { dashboardServing } from "./daemon/dashboard";
+import { RELEASES, upgrade } from "./daemon/upgrade";
+import { RIG_VERSION } from "./domain/version";
 export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
@@ -86,6 +88,22 @@ export async function main(args: readonly string[]): Promise<number> {
     output: userOutput(),
     newOperationId: randomUUID,
     capture: runCapturedProcess,
+    upgrade: (request) =>
+      upgrade(
+        {
+          root,
+          releases: process.env.RIG_RELEASE_URL || RELEASES,
+          current: RIG_VERSION,
+          fetch: (url) => fetch(url),
+          install: async (script, env) =>
+            // Its output is the upgrade's progress, shown as it runs.
+            Bun.spawn(["/bin/sh", script], {
+              env: { ...process.env, ...env },
+              stdio: ["inherit", "inherit", "inherit"],
+            }).exited,
+        },
+        request,
+      ),
     diagnostics: createHostDiagnosticLog({
       root,
       source: "rigd",

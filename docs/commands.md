@@ -126,6 +126,9 @@ rigd
 ├─ install                          install and verify the daemon, and Rig's Caddy with a proxy section;
 │                                   with daemon.start: boot, prints one sudo line per system job, once
 ├─ status                           installed, running, reachable
+├─ upgrade [version]                install the latest release (or the one named, to roll back) through
+│                                   that release's install script: rig, rigd and the dashboard
+│    --check                        only say whether that release differs from the one installed
 ├─ uninstall                        refused while Targets run or await recovery; prints the sudo
 │                                   line that removes a system job
 └─ capture <request-file>           internal; see below

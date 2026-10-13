@@ -30,6 +30,17 @@ export function renderResult(action: string, value: unknown): string {
         ? `Withdrew routes no recorded Target owned: ${report.withdrawn.map(word).join(", ")}.\n`
         : ""
     }`;
+  if (action === "daemon-upgrade") {
+    const release = word(report.release);
+    const installed = word(report.installed);
+    if (report.outcome === "upgraded")
+      return `Upgraded Rig from ${installed} to ${release}.\n`;
+    if (report.outcome === "available")
+      return `Rig ${release} is available; ${installed} is installed. Run rigd upgrade${report.named === true ? ` ${release}` : ""} to install it.\n`;
+    return report.named === true
+      ? `Rig ${release} is already installed.\n`
+      : `Rig ${installed} is installed, the latest release.\n`;
+  }
   if (action === "daemon-status")
     return `Installed  ${report.installed ? "yes" : "no"}\nRunning    ${report.running ? "yes" : "no"}\nReachable  ${report.reachable ? "yes" : "no"}\n${
       report.version ? `Version    ${word(report.version)}\n` : ""

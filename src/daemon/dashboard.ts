@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import type { HostConfig } from "../config/types";
+import { RigError } from "../domain/errors";
 import type { DoctorCheck } from "./offline-doctor";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { LogRetention } from "../domain/log-retention";
@@ -82,10 +83,12 @@ export function dashboardPublication(
     trustedClients: host.dashboard.trusted_clients,
   };
 }
-/** The route Rig's Caddy serves for a published dashboard: its domain, to its port on 127.0.0.1. */
+/** The route Rig's Caddy serves for a published dashboard: its domain, to its port on 127.0.0.1; and Caddy's HTTPS port
+ * it was published on, which is part of the address the dashboard admits (see dashboardPublication). */
 export interface DashboardRoute {
   readonly domain: string;
   readonly port: number;
+  readonly https: number;
 }
 /** The route of the dashboard a rigd started now would publish: Host config's domain and port, when the dashboard is on,
  * published, and installed for this release; otherwise none, so Caddy never sends visitors to a port nothing of Rig's
@@ -93,13 +96,17 @@ export interface DashboardRoute {
  * install read it to say what applying Host config would publish. */
 export async function configuredDashboardRoute(
   root: string,
-  host: Pick<HostConfig, "dashboard">,
+  host: Pick<HostConfig, "dashboard" | "proxy">,
 ): Promise<DashboardRoute | undefined> {
   if (host.dashboard === false || host.dashboard.domain === undefined)
     return undefined;
   const server = join(dashboardDirectory(root), "web", "server.js");
   if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
-  return { domain: host.dashboard.domain, port: host.dashboard.port };
+  return {
+    domain: host.dashboard.domain,
+    port: host.dashboard.port,
+    https: host.proxy?.ports.https ?? 443,
+  };
 }
 /** Pure: proxy settings with the dashboard's route beside the owner's proxy.routes, so publication, conflicts, rig proxy,
  * DNS checks and verify serve and report it as one of them. Host config refuses a domain proxy.routes already has. */
@@ -113,6 +120,22 @@ export function withDashboardRoute(
         routes: { ...settings.routes, [route.domain]: route.port },
       }
     : settings;
+}
+/** The proxy settings Rig's Caddy publishes while rigd serves the dashboard `route` (see withDashboardRoute). Settings that
+ * move Caddy's HTTPS port are refused, PROXY_CONFIG: the running dashboard admits only the address it was started with,
+ * so the move waits for rigd install, which starts both anew; Caddy keeps the settings it last accepted meanwhile. */
+export function publishedProxySettings(
+  settings: ProxySettings,
+  route: DashboardRoute | undefined,
+): ProxySettings {
+  if (route && settings.ports.https !== route.https)
+    throw new RigError(
+      "PROXY_CONFIG",
+      `proxy.ports.https is now ${settings.ports.https}, but the dashboard rigd serves at ${route.domain} was started for ${route.https}, so it would refuse the new address.`,
+      "Run rigd install to apply the new port to Caddy and the dashboard together. Caddy keeps the settings it last accepted until then.",
+      { https: settings.ports.https, published: route.https },
+    );
+  return withDashboardRoute(settings, route);
 }
 /** How a rigd started now would serve the dashboard (see describeDashboard): Host config's settings, when it is on and
  * this release's dashboard is installed; otherwise undefined, since that rigd serves none. `rigd install` compares it

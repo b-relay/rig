@@ -75,7 +75,9 @@ with, so an edit to the domain, port or trusted clients applies when
 `rigd install` restarts `rigd` (`rig proxy reload` leaves the route as it was);
 until then `rig doctor`'s `dashboard` check names the difference. With Caddy's
 HTTPS port other than 443 (`proxy.ports.https`), the dashboard is addressed as
-`https://rig.example.com:<port>`. A browser from anywhere else signs in with the
+`https://rig.example.com:<port>`; while it is published, `rig proxy reload`
+refuses to move that port (`PROXY_CONFIG`), since the running dashboard admits
+only the address it started with, and `rigd install` moves both. A browser from anywhere else signs in with the
 access key in `<RIG_ROOT>/auth/dashboard.key`, which the dashboard creates on
 its first start. `rigd status` then reads
 `Dashboard  https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10`,

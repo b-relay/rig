@@ -93,6 +93,7 @@ import {
   configuredDashboardRoute,
   dashboardCheck,
   dashboardServing,
+  publishedProxySettings,
   dashboardDirectory,
   dashboardPublication,
   openDashboard,
@@ -509,7 +510,7 @@ function composeManagedCaddy(
     admin,
   });
   const settings = async () =>
-    withDashboardRoute(await readProxySettings(root), dashboardRoute);
+    publishedProxySettings(await readProxySettings(root), dashboardRoute);
   const caddy = createManagedCaddy({
     root,
     settings,

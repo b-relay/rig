@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   DASHBOARD,
   configuredDashboardRoute,
+  publishedProxySettings,
   dashboardCheck,
   dashboardPublication,
   describeDashboard,
@@ -468,7 +469,7 @@ test("Caddy is given the dashboard's route only when a dashboard is installed, o
     f.root,
     host({ port: 4281, domain: "rig.example.com" }),
   );
-  expect(route).toEqual({ domain: "rig.example.com", port: 4281 });
+  expect(route).toEqual({ domain: "rig.example.com", port: 4281, https: 443 });
   expect(hostRoutes(withDashboardRoute(host({}).proxy!, route))).toEqual([
     { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
     { hostname: "rig.example.com", upstream: "127.0.0.1:4281" },
@@ -520,7 +521,7 @@ test("a dashboard edit waits for rigd install: doctor says so, and it is never a
     proxy: { caddy: "/usr/local/bin/caddy" },
   }).proxy!;
   // rigd started serving rig.example.com on 4280, and Caddy accepted that; Host config now asks for 4281.
-  const started = { domain: "rig.example.com", port: 4280 };
+  const started = { domain: "rig.example.com", port: 4280, https: 443 };
   const accepted = withDashboardRoute(proxy, started);
   expect(
     await pendingSettings(f.root, withDashboardRoute(proxy, started), accepted),
@@ -528,7 +529,11 @@ test("a dashboard edit waits for rigd install: doctor says so, and it is never a
   expect(
     await pendingSettings(
       f.root,
-      withDashboardRoute(proxy, { domain: "rig.example.com", port: 4281 }),
+      withDashboardRoute(proxy, {
+        domain: "rig.example.com",
+        port: 4281,
+        https: 443,
+      }),
       accepted,
     ),
   ).toMatchObject({ fields: ["routes"] });
@@ -588,4 +593,27 @@ test("a published dashboard on a Caddy whose HTTPS port is not 443 is addressed 
   expect(policy.hosts.has("rig.example.com:8443")).toBe(true);
   expect(policy.origins.has("https://rig.example.com:8443")).toBe(true);
   expect(policy.relaysAt).toBeUndefined();
+});
+
+test("while rigd serves a published dashboard, settings that move Caddy's HTTPS port are refused until rigd install moves both", () => {
+  const settings = (https: number) =>
+    parseHostConfig({
+      proxy: { caddy: "/usr/local/bin/caddy", ports: { http: 8080, https } },
+    }).proxy!;
+  const route = { domain: "rig.example.com", port: 4280, https: 8443 };
+  expect(publishedProxySettings(settings(8443), route).routes).toEqual({
+    "rig.example.com": 4280,
+  });
+  expect(() => publishedProxySettings(settings(8444), route)).toThrow(
+    expect.objectContaining({
+      code: "PROXY_CONFIG",
+      message:
+        "proxy.ports.https is now 8444, but the dashboard rigd serves at rig.example.com was started for 8443, so it would refuse the new address.",
+      hint: expect.stringContaining("Run rigd install"),
+    }),
+  );
+  // Without a published dashboard, the port moves on reload as before.
+  expect(publishedProxySettings(settings(8444), undefined).ports.https).toBe(
+    8444,
+  );
 });

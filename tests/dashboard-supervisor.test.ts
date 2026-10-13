@@ -221,7 +221,7 @@ test("rigd's health reply names where it serves the dashboard, and omits it when
   }
 });
 
-test("a left-over dashboard is stopped even when this rigd serves none, and a torn record is cleared without stopping anything", async () => {
+test("a left-over dashboard is stopped even when this rigd serves none, and a record that is not one is cleared without stopping anything", async () => {
   const f = await installed(SERVER);
   const left = Bun.spawn([process.execPath, "server.js"], {
     cwd: join(f.directory, "web"),
@@ -244,12 +244,20 @@ test("a left-over dashboard is stopped even when this rigd serves none, and a to
   await expect(
     stat(join(f.root, "dashboard", "process.json")),
   ).rejects.toThrow();
-  // A record a crash tore is removed, and nothing is signalled.
-  await writeFile(join(f.root, "dashboard", "process.json"), '{"pid": 1');
-  await stopLeftOverDashboard(f.root);
-  await expect(
-    stat(join(f.root, "dashboard", "process.json")),
-  ).rejects.toThrow();
+  // A record that is not one (torn by a crash, null, or of the wrong types) is removed, and nothing is signalled.
+  for (const text of [
+    '{"pid": 1',
+    "null",
+    "[]",
+    '{"pid": "1", "startedAt": 5}',
+    '{"pid": 1}',
+  ]) {
+    await writeFile(join(f.root, "dashboard", "process.json"), text);
+    await stopLeftOverDashboard(f.root);
+    await expect(
+      stat(join(f.root, "dashboard", "process.json")),
+    ).rejects.toThrow();
+  }
 });
 
 test("a stop right after a start that could not spawn the dashboard returns, rather than waiting for an exit that never comes", async () => {

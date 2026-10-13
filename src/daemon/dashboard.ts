@@ -9,6 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
 import type { HostConfig } from "../config/types";
 import type { LogRetention } from "../domain/log-retention";
 import { RIG_VERSION } from "../domain/version";
@@ -56,6 +57,11 @@ export async function dashboardUrl(
 }
 
 const recordPath = (root: string) => join(root, "dashboard", "process.json");
+/** The record of a running dashboard: its pid and the start time ps reported, which together name that one process. */
+const recordSchema = z.object({
+  pid: z.number().int().positive(),
+  startedAt: z.string().min(1),
+});
 
 /** Stops the dashboard an earlier rigd recorded and left running (one that was killed), whether or not this rigd serves
  * one, so it does not keep the port or serve unseen. Only the very process recorded is stopped: its pid and start time
@@ -64,17 +70,13 @@ export async function stopLeftOverDashboard(root: string): Promise<void> {
   const record = recordPath(root);
   let recorded: ProcessRecord;
   try {
-    recorded = JSON.parse(await readFile(record, "utf8")) as ProcessRecord;
+    recorded = recordSchema.parse(JSON.parse(await readFile(record, "utf8")));
   } catch {
-    // None recorded; or one torn by a crash, which an atomic write never leaves (see remember).
+    // None recorded; or one that is not a record (torn, or edited by hand), which names no process to stop.
     await rm(record, { force: true });
     return;
   }
-  if (
-    Number.isInteger(recorded.pid) &&
-    recorded.startedAt !== undefined &&
-    (await recordedProcess(recorded)) === "running"
-  ) {
+  if ((await recordedProcess(recorded)) === "running") {
     signal(recorded.pid, "SIGTERM");
     for (
       const until = Date.now() + STOP_GRACE_MS;

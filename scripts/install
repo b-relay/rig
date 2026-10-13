@@ -48,27 +48,24 @@ path_key() {
 
 # Fails unless both destinations can be replaced: a Rig Project's Target that publishes rig or rigd owns that file, and
 # this installer never replaces one; nor anything that is not a regular file. An owned file is known by its ownership
-# record, named by the SHA-256 of its path as Rig wrote it. When RIG_ROOT reaches the root through another spelling (a
-# symlink), that name differs; so a stable Target's record named for no file in bin as spelled here, whose revision is
-# the SHA-256 of the destination's bytes, owns it too. (Only a stable Target publishes bin/rig and bin/rigd unsuffixed.)
+# record, named by the SHA-256 of its path as Rig wrote it. A record for a Tool named rig or rigd that is named for no
+# file in bin as spelled here (written under another spelling of the root, through a symlink, or left by a file that is
+# gone) may be the record of these very files, so it stops the install too, whatever the Target was called.
 check_destinations() {
 	keys="$(for file in "$root"/bin/*; do if [ -e "$file" ]; then path_key "$file"; fi; done)"
+	for record in "$root"/installed/owners/*.json; do
+		case "$record" in *.repository.json) continue ;; esac
+		[ -f "$record" ] || continue
+		if printf '%s\n' "$keys" | grep -qx "$(basename "$record" .json)"; then continue; fi
+		if grep -q '"componentName":"rigd\{0,1\}"' "$record"; then
+			fail "$record records a rig or rigd a Target published that is not in $root/bin as spelled here, so install cannot tell whether it owns these. Set RIG_ROOT as rigd spells it (without a symlink in the path), or run rig doctor to find the file."
+		fi
+	done
 	for name in rig rigd; do
 		destination="$root/bin/$name"
-		owned="$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
-		[ ! -e "$root/installed/owners/$(path_key "$destination").json" ] || fail "$owned"
+		[ ! -e "$root/installed/owners/$(path_key "$destination").json" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
 		if [ -e "$destination" ] || [ -L "$destination" ]; then
 			[ -f "$destination" ] && [ ! -L "$destination" ] || fail "$destination is not a regular file; move it aside and run install again."
-			bytes="$(shasum -a 256 "$destination" | cut -c 1-64)"
-			for record in "$root"/installed/owners/*.json; do
-				case "$record" in *.repository.json) continue ;; esac
-				[ -f "$record" ] || continue
-				# A record named for another file in bin belongs to that file.
-				if printf '%s\n' "$keys" | grep -qx "$(basename "$record" .json)"; then continue; fi
-				if grep -q '"target":"stable"' "$record" && grep -q "\"revision\":\"$bytes\"" "$record"; then
-					fail "$owned"
-				fi
-			done
 		fi
 	done
 }

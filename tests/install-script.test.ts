@@ -330,28 +330,45 @@ async function publish(
   return destination;
 }
 
-test("a RIG_ROOT that reaches the root through a symlink still finds the rig a stable Target owns there, by its bytes", async () => {
-  const f = await release();
-  const real = join(f.home, "real");
-  const owned = await publish(real, "rig", "published by a Target", "stable");
-  const alias = join(f.home, "alias");
-  await symlink(real, alias);
-  const result = await f.install({ RIG_ROOT: alias });
-  expect(result.code).toBe(1);
-  expect(result.stderr).toContain(
-    `${alias}/bin/rig was published by a Rig Project's Target, which owns it, so install leaves it alone.`,
-  );
-  expect(await readFile(owned, "utf8")).toBe("published by a Target");
-  expect(await readdir(join(real, "bin"))).toEqual(["rig"]);
-  expect(await exists(f.ran)).toBe(false);
+test("through a symlinked RIG_ROOT, a stable Target's records cannot be tied to a file, so nothing is replaced, even a published rig edited by hand", async () => {
+  for (const edited of [false, true]) {
+    const f = await release();
+    const real = join(f.home, "real");
+    const owned = await publish(real, "rig", "published by a Target", "stable");
+    if (edited) await writeFile(owned, "edited by hand");
+    const alias = join(f.home, "alias");
+    await symlink(real, alias);
+    const result = await f.install({ RIG_ROOT: alias });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `records a rig or rigd a Target published that is not in ${alias}/bin as spelled here`,
+    );
+    expect(await readFile(owned, "utf8")).toBe(
+      edited ? "edited by hand" : "published by a Target",
+    );
+    expect(await readdir(join(real, "bin"))).toEqual(["rig"]);
+    expect(await exists(f.ran)).toBe(false);
+  }
 });
 
-test("records that do not own the destinations never stop an install: another Target's, a working copy's build of the same bytes, or another stable Tool with them", async () => {
+test("a record for a rig whose file is gone stops the install too, since it may have been this very file", async () => {
   const f = await release();
-  // A rig installed earlier, and a working copy's Tool built from the same bytes, recorded as the working Target's.
+  const gone = await publish(f.root, "rig", "published by a Target", "stable");
+  await rm(gone);
+  const result = await f.install();
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain("or run rig doctor to find the file.");
+  expect(await exists(join(f.root, "bin", "rig"))).toBe(false);
+});
+
+test("records that do not own the destinations never stop an install: a working copy's rig-dev, another stable Tool even with the same bytes, or another Tool's stale record", async () => {
+  const f = await release();
   await mkdir(join(f.root, "bin"), { recursive: true });
   await writeFile(join(f.root, "bin", "rig"), "the earlier install");
-  const record = ownershipRecordPath(f.root, join(f.root, "bin", "rig-dev"));
+  // A working copy's rig, published as rig-dev from the same bytes, and recorded as the working Target's Tool rig.
+  const dev = join(f.root, "bin", "rig-dev");
+  await writeFile(dev, "the earlier install");
+  const record = ownershipRecordPath(f.root, dev);
   await mkdir(join(record, ".."), { recursive: true });
   await writeFile(
     record,
@@ -368,10 +385,14 @@ test("records that do not own the destinations never stop an install: another Ta
   await publish(f.root, "pantry", "another Project's Tool", "stable");
   // A stable Tool under another name whose bytes are the same as the installed rig's owns only its own file.
   await publish(f.root, "rig-old", "the earlier install", "stable");
+  // An older working Target's Tool whose file is gone, as an upgraded Host keeps: it is not rig or rigd.
+  const stale = await publish(f.root, "watch", "gone", "working");
+  await rm(stale);
   const result = await f.install();
   expect(result.stderr).toBe("");
   expect(result.code).toBe(0);
   expect(await installedArch(f.root)).toBe("arm64");
+  expect(await readFile(dev, "utf8")).toBe("the earlier install");
 });
 
 test("a RIG_ROOT spelled with //, . or .. parts, or relative, is refused, so the owned-file check uses the path Rig records", async () => {

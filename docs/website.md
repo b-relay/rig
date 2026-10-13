@@ -6,9 +6,14 @@ control-plane action. There is no landing page; the overview is the root.
 
 ## Stack
 
-Next.js (App Router) and React, run by Bun itself: `rig.yaml` builds with
-`bun --bun next build web` and serves with `bun --bun next start web`, so the
-server, the build, and the tests share one runtime. Every page is a Server
+Next.js (App Router) and React, run by Bun itself.
+`scripts/build-dashboard.sh` builds it (`output: "standalone"`, images
+unoptimized so no native image library is carried) and assembles a
+self-contained server, `web/server.js` with the modules it needs and the static
+files beside it. A release ships that build, and `rigd` runs it with the Bun
+inside its own executable (`BUN_BE_BUN=1`); this repository's `rig.yaml` builds
+and runs the same one, so the working Target serves what ships. The server, the
+build, and the tests share one runtime. Every page is a Server
 Component (`dynamic = "force-dynamic"` in the root layout): it reads `rigd` on
 the server and streams its rows as they arrive, so the browser never holds the
 control-plane token and never talks to `rigd` directly. Changes go through

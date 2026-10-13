@@ -138,15 +138,20 @@ bun run src/rigd.ts --help
 A release is a tag. Bump `RIG_VERSION` in `src/domain/version.ts`, merge it,
 then tag that commit `v<version>` and push the tag. The release workflow
 (`.github/workflows/release.yml`) runs `scripts/package-release.sh`, which
-compiles `rig` and `rigd` for Apple Silicon and Intel Macs into
+compiles `rig` and `rigd` for Apple Silicon and Intel Macs, builds the
+dashboard once (`scripts/build-dashboard.sh`; it runs on either), packs each
+architecture's `rig`, `rigd` and `dashboard/` into
 `rig-<tag>-darwin-<arch>.tar.gz`, writes the tag into the `install` script, and
 lists every file in `SHA256SUMS`. It then attests each file's build provenance
 and publishes the GitHub Release. Run `scripts/package-release.sh <tag> dist`
 from a clean checkout to try one locally.
 
 The `install` script downloads one release's archive for the Mac it runs on,
-checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin`, and
-runs `rigd install`. It writes only under the Rig root, besides what
+checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin` and
+the dashboard in `<RIG_ROOT>/dashboard/<release>` (off `PATH`; `rigd` starts it),
+runs `rigd install`, then removes earlier releases' dashboards once `rigd status`
+shows this release serving (an install that adopted a running `rigd` of another
+release keeps them). It writes only under the Rig root, besides what
 `rigd install` sets up (a LaunchAgent in `~/Library/LaunchAgents`), and never
 edits a shell profile: when `<RIG_ROOT>/bin` is not on `PATH`, it prints the
 line to add. It leaves alone a `rig` or `rigd` that a Rig Project's Target

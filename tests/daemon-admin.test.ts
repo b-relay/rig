@@ -1316,3 +1316,40 @@ test("an unusable credential beside a live daemon is named by status and refuses
     await rm(root, { recursive: true, force: true });
   }
 }, 20000);
+test("rigd install restarts a running rigd that serves the dashboard elsewhere than Host config now asks: another port, or none", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-dashboard-"));
+  const script = join(root, "child.ts");
+  const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
+  // A rigd serving the dashboard on 4280.
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0,dashboard:"http://127.0.0.1:4280"});`,
+  );
+  const admin = (asked: string | undefined) =>
+    new DaemonAdmin({
+      root,
+      command: [process.execPath, script],
+      mode: "process",
+      userHome: root,
+      dashboard: async () => asked,
+    });
+  try {
+    expect(await admin("http://127.0.0.1:4280").install()).toMatchObject({
+      outcome: "installed",
+      dashboard: "http://127.0.0.1:4280",
+    });
+    expect(await admin("http://127.0.0.1:4280").install()).toMatchObject({
+      outcome: "unchanged",
+    });
+    for (const asked of ["http://127.0.0.1:5001", undefined])
+      expect(await admin(asked).install()).toMatchObject({
+        outcome: "installed",
+        replaced: { pid: expect.any(Number) },
+      });
+  } finally {
+    await admin(undefined)
+      .uninstall()
+      .catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);

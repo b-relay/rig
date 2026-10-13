@@ -4,6 +4,11 @@ import type { NextConfig } from "next";
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // A self-contained server (.next/standalone) that rigd runs with the Bun inside its own executable; the working Target
+  // runs the same build. scripts/build-dashboard.sh assembles it.
+  output: "standalone",
+  // No page uses next/image, so the build carries no native image library and runs on either Mac architecture.
+  images: { unoptimized: true },
   // The repository's own agent guidance lives at its root; next dev must not write another copy here.
   agentRules: false,
   // The daemon modules under src/ are imported straight from the repository, one level up.

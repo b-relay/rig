@@ -1,6 +1,7 @@
 #!/bin/sh
-# Installs Rig on this Mac: `rig` and `rigd` into the Rig root's bin directory (~/.rig/bin), then `rigd install`,
-# which starts rigd as a LaunchAgent (with RIG_ROOT set, as a detached process instead).
+# Installs Rig on this Mac: `rig` and `rigd` into the Rig root's bin directory (~/.rig/bin) and the dashboard into
+# ~/.rig/dashboard/<release> (off PATH: rigd starts it), then `rigd install`, which starts rigd as a LaunchAgent (with
+# RIG_ROOT set, as a detached process instead).
 #
 # Read it before you run it. It downloads one release of https://github.com/b-relay/rig over HTTPS, checks the
 # download against that release's SHA256SUMS, and writes nothing outside the Rig root; `rigd install` then sets rigd up.
@@ -85,7 +86,8 @@ main() {
 
 	work="$(mktemp -d)"
 	stage=""
-	trap 'rm -rf "$work" ${stage:+"$stage"}' EXIT
+	board=""
+	trap 'rm -rf "$work" ${stage:+"$stage"} ${board:+"$board"}' EXIT
 	trap 'exit 1' HUP INT TERM
 	build="rig-$version-darwin-$arch"
 	printf 'Downloading Rig %s for %s...\n' "$version" "$arch"
@@ -107,28 +109,48 @@ main() {
 
 	mkdir "$work/unpacked"
 	tar -xzf "$work/$build.tar.gz" -C "$work/unpacked"
-	for name in rig rigd; do
+	for name in rig rigd dashboard/web/server.js; do
 		file="$work/unpacked/$build/$name"
 		[ -f "$file" ] && [ ! -L "$file" ] || fail "$build.tar.gz has no $name; nothing was installed."
 	done
 
 	# Both executables are staged in a fresh directory beside their destinations before either is replaced, then each is
 	# renamed over its destination, so a running rigd keeps the file it started from and nothing sees a half-written one.
-	mkdir -p "$root/bin"
+	mkdir -p "$root/bin" "$root/dashboard"
 	stage="$(mktemp -d "$root/bin/.install.XXXXXX")"
 	for name in rig rigd; do
 		cp "$work/unpacked/$build/$name" "$stage/$name"
 		chmod 755 "$stage/$name"
 	done
+	# The dashboard goes in beside the ones already there, under its release; rigd runs the one of its own release.
+	board="$(mktemp -d "$root/dashboard/.install.XXXXXX")"
+	cp -R "$work/unpacked/$build/dashboard/." "$board/"
 	# Checked again just before the renames: a Target may have published one while the release downloaded. rigd
 	# serializes its own publications in-process, so only an instant between this check and the renames is left uncovered.
 	check_destinations
+	# A dashboard of this release that is already installed is the same files, and may be serving, so it stays.
+	if [ ! -e "$root/dashboard/$version" ]; then
+		mv "$board" "$root/dashboard/$version"
+		board=""
+	fi
 	for name in rig rigd; do
 		mv -f "$stage/$name" "$root/bin/$name"
 	done
-	printf 'Installed rig and rigd %s in %s/bin.\n' "$version" "$root"
+	printf 'Installed rig and rigd %s in %s/bin, and the dashboard in %s/dashboard/%s.\n' "$version" "$root" "$root" "$version"
 
 	"$root/bin/rigd" install
+
+	# Earlier releases' dashboards go once rigd serves this release, which then runs this release's dashboard. A rigd
+	# install that adopted a running rigd of another release leaves it serving its own, so they stay until then.
+	serving="$(RIG_ROOT="$root" "$root/bin/rigd" status 2>/dev/null | sed -n 's/^Version  *//p')"
+	case "$serving" in
+	"${version#v}+"*)
+		for old in "$root"/dashboard/v*; do
+			if [ -d "$old" ] && [ "$old" != "$root/dashboard/$version" ]; then rm -rf "$old"; fi
+		done
+		;;
+	*) printf 'rigd serves %s, not %s yet, so earlier dashboards are kept; run rigd install to start this release.\n' "${serving:-no release}" "$version" ;;
+	esac
 
 	case ":$PATH:" in
 	*":$root/bin:"*) ;;

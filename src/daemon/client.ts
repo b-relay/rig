@@ -18,6 +18,7 @@ const healthSchema = z.object({
   pid: z.number().int().positive(),
   running: z.literal(true),
   version: z.string().min(1).optional(),
+  dashboard: z.string().min(1).optional(),
 });
 const errorSchema = z.object({
   error: z.object({

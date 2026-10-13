@@ -452,4 +452,6 @@ export interface DaemonHealth {
   running: true;
   /** Absent when an older rigd, which reported none, is serving. */
   version?: string;
+  /** Where rigd serves the dashboard; absent when it runs none. */
+  dashboard?: string;
 }

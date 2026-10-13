@@ -24,7 +24,8 @@ export interface SiteSettings {
   /** The one published host whose dashboard controls the Host's rigd. */
   dashboardHost?: string;
   trustedClients: TrustedClient[];
-  /** The repository the site runs from; the sandbox's rig and rigd run from its sources. */
+  /** The repository the site was built from; the sandbox's rig and rigd run from its sources. RIG_WEB_REPOSITORY names it,
+   * since the assembled server runs from inside its build (.dashboard/web), not from the checkout. */
   repository: string;
 }
 /** Pure: the settings named by a Service environment. A missing port or a malformed trusted
@@ -53,7 +54,7 @@ export function siteSettings(
       ? { dashboardHost: env.RIG_WEB_DASHBOARD_HOST }
       : {}),
     trustedClients: parseTrustedClients(env.RIG_WEB_TRUSTED_CLIENTS ?? ""),
-    repository: cwd,
+    repository: env.RIG_WEB_REPOSITORY || cwd,
   };
 }
 let settings: SiteSettings | undefined;

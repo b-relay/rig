@@ -9,11 +9,16 @@ services:
   # rigd with the control-plane address and token from the Rig root, the way rig does, so the
   # browser never holds them.
   web:
-    build: bun install --frozen-lockfile && bun --bun next build web
-    command: bun --bun next start web -H 127.0.0.1 -p ${port}
+    # The same assembled build a release ships and rigd runs (scripts/build-dashboard.sh), so what runs here is what ships.
+    build: bun install --frozen-lockfile && rm -rf .dashboard && scripts/build-dashboard.sh .dashboard
+    command: bun .dashboard/web/server.js
     ports: { http: auto }
     environment:
       PORT: ${port}
+      HOSTNAME: 127.0.0.1
+      # The checkout the site was built from: the assembled server runs from inside .dashboard/web, and a Preview's
+      # sandbox rig and rigd run from this checkout's sources.
+      RIG_WEB_REPOSITORY: ${rig.workspace}
       # The site owns SIGTERM so a stop can take the sandbox rigd of a Preview down with it.
       NEXT_MANUAL_SIG_HANDLE: "true"
       # The name this Target is published under; empty for the working Target, which is loopback only.

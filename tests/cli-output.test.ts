@@ -182,3 +182,21 @@ test("rig run answers with the job it started", () => {
     }),
   ).toBe("melody stable mb-mirror started\n");
 });
+
+test("rigd status names where rigd serves the dashboard, and says nothing of one it runs none of", () => {
+  const status = {
+    installed: true,
+    running: true,
+    reachable: true,
+    version: "0.1.0+abc",
+  };
+  expect(
+    renderResult("daemon-status", {
+      ...status,
+      dashboard: "http://127.0.0.1:4280",
+    }),
+  ).toBe(
+    "Installed  yes\nRunning    yes\nReachable  yes\nVersion    0.1.0+abc\nDashboard  http://127.0.0.1:4280\n",
+  );
+  expect(renderResult("daemon-status", status)).not.toContain("Dashboard");
+});

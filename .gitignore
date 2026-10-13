@@ -42,4 +42,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Next.js build output
 web/.next
+# The assembled dashboard the working Target runs (scripts/build-dashboard.sh).
+/.dashboard
 web/next-env.d.ts

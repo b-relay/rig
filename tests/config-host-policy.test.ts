@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseHostConfig, parseProjectConfig } from "../src/config";
-import { hostRoutes } from "../src/domain/managed-proxy";
 import { inspectHost } from "../src/adapters/host-inspection";
 import { configuredDiagnosticLog } from "../src/diagnostics/host-log";
 
@@ -279,7 +278,7 @@ test("rig's and rigd's diagnostic logs keep the days diagnostics.retention_days 
   }
 });
 
-test("dashboard.domain is published by Rig's own Caddy as one more of the owner's routes, and refused without one or beside a proxy.routes entry for it", () => {
+test("dashboard.domain and trusted_clients are read as written, and the domain is refused without Rig's own Caddy or beside a proxy.routes entry for it", () => {
   const host = parseHostConfig({
     proxy: {
       caddy: "/usr/local/bin/caddy",
@@ -291,15 +290,8 @@ test("dashboard.domain is published by Rig's own Caddy as one more of the owner'
       trusted_clients: ["100.64.0.0/10", "192.168.1.5", "fd7a::1"],
     },
   });
-  expect(host.proxy!.routes).toEqual({
-    "grafana.example.com": 3000,
-    "rig.example.com": 4281,
-  });
-  // Rig's Caddy serves it as it serves those: a reverse proxy to the dashboard's port.
-  expect(hostRoutes(host.proxy!)).toEqual([
-    { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
-    { hostname: "rig.example.com", upstream: "127.0.0.1:4281" },
-  ]);
+  // The route is added by the rigd that serves the dashboard (withDashboardRoute), never into the config as read.
+  expect(host.proxy!.routes).toEqual({ "grafana.example.com": 3000 });
   expect(host.dashboard).toEqual({
     port: 4281,
     domain: "rig.example.com",

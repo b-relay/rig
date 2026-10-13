@@ -358,7 +358,7 @@
               "maximum": 65535
             },
             "domain": {
-              "description": "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry, so a Target or proxy.routes naming it is refused. Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
+              "description": "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry while rigd runs the dashboard, so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
               "type": "string"
             },
             "trusted_clients": {

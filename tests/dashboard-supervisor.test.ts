@@ -12,7 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DASHBOARD,
+  configuredDashboardRoute,
   describeDashboard,
+  withDashboardRoute,
   dashboardDirectory,
   dashboardServing,
   openDashboard,
@@ -21,6 +23,9 @@ import {
 } from "../src/daemon/dashboard";
 import { waitForLogPoll } from "../src/adapters/log-follow-scheduler";
 import { parseHostConfig } from "../src/config/schema";
+import { hostRoutes, proxyPaths } from "../src/domain/managed-proxy";
+import { createProxyInstallation } from "../src/daemon/proxy-installation";
+import { runCommand } from "../src/providers/command-runner";
 import {
   processExists,
   processStartTime,
@@ -440,4 +445,61 @@ Bun.serve({
     trusted: null,
   });
   await local.stop();
+});
+
+test("Caddy is given the dashboard's route only when a dashboard is installed, on, and published, to the port it serves", async () => {
+  const f = await installed(SERVER);
+  const proxy = {
+    caddy: "/usr/local/bin/caddy",
+    routes: { "grafana.example.com": 3000 },
+  };
+  const host = (dashboard: unknown) => parseHostConfig({ proxy, dashboard });
+  const route = await configuredDashboardRoute(
+    f.root,
+    host({ port: 4281, domain: "rig.example.com" }),
+  );
+  expect(route).toEqual({ domain: "rig.example.com", port: 4281 });
+  expect(hostRoutes(withDashboardRoute(host({}).proxy!, route))).toEqual([
+    { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
+    { hostname: "rig.example.com", upstream: "127.0.0.1:4281" },
+  ]);
+  // Off, or not published: no route.
+  expect(await configuredDashboardRoute(f.root, host(false))).toBeUndefined();
+  expect(await configuredDashboardRoute(f.root, host({}))).toBeUndefined();
+  expect(withDashboardRoute(host({}).proxy!, undefined).routes).toEqual({
+    "grafana.example.com": 3000,
+  });
+  // Not installed for this release: nothing would answer on its port, so Caddy sends nobody there.
+  await rm(join(f.directory, "web", "server.js"));
+  expect(
+    await configuredDashboardRoute(f.root, host({ domain: "rig.example.com" })),
+  ).toBeUndefined();
+});
+
+test("rigd install refuses a dashboard.domain a Target serves, before anything stops or starts", async () => {
+  const f = await installed(SERVER);
+  await writeFile(
+    join(f.root, "config.yaml"),
+    "proxy:\n  caddy: /nonexistent/caddy\ndashboard:\n  domain: app.example.test\n",
+  );
+  // A Target's block in Rig's route file serves the hostname.
+  const token = "a".repeat(64);
+  const routes = proxyPaths(f.root).routes;
+  await mkdir(join(routes, ".."), { recursive: true });
+  await writeFile(
+    routes,
+    `# rig begin ${token}\napp.example.test {\n  reverse_proxy 127.0.0.1:3001\n}\n# rig end ${token}\n`,
+  );
+  const installation = createProxyInstallation({
+    root: f.root,
+    userHome: f.root,
+    uid: process.getuid!(),
+    userName: "test",
+    mode: "process",
+    run: runCommand,
+  });
+  await expect(installation.preflight()).rejects.toMatchObject({
+    code: "ROUTE_CONFLICT",
+    message: expect.stringContaining("dashboard.domain in Host config"),
+  });
 });

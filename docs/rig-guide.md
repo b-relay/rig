@@ -67,8 +67,12 @@ dashboard:
   trusted_clients: [100.64.0.0/10] # your tailnet reaches it without the key
 ```
 
-It is served like a `proxy.routes` entry, so a Target or `proxy.routes` naming
-the same hostname is refused. A browser from anywhere else signs in with the
+It is served like a `proxy.routes` entry, to the port of the dashboard `rigd`
+runs, and only while one runs: a Target or `proxy.routes` naming the same
+hostname is refused (`rigd install` refuses a domain a Target already serves
+before it restarts anything). The route follows the dashboard `rigd` started
+with, so an edit to the domain or port is served once `rigd install` restarts
+`rigd`; until then `rig doctor` and `rig proxy` show it as pending. A browser from anywhere else signs in with the
 access key in `<RIG_ROOT>/auth/dashboard.key`, which the dashboard creates on
 its first start. `rigd status` then reads
 `Dashboard  https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10`,

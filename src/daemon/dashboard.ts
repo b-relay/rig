@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import { z } from "zod";
 import type { HostConfig } from "../config/types";
+import type { ProxySettings } from "../config/proxy-schema";
 import type { LogRetention } from "../domain/log-retention";
 import { RIG_VERSION } from "../domain/version";
 import { rotateLogFile } from "../providers/target-log";
@@ -69,6 +70,38 @@ export function dashboardPublication(
   return dashboard.domain === undefined
     ? undefined
     : { domain: dashboard.domain, trustedClients: dashboard.trusted_clients };
+}
+/** The route Rig's Caddy serves for a published dashboard: its domain, to its port on 127.0.0.1. */
+export interface DashboardRoute {
+  readonly domain: string;
+  readonly port: number;
+}
+/** The route of the dashboard a rigd started now would publish: Host config's domain and port, when the dashboard is on,
+ * published, and installed for this release; otherwise none, so Caddy never sends visitors to a port nothing of Rig's
+ * serves. rigd reads it once as it starts, beside the dashboard it starts, so the two never disagree; doctor and rigd
+ * install read it to say what applying Host config would publish. */
+export async function configuredDashboardRoute(
+  root: string,
+  host: Pick<HostConfig, "dashboard">,
+): Promise<DashboardRoute | undefined> {
+  if (host.dashboard === false || host.dashboard.domain === undefined)
+    return undefined;
+  const server = join(dashboardDirectory(root), "web", "server.js");
+  if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
+  return { domain: host.dashboard.domain, port: host.dashboard.port };
+}
+/** Pure: proxy settings with the dashboard's route beside the owner's proxy.routes, so publication, conflicts, rig proxy,
+ * DNS checks and verify serve and report it as one of them. Host config refuses a domain proxy.routes already has. */
+export function withDashboardRoute(
+  settings: ProxySettings,
+  route: DashboardRoute | undefined,
+): ProxySettings {
+  return route
+    ? {
+        ...settings,
+        routes: { ...settings.routes, [route.domain]: route.port },
+      }
+    : settings;
 }
 /** How a rigd started now would serve the dashboard (see describeDashboard): Host config's settings, when it is on and
  * this release's dashboard is installed; otherwise undefined, since that rigd serves none. `rigd install` compares it

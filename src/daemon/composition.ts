@@ -90,9 +90,12 @@ import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
 import {
+  configuredDashboardRoute,
   dashboardDirectory,
   dashboardPublication,
   openDashboard,
+  withDashboardRoute,
+  type DashboardRoute,
   stopLeftOverDashboard,
 } from "./dashboard";
 import { waitForLogPoll } from "../adapters/log-follow-scheduler";
@@ -166,9 +169,14 @@ export async function composeDaemon(
     ["child", child],
   ]);
   const environment = inheritedEnvironment(process.env);
+  // The published dashboard's route, read once as this rigd starts the dashboard it serves, so Caddy and the dashboard
+  // agree until the next rigd: none when the dashboard is off, unpublished, or not installed.
+  const dashboardRoute = await configuredDashboardRoute(root, host);
   // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
   const managed =
-    host.proxyMode === "managed" ? composeManagedCaddy(root, mode) : undefined;
+    host.proxyMode === "managed"
+      ? composeManagedCaddy(root, mode, dashboardRoute)
+      : undefined;
   // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
   const external = managed
     ? undefined
@@ -275,7 +283,10 @@ export async function composeDaemon(
     usage: usage.monitor,
     // Host config and the token are read at every request, so DNS needs no restart after rig proxy token or an edit.
     dns: createDnsControl({
-      settings: async () => (await readHostConfig(root)).proxy,
+      settings: async () => {
+        const proxy = (await readHostConfig(root)).proxy;
+        return proxy && withDashboardRoute(proxy, dashboardRoute);
+      },
       token: () => readDnsToken(root),
       provider: (name, token) => {
         const create = DNS_PROVIDERS[name];
@@ -472,6 +483,7 @@ export async function composeDaemon(
 function composeManagedCaddy(
   root: string,
   mode: DaemonMode,
+  dashboardRoute: DashboardRoute | undefined,
 ): { caddy: ManagedCaddy; control: ProxyControl; job: CaddyJob } {
   const paths = proxyPaths(root);
   const admin = createCaddyAdmin(paths.socket);
@@ -484,7 +496,8 @@ function composeManagedCaddy(
     userName: userInfo().username,
     admin,
   });
-  const settings = () => readProxySettings(root);
+  const settings = async () =>
+    withDashboardRoute(await readProxySettings(root), dashboardRoute);
   const caddy = createManagedCaddy({
     root,
     settings,

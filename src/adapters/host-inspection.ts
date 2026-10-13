@@ -1,4 +1,8 @@
 import { access, constants, stat } from "node:fs/promises";
+import {
+  configuredDashboardRoute,
+  withDashboardRoute,
+} from "../daemon/dashboard";
 import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
@@ -44,7 +48,11 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
       checks.push(
         ...(await inspectManagedProxy(
           root,
-          host.proxy,
+          // What applying Host config would publish, the dashboard's route included (see rigd install).
+          withDashboardRoute(
+            host.proxy,
+            await configuredDashboardRoute(root, host),
+          ),
           installation?.mode ?? (process.env.RIG_ROOT ? "process" : "launchd"),
         )),
       );

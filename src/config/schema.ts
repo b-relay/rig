@@ -1369,7 +1369,7 @@ export const hostConfigSchema = z.strictObject({
           )
           .optional()
           .describe(
-            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry, so a Target or proxy.routes naming it is refused. Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
+            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry while rigd runs the dashboard, so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
           ),
         trusted_clients: z
           .array(
@@ -1425,23 +1425,7 @@ export function parseHostConfig(value: unknown) {
   const result = checkedHostConfigSchema.safeParse(value);
   if (!result.success) throw validationError("Host", result.error.issues);
   const { mode, externalIgnored } = proxyModeOf(value);
-  const host = result.data;
-  // The published dashboard is one more of the owner's routes, so every reader of proxy.routes (publication, conflicts,
-  // rig proxy, DNS checks, verify) serves and reports it the same way.
-  const dashboard = host.dashboard === false ? undefined : host.dashboard;
-  const proxy =
-    host.proxy && dashboard?.domain
-      ? {
-          ...host.proxy,
-          routes: { ...host.proxy.routes, [dashboard.domain]: dashboard.port },
-        }
-      : host.proxy;
-  return {
-    ...host,
-    ...(proxy ? { proxy } : {}),
-    proxyMode: mode,
-    externalIgnored,
-  };
+  return { ...result.data, proxyMode: mode, externalIgnored };
 }
 
 /** Human guidance contains field paths and plain rules, never input values. */

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir, userInfo } from "node:os";
 import { runRigdCli } from "./cli/rigd";
@@ -20,8 +21,7 @@ import { runCommand } from "./providers/command-runner";
 import { createProxyInstallation } from "./daemon/proxy-installation";
 import { readHostConfig } from "./config";
 import { dashboardServing } from "./daemon/dashboard";
-import { RELEASES, upgrade } from "./daemon/upgrade";
-import { RIG_VERSION } from "./domain/version";
+import { RELEASES, installedRelease, upgrade } from "./daemon/upgrade";
 export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
@@ -91,10 +91,9 @@ export async function main(args: readonly string[]): Promise<number> {
     upgrade: (request) =>
       upgrade(
         {
-          root,
           releases: process.env.RIG_RELEASE_URL || RELEASES,
-          current: RIG_VERSION,
-          fetch: (url) => fetch(url),
+          fetch: (url) => fetch(url, { redirect: "manual" }),
+          installedRelease: () => installedRelease(join(root, "bin", "rigd")),
           install: async (script, env) =>
             // Its output is the upgrade's progress, shown as it runs.
             Bun.spawn(["/bin/sh", script], {

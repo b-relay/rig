@@ -12,22 +12,28 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderResult } from "../src/cli/output";
-import { upgrade, type UpgradeDependencies } from "../src/daemon/upgrade";
+import {
+  installedRelease,
+  upgrade,
+  type UpgradeDependencies,
+} from "../src/daemon/upgrade";
 
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
+const REPOSITORY = "https://github.com/b-relay/rig";
 
-/** A release tree on local files as GitHub serves it: `download/<tag>/{install,SHA256SUMS}` per release, and the latest
- * release's install script at `latest/download/install`. Each install script records how it was run. */
+/** A release tree on local files as GitHub serves it, `download/<tag>/{install,SHA256SUMS}` per release, with GitHub's
+ * latest-release redirect answered by `fetch`. Each install script records the release and the environment it ran with. */
 async function releases(tags: readonly string[], latest: string) {
   const home = await mkdtemp(join(tmpdir(), "rigd-upgrade-"));
   roots.push(home);
   const ran = join(home, "ran");
+  const env: Record<string, string>[] = [];
   const script = (tag: string, code = 0) =>
-    `#!/bin/sh\nversion="${tag}"\necho "$version RIG_ROOT=$RIG_ROOT RIG_RELEASE_URL=$RIG_RELEASE_URL" >> '${ran}'\nexit ${code}\n`;
+    `#!/bin/sh\nversion="${tag}"\necho "$version" >> '${ran}'\nexit ${code}\n`;
   const publish = async (tag: string, body: string) => {
     const dir = join(home, "download", tag);
     await mkdir(dir, { recursive: true });
@@ -38,24 +44,28 @@ async function releases(tags: readonly string[], latest: string) {
     );
   };
   for (const tag of tags) await publish(tag, script(tag));
-  await mkdir(join(home, "latest", "download"), { recursive: true });
-  await writeFile(
-    join(home, "latest", "download", "install"),
-    await readFile(join(home, "download", latest, "install")),
-  );
-  const deps = (current = "0.1.0"): UpgradeDependencies => ({
-    root: join(home, ".rig"),
+  const deps = (installed: string | null = "0.1.0"): UpgradeDependencies => ({
     releases: `file://${join(home, "download")}`,
-    current,
-    fetch: (url) => fetch(url),
-    install: (file, env) =>
-      Bun.spawn(["/bin/sh", file], { env: { ...process.env, ...env } }).exited,
+    fetch: async (url) =>
+      url.endsWith("/latest")
+        ? new Response(null, {
+            status: 302,
+            headers: { location: `${REPOSITORY}/releases/tag/${latest}` },
+          })
+        : fetch(url, { redirect: "manual" }),
+    // null: no rigd in the Rig root.
+    installedRelease: async () => installed ?? undefined,
+    install: (file, given) => {
+      env.push(given);
+      return Bun.spawn(["/bin/sh", file]).exited;
+    },
   });
   return {
     home,
     deps,
     publish,
     script,
+    env,
     ran: () => readFile(ran, "utf8").catch(() => ""),
   };
 }
@@ -80,7 +90,7 @@ test("rigd upgrade --check names a newer latest release and installs nothing; th
   expect(await f.ran()).toBe("");
 });
 
-test("rigd upgrade runs the latest release's own install script with the Rig root, and a named one to roll back", async () => {
+test("rigd upgrade runs the latest release's own install script, and a named one to roll back, leaving the Rig root to the script", async () => {
   const f = await releases(["v0.1.0", "v0.2.0"], "v0.2.0");
   const upgraded = await upgrade(f.deps(), {});
   expect(upgraded).toEqual({
@@ -98,14 +108,13 @@ test("rigd upgrade runs the latest release's own install script with the Rig roo
     release: "v0.1.0",
     named: true,
   });
-  // The script downloads from the same place rigd upgrade did.
-  expect(await f.ran()).toBe(
-    [
-      `v0.2.0 RIG_ROOT=${join(f.home, ".rig")} RIG_RELEASE_URL=file://${join(f.home, "download")}`,
-      `v0.1.0 RIG_ROOT=${join(f.home, ".rig")} RIG_RELEASE_URL=file://${join(f.home, "download")}`,
-      "",
-    ].join("\n"),
-  );
+  expect(await f.ran()).toBe("v0.2.0\nv0.1.0\n");
+  // The script downloads from where rigd upgrade did, and finds the Rig root as rigd does: RIG_ROOT only when it was set,
+  // so a LaunchAgent or system job stays one rather than becoming a detached process.
+  expect(f.env).toEqual([
+    { RIG_RELEASE_URL: `file://${join(f.home, "download")}` },
+    { RIG_RELEASE_URL: `file://${join(f.home, "download")}` },
+  ]);
   expect(
     renderResult(
       "daemon-upgrade",
@@ -114,11 +123,45 @@ test("rigd upgrade runs the latest release's own install script with the Rig roo
   ).toBe("Rig v0.1.0 is already installed.\n");
 });
 
+test("what is installed is what the Rig root's rigd reports: an empty root installs, whatever release rigd upgrade itself is", async () => {
+  const f = await releases(["v0.1.0"], "v0.1.0");
+  const installed = await upgrade(f.deps(null), {});
+  expect(installed).toEqual({
+    outcome: "upgraded",
+    release: "v0.1.0",
+    named: false,
+  });
+  expect(renderResult("daemon-upgrade", installed)).toBe(
+    "Installed Rig v0.1.0.\n",
+  );
+  expect(
+    renderResult(
+      "daemon-upgrade",
+      await upgrade(f.deps(null), { check: true }),
+    ),
+  ).toBe(
+    "Rig v0.1.0 is available; none is installed. Run rigd upgrade to install it.\n",
+  );
+});
+
+test("the release decides which script runs: one serving another release's script, even a genuine earlier one, never runs", async () => {
+  const f = await releases(["v0.1.0", "v0.2.0"], "v0.2.0");
+  // v0.2.0's install asset is v0.1.0's script, matching v0.1.0's SHA256SUMS.
+  await writeFile(
+    join(f.home, "download", "v0.2.0", "install"),
+    f.script("v0.1.0"),
+  );
+  await expect(upgrade(f.deps(), {})).rejects.toMatchObject({
+    code: "UPGRADE_FAILED",
+    message: "The install script of v0.2.0 installs v0.1.0.",
+  });
+  expect(await f.ran()).toBe("");
+});
+
 test("an install script that does not match its release's SHA256SUMS never runs", async () => {
   const f = await releases(["v0.2.0"], "v0.2.0");
-  // The latest install script was changed after the release.
   await writeFile(
-    join(f.home, "latest", "download", "install"),
+    join(f.home, "download", "v0.2.0", "install"),
     f.script("v0.2.0").replace("exit 0", "echo changed; exit 0"),
   );
   await expect(upgrade(f.deps(), {})).rejects.toMatchObject({
@@ -137,7 +180,7 @@ test("a failed install script fails the upgrade, naming its exit", async () => {
   });
 });
 
-test("a release that does not exist, a version that is not one, an address that is not HTTPS, and a script for another release are refused before anything runs", async () => {
+test("a release that does not exist, a version that is not one, and no release at all are refused before anything runs", async () => {
   const f = await releases(["v0.2.0"], "v0.2.0");
   await expect(upgrade(f.deps(), { version: "9.9.9" })).rejects.toMatchObject({
     code: "UPGRADE_DOWNLOAD",
@@ -146,15 +189,104 @@ test("a release that does not exist, a version that is not one, an address that 
     code: "USAGE",
   });
   await expect(
-    upgrade({ ...f.deps(), releases: "http://example.com/download" }, {}),
-  ).rejects.toMatchObject({ code: "UPGRADE_DOWNLOAD" });
-  // v0.4.0's published script installs another release.
-  await f.publish("v0.4.0", f.script("v0.2.0"));
-  await expect(upgrade(f.deps(), { version: "0.4.0" })).rejects.toMatchObject({
-    code: "UPGRADE_FAILED",
-    message: "The install script of v0.4.0 installs v0.2.0.",
+    upgrade(
+      {
+        ...f.deps(),
+        fetch: async () => new Response("Not Found", { status: 404 }),
+      },
+      {},
+    ),
+  ).rejects.toMatchObject({
+    code: "UPGRADE_DOWNLOAD",
+    message: "There is no release of Rig yet.",
   });
   expect(await f.ran()).toBe("");
+});
+
+test("every redirect is followed by rigd upgrade itself and must stay on HTTPS, within a bound", async () => {
+  const body = `#!/bin/sh\nversion="v0.2.0"\nexit 0\n`;
+  const sums = `${createHash("sha256").update(body).digest("hex")}  install\n`;
+  const ran: string[] = [];
+  /** GitHub's shape: a release asset redirects once to its CDN; `hops` decides each address's answer. */
+  const deps = (
+    hops: Record<string, Response | (() => Response)>,
+  ): UpgradeDependencies => ({
+    releases: `${REPOSITORY}/releases/download`,
+    fetch: async (url) => {
+      const answer = hops[url];
+      if (!answer) return new Response("Not Found", { status: 404 });
+      return typeof answer === "function" ? answer() : answer.clone();
+    },
+    installedRelease: async () => "0.1.0",
+    install: async (file) => {
+      ran.push(file);
+      return 0;
+    },
+  });
+  const redirect = (location: string) => () =>
+    new Response(null, { status: 302, headers: { location } });
+  const github = {
+    [`${REPOSITORY}/releases/latest`]: redirect(
+      `${REPOSITORY}/releases/tag/v0.2.0`,
+    ),
+    [`${REPOSITORY}/releases/download/v0.2.0/install`]: redirect(
+      "https://objects.example.com/install",
+    ),
+    "https://objects.example.com/install": () => new Response(body),
+    [`${REPOSITORY}/releases/download/v0.2.0/SHA256SUMS`]: redirect(
+      "https://objects.example.com/sums",
+    ),
+    "https://objects.example.com/sums": () => new Response(sums),
+  };
+  expect(await upgrade(deps(github), {})).toMatchObject({
+    outcome: "upgraded",
+  });
+  expect(ran).toHaveLength(1);
+  // An HTTP hop anywhere in the chain, even one that comes back to HTTPS, is refused.
+  await expect(
+    upgrade(
+      deps({
+        ...github,
+        "https://objects.example.com/install": redirect(
+          "http://cache.example.com/install",
+        ),
+        "http://cache.example.com/install": redirect(
+          "https://objects.example.com/install-2",
+        ),
+        "https://objects.example.com/install-2": () => new Response(body),
+      }),
+      {},
+    ),
+  ).rejects.toMatchObject({
+    code: "UPGRADE_DOWNLOAD",
+    message:
+      "Could not download http://cache.example.com/install: it is not HTTPS.",
+  });
+  // A redirect loop ends.
+  await expect(
+    upgrade(
+      deps({
+        ...github,
+        "https://objects.example.com/install": redirect(
+          "https://objects.example.com/install",
+        ),
+      }),
+      {},
+    ),
+  ).rejects.toMatchObject({ code: "UPGRADE_DOWNLOAD" });
+  expect(ran).toHaveLength(1);
+});
+
+test("the installed release is read from the Rig root's rigd version, and is none when there is no rigd there", async () => {
+  const home = await mkdtemp(join(tmpdir(), "rigd-installed-"));
+  roots.push(home);
+  const rigd = join(home, "rigd");
+  await writeFile(rigd, "#!/bin/sh\necho 0.1.0+abcdef123456\n");
+  await chmod(rigd, 0o755);
+  expect(await installedRelease(rigd)).toBe("0.1.0");
+  await writeFile(rigd, "#!/bin/sh\necho 0.1.0+dev\n");
+  expect(await installedRelease(rigd)).toBe("0.1.0");
+  expect(await installedRelease(join(home, "missing"))).toBeUndefined();
 });
 
 test("end to end, rigd upgrade installs a release through the real install script", async () => {
@@ -201,18 +333,19 @@ test("end to end, rigd upgrade installs a release through the real install scrip
     join(download, "SHA256SUMS"),
     await new Response(sums.stdout).text(),
   );
-  await mkdir(join(home, "latest", "download"), { recursive: true });
-  await writeFile(
-    join(home, "latest", "download", "install"),
-    await readFile(join(download, "install")),
-  );
   const root = join(home, ".rig");
   const result = await upgrade(
     {
-      root,
       releases: `file://${join(home, "download")}`,
-      current: "0.1.0",
-      fetch: (url) => fetch(url),
+      fetch: async (url) =>
+        url.endsWith("/latest")
+          ? new Response(null, {
+              status: 302,
+              headers: { location: `${REPOSITORY}/releases/tag/${tag}` },
+            })
+          : fetch(url, { redirect: "manual" }),
+      installedRelease: () => installedRelease(join(root, "bin", "rigd")),
+      // Without RIG_ROOT, as for a default install, the script finds ~/.rig under HOME.
       install: (file, env) =>
         Bun.spawn(["/bin/sh", file], {
           env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: home, ...env },
@@ -221,7 +354,7 @@ test("end to end, rigd upgrade installs a release through the real install scrip
     },
     {},
   );
-  expect(result.outcome).toBe("upgraded");
+  expect(result).toEqual({ outcome: "upgraded", release: tag, named: false });
   expect((await stat(join(root, "bin", "rigd"))).mode & 0o777).toBe(0o755);
   expect(
     await readFile(join(root, "dashboard", tag, "web", "server.js"), "utf8"),

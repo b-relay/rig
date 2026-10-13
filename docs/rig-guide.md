@@ -201,7 +201,9 @@ script, as a first install does, after checking the script against the
 release's `SHA256SUMS`, over HTTPS only. The script checks the archive, puts
 `rig`, `rigd` and the dashboard in place, and runs `rigd install`, which swaps the
 serving daemon as above. `rigd upgrade --check` only says whether that release
-differs from the one installed. Like the install script, it leaves alone a `rig`
+differs from the one installed, which is the release the Rig root's own `rigd`
+reports. The latest release is the one GitHub's latest-release page names, and
+its script must name the same release. Like the install script, it leaves alone a `rig`
 or `rigd` that a Rig Project's Target published.
 
 ### Rig's own Caddy

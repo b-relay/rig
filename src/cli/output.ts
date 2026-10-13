@@ -34,9 +34,11 @@ export function renderResult(action: string, value: unknown): string {
     const release = word(report.release);
     const installed = word(report.installed);
     if (report.outcome === "upgraded")
-      return `Upgraded Rig from ${installed} to ${release}.\n`;
+      return installed
+        ? `Upgraded Rig from ${installed} to ${release}.\n`
+        : `Installed Rig ${release}.\n`;
     if (report.outcome === "available")
-      return `Rig ${release} is available; ${installed} is installed. Run rigd upgrade${report.named === true ? ` ${release}` : ""} to install it.\n`;
+      return `Rig ${release} is available; ${installed ? `${installed} is installed` : "none is installed"}. Run rigd upgrade${report.named === true ? ` ${release}` : ""} to install it.\n`;
     return report.named === true
       ? `Rig ${release} is already installed.\n`
       : `Rig ${installed} is installed, the latest release.\n`;

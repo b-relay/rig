@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
-  symlink,
   mkdtemp,
   readFile,
   readdir,
@@ -301,19 +300,6 @@ exec /usr/bin/curl "$@"
   expect(await exists(f.ran)).toBe(false);
 });
 
-/** rigd's installation record, as `rigd install` writes it when it runs from <root>/bin/rigd. */
-async function installedRigd(root: string) {
-  await mkdir(join(root, "daemon"), { recursive: true });
-  await writeFile(
-    join(root, "daemon", "install.json"),
-    JSON.stringify({
-      mode: "launchd",
-      command: [join(root, "bin", "rigd")],
-      version: "0.1.0+abc",
-    }),
-  );
-}
-
 /** Publishes `bytes` at bin/<name> under `root` as `target`'s Tool would: the file and its ownership record. */
 async function publish(
   root: string,
@@ -343,59 +329,8 @@ async function publish(
   return destination;
 }
 
-test("a RIG_ROOT spelled otherwise than rigd spells the root is refused, so the owned-file check uses the names rigd wrote", async () => {
+test("records of other files never stop an install: a working copy's rig-dev, another stable Tool even with the same bytes, or another Tool's stale record", async () => {
   const f = await release();
-  const real = join(f.home, "real");
-  await installedRigd(real);
-  const owned = await publish(real, "rig", "published by a Target", "stable");
-  await writeFile(owned, "edited by hand");
-  const alias = join(f.home, "alias");
-  await symlink(real, alias);
-  const result = await f.install({ RIG_ROOT: alias });
-  expect(result.code).toBe(1);
-  expect(result.stderr).toContain(
-    `rigd runs from ${real}/bin/rigd, so Rig records its files under ${real}. Set RIG_ROOT=${real} and run install again.`,
-  );
-  expect(await readFile(owned, "utf8")).toBe("edited by hand");
-  expect(await readdir(join(real, "bin"))).toEqual(["rig"]);
-  expect(await exists(f.ran)).toBe(false);
-});
-
-test("when rigd does not say how it spells the root, any record named for no file here stops the install, whatever its Tool is called", async () => {
-  const f = await release();
-  const real = join(f.home, "real");
-  // An older Host's Tool launcher, published as bin/rig under a legacy install name.
-  const owned = await publish(real, "rig", "published by a Target", "stable");
-  const record = ownershipRecordPath(real, owned);
-  await writeFile(
-    record,
-    (await readFile(record, "utf8")).replace('"rig"', '"launcher"'),
-  );
-  const alias = join(f.home, "alias");
-  await symlink(real, alias);
-  const result = await f.install({ RIG_ROOT: alias });
-  expect(result.code).toBe(1);
-  expect(result.stderr).toContain(
-    `records a file a Target published that is not in ${alias}/bin as spelled here, and rigd does not say how it spells the Rig root`,
-  );
-  expect(await readFile(owned, "utf8")).toBe("published by a Target");
-  expect(await exists(f.ran)).toBe(false);
-});
-
-test("a record for a rig whose file is gone stops the install too, since it may have been this very file", async () => {
-  const f = await release();
-  const gone = await publish(f.root, "rig", "published by a Target", "stable");
-  await rm(gone);
-  const result = await f.install();
-  expect(result.code).toBe(1);
-  expect(result.stderr).toContain("or run rig doctor to find the file.");
-  expect(await exists(join(f.root, "bin", "rig"))).toBe(false);
-});
-
-test("records that do not own the destinations never stop an install: a working copy's rig-dev, another stable Tool even with the same bytes, or another Tool's stale record", async () => {
-  const f = await release();
-  // rigd is installed here, spelled as here, so a record whose file is gone is only stale.
-  await installedRigd(f.root);
   await mkdir(join(f.root, "bin"), { recursive: true });
   await writeFile(join(f.root, "bin", "rig"), "the earlier install");
   // A working copy's rig, published as rig-dev from the same bytes, and recorded as the working Target's Tool rig.
@@ -418,9 +353,8 @@ test("records that do not own the destinations never stop an install: a working 
   await publish(f.root, "pantry", "another Project's Tool", "stable");
   // A stable Tool under another name whose bytes are the same as the installed rig's owns only its own file.
   await publish(f.root, "rig-old", "the earlier install", "stable");
-  // An older working Target's Tool whose file is gone, as an upgraded Host keeps: it is not rig or rigd.
-  const stale = await publish(f.root, "watch", "gone", "working");
-  await rm(stale);
+  // An older working Target's Tool whose file is gone, as an upgraded Host keeps.
+  await rm(await publish(f.root, "watch", "gone", "working"));
   const result = await f.install();
   expect(result.stderr).toBe("");
   expect(result.code).toBe(0);

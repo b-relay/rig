@@ -4,6 +4,9 @@
 #
 # Read it before you run it. It downloads one release of https://github.com/b-relay/rig over HTTPS, checks the
 # download against that release's SHA256SUMS, and writes nothing outside the Rig root; `rigd install` then sets rigd up.
+# It never edits your shell profile: when ~/.rig/bin is not on your PATH, it prints the line to add. That directory also
+# holds the Tools your Projects publish. It leaves alone a rig or rigd that a Rig Project's deploy owns (see
+# check_destinations).
 # To check the files were built by Rig's own release workflow: gh attestation verify <file> --repo b-relay/rig
 #
 #   RIG_ROOT  where Rig keeps everything (default ~/.rig); an absolute path, written without //, . or .. parts.
@@ -46,29 +49,12 @@ path_key() {
 	printf '%s' "$1" | shasum -a 256 | cut -c 1-64
 }
 
-# Fails unless both destinations can be replaced: a Rig Project's Target that publishes rig or rigd owns that file, and
-# this installer never replaces one; nor anything that is not a regular file. An owned file is known by its ownership
-# record, named by the SHA-256 of its path as rigd spells it, so the root must be spelled the same way here. rigd's
-# installation record says how it spells the root when it runs from <root>/bin/rigd; any other spelling is refused. When
-# that cannot be told, any record named for no file in bin as spelled here may be one of these files, and stops the install.
+# Fails unless both destinations can be replaced. A Rig Project's Target that publishes rig or rigd owns that file, and
+# Rig records it in installed/owners under the SHA-256 of the file's path; this installer leaves an owned file alone.
+# The record is bookkeeping between Rig's own deploys, not protection: anything running as you can change these files.
+# The check uses RIG_ROOT as spelled here, so a root reached through another spelling (a symlink) is not checked; Rig
+# still notices then, since that Target's next deploy refuses bytes it did not publish (ARTIFACT_CHANGED, rig doctor).
 check_destinations() {
-	rigd_command="$(sed -n 's/.*"command":\["\([^"]*\)".*/\1/p' "$root/daemon/install.json" 2>/dev/null || true)"
-	case "$rigd_command" in
-	*/bin/rigd)
-		rigd_root="${rigd_command%/bin/rigd}"
-		[ "$rigd_root" = "$root" ] || fail "rigd runs from $rigd_command, so Rig records its files under $rigd_root. Set RIG_ROOT=$rigd_root and run install again."
-		;;
-	*)
-		keys="$(for file in "$root"/bin/*; do if [ -e "$file" ]; then path_key "$file"; fi; done)"
-		for record in "$root"/installed/owners/*.json; do
-			case "$record" in *.repository.json) continue ;; esac
-			[ -f "$record" ] || continue
-			if ! printf '%s\n' "$keys" | grep -qx "$(basename "$record" .json)"; then
-				fail "$record records a file a Target published that is not in $root/bin as spelled here, and rigd does not say how it spells the Rig root, so install cannot tell whether it is rig or rigd. Set RIG_ROOT as rigd spells it, or run rig doctor to find the file."
-			fi
-		done
-		;;
-	esac
 	for name in rig rigd; do
 		destination="$root/bin/$name"
 		[ ! -e "$root/installed/owners/$(path_key "$destination").json" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."

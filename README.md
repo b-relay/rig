@@ -5,6 +5,38 @@ Rig runs, inspects, and deploys local Mac projects. The `rig` CLI talks to
 routing providers. The implementation uses strict
 TypeScript, Bun, and Zod.
 
+## Install
+
+Rig runs on macOS (Apple Silicon or Intel). Download the latest release's
+`install` script, read it, then run it:
+
+```sh
+curl -fsSLO https://github.com/b-relay/rig/releases/latest/download/install
+less install
+sh install
+```
+
+To check the script before running it, compare it with the release's
+`SHA256SUMS` and its build provenance:
+
+```sh
+curl -fsSLO https://github.com/b-relay/rig/releases/latest/download/SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS
+gh attestation verify install --repo b-relay/rig
+```
+
+If you accept running it unread, this does the same in one line:
+
+```sh
+curl -fsSL https://github.com/b-relay/rig/releases/latest/download/install | sh
+```
+
+It puts `rig` and `rigd` in `~/.rig/bin` (and prints the line that adds it to
+your `PATH`), the dashboard in `~/.rig/dashboard`, and starts `rigd`, which
+serves the dashboard at `http://127.0.0.1:4280`. `rigd upgrade` installs a newer
+release, and `rigd upgrade --check` says whether there is one. Releases follow
+semantic versioning.
+
 ## Usage
 
 ```sh
@@ -107,6 +139,13 @@ bun run build
 bun run format:check
 ```
 
+Rig is developed as a Rig Project on a Mac with Rig installed: `rig init` in
+this repository registers it, and `rig up` runs its working Target. That serves
+the dashboard from the working copy on a loopback port and publishes its Tools as
+`rig-dev` and `rigd-dev`, beside the installed `rig` and `rigd`, which stay the
+production release. Try a `rigd-dev` under its own `RIG_ROOT`, never the Host's.
+The repository runs no stable Target.
+
 `bun test` runs the full suite one file at a time. `bun run test:parallel` runs
 the same files in four worker processes, starting the slowest files first from
 `tests/timings.json`, and is several times faster. `bun run test:fast` does the
@@ -135,8 +174,10 @@ bun run src/rigd.ts --help
 
 ### Releasing
 
-A release is a tag. Bump `RIG_VERSION` in `src/domain/version.ts`, merge it,
-then tag that commit `v<version>` and push the tag. The release workflow
+A release is a tag. Releases follow semantic versioning: bump `RIG_VERSION` in
+`src/domain/version.ts` (major for a breaking change to a command, config or the
+control plane; minor for a new one; patch for a fix), merge it, then tag that
+commit `v<version>` and push the tag. The release workflow
 (`.github/workflows/release.yml`) runs `scripts/package-release.sh`, which
 compiles `rig` and `rigd` for Apple Silicon and Intel Macs, builds the
 dashboard once (`scripts/build-dashboard.sh`; it runs on either), packs each

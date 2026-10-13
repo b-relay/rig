@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderResult } from "../src/cli/output";
 import {
+  installEnvironment,
   installedRelease,
   upgrade,
   type UpgradeDependencies,
@@ -266,6 +267,19 @@ test("every redirect is followed by rigd upgrade itself and must stay on HTTPS, 
     message:
       "Could not download http://cache.example.com/install: it is not HTTPS.",
   });
+  // An HTTPS download never ends in a local file.
+  await expect(
+    upgrade(
+      deps({
+        ...github,
+        "https://objects.example.com/install": redirect("file:///etc/hosts"),
+      }),
+      {},
+    ),
+  ).rejects.toMatchObject({
+    code: "UPGRADE_DOWNLOAD",
+    message: "Could not download file:///etc/hosts: it is not HTTPS.",
+  });
   // A redirect to an address that is not one is a failed download.
   await expect(
     upgrade(
@@ -377,4 +391,14 @@ test("end to end, rigd upgrade installs a release through the real install scrip
     await readFile(join(root, "dashboard", tag, "web", "server.js"), "utf8"),
   ).toBe("// served");
   expect(await readFile(ran, "utf8")).toBe("install\nstatus\n");
+});
+
+test("the install script gets RIG_ROOT as rigd resolved it when one was set, and none otherwise", () => {
+  expect(
+    installEnvironment({ PATH: "/bin", RIG_ROOT: "/tmp/root/" }, "/tmp/root"),
+  ).toEqual({ PATH: "/bin", RIG_ROOT: "/tmp/root" });
+  for (const RIG_ROOT of [undefined, ""])
+    expect(
+      installEnvironment({ PATH: "/bin", RIG_ROOT }, "/Users/me/.rig"),
+    ).toEqual({ PATH: "/bin" });
 });

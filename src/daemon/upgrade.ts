@@ -123,7 +123,7 @@ async function latestRelease(
   deps: Pick<UpgradeDependencies, "fetch" | "releases">,
 ): Promise<string> {
   const url = deps.releases.replace(/\/download$/, "/latest");
-  const response = await request(deps, url);
+  const response = await request(deps, url, schemeOf(url));
   const tag = /\/releases\/tag\/(v\d+\.\d+\.\d+)$/.exec(
     response.headers.get("location") ?? "",
   )?.[1];
@@ -144,9 +144,11 @@ async function download(
   deps: Pick<UpgradeDependencies, "fetch">,
   url: string,
 ): Promise<Uint8Array> {
+  // Every hop stays on the scheme the download began with: HTTPS for a release, file:// only for a test's local tree.
+  const scheme = schemeOf(url);
   let address = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const response = await request(deps, address);
+    const response = await request(deps, address, scheme);
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location)
@@ -181,13 +183,23 @@ async function download(
   }
   throw failure(url, `more than ${MAX_REDIRECTS} redirects`);
 }
-/** One request to an HTTPS (or, for tests, file://) address, never following a redirect itself. */
+/** Pure: the scheme a download may use: file:// for a test's local tree, HTTPS for everything else. */
+function schemeOf(url: string): "https://" | "file://" {
+  return url.startsWith("file://") ? "file://" : "https://";
+}
+/** One request to an address on `scheme`, never following a redirect itself. */
 async function request(
   deps: Pick<UpgradeDependencies, "fetch">,
   address: string,
+  scheme: "https://" | "file://",
 ): Promise<Response> {
-  if (!address.startsWith("https://") && !address.startsWith("file://"))
-    throw failure(address, "it is not HTTPS");
+  if (!address.startsWith(scheme))
+    throw failure(
+      address,
+      scheme === "https://"
+        ? "it is not HTTPS"
+        : "it leaves the local release tree",
+    );
   try {
     return await deps.fetch(address);
   } catch (error) {
@@ -226,4 +238,14 @@ export async function installedRelease(
   } catch {
     return undefined;
   }
+}
+
+/** Pure: the environment a release's install script runs in, from rigd's own: RIG_ROOT as rigd resolved it when one was
+ * set, and none otherwise, so the script and its rigd install find the root as rigd does (a LaunchAgent stays one). */
+export function installEnvironment(
+  environment: Readonly<Record<string, string | undefined>>,
+  root: string,
+): Record<string, string | undefined> {
+  const { RIG_ROOT, ...rest } = environment;
+  return { ...rest, ...(RIG_ROOT ? { RIG_ROOT: root } : {}) };
 }

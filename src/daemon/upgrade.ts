@@ -70,7 +70,7 @@ export async function upgrade(
     named,
   });
   if (release === installed) return result("current");
-  if (request.check) return result("available");
+  // Fetched before anything is said to be available, so a release that does not exist is named as such.
   const script = await download(deps, `${deps.releases}/${release}/install`);
   const names = /^version="(v\d+\.\d+\.\d+)"$/m.exec(
     new TextDecoder().decode(script),
@@ -82,6 +82,7 @@ export async function upgrade(
       "That release is not as published; nothing was changed.",
       { release },
     );
+  if (request.check) return result("available");
   const sums = new TextDecoder().decode(
     await download(deps, `${deps.releases}/${release}/SHA256SUMS`),
   );
@@ -150,7 +151,11 @@ async function download(
       const location = response.headers.get("location");
       if (!location)
         throw failure(url, `a redirect from ${address} named no address`);
-      address = new URL(location, address).toString();
+      try {
+        address = new URL(location, address).toString();
+      } catch {
+        throw failure(url, `a redirect from ${address} named no valid address`);
+      }
       continue;
     }
     if (!response.ok)

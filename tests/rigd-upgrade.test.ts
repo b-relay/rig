@@ -185,6 +185,10 @@ test("a release that does not exist, a version that is not one, and no release a
   await expect(upgrade(f.deps(), { version: "9.9.9" })).rejects.toMatchObject({
     code: "UPGRADE_DOWNLOAD",
   });
+  // --check too: a release that does not exist is never said to be available.
+  await expect(
+    upgrade(f.deps(), { version: "9.9.9", check: true }),
+  ).rejects.toMatchObject({ code: "UPGRADE_DOWNLOAD" });
   await expect(upgrade(f.deps(), { version: "latest" })).rejects.toMatchObject({
     code: "USAGE",
   });
@@ -261,6 +265,19 @@ test("every redirect is followed by rigd upgrade itself and must stay on HTTPS, 
     code: "UPGRADE_DOWNLOAD",
     message:
       "Could not download http://cache.example.com/install: it is not HTTPS.",
+  });
+  // A redirect to an address that is not one is a failed download.
+  await expect(
+    upgrade(
+      deps({
+        ...github,
+        "https://objects.example.com/install": redirect("https://"),
+      }),
+      {},
+    ),
+  ).rejects.toMatchObject({
+    code: "UPGRADE_DOWNLOAD",
+    message: expect.stringContaining("named no valid address"),
   });
   // A redirect loop ends.
   await expect(

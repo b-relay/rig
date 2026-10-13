@@ -48,19 +48,27 @@ path_key() {
 
 # Fails unless both destinations can be replaced: a Rig Project's Target that publishes rig or rigd owns that file, and
 # this installer never replaces one; nor anything that is not a regular file. An owned file is known by its ownership
-# record, named by the SHA-256 of its path as Rig wrote it. A record for a Tool named rig or rigd that is named for no
-# file in bin as spelled here (written under another spelling of the root, through a symlink, or left by a file that is
-# gone) may be the record of these very files, so it stops the install too, whatever the Target was called.
+# record, named by the SHA-256 of its path as rigd spells it, so the root must be spelled the same way here. rigd's
+# installation record says how it spells the root when it runs from <root>/bin/rigd; any other spelling is refused. When
+# that cannot be told, any record named for no file in bin as spelled here may be one of these files, and stops the install.
 check_destinations() {
-	keys="$(for file in "$root"/bin/*; do if [ -e "$file" ]; then path_key "$file"; fi; done)"
-	for record in "$root"/installed/owners/*.json; do
-		case "$record" in *.repository.json) continue ;; esac
-		[ -f "$record" ] || continue
-		if printf '%s\n' "$keys" | grep -qx "$(basename "$record" .json)"; then continue; fi
-		if grep -q '"componentName":"rigd\{0,1\}"' "$record"; then
-			fail "$record records a rig or rigd a Target published that is not in $root/bin as spelled here, so install cannot tell whether it owns these. Set RIG_ROOT as rigd spells it (without a symlink in the path), or run rig doctor to find the file."
-		fi
-	done
+	rigd_command="$(sed -n 's/.*"command":\["\([^"]*\)".*/\1/p' "$root/daemon/install.json" 2>/dev/null || true)"
+	case "$rigd_command" in
+	*/bin/rigd)
+		rigd_root="${rigd_command%/bin/rigd}"
+		[ "$rigd_root" = "$root" ] || fail "rigd runs from $rigd_command, so Rig records its files under $rigd_root. Set RIG_ROOT=$rigd_root and run install again."
+		;;
+	*)
+		keys="$(for file in "$root"/bin/*; do if [ -e "$file" ]; then path_key "$file"; fi; done)"
+		for record in "$root"/installed/owners/*.json; do
+			case "$record" in *.repository.json) continue ;; esac
+			[ -f "$record" ] || continue
+			if ! printf '%s\n' "$keys" | grep -qx "$(basename "$record" .json)"; then
+				fail "$record records a file a Target published that is not in $root/bin as spelled here, and rigd does not say how it spells the Rig root, so install cannot tell whether it is rig or rigd. Set RIG_ROOT as rigd spells it, or run rig doctor to find the file."
+			fi
+		done
+		;;
+	esac
 	for name in rig rigd; do
 		destination="$root/bin/$name"
 		[ ! -e "$root/installed/owners/$(path_key "$destination").json" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."

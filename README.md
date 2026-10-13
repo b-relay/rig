@@ -8,21 +8,26 @@ TypeScript, Bun, and Zod.
 ## Install
 
 Rig runs on macOS (Apple Silicon or Intel). Download the latest release's
-`install` script, read it, then run it:
+`install` script and read it:
 
 ```sh
 curl -fsSLO https://github.com/b-relay/rig/releases/latest/download/install
 less install
-sh install
 ```
 
-To check the script before running it, compare it with the release's
-`SHA256SUMS` and its build provenance:
+Then, optionally, check it against the release's `SHA256SUMS` and its build
+provenance:
 
 ```sh
 curl -fsSLO https://github.com/b-relay/rig/releases/latest/download/SHA256SUMS
 shasum -a 256 -c --ignore-missing SHA256SUMS
 gh attestation verify install --repo b-relay/rig
+```
+
+And run it:
+
+```sh
+sh install
 ```
 
 If you accept running it unread, this does the same in one line:

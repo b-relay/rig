@@ -29,8 +29,9 @@ own Caddy publishes it at that hostname, with the access key in
 `<RIG_ROOT>/auth/dashboard.key` and `dashboard.trusted_clients` passed to it as
 `RIG_WEB_KEY_FILE` and `RIG_WEB_TRUSTED_CLIENTS`. In this repository it is also a
 Rig Service (`services.web` in `rig.yaml`), for developing it: it listens on
-`127.0.0.1` only; Caddy publishes the stable Target at `rig.b-relay.com` and each
-Preview at `rig-<preview>.b-relay.com`.
+`127.0.0.1` only; the working Target serves it on a loopback port, and Caddy
+publishes each Preview at `rig-<preview>.b-relay.com`. The repository runs no
+stable Target: `rig.b-relay.com` is the installed release's dashboard.
 
 It authenticates to `rigd` the way `rig` does. `rigd install` writes a random
 token to `<RIG_ROOT>/auth/control-plane.token` (mode 600) and `rigd` records its
@@ -297,8 +298,9 @@ client.
 
 This matters even on the Mac itself when `rig.b-relay.com` resolves to a
 Tailscale or LAN address: Caddy then sees the browser arrive from that address,
-not from loopback. Read the key with `cat` on the path the log names
-(`rig logs stable --project rig`).
+not from loopback. Read the key with `cat`: the installed dashboard's is
+`<RIG_ROOT>/auth/dashboard.key`, and a Target serving the site (a working copy
+or a Preview) names its key file in its log (`rig logs`).
 
 Anyone holding the key has full control of every Project on the Host. Without
 `RIG_WEB_KEY_FILE`, clients beyond the trusted addresses are refused outright.

@@ -158,7 +158,7 @@ export async function signIn(
     return refused({
       code: "KEY_REFUSED",
       message: "That is not this Host's access key.",
-      hint: "On the Mac that serves this site, the web Service's log names the key file: rig logs stable --project rig.",
+      hint: "On the Mac that serves this site, read the key file: ~/.rig/auth/dashboard.key for the dashboard that comes with Rig; a working copy or Preview names its own in its log (rig logs).",
     });
   const { header: _header, ...cookie } = sessionCookie(
     policy.accessKey,

@@ -133,6 +133,22 @@ bun run src/index.ts --help
 bun run src/rigd.ts --help
 ```
 
+### Releasing
+
+A release is a tag. Bump `RIG_VERSION` in `src/domain/version.ts`, merge it,
+then tag that commit `v<version>` and push the tag. The release workflow
+(`.github/workflows/release.yml`) runs `scripts/package-release.sh`, which
+compiles `rig` and `rigd` for Apple Silicon and Intel Macs into
+`rig-<tag>-darwin-<arch>.tar.gz`, writes the tag into the `install` script, and
+lists every file in `SHA256SUMS`. It then attests each file's build provenance
+and publishes the GitHub Release. Run `scripts/package-release.sh <tag> dist`
+from a clean checkout to try one locally.
+
+The `install` script downloads one release's archive for the Mac it runs on,
+checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin`, and
+runs `rigd install`. It never replaces a `rig` or `rigd` a Rig Project's Target
+published there.
+
 Integration tests create temporary daemons, processes, and provider resources.
 They need permission to bind localhost and a local Caddy executable.
 

@@ -1,5 +1,5 @@
 /** The release number people read; bump it with each release. */
-export const RIG_VERSION = "0.1.0";
+export const RIG_VERSION = "1.0.0";
 /** Pure: the stamp one build reports, `<release>+<commit>`, or `<release>+dev` for a run from source. */
 export const buildStamp = (
   release: string,

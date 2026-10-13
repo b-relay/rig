@@ -7,18 +7,17 @@ Three complete example configs live in [examples](examples).
 
 ## Setup
 
-Build the CLI:
+Install a release, as the [README](../README.md#install) shows: its `install`
+script puts `rig` and `rigd` in `<RIG_ROOT>/bin` and the dashboard in
+`<RIG_ROOT>/dashboard/<release>`, runs `rigd install`, and prints the line that
+adds `<RIG_ROOT>/bin` to `PATH` when it is missing. `rigd upgrade` installs a
+newer release later. An installed release is production; Rig itself is
+developed as a Rig Project's working Target, whose Tools are `rig-dev` and
+`rigd-dev` (see the README's Development), never by replacing the installed
+`rig` and `rigd`.
 
-```bash
-bun install
-bun run build
-bun run typecheck
-```
-
-The build produces `rig` and `rigd`. Put both in the chosen executable
-directory. Source development and
-tests must set an isolated `RIG_ROOT`; do not install into the real Host to
-try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
+Source development and tests must set an isolated `RIG_ROOT`; do not install
+into the real Host to try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
 `~/.rig`, and a relative value makes `rig` and `rigd` exit
 with a usage error before they create or read anything, rather than rooting
 Rig in the current working directory. Every command writes under the root (at
@@ -175,11 +174,11 @@ reports launchctl's reason and leaves nothing installed.
 The daemon's loopback `/health` endpoint answers `HEAD` as well as `GET`, so
 a probe that only wants the status line gets 200 without a body.
 `rig --version` and `rigd --version` print the build stamp: the release number
-plus the commit the executable was built from, such as `0.1.0+cb6077187ba5`
+plus the commit the executable was built from, such as `1.0.0+cb6077187ba5`
 (`bun build --define process.env.RIG_BUILD_COMMIT=...` embeds what
 `git describe --always --dirty` reports; a build from a tree with uncommitted
 changes ends in `-dirty`, and a run from source or a build outside git reports
-`0.1.0+dev`; two `-dirty` builds of one commit, or two `+dev` runs, are not
+`1.0.0+dev`; two `-dirty` builds of one commit, or two `+dev` runs, are not
 distinguishable from each other). Deploys build from a clean checkout of the
 Commit, so their stamps are never `-dirty`. A serving daemon reports its stamp to
 `rigd status`, which warns when it differs from the `rigd` you ran. Upgrading

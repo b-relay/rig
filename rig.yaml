@@ -1,7 +1,8 @@
 name: rig
 description: Rig project config for the CLI and daemon binaries and the Rig dashboard site.
-# The stable Target serves the website here; each Preview gets rig-<preview>.b-relay.com. web is the one
-# Service with a port, so the hostname routes to it without a proxy.
+# Each Preview gets rig-<preview>.b-relay.com from this; web is the one Service with a port, so the hostname routes to
+# it without a proxy. rig.b-relay.com itself is the installed Rig's dashboard (dashboard.domain in Host config): an
+# installed release is production, so this repository runs no stable Target and publishes no rig or rigd of its own.
 domain: rig.b-relay.com
 
 services:
@@ -30,8 +31,9 @@ services:
       test: http://127.0.0.1:${port}/healthz
 
 targets:
+  # The working copy is how Rig is developed and tried: its Tools are rig-dev and rigd-dev, beside the installed ones.
   working: true
-  stable: true
+  stable: false
   preview:
     services:
       web:

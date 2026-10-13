@@ -19,7 +19,7 @@ import { runCapturedProcess } from "./providers/captured-process";
 import { runCommand } from "./providers/command-runner";
 import { createProxyInstallation } from "./daemon/proxy-installation";
 import { readHostConfig } from "./config";
-import { dashboardUrl } from "./daemon/dashboard";
+import { dashboardServing } from "./daemon/dashboard";
 export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
@@ -73,7 +73,7 @@ export async function main(args: readonly string[]): Promise<number> {
       mode,
       userHome: homedir(),
       start: async () => (await readHostConfig(root)).daemon.start,
-      dashboard: async () => dashboardUrl(root, await readHostConfig(root)),
+      dashboard: async () => dashboardServing(root, await readHostConfig(root)),
       proxy: createProxyInstallation({
         root,
         userHome: homedir(),

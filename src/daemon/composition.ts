@@ -91,6 +91,7 @@ import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
 import {
   dashboardDirectory,
+  dashboardPublication,
   openDashboard,
   stopLeftOverDashboard,
 } from "./dashboard";
@@ -226,6 +227,9 @@ export async function composeDaemon(
       : await openDashboard({
           root,
           port: host.dashboard.port,
+          ...((published) => (published ? { published } : {}))(
+            dashboardPublication(host.dashboard),
+          ),
           directory: dashboardDirectory(root),
           executable: process.execPath,
           retention: logRetention,
@@ -382,7 +386,7 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     env,
-    ...(dashboard ? { dashboard: dashboard.url } : {}),
+    ...(dashboard ? { dashboard: dashboard.serving } : {}),
     async start() {
       // One an earlier rigd left running is stopped whether or not this rigd serves one. This one only reads rigd, so it
       // is served while the first pass still runs.

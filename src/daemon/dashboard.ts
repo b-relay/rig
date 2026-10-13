@@ -43,17 +43,47 @@ export function dashboardDirectory(
 ): string {
   return join(root, "dashboard", `v${release}`);
 }
-/** Where a rigd started now would serve the dashboard: Host config's port, when it is on and this release's dashboard is
- * installed; otherwise undefined, since that rigd serves none. `rigd install` compares it with what the running rigd
- * reports, so a changed setting starts a rigd that applies it. */
-export async function dashboardUrl(
+/** Where the dashboard is published beyond this Mac: Rig's Caddy serves `domain`, and `trustedClients` reach it without
+ * the access key. */
+export interface DashboardPublication {
+  readonly domain: string;
+  readonly trustedClients: readonly string[];
+}
+/** Pure: how a dashboard is served, as rigd status shows it and rigd install compares it: `http://127.0.0.1:4280`, or
+ * `https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10`. */
+export function describeDashboard(
+  port: number,
+  published?: DashboardPublication,
+): string {
+  const local = `http://127.0.0.1:${port}`;
+  if (!published) return local;
+  const trusting = published.trustedClients.length
+    ? `, trusting ${published.trustedClients.join(", ")}`
+    : "";
+  return `https://${published.domain} via ${local}${trusting}`;
+}
+/** Pure: the publication Host config asks of the dashboard, if any. */
+export function dashboardPublication(
+  dashboard: Exclude<HostConfig["dashboard"], false>,
+): DashboardPublication | undefined {
+  return dashboard.domain === undefined
+    ? undefined
+    : { domain: dashboard.domain, trustedClients: dashboard.trusted_clients };
+}
+/** How a rigd started now would serve the dashboard (see describeDashboard): Host config's settings, when it is on and
+ * this release's dashboard is installed; otherwise undefined, since that rigd serves none. `rigd install` compares it
+ * with what the running rigd reports, so a changed setting starts a rigd that applies it. */
+export async function dashboardServing(
   root: string,
   host: Pick<HostConfig, "dashboard">,
 ): Promise<string | undefined> {
   if (host.dashboard === false) return undefined;
   const server = join(dashboardDirectory(root), "web", "server.js");
   if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
-  return `http://127.0.0.1:${host.dashboard.port}`;
+  return describeDashboard(
+    host.dashboard.port,
+    dashboardPublication(host.dashboard),
+  );
 }
 
 const recordPath = (root: string) => join(root, "dashboard", "process.json");
@@ -96,6 +126,8 @@ export interface DashboardDependencies {
   readonly directory: string;
   /** rigd's own executable, which runs the server as Bun (BUN_BE_BUN=1); from source, Bun itself. */
   readonly executable: string;
+  /** Where Rig's Caddy publishes it, when Host config names a domain. */
+  readonly published?: DashboardPublication;
   /** The Host's Target log sizes, which the dashboard's log follows too. */
   retention(): Promise<LogRetention>;
   readonly notices: Pick<NoticeBoard, "note" | "clear">;
@@ -108,6 +140,8 @@ export interface DashboardDependencies {
 export interface Dashboard {
   /** Where it is served: http://127.0.0.1:<port>. */
   readonly url: string;
+  /** How it is served, with where it is published (see describeDashboard). */
+  readonly serving: string;
   /** Starts it and keeps it running until `stop`. */
   start(): void;
   stop(): Promise<void>;
@@ -154,6 +188,15 @@ export async function openDashboard(
     HOSTNAME: "127.0.0.1",
     PORT: String(deps.port),
     RIG_ROOT: deps.root,
+    // Published, it is the dashboard at that host: browsers beyond this Mac sign in with the key, unless trusted.
+    ...(deps.published
+      ? {
+          RIG_WEB_HOST: deps.published.domain,
+          RIG_WEB_DASHBOARD_HOST: deps.published.domain,
+          RIG_WEB_KEY_FILE: join(deps.root, "auth", "dashboard.key"),
+          RIG_WEB_TRUSTED_CLIENTS: deps.published.trustedClients.join(","),
+        }
+      : {}),
   };
   const launch = (): Run => {
     const child = spawn(deps.executable, ["server.js"], {
@@ -226,6 +269,7 @@ export async function openDashboard(
   };
   return {
     url: `http://127.0.0.1:${deps.port}`,
+    serving: describeDashboard(deps.port, deps.published),
     start() {
       running ??= loop();
     },

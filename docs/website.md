@@ -23,9 +23,14 @@ same Zod schema `rigd` uses and answer an `Outcome`, a value or a failure with
 
 ## How it reaches rigd
 
-The site is a Rig Service (`services.web` in this repository's `rig.yaml`). It
-listens on `127.0.0.1` only; Caddy publishes the stable Target at
-`rig.b-relay.com` and each Preview at `rig-<preview>.b-relay.com`.
+An installed Rig runs the site from its release: `rigd` serves it on
+`127.0.0.1:<dashboard.port>`, and with `dashboard.domain` in Host config Rig's
+own Caddy publishes it at that hostname, with the access key in
+`<RIG_ROOT>/auth/dashboard.key` and `dashboard.trusted_clients` passed to it as
+`RIG_WEB_KEY_FILE` and `RIG_WEB_TRUSTED_CLIENTS`. In this repository it is also a
+Rig Service (`services.web` in `rig.yaml`), for developing it: it listens on
+`127.0.0.1` only; Caddy publishes the stable Target at `rig.b-relay.com` and each
+Preview at `rig-<preview>.b-relay.com`.
 
 It authenticates to `rigd` the way `rig` does. `rigd install` writes a random
 token to `<RIG_ROOT>/auth/control-plane.token` (mode 600) and `rigd` records its

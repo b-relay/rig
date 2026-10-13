@@ -339,7 +339,7 @@
       "additionalProperties": false
     },
     "dashboard": {
-      "description": "The dashboard that comes with Rig: rigd starts it and keeps it running, on this Mac only, at http://127.0.0.1:<port>. false turns it off.",
+      "description": "The dashboard that comes with Rig: rigd starts it and keeps it running at http://127.0.0.1:<port>, and with domain Rig's Caddy publishes it. false turns it off.",
       "default": {},
       "anyOf": [
         {
@@ -356,6 +356,18 @@
               "type": "integer",
               "minimum": 1024,
               "maximum": 65535
+            },
+            "domain": {
+              "description": "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry, so a Target or proxy.routes naming it is refused. Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
+              "type": "string"
+            },
+            "trusted_clients": {
+              "default": [],
+              "description": "Addresses that reach the published dashboard without the access key: IP addresses, or IPv4 blocks such as 100.64.0.0/10 for a tailnet. Everyone else signs in with the key. A change applies when rigd next starts (rigd install).",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           },
           "additionalProperties": false

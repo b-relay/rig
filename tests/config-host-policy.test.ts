@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseHostConfig, parseProjectConfig } from "../src/config";
+import { hostRoutes } from "../src/domain/managed-proxy";
 import { inspectHost } from "../src/adapters/host-inspection";
 import { configuredDiagnosticLog } from "../src/diagnostics/host-log";
 
@@ -17,7 +18,7 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     logs: { max_bytes: 64 * 1024 * 1024, generations: 1 },
     monitor: { detail_hours: 24, retention_days: 7 },
     daemon: { start: "login" },
-    dashboard: { port: 4280 },
+    dashboard: { port: 4280, trusted_clients: [] },
     proxyMode: "external",
     externalIgnored: false,
   });
@@ -276,4 +277,61 @@ test("rig's and rigd's diagnostic logs keep the days diagnostics.retention_days 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("dashboard.domain is published by Rig's own Caddy as one more of the owner's routes, and refused without one or beside a proxy.routes entry for it", () => {
+  const host = parseHostConfig({
+    proxy: {
+      caddy: "/usr/local/bin/caddy",
+      routes: { "grafana.example.com": 3000 },
+    },
+    dashboard: {
+      port: 4281,
+      domain: "rig.example.com",
+      trusted_clients: ["100.64.0.0/10", "192.168.1.5", "fd7a::1"],
+    },
+  });
+  expect(host.proxy!.routes).toEqual({
+    "grafana.example.com": 3000,
+    "rig.example.com": 4281,
+  });
+  // Rig's Caddy serves it as it serves those: a reverse proxy to the dashboard's port.
+  expect(hostRoutes(host.proxy!)).toEqual([
+    { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
+    { hostname: "rig.example.com", upstream: "127.0.0.1:4281" },
+  ]);
+  expect(host.dashboard).toEqual({
+    port: 4281,
+    domain: "rig.example.com",
+    trusted_clients: ["100.64.0.0/10", "192.168.1.5", "fd7a::1"],
+  });
+  for (const [config, problem] of [
+    [{ dashboard: { domain: "rig.example.com" } }, "needs a proxy section"],
+    [
+      {
+        proxy: { caddy: "/c", routes: { "rig.example.com": 1 } },
+        dashboard: { domain: "rig.example.com" },
+      },
+      "is also in proxy.routes",
+    ],
+    [
+      { proxy: { caddy: "/c" }, dashboard: { domain: "Rig.Example.com" } },
+      "must be a lowercase hostname",
+    ],
+    [
+      { dashboard: { trusted_clients: ["100.64.0.0/40"] } },
+      "must be an IP address or an IPv4 block",
+    ],
+  ] as const)
+    expect(() => parseHostConfig(config)).toThrow(
+      expect.objectContaining({
+        context: expect.objectContaining({
+          issues: expect.arrayContaining([
+            expect.objectContaining({
+              message: expect.stringContaining(problem),
+            }),
+          ]),
+        }),
+      }),
+    );
 });

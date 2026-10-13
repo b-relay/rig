@@ -12,8 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   DASHBOARD,
+  describeDashboard,
   dashboardDirectory,
-  dashboardUrl,
+  dashboardServing,
   openDashboard,
   stopLeftOverDashboard,
   type DashboardDependencies,
@@ -352,15 +353,91 @@ test("the dashboard's log is rotated by the Host's log sizes", async () => {
 
 test("rigd install restarts rigd when it would serve the dashboard elsewhere: on another port, off, or not installed", async () => {
   const f = await installed(SERVER);
-  expect(await dashboardUrl(f.root, parseHostConfig({}))).toBe(
+  expect(await dashboardServing(f.root, parseHostConfig({}))).toBe(
     "http://127.0.0.1:4280",
   );
   expect(
-    await dashboardUrl(f.root, parseHostConfig({ dashboard: { port: 5001 } })),
+    await dashboardServing(
+      f.root,
+      parseHostConfig({ dashboard: { port: 5001 } }),
+    ),
   ).toBe("http://127.0.0.1:5001");
   expect(
-    await dashboardUrl(f.root, parseHostConfig({ dashboard: false })),
+    await dashboardServing(f.root, parseHostConfig({ dashboard: false })),
   ).toBeUndefined();
   await rm(join(f.directory, "web", "server.js"));
-  expect(await dashboardUrl(f.root, parseHostConfig({}))).toBeUndefined();
+  expect(await dashboardServing(f.root, parseHostConfig({}))).toBeUndefined();
+});
+
+test("how the dashboard is served reads its local address, and where Caddy publishes it with whom it trusts", async () => {
+  expect(describeDashboard(4280)).toBe("http://127.0.0.1:4280");
+  expect(
+    describeDashboard(4280, { domain: "rig.example.com", trustedClients: [] }),
+  ).toBe("https://rig.example.com via http://127.0.0.1:4280");
+  expect(
+    describeDashboard(4280, {
+      domain: "rig.example.com",
+      trustedClients: ["100.64.0.0/10", "192.168.1.5"],
+    }),
+  ).toBe(
+    "https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10, 192.168.1.5",
+  );
+  // So rigd install restarts rigd when the domain or the trusted clients change, as for the port.
+  const f = await installed(SERVER);
+  const proxy = { caddy: "/usr/local/bin/caddy" };
+  expect(
+    await dashboardServing(
+      f.root,
+      parseHostConfig({
+        proxy,
+        dashboard: {
+          domain: "rig.example.com",
+          trusted_clients: ["100.64.0.0/10"],
+        },
+      }),
+    ),
+  ).toBe(
+    "https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10",
+  );
+});
+
+test("a published dashboard runs with its host, its access key file, and the clients it trusts; one on this Mac only with none of them", async () => {
+  const f = await installed(`
+Bun.serve({
+  port: Number(process.env.PORT),
+  hostname: process.env.HOSTNAME,
+  fetch: () => Response.json({
+    host: process.env.RIG_WEB_HOST ?? null,
+    dashboard: process.env.RIG_WEB_DASHBOARD_HOST ?? null,
+    key: process.env.RIG_WEB_KEY_FILE ?? null,
+    trusted: process.env.RIG_WEB_TRUSTED_CLIENTS ?? null,
+  }),
+});`);
+  const published = (await openDashboard({
+    ...f.deps,
+    published: {
+      domain: "rig.example.com",
+      trustedClients: ["100.64.0.0/10", "192.168.1.5"],
+    },
+  }))!;
+  expect(published.serving).toBe(
+    `https://rig.example.com via ${published.url}, trusting 100.64.0.0/10, 192.168.1.5`,
+  );
+  published.start();
+  expect(JSON.parse((await answer(published.url))!)).toEqual({
+    host: "rig.example.com",
+    dashboard: "rig.example.com",
+    key: join(f.root, "auth", "dashboard.key"),
+    trusted: "100.64.0.0/10,192.168.1.5",
+  });
+  await published.stop();
+  const local = (await openDashboard(f.deps))!;
+  local.start();
+  expect(JSON.parse((await answer(local.url))!)).toEqual({
+    host: null,
+    dashboard: null,
+    key: null,
+    trusted: null,
+  });
+  await local.stop();
 });

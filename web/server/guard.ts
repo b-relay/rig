@@ -1,4 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { ipv4, type TrustedClient } from "../../src/domain/trusted-clients";
+
+export {
+  parseTrustedClients,
+  type TrustedClient,
+} from "../../src/domain/trusted-clients";
 
 /** Who may use the relay. The relay holds this Host's control-plane credential, so every
  * request it forwards must come from its own page, under its own name, from a trusted machine. */
@@ -14,10 +20,6 @@ export interface AccessPolicy {
   /** Set when this copy of the site is a Preview: it shows the pages but never relays, and names the host that does. */
   relaysAt?: string;
 }
-/** One validated trusted-client entry; `bits` is 32 for a single IPv4 address. */
-export type TrustedClient =
-  | { kind: "block"; base: number; bits: number }
-  | { kind: "exact"; address: string };
 /** The request facts access is decided from; header names are lower case. */
 export interface RequestFacts {
   method: string;
@@ -42,16 +44,6 @@ const refused = (
   message: string,
 ): Admission => ({ admitted: false, status, code, message });
 
-function ipv4(address: string): number | undefined {
-  const parts = address.split(".");
-  if (parts.length !== 4) return undefined;
-  let value = 0;
-  for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part) || Number(part) > 255) return undefined;
-    value = value * 256 + Number(part);
-  }
-  return value;
-}
 const LOOPBACK = /^(?:127\.\d+\.\d+\.\d+|::1|::ffff:127\.\d+\.\d+\.\d+)$/;
 /** Pure: whether one client address is loopback or named by the trusted list. */
 export function trustedClient(
@@ -66,27 +58,6 @@ export function trustedClient(
     const span = 2 ** (32 - entry.bits);
     return Math.floor(entry.base / span) === Math.floor(client / span);
   });
-}
-/** Pure: reads the operator's trusted-client list. A malformed entry throws rather than
- * being skipped or widened, because a typo here decides who controls the Host. */
-export function parseTrustedClients(list: string): TrustedClient[] {
-  return list
-    .split(",")
-    .map((each) => each.trim())
-    .filter(Boolean)
-    .map((entry): TrustedClient => {
-      const block = /^([\d.]+)\/(\d{1,2})$/.exec(entry);
-      const base = ipv4(block ? block[1]! : entry);
-      if (block && base !== undefined && Number(block[2]) <= 32)
-        return { kind: "block", base, bits: Number(block[2]) };
-      if (!block && base !== undefined)
-        return { kind: "block", base, bits: 32 };
-      if (!block && /^[0-9a-f:]+$/i.test(entry) && entry.includes(":"))
-        return { kind: "exact", address: entry.toLowerCase() };
-      throw new TypeError(
-        `"${entry}" is not an IP address or an IPv4 block such as 100.64.0.0/10.`,
-      );
-    });
 }
 export const SESSION_COOKIE = "rig_session";
 /** How long a sign-in lasts without a visit: browsers keep no cookie longer than 400 days. Each

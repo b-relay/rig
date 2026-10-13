@@ -42,14 +42,24 @@ normal_path() {
 }
 
 # Fails unless both destinations can be replaced: a Rig Project's Target that publishes rig or rigd owns that file, and
-# this installer never replaces one; nor anything that is not a regular file.
+# this installer never replaces one; nor anything that is not a regular file. An owned file is known by its ownership
+# record, named by the SHA-256 of its path as Rig writes it; or, when RIG_ROOT reaches the root through another spelling
+# (a symlink), by a stable Target's record whose revision is the SHA-256 of the file's bytes. Only a stable Target
+# publishes bin/rig and bin/rigd unsuffixed (working publishes rig-dev), so a working copy's identical build matches none.
 check_destinations() {
 	for name in rig rigd; do
 		destination="$root/bin/$name"
+		owned="$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
 		owner="$root/installed/owners/$(printf '%s' "$destination" | shasum -a 256 | cut -c 1-64).json"
-		[ ! -e "$owner" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
+		[ ! -e "$owner" ] || fail "$owned"
 		if [ -e "$destination" ] || [ -L "$destination" ]; then
 			[ -f "$destination" ] && [ ! -L "$destination" ] || fail "$destination is not a regular file; move it aside and run install again."
+			bytes="$(shasum -a 256 "$destination" | cut -c 1-64)"
+			for record in "$root"/installed/owners/*.json; do
+				if [ -f "$record" ] && grep -q '"target":"stable"' "$record" && grep -q "\"revision\":\"$bytes\"" "$record"; then
+					fail "$owned"
+				fi
+			done
 		fi
 	done
 }

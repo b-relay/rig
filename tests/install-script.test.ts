@@ -1,7 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   chmod,
   mkdir,
+  symlink,
   mkdtemp,
   readFile,
   readdir,
@@ -297,6 +299,77 @@ exec /usr/bin/curl "$@"
   // The staged copies are gone with the failure.
   expect(await readdir(join(root, "bin"))).toEqual(["rig"]);
   expect(await exists(f.ran)).toBe(false);
+});
+
+/** Publishes `bytes` at bin/<name> under `root` as `target`'s Tool would: the file and its ownership record. */
+async function publish(
+  root: string,
+  name: string,
+  bytes: string,
+  target: "stable" | "working",
+) {
+  const destination = installedPath(
+    root,
+    { kind: "stable", name: "stable" },
+    { name },
+  );
+  await mkdir(join(root, "bin"), { recursive: true });
+  await writeFile(destination, bytes);
+  const record = ownershipRecordPath(root, destination);
+  await mkdir(join(record, ".."), { recursive: true });
+  await writeFile(
+    record,
+    JSON.stringify({
+      targetId: "t1",
+      componentName: name,
+      project: "rig",
+      target,
+      revision: createHash("sha256").update(bytes).digest("hex"),
+    }),
+  );
+  return destination;
+}
+
+test("a RIG_ROOT that reaches the root through a symlink still finds the rig a stable Target owns there, by its bytes", async () => {
+  const f = await release();
+  const real = join(f.home, "real");
+  const owned = await publish(real, "rig", "published by a Target", "stable");
+  const alias = join(f.home, "alias");
+  await symlink(real, alias);
+  const result = await f.install({ RIG_ROOT: alias });
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(
+    `${alias}/bin/rig was published by a Rig Project's Target, which owns it, so install leaves it alone.`,
+  );
+  expect(await readFile(owned, "utf8")).toBe("published by a Target");
+  expect(await readdir(join(real, "bin"))).toEqual(["rig"]);
+  expect(await exists(f.ran)).toBe(false);
+});
+
+test("records that do not own the destinations never stop an install: another Target's, or a working copy's build of the same bytes", async () => {
+  const f = await release();
+  // A rig installed earlier, and a working copy's Tool built from the same bytes, recorded as the working Target's.
+  await mkdir(join(f.root, "bin"), { recursive: true });
+  await writeFile(join(f.root, "bin", "rig"), "the earlier install");
+  const record = ownershipRecordPath(f.root, join(f.root, "bin", "rig-dev"));
+  await mkdir(join(record, ".."), { recursive: true });
+  await writeFile(
+    record,
+    JSON.stringify({
+      targetId: "t2",
+      componentName: "rig",
+      project: "rig",
+      target: "working",
+      revision: createHash("sha256")
+        .update("the earlier install")
+        .digest("hex"),
+    }),
+  );
+  await publish(f.root, "pantry", "another Project's Tool", "stable");
+  const result = await f.install();
+  expect(result.stderr).toBe("");
+  expect(result.code).toBe(0);
+  expect(await installedArch(f.root)).toBe("arm64");
 });
 
 test("a RIG_ROOT spelled with //, . or .. parts, or relative, is refused, so the owned-file check uses the path Rig records", async () => {

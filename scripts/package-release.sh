@@ -4,6 +4,8 @@
 # runs it on a pushed tag; it also runs locally to try a release before tagging one.
 #
 #   scripts/package-release.sh <tag> <out>     for example: scripts/package-release.sh v0.1.0 dist
+#
+# <out> must not exist yet.
 set -eu
 
 [ $# -eq 2 ] || {
@@ -11,7 +13,16 @@ set -eu
 	exit 2
 }
 tag="$1"
-out="$2"
+# Absolute, so it means the same directory once the script moves to the repository root.
+case "$2" in
+/*) out="$2" ;;
+*) out="$PWD/$2" ;;
+esac
+# A fresh directory, so packaging never deletes or mixes into anything that is already there.
+[ ! -e "$out" ] || {
+	echo "$out already exists; give a directory that does not exist yet." >&2
+	exit 1
+}
 cd "$(dirname "$0")/.."
 
 # The tag names the release Rig reports, so the two can never disagree.
@@ -27,7 +38,6 @@ release="$(bun -e 'import { RIG_VERSION } from "./src/domain/version"; process.s
 }
 stamp="$(git rev-parse --short=12 HEAD)"
 
-rm -rf "$out"
 mkdir -p "$out"
 for arch in arm64 x64; do
 	build="rig-$tag-darwin-$arch"

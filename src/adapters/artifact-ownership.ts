@@ -90,6 +90,16 @@ export interface OrphanedArtifact {
   /** Its bytes are no longer the ones Rig published for that owner: Rig never replaces or removes it. */
   changed: boolean;
 }
+/** Pure: where the ownership record of the executable at `destination` lives: named by the SHA-256 of that path as Rig
+ * writes it, under the root. The release's install script computes the same path to leave an owned rig or rigd alone. */
+export function ownershipRecordPath(root: string, destination: string): string {
+  return join(
+    root,
+    "installed",
+    "owners",
+    createHash("sha256").update(destination).digest("hex") + ".json",
+  );
+}
 /** One daemon serializes ownership mutations; an existing unowned file is never taken over.
  * `digest` hashes an executable; the daemon passes a remembering one so status calls do not
  * re-read every Tool. `recordedTargets` reads the Target ids state records now: an executable whose owner it does not name
@@ -101,12 +111,7 @@ export function createArtifactOwnership(
   recordedTargets?: () => Promise<ReadonlySet<string>>,
 ) {
   const ownerPath = (destination: string) =>
-    join(
-      root,
-      "installed",
-      "owners",
-      createHash("sha256").update(destination).digest("hex") + ".json",
-    );
+    ownershipRecordPath(root, destination);
   /** Beside the ownership record of Rig's own executables: which repository published them. */
   const provenancePath = (destination: string) =>
     ownerPath(destination).replace(/\.json$/, ".repository.json");

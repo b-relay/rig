@@ -346,7 +346,7 @@ test("a RIG_ROOT that reaches the root through a symlink still finds the rig a s
   expect(await exists(f.ran)).toBe(false);
 });
 
-test("records that do not own the destinations never stop an install: another Target's, or a working copy's build of the same bytes", async () => {
+test("records that do not own the destinations never stop an install: another Target's, a working copy's build of the same bytes, or another stable Tool with them", async () => {
   const f = await release();
   // A rig installed earlier, and a working copy's Tool built from the same bytes, recorded as the working Target's.
   await mkdir(join(f.root, "bin"), { recursive: true });
@@ -366,6 +366,8 @@ test("records that do not own the destinations never stop an install: another Ta
     }),
   );
   await publish(f.root, "pantry", "another Project's Tool", "stable");
+  // A stable Tool under another name whose bytes are the same as the installed rig's owns only its own file.
+  await publish(f.root, "rig-old", "the earlier install", "stable");
   const result = await f.install();
   expect(result.stderr).toBe("");
   expect(result.code).toBe(0);

@@ -41,6 +41,19 @@ normal_path() {
 	esac
 }
 
+# Fails unless both destinations can be replaced: a Rig Project's Target that publishes rig or rigd owns that file, and
+# this installer never replaces one; nor anything that is not a regular file.
+check_destinations() {
+	for name in rig rigd; do
+		destination="$root/bin/$name"
+		owner="$root/installed/owners/$(printf '%s' "$destination" | shasum -a 256 | cut -c 1-64).json"
+		[ ! -e "$owner" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
+		if [ -e "$destination" ] || [ -L "$destination" ]; then
+			[ -f "$destination" ] && [ ! -L "$destination" ] || fail "$destination is not a regular file; move it aside and run install again."
+		fi
+	done
+}
+
 main() {
 	case "$version" in
 	v*) ;;
@@ -58,15 +71,7 @@ main() {
 	root="${RIG_ROOT:-$HOME/.rig}"
 	normal_path "$root" || fail "RIG_ROOT must be an absolute path without //, . or .. parts, but it is \"$root\"."
 
-	for name in rig rigd; do
-		destination="$root/bin/$name"
-		# A Rig Project's Target that publishes rig or rigd owns that file; this installer never replaces one.
-		owner="$root/installed/owners/$(printf '%s' "$destination" | shasum -a 256 | cut -c 1-64).json"
-		[ ! -e "$owner" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
-		if [ -e "$destination" ] || [ -L "$destination" ]; then
-			[ -f "$destination" ] && [ ! -L "$destination" ] || fail "$destination is not a regular file; move it aside and run install again."
-		fi
-	done
+	check_destinations
 
 	work="$(mktemp -d)"
 	stage=""
@@ -101,6 +106,9 @@ main() {
 		cp "$work/unpacked/$build/$name" "$stage/$name"
 		chmod 755 "$stage/$name"
 	done
+	# Checked again just before the renames: a Target may have published one while the release downloaded. rigd
+	# serializes its own publications in-process, so only an instant between this check and the renames is left uncovered.
+	check_destinations
 	for name in rig rigd; do
 		mv -f "$stage/$name" "$root/bin/$name"
 	done

@@ -260,6 +260,45 @@ test("install never replaces a rig or rigd that a Rig Project's Target published
   expect(await exists(f.ran)).toBe(false);
 });
 
+test("a rig a Target publishes while the release downloads is still left alone, and neither executable is replaced", async () => {
+  const f = await release();
+  const root = resolveRigRoot(f.root, f.home);
+  const destination = installedPath(
+    root,
+    { kind: "stable", name: "stable" },
+    { name: "rig" },
+  );
+  const record = ownershipRecordPath(root, destination);
+  // A curl that, while the archive downloads, publishes rig as a Target does: the file and its ownership record.
+  const fakes = join(f.home, "fakes");
+  await writeFile(
+    join(fakes, "curl"),
+    `#!/bin/sh
+for arg in "$@"; do
+  case "$arg" in
+  *.tar.gz)
+    mkdir -p '${join(root, "bin")}' '${join(record, "..")}'
+    printf 'published by a Target' > '${destination}'
+    printf '{}' > '${record}'
+    ;;
+  esac
+done
+exec /usr/bin/curl "$@"
+`,
+  );
+  await chmod(join(fakes, "curl"), 0o755);
+  const result = await f.install();
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(
+    `${destination} was published by a Rig Project's Target, which owns it, so install leaves it alone.`,
+  );
+  expect(await readFile(destination, "utf8")).toBe("published by a Target");
+  expect(await exists(join(root, "bin", "rigd"))).toBe(false);
+  // The staged copies are gone with the failure.
+  expect(await readdir(join(root, "bin"))).toEqual(["rig"]);
+  expect(await exists(f.ran)).toBe(false);
+});
+
 test("a RIG_ROOT spelled with //, . or .. parts, or relative, is refused, so the owned-file check uses the path Rig records", async () => {
   const f = await release();
   for (const RIG_ROOT of [

@@ -138,7 +138,7 @@ test("install puts the release's rig and rigd in the Rig root's bin, runs rigd i
   expect(result.stdout).toContain(
     `Installed rig and rigd ${TAG} in ${f.root}/bin.`,
   );
-  expect(result.stdout).toContain(`export PATH="${f.root}/bin:$PATH"`);
+  expect(result.stdout).toContain(`export PATH='${f.root}/bin':"$PATH"`);
   for (const name of ["rig", "rigd"])
     expect((await stat(join(f.root, "bin", name))).mode & 0o777).toBe(0o755);
   expect(await installedArch(f.root)).toBe("arm64");
@@ -191,6 +191,13 @@ test("a download that does not match SHA256SUMS, or a SHA256SUMS that does not n
       ),
     // Named twice.
     (written: string) => `${written}${written}`,
+    // Separated by a tab, by one space, or padded.
+    (written: string) => written.replace(/^([0-9a-f]{64})  /gm, "$1\t"),
+    (written: string) => written.replace(/^([0-9a-f]{64})  /gm, "$1 "),
+    (written: string) => written.replace(/\.tar\.gz$/gm, ".tar.gz "),
+    // A valid line, and a malformed one naming the archive too.
+    (written: string) =>
+      `${written}${written.replace(/^([0-9a-f]{64})  /gm, "$1\t")}`,
   ]) {
     const f = await release({ sums });
     const result = await f.install();
@@ -381,15 +388,33 @@ test("a RIG_ROOT spelled with //, . or .. parts, or relative, is refused, so the
   expect(await exists(f.ran)).toBe(false);
 });
 
-test("a script cut short before its last line runs nothing", async () => {
+test("a script cut short anywhere before its end runs nothing, even within its last line", async () => {
   const f = await release();
   const whole = await readFile(f.script, "utf8");
-  const cut = join(f.home, "install-cut");
-  await writeFile(cut, whole.slice(0, whole.lastIndexOf('main "$@"')));
-  const result = await f.install({}, cut);
-  expect(result.stdout).toBe("");
-  expect(await exists(join(f.root, "bin"))).toBe(false);
-  expect(await exists(f.ran)).toBe(false);
+  const last = whole.lastIndexOf('(main "$@")');
+  for (const end of [last, last + "(main".length, last + '(main "$@"'.length]) {
+    const cut = join(f.home, "install-cut");
+    await writeFile(cut, whole.slice(0, end));
+    const result = await f.install({}, cut);
+    expect(result.stdout).toBe("");
+    expect(await exists(join(f.root, "bin"))).toBe(false);
+    expect(await exists(f.ran)).toBe(false);
+  }
+});
+
+test("the PATH line it prints means the Rig root when pasted, whatever characters the root's name holds", async () => {
+  const f = await release();
+  const root = join(f.home, "it's $USER");
+  const result = await f.install({ RIG_ROOT: root });
+  expect(result.code).toBe(0);
+  const line = result.stdout
+    .split("\n")
+    .find((each) => each.trim().startsWith("export PATH="))!
+    .trim();
+  const pasted = await run(["/bin/sh", "-c", `${line}; printf '%s' "$PATH"`], {
+    USER: "someone-else",
+  });
+  expect(pasted.stdout).toBe(`${root}/bin:${SYSTEM_PATH}`);
 });
 
 test("the install script in the repository belongs to no release and says where to get one", async () => {

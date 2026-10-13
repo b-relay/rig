@@ -146,9 +146,10 @@ from a clean checkout to try one locally.
 
 The `install` script downloads one release's archive for the Mac it runs on,
 checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin`, and
-runs `rigd install`. It changes nothing outside the Rig root: when
-`<RIG_ROOT>/bin` is not on `PATH`, it prints the line to add rather than editing
-a shell profile. It leaves alone a `rig` or `rigd` that a Rig Project's Target
+runs `rigd install`. It writes only under the Rig root, besides what
+`rigd install` sets up (a LaunchAgent in `~/Library/LaunchAgents`), and never
+edits a shell profile: when `<RIG_ROOT>/bin` is not on `PATH`, it prints the
+line to add. It leaves alone a `rig` or `rigd` that a Rig Project's Target
 published, which Rig records in `<RIG_ROOT>/installed/owners` under the SHA-256
 of the file's path. That record is bookkeeping between Rig's own deploys, not
 protection: anything running as you can change these files. The installer checks

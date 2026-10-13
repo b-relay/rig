@@ -11,7 +11,7 @@
 #
 #   RIG_ROOT  where Rig keeps everything (default ~/.rig); an absolute path, written without //, . or .. parts.
 #
-# Everything runs from main, called on the last line, so a download cut short runs nothing at all.
+# Everything runs from main, called in parentheses on the last line, so a download cut short runs nothing at all.
 set -eu
 
 # The release this copy installs: the release workflow writes its tag here.
@@ -91,11 +91,15 @@ main() {
 	printf 'Downloading Rig %s for %s...\n' "$version" "$arch"
 	download "$releases/$version/$build.tar.gz" "$work/$build.tar.gz"
 	download "$releases/$version/SHA256SUMS" "$work/SHA256SUMS"
-	# Exactly one line "<64 hex digits>  <archive>" names the archive; the digest is compared here, not by shasum -c,
-	# which would also accept other line formats.
+	# Exactly one line mentions the archive, and it is exactly "<64 hex digits>  <archive>"; the digest is compared here,
+	# not by shasum -c, which would also accept other line formats.
 	expected="$(awk -v name="$build.tar.gz" '
-		NF == 2 && $2 == name && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { digest = $1; count++ }
-		END { if (count == 1) print digest }
+		index($0, name) {
+			mentions++
+			if (length($0) == 66 + length(name) && substr($0, 65) == "  " name && substr($0, 1, 64) ~ /^[0-9a-f]+$/)
+				digest = substr($0, 1, 64)
+		}
+		END { if (mentions == 1 && digest != "") print digest }
 	' "$work/SHA256SUMS")"
 	[ -n "$expected" ] || fail "SHA256SUMS does not list $build.tar.gz exactly once; nothing was installed."
 	actual="$(shasum -a 256 "$work/$build.tar.gz" | cut -c 1-64)"
@@ -128,8 +132,12 @@ main() {
 
 	case ":$PATH:" in
 	*":$root/bin:"*) ;;
-	*) printf '\nAdd Rig to your PATH, for example in ~/.zshrc:\n  export PATH="%s/bin:$PATH"\n' "$root" ;;
+	*)
+		# The root is quoted so the line means this directory when pasted, whatever characters its name holds.
+		quoted="$(printf '%s' "$root/bin" | sed "s/'/'\\\\''/g")"
+		printf '\nAdd Rig to your PATH, for example in ~/.zshrc:\n  export PATH='"'"'%s'"'"':"$PATH"\n' "$quoted"
+		;;
 	esac
 }
 
-main "$@"
+(main "$@")

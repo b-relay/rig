@@ -1,0 +1,43 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (matching RIG_VERSION) publishes that release: rig and rigd for Apple Silicon and Intel Macs,
+# the install script, SHA256SUMS, and a build provenance attestation for each file.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: scripts/package-release.sh "$GITHUB_REF_NAME" dist
+      # The runner is Apple Silicon: the arm64 build must start and report the tagged release before anything is published.
+      - name: Smoke test
+        run: |
+          mkdir smoke
+          tar -xzf "dist/rig-$GITHUB_REF_NAME-darwin-arm64.tar.gz" -C smoke
+          for name in rig rigd; do
+            "smoke/rig-$GITHUB_REF_NAME-darwin-arm64/$name" --version | grep -q "^${GITHUB_REF_NAME#v}+"
+          done
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/install
+            dist/SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Rig $GITHUB_REF_NAME" --generate-notes --verify-tag

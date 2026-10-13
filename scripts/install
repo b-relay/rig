@@ -1,0 +1,143 @@
+#!/bin/sh
+# Installs Rig on this Mac: `rig` and `rigd` into the Rig root's bin directory (~/.rig/bin), then `rigd install`,
+# which starts rigd as a LaunchAgent (with RIG_ROOT set, as a detached process instead).
+#
+# Read it before you run it. It downloads one release of https://github.com/b-relay/rig over HTTPS, checks the
+# download against that release's SHA256SUMS, and writes nothing outside the Rig root; `rigd install` then sets rigd up.
+# It never edits your shell profile: when ~/.rig/bin is not on your PATH, it prints the line to add. That directory also
+# holds the Tools your Projects publish. It leaves alone a rig or rigd that a Rig Project's deploy owns (see
+# check_destinations).
+# To check the files were built by Rig's own release workflow: gh attestation verify <file> --repo b-relay/rig
+#
+#   RIG_ROOT  where Rig keeps everything (default ~/.rig); an absolute path, written without //, . or .. parts.
+#
+# Everything runs from main, called in parentheses on the last line, so a download cut short runs nothing at all.
+set -eu
+
+# The release this copy installs: the release workflow writes its tag here.
+version="__RIG_RELEASE__"
+# Where releases are downloaded from; tests point it at local files.
+releases="${RIG_RELEASE_URL:-https://github.com/b-relay/rig/releases/download}"
+
+fail() {
+	printf 'rig install: %s\n' "$1" >&2
+	exit 1
+}
+
+# Downloads $1 to $2: over HTTPS only, redirects included; a file:// URL is for tests.
+download() {
+	case "$1" in
+	https://*) curl --proto '=https' --proto-redir '=https' -fsSL -o "$2" "$1" ;;
+	file://*) curl --proto '=file' -fsSL -o "$2" "$1" ;;
+	*) false ;;
+	esac || fail "could not download $1"
+}
+
+# Whether $1 is an absolute path in the form Rig resolves it to, so the paths here are the ones Rig records.
+normal_path() {
+	case "$1" in
+	/*) ;;
+	*) return 1 ;;
+	esac
+	case "$1" in
+	*/ | *//* | */./* | */../* | */. | */..) return 1 ;;
+	esac
+}
+
+# The SHA-256 of a path, as Rig names the ownership record of the executable there.
+path_key() {
+	printf '%s' "$1" | shasum -a 256 | cut -c 1-64
+}
+
+# Fails unless both destinations can be replaced. A Rig Project's Target that publishes rig or rigd owns that file, and
+# Rig records it in installed/owners under the SHA-256 of the file's path; this installer leaves an owned file alone.
+# The record is bookkeeping between Rig's own deploys, not protection: anything running as you can change these files.
+# The check uses RIG_ROOT as spelled here, so a root reached through another spelling (a symlink) is not checked; Rig
+# still notices then, since that Target's next deploy refuses bytes it did not publish (ARTIFACT_CHANGED, rig doctor).
+check_destinations() {
+	for name in rig rigd; do
+		destination="$root/bin/$name"
+		[ ! -e "$root/installed/owners/$(path_key "$destination").json" ] || fail "$destination was published by a Rig Project's Target, which owns it, so install leaves it alone. Stop that Target publishing it, or install into another RIG_ROOT."
+		if [ -e "$destination" ] || [ -L "$destination" ]; then
+			[ -f "$destination" ] && [ ! -L "$destination" ] || fail "$destination is not a regular file; move it aside and run install again."
+		fi
+	done
+}
+
+main() {
+	case "$version" in
+	v*) ;;
+	*) fail "this copy of install belongs to no release. Download it from https://github.com/b-relay/rig/releases/latest/download/install" ;;
+	esac
+	[ "$(uname -s)" = Darwin ] || fail "Rig runs on macOS only."
+	case "$(uname -m)" in
+	arm64) arch=arm64 ;;
+	x86_64)
+		# A shell under Rosetta reports x86_64 on Apple Silicon; the native build is the one to run.
+		if [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then arch=arm64; else arch=x64; fi
+		;;
+	*) fail "no Rig build for $(uname -m)." ;;
+	esac
+	root="${RIG_ROOT:-$HOME/.rig}"
+	normal_path "$root" || fail "RIG_ROOT must be an absolute path without //, . or .. parts, but it is \"$root\"."
+
+	check_destinations
+
+	work="$(mktemp -d)"
+	stage=""
+	trap 'rm -rf "$work" ${stage:+"$stage"}' EXIT
+	trap 'exit 1' HUP INT TERM
+	build="rig-$version-darwin-$arch"
+	printf 'Downloading Rig %s for %s...\n' "$version" "$arch"
+	download "$releases/$version/$build.tar.gz" "$work/$build.tar.gz"
+	download "$releases/$version/SHA256SUMS" "$work/SHA256SUMS"
+	# Exactly one line mentions the archive, and it is exactly "<64 hex digits>  <archive>"; the digest is compared here,
+	# not by shasum -c, which would also accept other line formats.
+	expected="$(awk -v name="$build.tar.gz" '
+		index($0, name) {
+			mentions++
+			if (length($0) == 66 + length(name) && substr($0, 65) == "  " name && substr($0, 1, 64) ~ /^[0-9a-f]+$/)
+				digest = substr($0, 1, 64)
+		}
+		END { if (mentions == 1 && digest != "") print digest }
+	' "$work/SHA256SUMS")"
+	[ -n "$expected" ] || fail "SHA256SUMS does not list $build.tar.gz exactly once; nothing was installed."
+	actual="$(shasum -a 256 "$work/$build.tar.gz" | cut -c 1-64)"
+	[ "$actual" = "$expected" ] || fail "$build.tar.gz does not match the release's SHA256SUMS; nothing was installed."
+
+	mkdir "$work/unpacked"
+	tar -xzf "$work/$build.tar.gz" -C "$work/unpacked"
+	for name in rig rigd; do
+		file="$work/unpacked/$build/$name"
+		[ -f "$file" ] && [ ! -L "$file" ] || fail "$build.tar.gz has no $name; nothing was installed."
+	done
+
+	# Both executables are staged in a fresh directory beside their destinations before either is replaced, then each is
+	# renamed over its destination, so a running rigd keeps the file it started from and nothing sees a half-written one.
+	mkdir -p "$root/bin"
+	stage="$(mktemp -d "$root/bin/.install.XXXXXX")"
+	for name in rig rigd; do
+		cp "$work/unpacked/$build/$name" "$stage/$name"
+		chmod 755 "$stage/$name"
+	done
+	# Checked again just before the renames: a Target may have published one while the release downloaded. rigd
+	# serializes its own publications in-process, so only an instant between this check and the renames is left uncovered.
+	check_destinations
+	for name in rig rigd; do
+		mv -f "$stage/$name" "$root/bin/$name"
+	done
+	printf 'Installed rig and rigd %s in %s/bin.\n' "$version" "$root"
+
+	"$root/bin/rigd" install
+
+	case ":$PATH:" in
+	*":$root/bin:"*) ;;
+	*)
+		# The root is quoted so the line means this directory when pasted, whatever characters its name holds.
+		quoted="$(printf '%s' "$root/bin" | sed "s/'/'\\\\''/g")"
+		printf '\nAdd Rig to your PATH, for example in ~/.zshrc:\n  export PATH='"'"'%s'"'"':"$PATH"\n' "$quoted"
+		;;
+	esac
+}
+
+(main "$@")

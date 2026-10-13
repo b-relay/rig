@@ -133,6 +133,31 @@ bun run src/index.ts --help
 bun run src/rigd.ts --help
 ```
 
+### Releasing
+
+A release is a tag. Bump `RIG_VERSION` in `src/domain/version.ts`, merge it,
+then tag that commit `v<version>` and push the tag. The release workflow
+(`.github/workflows/release.yml`) runs `scripts/package-release.sh`, which
+compiles `rig` and `rigd` for Apple Silicon and Intel Macs into
+`rig-<tag>-darwin-<arch>.tar.gz`, writes the tag into the `install` script, and
+lists every file in `SHA256SUMS`. It then attests each file's build provenance
+and publishes the GitHub Release. Run `scripts/package-release.sh <tag> dist`
+from a clean checkout to try one locally.
+
+The `install` script downloads one release's archive for the Mac it runs on,
+checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin`, and
+runs `rigd install`. It writes only under the Rig root, besides what
+`rigd install` sets up (a LaunchAgent in `~/Library/LaunchAgents`), and never
+edits a shell profile: when `<RIG_ROOT>/bin` is not on `PATH`, it prints the
+line to add. It leaves alone a `rig` or `rigd` that a Rig Project's Target
+published, which Rig records in `<RIG_ROOT>/installed/owners` under the SHA-256
+of the file's path. That record is bookkeeping between Rig's own deploys, not
+protection: anything running as you can change these files. The installer checks
+it with `RIG_ROOT` as spelled; through another spelling of the same directory (a
+symlink) it does not see the record, and Rig notices instead, since that
+Target's next deploy refuses bytes it did not publish (`ARTIFACT_CHANGED`, and
+`rig doctor` reports it).
+
 Integration tests create temporary daemons, processes, and provider resources.
 They need permission to bind localhost and a local Caddy executable.
 

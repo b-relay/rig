@@ -91,6 +91,8 @@ import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
 import {
   configuredDashboardRoute,
+  dashboardCheck,
+  dashboardServing,
   dashboardDirectory,
   dashboardPublication,
   openDashboard,
@@ -236,7 +238,7 @@ export async function composeDaemon(
           root,
           port: host.dashboard.port,
           ...((published) => (published ? { published } : {}))(
-            dashboardPublication(host.dashboard),
+            dashboardPublication(host),
           ),
           directory: dashboardDirectory(root),
           executable: process.execPath,
@@ -275,7 +277,17 @@ export async function composeDaemon(
     healthResults: (target, service) => health?.results(target, service),
     notices: notices.list,
     readAdminActivity: adminActivity.read,
-    inspectHost: () => inspectHost(root),
+    inspectHost: async () => [
+      ...(await inspectHost(root, { dashboardRoute })),
+      dashboardCheck(
+        await readHostConfig(root).then(
+          (current) => dashboardServing(root, current),
+          // An unreadable Host config is its own finding; it asks nothing of the dashboard here.
+          () => dashboard?.serving,
+        ),
+        dashboard?.serving,
+      ),
+    ],
     inspectProxy: () => inspectHostProxy(root, host, environment),
     routeFileInRoot: () => routeFileInRoot(root, host),
     orphanedTools: (recorded) => effects.orphanedTools(recorded),

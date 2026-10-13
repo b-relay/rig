@@ -13,6 +13,8 @@ import { join } from "node:path";
 import {
   DASHBOARD,
   configuredDashboardRoute,
+  dashboardCheck,
+  dashboardPublication,
   describeDashboard,
   withDashboardRoute,
   dashboardDirectory,
@@ -26,6 +28,8 @@ import { parseHostConfig } from "../src/config/schema";
 import { hostRoutes, proxyPaths } from "../src/domain/managed-proxy";
 import { createProxyInstallation } from "../src/daemon/proxy-installation";
 import { runCommand } from "../src/providers/command-runner";
+import { pendingSettings } from "../src/adapters/proxy-generation";
+import { accessPolicy } from "../web/server/guard";
 import {
   processExists,
   processStartTime,
@@ -377,11 +381,16 @@ test("rigd install restarts rigd when it would serve the dashboard elsewhere: on
 test("how the dashboard is served reads its local address, and where Caddy publishes it with whom it trusts", async () => {
   expect(describeDashboard(4280)).toBe("http://127.0.0.1:4280");
   expect(
-    describeDashboard(4280, { domain: "rig.example.com", trustedClients: [] }),
+    describeDashboard(4280, {
+      domain: "rig.example.com",
+      authority: "rig.example.com",
+      trustedClients: [],
+    }),
   ).toBe("https://rig.example.com via http://127.0.0.1:4280");
   expect(
     describeDashboard(4280, {
       domain: "rig.example.com",
+      authority: "rig.example.com",
       trustedClients: ["100.64.0.0/10", "192.168.1.5"],
     }),
   ).toBe(
@@ -422,6 +431,7 @@ Bun.serve({
     ...f.deps,
     published: {
       domain: "rig.example.com",
+      authority: "rig.example.com",
       trustedClients: ["100.64.0.0/10", "192.168.1.5"],
     },
   }))!;
@@ -502,4 +512,80 @@ test("rigd install refuses a dashboard.domain a Target serves, before anything s
     code: "ROUTE_CONFLICT",
     message: expect.stringContaining("dashboard.domain in Host config"),
   });
+});
+
+test("a dashboard edit waits for rigd install: doctor says so, and it is never a proxy setting rig proxy reload would apply", async () => {
+  const f = await installed(SERVER);
+  const proxy = parseHostConfig({
+    proxy: { caddy: "/usr/local/bin/caddy" },
+  }).proxy!;
+  // rigd started serving rig.example.com on 4280, and Caddy accepted that; Host config now asks for 4281.
+  const started = { domain: "rig.example.com", port: 4280 };
+  const accepted = withDashboardRoute(proxy, started);
+  expect(
+    await pendingSettings(f.root, withDashboardRoute(proxy, started), accepted),
+  ).toBeUndefined();
+  expect(
+    await pendingSettings(
+      f.root,
+      withDashboardRoute(proxy, { domain: "rig.example.com", port: 4281 }),
+      accepted,
+    ),
+  ).toMatchObject({ fields: ["routes"] });
+  // So rigd compares proxy settings with the route it publishes, and the dashboard check reports the edit.
+  expect(
+    dashboardCheck(
+      "https://rig.example.com via http://127.0.0.1:4281",
+      "https://rig.example.com via http://127.0.0.1:4280",
+    ),
+  ).toEqual({
+    name: "dashboard",
+    ok: false,
+    message:
+      "Host config asks for the dashboard at https://rig.example.com via http://127.0.0.1:4281, but rigd serves it at https://rig.example.com via http://127.0.0.1:4280.",
+    reason: "dashboard-pending",
+    hint: "Run rigd install: rigd reads the dashboard's settings as it starts, and rig proxy reload leaves its route as rigd started it.",
+  });
+  expect(dashboardCheck(undefined, "http://127.0.0.1:4280")).toMatchObject({
+    ok: false,
+    message:
+      "Host config asks for the dashboard off, but rigd serves it at http://127.0.0.1:4280.",
+  });
+  expect(
+    dashboardCheck("http://127.0.0.1:4280", "http://127.0.0.1:4280"),
+  ).toMatchObject({
+    ok: true,
+  });
+});
+
+test("a published dashboard on a Caddy whose HTTPS port is not 443 is addressed with that port, and admits it", () => {
+  const host = (https?: number) =>
+    parseHostConfig({
+      proxy: {
+        caddy: "/usr/local/bin/caddy",
+        ...(https ? { ports: { http: 8080, https } } : {}),
+      },
+      dashboard: { domain: "rig.example.com" },
+    });
+  expect(dashboardPublication(host())).toMatchObject({
+    domain: "rig.example.com",
+    authority: "rig.example.com",
+  });
+  const published = dashboardPublication(host(8443))!;
+  expect(published).toMatchObject({
+    domain: "rig.example.com",
+    authority: "rig.example.com:8443",
+  });
+  expect(describeDashboard(4280, published)).toBe(
+    "https://rig.example.com:8443 via http://127.0.0.1:4280",
+  );
+  // The authority is what the dashboard is told it is published as, so the browser's Host and Origin are its own.
+  const policy = accessPolicy({
+    publicHost: published.authority,
+    dashboardHost: published.authority,
+    port: 4280,
+  });
+  expect(policy.hosts.has("rig.example.com:8443")).toBe(true);
+  expect(policy.origins.has("https://rig.example.com:8443")).toBe(true);
+  expect(policy.relaysAt).toBeUndefined();
 });

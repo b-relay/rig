@@ -195,6 +195,17 @@ When `rig` sends a command that the daemon does not accept, the error names
 both versions and says to run `rigd install`, because `rig` only sends commands
 its own grammar allows.
 
+`rigd upgrade` installs the latest release of Rig, and `rigd upgrade 0.2.0`
+the one named (an earlier one rolls back). It runs that release's own `install`
+script, as a first install does, after checking the script against the
+release's `SHA256SUMS`, over HTTPS only. The script checks the archive, puts
+`rig`, `rigd` and the dashboard in place, and runs `rigd install`, which swaps the
+serving daemon as above. `rigd upgrade --check` only says whether that release
+differs from the one installed, which is the release the Rig root's own `rigd`
+reports. The latest release is the one GitHub's latest-release page names, and
+its script must name the same release. Like the install script, it leaves alone a `rig`
+or `rigd` that a Rig Project's Target published.
+
 ### Rig's own Caddy
 
 Rig can run the Host's Caddy itself ([ADR 0014](adr/0014-rig-owned-caddy.md)).

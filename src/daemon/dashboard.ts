@@ -3,11 +3,13 @@ import {
   appendFile,
   mkdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import type { HostConfig } from "../config/types";
 import type { LogRetention } from "../domain/log-retention";
 import { RIG_VERSION } from "../domain/version";
 import { rotateLogFile } from "../providers/target-log";
@@ -40,6 +42,50 @@ export function dashboardDirectory(
 ): string {
   return join(root, "dashboard", `v${release}`);
 }
+/** Where a rigd started now would serve the dashboard: Host config's port, when it is on and this release's dashboard is
+ * installed; otherwise undefined, since that rigd serves none. `rigd install` compares it with what the running rigd
+ * reports, so a changed setting starts a rigd that applies it. */
+export async function dashboardUrl(
+  root: string,
+  host: Pick<HostConfig, "dashboard">,
+): Promise<string | undefined> {
+  if (host.dashboard === false) return undefined;
+  const server = join(dashboardDirectory(root), "web", "server.js");
+  if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
+  return `http://127.0.0.1:${host.dashboard.port}`;
+}
+
+const recordPath = (root: string) => join(root, "dashboard", "process.json");
+
+/** Stops the dashboard an earlier rigd recorded and left running (one that was killed), whether or not this rigd serves
+ * one, so it does not keep the port or serve unseen. Only the very process recorded is stopped: its pid and start time
+ * must both match. */
+export async function stopLeftOverDashboard(root: string): Promise<void> {
+  const record = recordPath(root);
+  let recorded: ProcessRecord;
+  try {
+    recorded = JSON.parse(await readFile(record, "utf8")) as ProcessRecord;
+  } catch {
+    // None recorded; or one torn by a crash, which an atomic write never leaves (see remember).
+    await rm(record, { force: true });
+    return;
+  }
+  if (
+    Number.isInteger(recorded.pid) &&
+    recorded.startedAt !== undefined &&
+    (await recordedProcess(recorded)) === "running"
+  ) {
+    signal(recorded.pid, "SIGTERM");
+    for (
+      const until = Date.now() + STOP_GRACE_MS;
+      Date.now() < until && (await recordedProcess(recorded)) === "running";
+    )
+      await Bun.sleep(100);
+    if ((await recordedProcess(recorded)) === "running")
+      signal(recorded.pid, "SIGKILL");
+  }
+  await rm(record, { force: true });
+}
 
 export interface DashboardDependencies {
   readonly root: string;
@@ -60,9 +106,15 @@ export interface DashboardDependencies {
 export interface Dashboard {
   /** Where it is served: http://127.0.0.1:<port>. */
   readonly url: string;
-  /** Stops a dashboard an earlier rigd left running, then starts this one and keeps it running until `stop`. */
-  start(): Promise<void>;
+  /** Starts it and keeps it running until `stop`. */
+  start(): void;
   stop(): Promise<void>;
+}
+
+/** One run of the dashboard: its process and how it ended, settled once it has exited or could not start. */
+interface Run {
+  readonly child: ChildProcess;
+  readonly ended: Promise<string>;
 }
 
 /** The dashboard this rigd can run, or undefined when none is installed for its release (a rigd run from source, or one
@@ -72,10 +124,10 @@ export async function openDashboard(
 ): Promise<Dashboard | undefined> {
   const server = join(deps.directory, "web", "server.js");
   if (!(await stat(server).catch(() => undefined))?.isFile()) return undefined;
-  const record = join(deps.root, "dashboard", "process.json");
+  const record = recordPath(deps.root);
   const logFile = join(deps.root, "logs", "dashboard", "dashboard.log");
   const stopping = new AbortController();
-  let child: ChildProcess | undefined;
+  let current: Run | undefined;
   let running: Promise<void> | undefined;
   // Output is appended in order, one write at a time, rotating a full file first.
   let writing: Promise<void> = Promise.resolve();
@@ -101,33 +153,62 @@ export async function openDashboard(
     PORT: String(deps.port),
     RIG_ROOT: deps.root,
   };
+  const launch = (): Run => {
+    const child = spawn(deps.executable, ["server.js"], {
+      cwd: join(deps.directory, "web"),
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout?.on("data", (chunk) => void log(String(chunk)));
+    child.stderr?.on("data", (chunk) => void log(String(chunk)));
+    // A process that could not start emits error and never exit, so either settles the run.
+    const ended = new Promise<string>((resolve) => {
+      child.once("error", (error) =>
+        resolve(`could not start (${error.message})`),
+      );
+      child.once("exit", (code, signal) =>
+        resolve(signal ? `was ended by ${signal}` : `exited with code ${code}`),
+      );
+    });
+    return { child, ended };
+  };
+  // Recorded with its start time, so a later rigd stops this very process and never another that reused its pid. Written
+  // beside the record and renamed over it, so a crash never leaves a torn record.
+  const remember = async (pid: number): Promise<boolean> => {
+    try {
+      const startedAt = await processStartTime(pid);
+      if (startedAt === undefined) return false;
+      const staged = `${record}.${process.pid}`;
+      await writeFile(staged, JSON.stringify({ pid, startedAt }), {
+        mode: 0o600,
+      });
+      await rename(staged, record);
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const loop = async () => {
     let inARow = 0;
     while (!stopping.signal.aborted) {
       const startedAt = deps.now();
-      const ended = new Promise<string>((resolve) => {
-        child = spawn(deps.executable, ["server.js"], {
-          cwd: join(deps.directory, "web"),
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        child.stdout?.on("data", (chunk) => void log(String(chunk)));
-        child.stderr?.on("data", (chunk) => void log(String(chunk)));
-        child.once("error", (error) =>
-          resolve(`could not start (${error.message})`),
+      const run = launch();
+      current = run;
+      let how: string;
+      if (run.child.pid !== undefined && !(await remember(run.child.pid))) {
+        // A dashboard no later rigd could find and stop must not run, or it would keep the port after a crash.
+        await terminate(run);
+        how = `could not be recorded in ${record}, so it was stopped`;
+      } else {
+        // Once it has run steadily, an earlier failure no longer stands.
+        const steady = setTimeout(
+          () => deps.notices.clear(DASHBOARD),
+          STEADY_MS,
         );
-        child.once("exit", (code, signal) =>
-          resolve(
-            signal ? `was ended by ${signal}` : `exited with code ${code}`,
-          ),
-        );
-      });
-      if (child?.pid !== undefined) await remember(child.pid);
-      // Once it has run steadily, an earlier failure no longer stands.
-      const steady = setTimeout(() => deps.notices.clear(DASHBOARD), STEADY_MS);
-      const how = await ended;
-      clearTimeout(steady);
-      child = undefined;
+        how = await run.ended;
+        clearTimeout(steady);
+      }
+      current = undefined;
       if (stopping.signal.aborted) break;
       inARow = deps.now() - startedAt >= STEADY_MS ? 1 : inARow + 1;
       const delay = Math.min(
@@ -141,65 +222,39 @@ export async function openDashboard(
     }
     await rm(record, { force: true });
   };
-  // Recorded with its start time, so a later rigd stops this very process and never another that reused its pid.
-  const remember = async (pid: number) => {
-    const startedAt = await processStartTime(pid);
-    await writeFile(
-      record,
-      JSON.stringify({ pid, ...(startedAt ? { startedAt } : {}) }),
-      { mode: 0o600 },
-    ).catch(() => {});
-  };
   return {
     url: `http://127.0.0.1:${deps.port}`,
-    async start() {
-      await stopLeftOver(record);
-      running = loop();
+    start() {
+      running ??= loop();
     },
     async stop() {
       stopping.abort();
-      const current = child;
-      if (current && current.exitCode === null && current.signalCode === null)
-        await terminate(current);
+      if (current) await terminate(current);
       await running;
       await writing;
     },
   };
 }
 
-/** SIGTERM, then SIGKILL once STOP_GRACE_MS has passed; resolves once it has exited. */
-async function terminate(child: ChildProcess): Promise<void> {
-  const exited = new Promise<void>((resolve) =>
-    child.once("exit", () => resolve()),
-  );
-  child.kill("SIGTERM");
-  const timer = setTimeout(() => child.kill("SIGKILL"), STOP_GRACE_MS);
-  await exited;
+/** SIGTERM, then SIGKILL once STOP_GRACE_MS has passed; resolves once the run has ended, including one that never
+ * started. */
+async function terminate(run: Run): Promise<void> {
+  const { child } = run;
+  if (child.exitCode === null && child.signalCode === null)
+    child.kill("SIGTERM");
+  const timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill("SIGKILL");
+  }, STOP_GRACE_MS);
+  await run.ended;
   clearTimeout(timer);
 }
 
-/** Stops the dashboard an earlier rigd recorded and left running (one that was killed), so it does not hold the port.
- * Only the very process recorded is stopped: its pid and start time must both match. */
-async function stopLeftOver(record: string): Promise<void> {
-  let recorded: ProcessRecord;
+/** Signals `pid`, ignoring one that has gone meanwhile. */
+function signal(pid: number, name: NodeJS.Signals): void {
   try {
-    recorded = JSON.parse(await readFile(record, "utf8")) as ProcessRecord;
+    process.kill(pid, name);
   } catch {
-    return;
+    /* It exited between the check and the signal. */
   }
-  if (
-    Number.isInteger(recorded.pid) &&
-    recorded.startedAt !== undefined &&
-    (await recordedProcess(recorded)) === "running"
-  ) {
-    process.kill(recorded.pid, "SIGTERM");
-    for (
-      const until = Date.now() + STOP_GRACE_MS;
-      Date.now() < until && (await recordedProcess(recorded)) === "running";
-    )
-      await Bun.sleep(100);
-    if ((await recordedProcess(recorded)) === "running")
-      process.kill(recorded.pid, "SIGKILL");
-  }
-  await rm(record, { force: true });
 }

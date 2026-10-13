@@ -89,7 +89,11 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
-import { dashboardDirectory, openDashboard } from "./dashboard";
+import {
+  dashboardDirectory,
+  openDashboard,
+  stopLeftOverDashboard,
+} from "./dashboard";
 import { waitForLogPoll } from "../adapters/log-follow-scheduler";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
 import { guardedUsageHistory } from "../adapters/guarded-usage-history";
@@ -380,8 +384,10 @@ export async function composeDaemon(
     env,
     ...(dashboard ? { dashboard: dashboard.url } : {}),
     async start() {
-      // It only reads rigd, so it is served while the first pass still runs.
-      await dashboard?.start();
+      // One an earlier rigd left running is stopped whether or not this rigd serves one. This one only reads rigd, so it
+      // is served while the first pass still runs.
+      await stopLeftOverDashboard(root);
+      dashboard?.start();
       // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
       void (managed ? managed.caddy.republish() : external!.republish()).catch(

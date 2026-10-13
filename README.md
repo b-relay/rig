@@ -149,7 +149,9 @@ from a clean checkout to try one locally.
 The `install` script downloads one release's archive for the Mac it runs on,
 checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin` and
 the dashboard in `<RIG_ROOT>/dashboard/<release>` (off `PATH`; `rigd` starts it),
-runs `rigd install`, then removes earlier releases' dashboards. It writes only under the Rig root, besides what
+runs `rigd install`, then removes earlier releases' dashboards once `rigd status`
+shows this release serving (an install that adopted a running `rigd` of another
+release keeps them). It writes only under the Rig root, besides what
 `rigd install` sets up (a LaunchAgent in `~/Library/LaunchAgents`), and never
 edits a shell profile: when `<RIG_ROOT>/bin` is not on `PATH`, it prints the
 line to add. It leaves alone a `rig` or `rigd` that a Rig Project's Target

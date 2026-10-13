@@ -81,7 +81,8 @@ async function release(
     if (options.rigd !== false)
       await writeFile(
         join(dir, "rigd"),
-        `#!/bin/sh\necho "$@" >> '${ran}'\necho "rigd $*"\n`,
+        // rigd status reports the release it serves: this one, unless the test says another.
+        `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\necho "rigd $*"\n`,
       );
     await run([
       "tar",
@@ -152,7 +153,7 @@ test("install puts the release's rig and rigd in the Rig root's bin, runs rigd i
   for (const name of ["rig", "rigd"])
     expect((await stat(join(f.root, "bin", name))).mode & 0o777).toBe(0o755);
   expect(await installedArch(f.root)).toBe("arm64");
-  expect(await readFile(f.ran, "utf8")).toBe("install\n");
+  expect(await readFile(f.ran, "utf8")).toBe("install\nstatus\n");
   // No staging directory is left beside them.
   expect((await readdir(join(f.root, "bin"))).sort()).toEqual(["rig", "rigd"]);
   // Run again, it replaces both and says nothing about PATH once Rig is on it.
@@ -245,6 +246,20 @@ test("installing a release removes earlier releases' dashboards once rigd instal
   expect(
     await readFile(join(f.root, "dashboard", TAG, "web", "server.js"), "utf8"),
   ).toBe("// serving");
+});
+
+test("when rigd install left another release serving (it adopted a running rigd), earlier dashboards are kept and the install says so", async () => {
+  const f = await release();
+  await mkdir(join(f.root, "dashboard", "v0.0.9", "web"), { recursive: true });
+  const result = await f.install({ RIG_TEST_SERVING: "0.0.9+old" });
+  expect(result.code).toBe(0);
+  expect(result.stdout).toContain(
+    `rigd serves 0.0.9+old, not ${TAG} yet, so earlier dashboards are kept; run rigd install to start this release.`,
+  );
+  expect((await readdir(join(f.root, "dashboard"))).sort()).toEqual([
+    "v0.0.9",
+    TAG,
+  ]);
 });
 
 test("an archive without the dashboard installs nothing", async () => {

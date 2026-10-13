@@ -140,10 +140,17 @@ main() {
 
 	"$root/bin/rigd" install
 
-	# rigd now runs this release's dashboard, so earlier releases' are no longer used.
-	for old in "$root"/dashboard/v*; do
-		if [ -d "$old" ] && [ "$old" != "$root/dashboard/$version" ]; then rm -rf "$old"; fi
-	done
+	# Earlier releases' dashboards go once rigd serves this release, which then runs this release's dashboard. A rigd
+	# install that adopted a running rigd of another release leaves it serving its own, so they stay until then.
+	serving="$(RIG_ROOT="$root" "$root/bin/rigd" status 2>/dev/null | sed -n 's/^Version  *//p')"
+	case "$serving" in
+	"${version#v}+"*)
+		for old in "$root"/dashboard/v*; do
+			if [ -d "$old" ] && [ "$old" != "$root/dashboard/$version" ]; then rm -rf "$old"; fi
+		done
+		;;
+	*) printf 'rigd serves %s, not %s yet, so earlier dashboards are kept; run rigd install to start this release.\n' "${serving:-no release}" "$version" ;;
+	esac
 
 	case ":$PATH:" in
 	*":$root/bin:"*) ;;

@@ -10,6 +10,7 @@ import {
   trustedClient,
 } from "../web/server/guard";
 import { sandboxDaemon } from "../web/server/sandbox";
+import { siteSettings } from "../web/server/site";
 import { join } from "node:path";
 import {
   DEMO_PROJECTS,
@@ -427,4 +428,23 @@ test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
   const later = sessionCookie("key-a", now + days(399));
   const renewed = `${later.name}=${later.value}`;
   expect(signedIn(renewed, "key-a", now + days(700))).toBe(true);
+});
+
+test("the site takes its repository from RIG_WEB_REPOSITORY, since the assembled server runs from inside its build, and from its directory otherwise", async () => {
+  const env = { PORT: "4280" };
+  expect(
+    siteSettings(env, "/home", "/checkout/.dashboard/web").repository,
+  ).toBe("/checkout/.dashboard/web");
+  expect(
+    siteSettings(
+      { ...env, RIG_WEB_REPOSITORY: "/checkout" },
+      "/home",
+      "/checkout/.dashboard/web",
+    ).repository,
+  ).toBe("/checkout");
+  // Rig's own rig.yaml names the checkout for it.
+  const config = await readProjectConfig(join(import.meta.dir, ".."));
+  expect(config.config.services!.web!.environment).toMatchObject({
+    RIG_WEB_REPOSITORY: "${rig.workspace}",
+  });
 });

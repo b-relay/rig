@@ -65,6 +65,10 @@ export interface DaemonAdminOptions {
   proxy?: ProxyInstallation;
   /** daemon.start in Host config: whether a launchd install is a system job that runs from boot. Login when absent. */
   start?: () => Promise<"login" | "boot">;
+  /** Where a rigd started now would serve the dashboard (Host config and the installed release); undefined when it would
+   * serve none. A running rigd that reports another is restarted, so a changed setting applies. Absent, it is not
+   * compared. */
+  dashboard?: () => Promise<string | undefined>;
   /** The account system jobs run as: the installing user. */
   userName?: string;
   /** Where system plists are staged and installed; tests pass temporary directories. */
@@ -403,6 +407,7 @@ export class DaemonAdmin {
         recorded.bun === this.options.bun &&
         recorded.mode === this.options.mode &&
         (recorded.proxy ?? "external") === (proxyMode ?? "external") &&
+        (await this.servesDashboardAsAsked(serving)) &&
         (proxyMode !== "managed" || (await this.options.proxy!.inSync()));
       if (current) return { ...prior, outcome: "unchanged" };
       if (recorded === undefined) {
@@ -617,9 +622,16 @@ export class DaemonAdmin {
   /** `daemon.start: boot` (ADR 0014, #287): rigd and its Caddy as system jobs that run as the user from boot. Defining them
    * needs the owner's sudo once, which this prints as one gated line per job; everything else, upgrades included, needs
    * none, because launchd starts each program again from the same path when it exits. */
+  /** Whether the running rigd serves the dashboard where a rigd started now would (none, when it would serve none). */
+  private async servesDashboardAsAsked(
+    serving: { dashboard?: string } | undefined,
+  ): Promise<boolean> {
+    if (!this.options.dashboard) return true;
+    return serving?.dashboard === (await this.options.dashboard());
+  }
   private async performSystemInstall(
     prior: DaemonStatus,
-    serving: { pid: number; version?: string } | undefined,
+    serving: { pid: number; version?: string; dashboard?: string } | undefined,
     proxyMode: ProxyMode | undefined,
   ): Promise<DaemonStatus> {
     const { root } = this.options;
@@ -689,7 +701,8 @@ export class DaemonAdmin {
       serving?.version === RIG_BUILD &&
       (recorded.command ?? []).join("\0") === this.options.command.join("\0") &&
       recorded.bun === this.options.bun &&
-      (recorded.proxy ?? "external") === (proxyMode ?? "external");
+      (recorded.proxy ?? "external") === (proxyMode ?? "external") &&
+      (await this.servesDashboardAsAsked(serving));
     await this.writeInstallation(this.options.bun, proxyMode, "system");
     let replaced: DaemonStatus["replaced"];
     if (!current) {

@@ -96,6 +96,8 @@ export interface DaemonStatus {
   version?: string;
   /** The daemon this install stopped and replaced, when it was of another version or command. */
   replaced?: { pid: number; version?: string };
+  /** Where the reachable daemon serves the dashboard; absent when it runs none. */
+  dashboard?: string;
   warnings?: string[];
 }
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,7 +132,7 @@ export class DaemonAdmin {
     records: ProcessRecord[];
     unverified?: string;
     /** The reachable daemon's pid and reported version, for an install deciding whether to replace it. */
-    serving?: { pid: number; version?: string };
+    serving?: { pid: number; version?: string; dashboard?: string };
     /** Why the recorded daemon could not be contacted: its credential is empty or unreadable. */
     credential?: RigError;
   }> {
@@ -166,7 +168,7 @@ export class DaemonAdmin {
       ...(unverified ? [unverified] : []),
     ];
     const status = (
-      serving?: { pid: number; version?: string },
+      serving?: { pid: number; version?: string; dashboard?: string },
       credential?: RigError,
     ) => {
       // A serving daemon of another version is the one thing `rigd install` can change here.
@@ -187,6 +189,7 @@ export class DaemonAdmin {
           running,
           reachable: serving !== undefined,
           ...(serving?.version ? { version: serving.version } : {}),
+          ...(serving?.dashboard ? { dashboard: serving.dashboard } : {}),
           ...(all.length ? { warnings: all } : {}),
         },
         records,
@@ -229,6 +232,7 @@ export class DaemonAdmin {
           ? {
               pid: health.pid,
               ...(health.version ? { version: health.version } : {}),
+              ...(health.dashboard ? { dashboard: health.dashboard } : {}),
             }
           : undefined,
       );

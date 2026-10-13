@@ -89,6 +89,8 @@ import { createRuntimeFiles } from "../adapters/runtime-files";
 import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
+import { dashboardDirectory, openDashboard } from "./dashboard";
+import { waitForLogPoll } from "../adapters/log-follow-scheduler";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
 import { guardedUsageHistory } from "../adapters/guarded-usage-history";
 import { createNativeProcessUsageReader } from "../providers/native-process-usage";
@@ -212,6 +214,21 @@ export async function composeDaemon(
     environment: executionBaseline(process.env),
   });
   const notices = createNoticeBoard(() => new Date().toISOString());
+  // The dashboard installed with this rigd's release, served on this Mac only; none from source or when Host config turns
+  // it off.
+  const dashboard =
+    host.dashboard === false
+      ? undefined
+      : await openDashboard({
+          root,
+          port: host.dashboard.port,
+          directory: dashboardDirectory(root),
+          executable: process.execPath,
+          retention: logRetention,
+          notices,
+          wait: waitForLogPoll,
+          now: Date.now,
+        });
   const adminActivity = createAdminActivityJournal({
     root,
     now: () => new Date().toISOString(),
@@ -361,7 +378,10 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     env,
+    ...(dashboard ? { dashboard: dashboard.url } : {}),
     async start() {
+      // It only reads rigd, so it is served while the first pass still runs.
+      await dashboard?.start();
       // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
       void (managed ? managed.caddy.republish() : external!.republish()).catch(
@@ -411,6 +431,7 @@ export async function composeDaemon(
     },
     async shutdown() {
       stopped = true;
+      await dashboard?.stop();
       stopMonitor?.();
       await stopHealth?.();
       // No new run starts from here on; a run in progress keeps running under its capture wrapper, and the next rigd

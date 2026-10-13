@@ -17,6 +17,7 @@ test("an empty Host config resolves every default, in snake_case like rig.yaml",
     logs: { max_bytes: 64 * 1024 * 1024, generations: 1 },
     monitor: { detail_hours: 24, retention_days: 7 },
     daemon: { start: "login" },
+    dashboard: { port: 4280 },
     proxyMode: "external",
     externalIgnored: false,
   });

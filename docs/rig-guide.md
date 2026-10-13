@@ -47,6 +47,16 @@ rigd install
 rigd status
 ```
 
+A release installs the dashboard beside `rigd`, in
+`<RIG_ROOT>/dashboard/<release>`, off `PATH`. `rigd` starts it with the Bun
+inside its own executable, serves it on `http://127.0.0.1:4280` (Host config's
+`dashboard.port`), starts it again after a back-off of up to a minute when it
+exits, and stops it when `rigd` stops. Its output is in
+`<RIG_ROOT>/logs/dashboard/dashboard.log`, rotated like a Target log, and a
+dashboard that keeps exiting is a `rig doctor` finding. `rigd status` names
+where it is served (`Dashboard  http://127.0.0.1:4280`); a `rigd` run from
+source, or with `dashboard: false`, serves none.
+
 `rigd status` exits 0 only when the daemon is reachable; otherwise it exits 1
 and its last line says what to do (`rigd is not installed. Run rigd install.`,
 `rigd is installed but not running. Run rigd install to start it.`, or, for a
@@ -1468,6 +1478,9 @@ capability:
 - `monitor.detail_hours` (default 24) and `monitor.retention_days` (default 7):
   how long `rigd` keeps every 1-second CPU and memory sample, and how long it
   keeps the per-minute history behind week-long charts (see Monitor)
+- `dashboard.port` (default 4280): where `rigd` serves the dashboard that comes
+  with Rig, at `http://127.0.0.1:<port>` on this Mac only; `dashboard: false`
+  turns it off. A change applies when `rigd` next starts (`rigd install`)
 
 Rig no longer sends alerts. An `alerts` section an earlier Rig read is ignored,
 so `rigd` still starts, and `rig doctor` asks you to delete it.

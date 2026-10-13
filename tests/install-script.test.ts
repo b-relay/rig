@@ -54,8 +54,9 @@ const exists = (path: string) =>
  * tag written in. The Mac it runs on is chosen with fake `uname` and `sysctl` commands. */
 async function release(
   options: {
-    /** What the archive holds besides the build directory's `rig` and `rigd`; `rigd: false` leaves it out. */
+    /** `rigd: false` leaves rigd out of the archive, `dashboard: false` the dashboard. */
     rigd?: boolean;
+    dashboard?: boolean;
     /** Rewrites SHA256SUMS once it is written. */
     sums?(written: string): string;
     machine?: "arm64" | "x86_64";
@@ -73,6 +74,10 @@ async function release(
     const dir = join(home, "build", build);
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "rig"), `#!/bin/sh\necho ${arch}\n`);
+    if (options.dashboard !== false) {
+      await mkdir(join(dir, "dashboard", "web"), { recursive: true });
+      await writeFile(join(dir, "dashboard", "web", "server.js"), "// served");
+    }
     if (options.rigd !== false)
       await writeFile(
         join(dir, "rigd"),
@@ -136,8 +141,13 @@ test("install puts the release's rig and rigd in the Rig root's bin, runs rigd i
   expect(result.stderr).toBe("");
   expect(result.code).toBe(0);
   expect(result.stdout).toContain(
-    `Installed rig and rigd ${TAG} in ${f.root}/bin.`,
+    `Installed rig and rigd ${TAG} in ${f.root}/bin, and the dashboard in ${f.root}/dashboard/${TAG}.`,
   );
+  // The dashboard is off PATH, under its release, for rigd to start.
+  expect(
+    await readFile(join(f.root, "dashboard", TAG, "web", "server.js"), "utf8"),
+  ).toBe("// served");
+  expect(await readdir(join(f.root, "dashboard"))).toEqual([TAG]);
   expect(result.stdout).toContain(`export PATH='${f.root}/bin':"$PATH"`);
   for (const name of ["rig", "rigd"])
     expect((await stat(join(f.root, "bin", name))).mode & 0o777).toBe(0o755);
@@ -216,6 +226,33 @@ test("a release that cannot be downloaded installs nothing and names the address
   expect(result.code).toBe(1);
   expect(result.stderr).toContain(
     `could not download file://${join(f.home, "nowhere")}/${TAG}/rig-${TAG}-darwin-arm64.tar.gz`,
+  );
+  expect(await exists(join(f.root, "bin"))).toBe(false);
+});
+
+test("installing a release removes earlier releases' dashboards once rigd install succeeds, and keeps this release's own", async () => {
+  const f = await release();
+  await mkdir(join(f.root, "dashboard", "v0.0.9", "web"), { recursive: true });
+  // The same release already installed may be serving: its files stay as they are.
+  await mkdir(join(f.root, "dashboard", TAG, "web"), { recursive: true });
+  await writeFile(
+    join(f.root, "dashboard", TAG, "web", "server.js"),
+    "// serving",
+  );
+  const result = await f.install();
+  expect(result.code).toBe(0);
+  expect((await readdir(join(f.root, "dashboard"))).sort()).toEqual([TAG]);
+  expect(
+    await readFile(join(f.root, "dashboard", TAG, "web", "server.js"), "utf8"),
+  ).toBe("// serving");
+});
+
+test("an archive without the dashboard installs nothing", async () => {
+  const f = await release({ dashboard: false });
+  const result = await f.install();
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(
+    "has no dashboard/web/server.js; nothing was installed.",
   );
   expect(await exists(join(f.root, "bin"))).toBe(false);
 });

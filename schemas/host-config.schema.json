@@ -338,6 +338,30 @@
       },
       "additionalProperties": false
     },
+    "dashboard": {
+      "description": "The dashboard that comes with Rig: rigd starts it and keeps it running, on this Mac only, at http://127.0.0.1:<port>. false turns it off.",
+      "default": {},
+      "anyOf": [
+        {
+          "type": "boolean",
+          "const": false,
+          "description": "No dashboard: rigd does not start it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "port": {
+              "default": 4280,
+              "description": "The port on 127.0.0.1 rigd serves the dashboard on. Default 4280. A change applies when rigd next starts (rigd install).",
+              "type": "integer",
+              "minimum": 1024,
+              "maximum": 65535
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
     "alerts": {
       "deprecated": true,
       "description": "No longer used: Rig sends no alerts. The section is ignored, and rig doctor asks you to delete it."

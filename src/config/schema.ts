@@ -1185,6 +1185,8 @@ export function parseProjectConfig(value: unknown): ProjectConfig {
   return result.data;
 }
 export type ProjectConfig = ParsedProject;
+/** The port rigd serves the dashboard on unless Host config names another. */
+export const DEFAULT_DASHBOARD_PORT = 4280;
 export const hostConfigSchema = z.strictObject({
   deploy: z
     .strictObject({
@@ -1343,6 +1345,25 @@ export const hostConfigSchema = z.strictObject({
     .prefault({})
     .describe(
       "How long rigd keeps the CPU and memory it samples from every running Service and Job.",
+    ),
+  dashboard: z
+    .union([
+      z.literal(false).describe("No dashboard: rigd does not start it."),
+      z.strictObject({
+        port: z
+          .number()
+          .int()
+          .min(1024)
+          .max(65535)
+          .default(DEFAULT_DASHBOARD_PORT)
+          .describe(
+            `The port on 127.0.0.1 rigd serves the dashboard on. Default ${DEFAULT_DASHBOARD_PORT}. A change applies when rigd next starts (rigd install).`,
+          ),
+      }),
+    ])
+    .prefault({})
+    .describe(
+      "The dashboard that comes with Rig: rigd starts it and keeps it running, on this Mac only, at http://127.0.0.1:<port>. false turns it off.",
     ),
   // Retired, not refused: rigd reads this file as it starts, so a refusal would keep it from starting at all.
   alerts: z.unknown().optional().meta({

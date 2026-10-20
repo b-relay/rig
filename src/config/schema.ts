@@ -970,52 +970,66 @@ function validateReferences(
     data: () => "/data",
     port: () => 1,
   });
-  const fields: [string[], string | undefined][] = [
-    [["build"], settings.build],
+  // Each field with whether /bin/sh -c runs it, where a reference must also sit where Rig can keep its value literal.
+  const fields: [string[], string | undefined, boolean][] = [
+    [["build"], settings.build, true],
     ...Object.entries(settings.environment ?? {}).map(
-      ([key, value]): [string[], string] => [["environment", key], value],
+      ([key, value]): [string[], string, boolean] => [
+        ["environment", key],
+        value,
+        false,
+      ],
     ),
     ...[settings.env_file ?? []]
       .flat()
-      .map((value): [string[], string] => [["env_file"], value]),
+      .map((value): [string[], string, boolean] => [["env_file"], value, false]),
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];
     for (const field of ["command", "build"] as const)
-      fields.push([[...own, field], service[field]]);
+      fields.push([[...own, field], service[field], true]);
     const test = service.healthcheck?.test;
     if (typeof test === "string")
-      fields.push([[...own, "healthcheck", "test"], test]);
+      fields.push([[...own, "healthcheck", "test"], test, !isHealthUrl(test)]);
     else
       for (const [index, value] of (test ?? []).entries())
         if (index > 0)
-          fields.push([[...own, "healthcheck", "test", String(index)], value]);
+          fields.push([
+            [...own, "healthcheck", "test", String(index)],
+            value,
+            test![0] === "CMD-SHELL",
+          ]);
     for (const [key, value] of Object.entries(service.environment ?? {}))
-      fields.push([[...own, "environment", key], value]);
+      fields.push([[...own, "environment", key], value, false]);
     for (const value of [service.env_file ?? []].flat())
-      fields.push([[...own, "env_file"], value]);
+      fields.push([[...own, "env_file"], value, false]);
   }
-  for (const [name, tool] of Object.entries(settings.tools ?? {}))
-    for (const field of ["bin", "build"] as const)
-      fields.push([["tools", name, field], tool[field]]);
+  for (const [name, tool] of Object.entries(settings.tools ?? {})) {
+    fields.push([["tools", name, "bin"], tool.bin, false]);
+    fields.push([["tools", name, "build"], tool.build, true]);
+  }
   for (const [name, job] of Object.entries(settings.jobs ?? {})) {
     const own = ["jobs", name];
-    fields.push([[...own, "command"], job.command]);
-    fields.push([[...own, "backup", "restore"], job.backup?.restore]);
+    fields.push([[...own, "command"], job.command, true]);
+    fields.push([[...own, "backup", "restore"], job.backup?.restore, true]);
     for (const [key, value] of Object.entries(job.environment ?? {}))
-      fields.push([[...own, "environment", key], value]);
+      fields.push([[...own, "environment", key], value, false]);
     for (const value of [job.env_file ?? []].flat())
-      fields.push([[...own, "env_file"], value]);
+      fields.push([[...own, "env_file"], value, false]);
   }
-  for (const [path, value] of fields) {
+  for (const [path, value, shell] of fields) {
     if (value === undefined) continue;
     try {
-      references.text(value, path.join("."));
+      if (shell) references.shell(value, path.join("."));
+      else references.text(value, path.join("."));
     } catch (error) {
       if (!(error instanceof ConfigError)) throw error;
       report(
         [...at, ...path],
-        error.message,
+        // Where a reference sits is fixed by writing the command another way, which the hint says.
+        error.code === "unsafe_reference"
+          ? `A reference sits ${String(error.context.place)}. ${error.hint}`
+          : error.message,
         error.code === "renamed_reference" ? RENAMED_RULE : undefined,
       );
     }

@@ -3008,7 +3008,7 @@ test("env_file paths resolve against the operator home or the workspace, and the
     );
 });
 
-test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a backquoted reference is refused", () => {
+test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a backquoted reference is refused when the config is read", () => {
   const issues = (extra: Record<string, unknown>) => {
     try {
       parseProjectConfig({
@@ -3053,19 +3053,16 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
       environment: { OK: "${services.db.environment.NAME}" },
     }),
   ).toBe("accepted");
-  const config = parseProjectConfig({
-    name: "app",
-    services: { web: { ...web().web, command: "echo `echo ${rig.target}`" } },
-  });
-  expect(() =>
-    resolveTargetPlan({
-      config,
-      target: "working",
-      workspacePath: "/work",
-      dataRoot: "/data",
-      assignedPorts: { web: 3000 },
+  // Where a reference sits in a command is checked when the config is read, not at the first deploy.
+  expect(
+    issues({
+      services: {
+        web: { ...web().web, command: "echo `echo ${rig.target}`" },
+      },
     }),
-  ).toThrow(expect.objectContaining({ code: "invalid_context" }));
+  ).toBe(
+    "Fix services.web.command: A reference sits inside backquotes. Write the command substitution as $(...) instead of backquotes.",
+  );
 });
 
 test("YAML editing replaces or removes an uncommented mapping or sequence in place", async () => {

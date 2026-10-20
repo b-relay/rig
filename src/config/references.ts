@@ -1,4 +1,5 @@
 import { ConfigError } from "./errors";
+import { shellPosition, type ShellPosition } from "./shell-position";
 
 /** A public env leaf a resolved string was built from, directly or through other leaves. */
 export interface PublicInput {
@@ -27,7 +28,8 @@ export interface ReferenceResolver {
   /** Resolves `${...}` in the string declared at config path `at`; that path decides the Service scope. */
   text(value: string, at: string): ResolvedText;
   /** The same for text /bin/sh -c will run. Every substituted value reaches the command as literal data: bare, it is single-quoted when it is empty or would
-   * split or expand; inside the author's double or single quotes it is escaped for that quote, so it never closes the quote or runs as shell code. */
+   * split or expand; inside the author's double or single quotes it is escaped for that quote, so it never closes the quote or runs as shell code.
+   * Where no quoting keeps it literal, such as a heredoc body, a comment or `$'...'`, the reference is refused as `unsafe_reference`. */
   shell(value: string, at: string): ResolvedText;
 }
 
@@ -282,49 +284,40 @@ export function referenceResolver(
   return {
     text: (value, at) => substitute(value, at, [at], (result) => result),
     shell: (value, at) =>
-      substitute(value, at, [at], (result, offset) => {
-        const quote = openShellQuote(value.slice(0, offset));
-        if (quote === "`")
-          throw new ConfigError(
-            `A reference in ${at} sits inside a backquoted command, where Rig cannot keep its value literal.`,
-            "invalid_context",
-            { path: at },
-            "Write the command substitution as $(...) instead of backquotes.",
-          );
-        return shellLiteral(result, quote);
-      }),
+      substitute(value, at, [at], (result, offset) =>
+        shellInsert(result, shellPosition(value.slice(0, offset)), at),
+      ),
   };
 }
-/** The quoting in force at the end of a prefix of shell text: the open quote of the innermost command, where `$(...)` and `(...)` each start
- * a command of their own with no quote open. "`" means the position is inside a backquoted command, whose escaping rules differ. */
-function openShellQuote(prefix: string): "'" | '"' | "`" | undefined {
-  // One entry per nested command, innermost last; each holds that command's open quote.
-  const commands: ("'" | '"' | undefined)[] = [undefined];
-  let backquoted = false;
-  for (let i = 0; i < prefix.length; i++) {
-    const char = prefix[i];
-    const quote = commands.at(-1);
-    if (quote === "'") {
-      if (char === "'") commands[commands.length - 1] = undefined;
-    } else if (char === "\\") i++;
-    else if (
-      char === "#" &&
-      quote === undefined &&
-      (i === 0 || /[\s;&|()]/.test(prefix[i - 1]!))
-    ) {
-      // A comment runs to the end of its line; a quote character in it opens nothing.
-      const end = prefix.indexOf("\n", i);
-      i = end === -1 ? prefix.length : end;
-    } else if (char === "`") backquoted = !backquoted;
-    else if (char === "$" && prefix[i + 1] === "(") {
-      commands.push(undefined);
-      i++;
-    } else if (quote === '"') {
-      if (char === '"') commands[commands.length - 1] = undefined;
-    } else if (char === "'" || char === '"')
-      commands[commands.length - 1] = char;
-    else if (char === "(") commands.push(undefined);
-    else if (char === ")" && commands.length > 1) commands.pop();
+/** `value` as literal data at `position` in the command at config path `at`, or ConfigError `unsafe_reference` where Rig
+ * cannot keep it literal, its context naming the `place`. Arithmetic takes only a whole number and `[[ ... ]]` only a word
+ * that needs no quoting, since bash evaluates a word there as an expression whose array subscripts run commands. */
+function shellInsert(value: string, position: ShellPosition, at: string) {
+  const refuse = (place: string, hint: string) =>
+    new ConfigError(
+      `A reference in ${at} sits ${place}, where Rig cannot keep its value literal.`,
+      "unsafe_reference",
+      { path: at, place },
+      hint,
+    );
+  switch (position.kind) {
+    case "refused":
+      throw refuse(position.place, position.hint);
+    case "arithmetic":
+      if (!/^[+-]?\d+$/.test(value))
+        throw refuse(
+          "in arithmetic but is not a whole number",
+          "Use only whole numbers, such as a port, in arithmetic.",
+        );
+      return value;
+    case "test":
+      if (!shellSafe.test(value))
+        throw refuse(
+          "in [[ ... ]] but needs quoting",
+          "Use [ ... ] or test, which compare it as text.",
+        );
+      return value;
+    case "word":
+      return shellLiteral(value, position.quote);
   }
-  return backquoted ? "`" : commands.at(-1);
 }

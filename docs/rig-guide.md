@@ -2711,8 +2711,10 @@ names the field that holds the reference, such as `services.web.command`:
 - `invalid_context`: `${rig.data}` outside a Service or job, `${port}` or
   `${ports.<port>}` outside a Service, or a shared or Tool `build` that reaches
   a Service's `environment` or data (`${services.<service>.data}`), directly
-  or through another value. Those builds run with Project inputs only. A reference inside a
-  backquoted command is refused the same way; write `$(...)` instead.
+  or through another value. Those builds run with Project inputs only.
+- `unsafe_reference`: a reference in a command sits where no quoting keeps
+  its value literal (see below). The message names the place and what to
+  write instead.
 
 Because the base config is checked by itself, a value that only a role patch
 defines cannot be referenced from the base; give it a base value and let the
@@ -2731,6 +2733,34 @@ backquote, or a quote character in the value stays part of the argument. A
 string `test` that resolves to an HTTP URL is handed to the HTTP probe
 unquoted, and each argument of a `CMD` test is quoted whole. Values substituted into `environment`, `domain`, `env_file`, and
 `bin` are never quoted.
+
+Some places in a command have no quoting that keeps a value literal, so a
+reference there is refused (`unsafe_reference`) when the config is read,
+before anything runs:
+
+- a heredoc (`<<EOF`, `<<'EOF'`, `<<-EOF`): its delimiter, the rest of its
+  line, and its body up to the delimiter line. In an unquoted heredoc the
+  shell would expand `$(...)`, backquotes and `$VAR` in the value, and in a
+  quoted one Rig's quotes would become part of the text. Pass the value
+  through the environment instead: declare it, such as
+  `environment: { WORKSPACE: "${rig.workspace}" }`, and write `$WORKSPACE`
+  in the heredoc; the shell expands a variable's value as data, never as
+  code. A here-string (`<<< ${...}`) is an ordinary word and is quoted.
+- `$'...'` quoting, a backquoted command (write `$(...)`), a comment, and
+  the position right after a backslash (write `$${NAME}` for a literal
+  `${NAME}`).
+- anything after shell syntax Rig cannot follow with certainty: a `case`
+  statement inside `$(...)` or `(...)`, or a heredoc whose line ends inside
+  parentheses.
+- arithmetic (`$((...))` or `((...))`) takes only a value that is a whole
+  number, such as `${port}`, and `[[ ... ]]` only a value that needs no
+  quoting: bash evaluates a word there as an arithmetic expression, which
+  can run commands. Use `[ ... ]` or `test` to compare other values. These
+  two depend on the value, so a workspace path with a space is refused there
+  when the Target is planned.
+
+Rig makes each value one literal word; a command that runs its own
+arguments as code, such as `eval`, `sh -c` or `let`, still does so.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while

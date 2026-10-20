@@ -5159,6 +5159,6 @@ test("doctor reports an unfinished rename with the commands that finish and undo
     report.checks.find((check) => check.name === "project-rename"),
   ).toMatchObject({
     ok: false,
-    hint: "Run rig rename after --project demo to finish it, or rig rename demo --project demo to undo it.",
+    hint: "Run rig rename after --project demo to finish the rename, or rig rename demo --project demo to undo it.",
   });
 });

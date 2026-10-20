@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
@@ -16,7 +18,13 @@ import { parseProjectConfig, resolveTargetPlan } from "../src/config";
 import { RigError } from "../src/domain/errors";
 import type { ProjectRecord, RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
-import { renameProject, renamedPlan } from "../src/runtime/rename";
+import {
+  pendingRenameAdvice,
+  renameProject,
+  renamedPlan,
+} from "../src/runtime/rename";
+import { writeEnvFile } from "../src/adapters/env-store";
+import { ABSENT_REVISION } from "../src/adapters/env-file-edit";
 import { prepareRegistration } from "../src/runtime/projects";
 import { STATE_VERSION } from "../src/runtime/state-schema";
 import { FileStateStore } from "../src/runtime/state-store";
@@ -136,7 +144,7 @@ type Crash = "config" | "env" | "save";
 /** Project `before` (and `others`) registered in a real state file, with `before`'s env file, renamed by `rename`, each
  * call a new rigd over the same root and rig.yaml. `crash` makes that call stop for good at a step, as a dead rigd does;
  * `failSave` fails its final save, `commitSave` after the write committed; `unreadable` fails the state read after that. */
-async function world(others: string[] = []) {
+async function world(others: string[] = [], configName = "before") {
   const root = await temporaryRoot();
   const store = new FileStateStore(root);
   const record = (id: string, name: string): ProjectRecord => ({
@@ -157,7 +165,7 @@ async function world(others: string[] = []) {
     Object.assign(state, initial);
   });
   await envFile(root, "before/all.env", "A=1\n");
-  const rigYaml = { name: "before" };
+  const rigYaml = { name: configName };
   const never = () => new Promise<never>(() => {});
   const deps = (
     options: {
@@ -344,6 +352,101 @@ test.if(caseInsensitive)(
     expect((await w.registered()).name).toBe("after");
   },
 );
+
+test("env files written under the old name while a rename is unfinished are never left unread: finish and undo refuse, keeping the record and the name", async () => {
+  const w = await world(["other"]);
+  await w.rename("after", { crash: "save" });
+  // The env editor writes the registered name's file, as the dashboard does after the restart.
+  await writeEnvFile(
+    join(w.root, "env", "before", "all.env"),
+    {},
+    ABSENT_REVISION,
+    [{ op: "set", key: "NEW", value: "1" }],
+    join(w.root, "env"),
+  );
+  for (const name of ["before", "after"])
+    await expect(w.rename(name)).rejects.toMatchObject({ code: "ENV_SPLIT" });
+  expect((await w.registered()).renaming?.to).toBe("after");
+  expect(await read(w.root, "after/all.env")).toBe("A=1\n");
+  expect(await read(w.root, "before/all.env")).toContain("NEW=");
+  await expect(
+    renameProject((await w.store.read()).projects[1]!, "after", {
+      root: w.root,
+      store: w.store,
+      documents: {} as RuntimeDependencies["documents"],
+    }),
+  ).rejects.toMatchObject({ code: "PROJECT_CONFLICT" });
+  // Once the new file is moved in and the directory aside, the rename finishes.
+  await writeFile(join(w.root, "env/after/all.env"), "A=1\nNEW=1\n");
+  await rename(join(w.root, "env/before"), join(w.root, "env/.aside"));
+  await w.rename("after");
+  expect((await w.registered()).name).toBe("after");
+  expect(await read(w.root, "after/all.env")).toBe("A=1\nNEW=1\n");
+});
+
+test.if(caseInsensitive)(
+  "undoing a copy withdraws it whole before deleting it, so a deletion cut short is finished or undone without a missing file",
+  async () => {
+    const w = await world(["BEFORE"]);
+    await envFile(w.root, "before/a/all.env", "A=a\n");
+    await envFile(w.root, "before/z/all.env", "Z=z\n");
+    await w.rename("after", { crash: "save" });
+    expect(await read(w.root, "after/z/all.env")).toBe("Z=z\n");
+    // A directory the deletion cannot empty stops the undo partway, as a crash would.
+    await chmod(join(w.root, "env/after/a"), 0o500);
+    await expect(w.rename("before")).rejects.toMatchObject({
+      code: "RENAME_ROLLBACK",
+    });
+    await chmod(join(w.root, "env/.removing-after/a"), 0o700);
+    expect((await w.registered()).renaming?.to).toBe("after");
+    await absent(w.root, "after");
+    // Finished now, the copy is made again, whole.
+    await w.rename("after");
+    expect(await read(w.root, "after/a/all.env")).toBe("A=a\n");
+    expect(await read(w.root, "after/z/all.env")).toBe("Z=z\n");
+    await absent(w.root, ".removing-after");
+    expect((await w.registered()).name).toBe("after");
+  },
+);
+
+test.if(caseInsensitive)(
+  "a copy's undo cut short is undone by running it again",
+  async () => {
+    const w = await world(["BEFORE"]);
+    await envFile(w.root, "before/a/all.env", "A=a\n");
+    await w.rename("after", { crash: "save" });
+    await chmod(join(w.root, "env/after/a"), 0o500);
+    await expect(w.rename("before")).rejects.toMatchObject({
+      code: "RENAME_ROLLBACK",
+    });
+    await chmod(join(w.root, "env/.removing-after/a"), 0o700);
+    await w.rename("before");
+    await absent(w.root, "after");
+    await absent(w.root, ".removing-after");
+    expect((await w.registered()).renaming).toBeUndefined();
+    expect(await read(w.root, "BEFORE/a/all.env")).toBe("A=a\n");
+  },
+);
+
+test("an interrupted repair of rig.yaml's name back to the registered one is finished by the same command", async () => {
+  // rig.yaml was edited by hand to 'edited'; rig rename before puts the registered name back.
+  const w = await world([], "edited");
+  await w.rename("before", { crash: "env" });
+  expect((await w.registered()).renaming).toEqual({
+    to: "before",
+    env: "none",
+    config: "edited",
+  });
+  expect(pendingRenameAdvice("before", { to: "before" })).toBe(
+    "Run rig rename before --project before to finish writing name: before to rig.yaml.",
+  );
+  await w.rename("before");
+  expect(w.rigYaml.name).toBe("before");
+  const project = await w.registered();
+  expect(project.name).toBe("before");
+  expect(project.renaming).toBeUndefined();
+  expect(project.formerNames).toBeUndefined();
+});
 
 test("a renamed plan reads its convention env files under the new name and keeps a listed one as written", () => {
   const config = parseProjectConfig({

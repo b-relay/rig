@@ -75,10 +75,11 @@ export async function renameProject(
     throw new RigError(
       "RENAME_PENDING",
       `Project '${project.name}' has an unfinished rename to '${pending.to}', so it cannot be renamed '${newName}' yet.`,
-      `Run rig rename ${pending.to} --project ${project.name} to finish it, or rig rename ${project.name} --project ${project.name} to undo it; then rename it again.`,
+      `${pendingRenameAdvice(project.name, pending)} Then rename it again.`,
       { to: pending.to },
     );
-  if (pending && newName === project.name)
+  // Renaming to its own name undoes the pending rename, unless that rename was the repair of rig.yaml back to that name.
+  if (pending && newName !== pending.to)
     return await undoRename(project, pending, deps);
   let record = pending;
   if (!record) {
@@ -180,6 +181,16 @@ async function undoRename(
     warnings: [],
   };
 }
+/** The commands that finish an unfinished rename, and undo it when it is a rename: one that only repairs rig.yaml back to
+ * the registered name is finished by the same command, and has nothing to undo. */
+export function pendingRenameAdvice(
+  name: string,
+  pending: Pick<PendingRename, "to">,
+): string {
+  return pending.to === name
+    ? `Run rig rename ${name} --project ${name} to finish writing name: ${name} to rig.yaml.`
+    : `Run rig rename ${pending.to} --project ${name} to finish the rename, or rig rename ${name} --project ${name} to undo it.`;
+}
 /** Puts rig.yaml and the env files back as they were before `pending` began, then clears its record, so nothing is left
  * half done. Fails RENAME_ROLLBACK, keeping the record, when something cannot be put back: running the rename again
  * finishes it, or undoes it. `error` is the failure that called for it, if any. */
@@ -208,10 +219,13 @@ async function putBack(
       if (record?.renaming?.to === pending.to) delete record.renaming;
     });
   } catch (recovery) {
+    // Env files in two places are named as they are; nothing was put back, and the record stays.
+    if (recovery instanceof RigError && recovery.code === "ENV_SPLIT")
+      throw recovery;
     throw new RigError(
       "RENAME_ROLLBACK",
       `Project '${project.name}' was not renamed '${pending.to}', and its rig.yaml or env files could not all be put back.`,
-      `Run rig rename ${pending.to} --project ${project.name} to finish the rename, or rig rename ${project.name} --project ${project.name} to undo it.`,
+      pendingRenameAdvice(project.name, pending),
       { from: project.name, to: pending.to },
       error === undefined
         ? failureCauses(recovery)

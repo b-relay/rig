@@ -17,6 +17,17 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
   const directory = (name: string) => join(envRoot, name);
   /** Where a copy is made before it is published under `to` by one rename; no Project name starts with a dot. */
   const staging = (to: string) => join(envRoot, `.renaming-${nameKey(to)}`);
+  /** Where a published copy is withdrawn to, by one rename, before it is deleted. */
+  const withdrawn = (to: string) => join(envRoot, `.removing-${nameKey(to)}`);
+  /** ENV_SPLIT: the rename moved the env files to `to`, and a new directory was made under `from` since. Either way, the
+   * other directory would be left with files nothing reads, so Rig refuses to choose. */
+  const split = (from: string, to: string) =>
+    new RigError(
+      "ENV_SPLIT",
+      `${directory(to)} holds this Project's env files, moved there by its unfinished rename, and ${directory(from)} was made since, so Rig will not choose between them.`,
+      `Move what you need from ${directory(from)} into ${directory(to)}, then move ${directory(from)} aside, and run the rename again to finish or undo it.`,
+      { path: directory(from), moved: directory(to) },
+    );
   /** ENV_DIRECTORY_TAKEN unless `to` has no directory of its own: none at all, or `from`'s under a spelling that differs only in
    * case on a disk that ignores case. */
   const assertFree = async (from: string, to: string) => {
@@ -63,6 +74,8 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
           // The destination was free when the rename began, and its name is reserved since: one there now is this
           // rename's published copy.
           if (await entry(directory(to))) return;
+          // What an earlier attempt left aside: a copy cut short, or one an undo withdrew and did not finish deleting.
+          await rm(withdrawn(to), { recursive: true, force: true });
           await rm(staging(to), { recursive: true, force: true });
           await copyTree(root, directory(from), staging(to));
           await rename(staging(to), directory(to));
@@ -71,7 +84,10 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
         }
         const source = await entry(directory(from));
         if (!source) return; // Moved by an earlier attempt, or there was nothing to move.
-        await assertFree(from, to);
+        // The destination was free when the rename began, and its name is reserved since: one there now holds the files
+        // an earlier attempt moved, and the source is a directory made after it.
+        const moved = await entry(directory(to));
+        if (moved && !sameEntry(moved, source)) throw split(from, to);
         await rename(directory(from), directory(to));
         await syncDirectory(envRoot);
       } catch (error) {
@@ -81,12 +97,18 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
     async undo({ from, to, how }) {
       if (how === "copy") {
         await rm(staging(to), { recursive: true, force: true });
-        await rm(directory(to), { recursive: true, force: true });
-        await syncDirectory(envRoot);
+        // Withdrawn whole first, so the copy is either published complete or gone, however far its deletion gets.
+        if (await entry(directory(to))) {
+          await rm(withdrawn(to), { recursive: true, force: true });
+          await rename(directory(to), withdrawn(to));
+          await syncDirectory(envRoot);
+        }
+        await rm(withdrawn(to), { recursive: true, force: true });
       } else if (how === "move") {
         const moved = await entry(directory(to));
+        if (!moved) return; // Never moved, or moved back by an earlier attempt.
         const original = await entry(directory(from));
-        if (!moved || (original && !sameEntry(original, moved))) return;
+        if (original && !sameEntry(original, moved)) throw split(from, to);
         await rename(directory(to), directory(from));
         await syncDirectory(envRoot);
       }

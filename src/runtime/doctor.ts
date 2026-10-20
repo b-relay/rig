@@ -13,6 +13,7 @@ import type { OrphanedTool, RuntimeDependencies } from "./contracts";
 import { join } from "node:path";
 import { RigError } from "../domain/errors";
 import { observeTargets, OBSERVATION_EXPIRED } from "./status";
+import { pendingRenameAdvice } from "./rename";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
@@ -342,9 +343,12 @@ export async function doctor(
     checks.push({
       name: "project-rename",
       ok: false,
-      message: `A rename of '${project.name}' to '${project.renaming.to}' did not finish: its rig.yaml or operator env files may have the new name already.`,
+      message:
+        project.renaming.to === project.name
+          ? `Writing name: ${project.name} back to rig.yaml (from '${project.renaming.config}') did not finish.`
+          : `A rename of '${project.name}' to '${project.renaming.to}' did not finish: its rig.yaml or operator env files may have the new name already.`,
       reason: "rename-unfinished",
-      hint: `Run rig rename ${project.renaming.to} --project ${project.name} to finish it, or rig rename ${project.name} --project ${project.name} to undo it.`,
+      hint: pendingRenameAdvice(project.name, project.renaming),
     });
   for (const target of targets) {
     const named = previewNameCheck(target, targets);

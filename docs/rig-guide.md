@@ -3055,7 +3055,11 @@ puts rig.yaml and the env files back. A rename interrupted by a crash is
 reported by `rig doctor` (`project-rename`): `rig rename <new> --project <old>`
 finishes it, and `rig rename <old> --project <old>` undoes it, whatever step it
 reached; any other rename of the Project is refused with `RENAME_PENDING` until
-then. Rig keeps the
+then. One that only writes the registered name back to a hand-edited rig.yaml
+is finished by running it again. When the env files were moved and a new
+directory was made under the old name since (by the dashboard's Environment
+tab, say), finishing and undoing both refuse with `ENV_SPLIT`, keeping the
+record, until you move what you need into one of them and the other aside. Rig keeps the
 names a Project had: a deployed Commit whose `rig.yaml` still names an old one
 is the Project's own, so `rig doctor` reports it as passing
 (`<target>/name`) instead of identity drift, and that Commit deploys and rolls

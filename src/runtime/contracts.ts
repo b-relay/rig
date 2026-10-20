@@ -241,7 +241,9 @@ export interface OperatorEnvFiles {
    * rename. Run again after a crash, it finishes the work: a move made or a copy published is recognised as done.
    * Rejects ENV_DIRECTORY_TAKEN when `to` has a directory that is not this rename's; ENV_MOVE when the rename or copy fails. */
   carry(input: { from: string; to: string; how: EnvCarry }): Promise<void>;
-  /** Puts the files back where they were before `carry`, however far it got: renamed back, or the copy removed. */
+  /** Puts the files back where they were before `carry`, however far it got: renamed back, or the copy withdrawn by one
+   * rename and then deleted. Both carry and undo reject ENV_SPLIT, changing nothing, when the files were moved and a new
+   * directory was made under `from` since: neither may be left unread. */
   undo(input: { from: string; to: string; how: EnvCarry }): Promise<void>;
 }
 /** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */

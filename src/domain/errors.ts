@@ -70,6 +70,7 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "PROJECT_ACTIVE",
   "RENAME_PENDING",
   "ENV_DIRECTORY_TAKEN",
+  "ENV_SPLIT",
   "PATH_REQUIRED",
   "PREVIEW_REQUIRED",
   "PREVIEW_NAME",

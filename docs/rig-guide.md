@@ -2751,7 +2751,7 @@ before anything runs:
   `${NAME}`).
 - anything after shell syntax Rig cannot follow with certainty: a `case`
   statement inside `$(...)` or `(...)`, or a heredoc whose line ends inside
-  parentheses.
+  parentheses its `<<` is not in.
 - arithmetic (`$((...))` or `((...))`) takes only a value that is a whole
   number, such as `${port}`, and `[[ ... ]]` only a value that needs no
   quoting: bash evaluates a word there as an arithmetic expression, which

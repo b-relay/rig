@@ -75,6 +75,7 @@ describe("rigd supervisor", () => {
     let registered = false;
     const timing: ProcessTiming = {
       now: () => new Date(Date.now() + skew),
+      elapsed: () => performance.now() + skew,
       wait: async (ms) => {
         if (signalled || !existsSync(ready)) return await Bun.sleep(ms);
         // The wrapper runs, so its lease (pid and birth identity, written before its release) names it: cleanup ends it

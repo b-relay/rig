@@ -1,6 +1,7 @@
 import type { ManagedComponent, RestartPolicy } from "../config/types";
 import { DEFAULT_RESTART_POLICY } from "../config/plan-defaults";
 import { recordActivity } from "../domain/activity";
+import { clockOr, type Clock } from "../domain/clock";
 import { hostRestartText, type HostRestart } from "../domain/host-session";
 import {
   RigError,
@@ -97,6 +98,7 @@ type Deps = Pick<
   RuntimeDependencies,
   | "store"
   | "now"
+  | "clock"
   | "id"
   | "lifecycle"
   | "observations"
@@ -182,16 +184,18 @@ function withAttempts(
 }
 
 /** When the next automatic attempt from `budget` is due for a Service that ended at `endedAt`, keeping only the attempts
- * still inside the budget's window at `now`; `exhausted` when the window already holds the budget's limit. */
+ * still inside the budget's window, measured on `clock`'s elapsed time; `exhausted` when the window already holds the
+ * budget's limit. `retryAt` is the wall-clock time the delay after `endedAt` ends, as recorded; the delay itself is
+ * `retryAt - endedAt` of elapsed time (`retryWait`). */
 export function scheduleAttempt(
   run: ServiceRun,
   budget: RestartBudget,
   endedAt: number,
-  now: number,
+  clock: Pick<Clock, "since">,
 ): { exhausted: true } | { run: ServiceRun } {
   const rule = BUDGETS[budget];
   const recent = spentAttempts(run, budget).filter(
-    (at) => now - at < rule.windowMs,
+    (at) => clock.since(at) < rule.windowMs,
   );
   if (recent.length >= rule.limit) return { exhausted: true };
   return {
@@ -200,6 +204,16 @@ export function scheduleAttempt(
       retryAt: endedAt + rule.delayMs(recent.length),
     },
   };
+}
+
+/** How much longer the automatic attempt due at `retryAt` waits, in milliseconds: its delay after the exit at `endedAt` (both
+ * wall-clock times, recorded together) less the time elapsed since that exit. */
+function retryWait(
+  retryAt: number,
+  endedAt: number,
+  clock: Pick<Clock, "since">,
+): number {
+  return retryAt - endedAt - clock.since(endedAt);
 }
 
 /** Saves one Service's record with an optional Activity entry, in one write that touches nothing else of the saved Target:
@@ -270,7 +284,7 @@ async function saveRuns(
 export function activationJournal(
   target: TargetRecord,
   mode: "explicit" | RestartBudget | "health",
-  deps: Pick<Deps, "store" | "now" | "id">,
+  deps: Pick<Deps, "store" | "now" | "clock" | "id">,
   options: {
     afterHostRestart?: HostRestart;
     healthStretch?: NonNullable<ServiceRun["healthStretch"]>;
@@ -302,7 +316,12 @@ export function activationJournal(
                   ? { healthStretch: options.healthStretch }
                   : {}),
               }
-            : automaticStart(fresh, current, mode, Date.parse(deps.now()));
+            : automaticStart(
+                fresh,
+                current,
+                mode,
+                clockOr(deps.clock, deps.now).stamp(),
+              );
       // In the same write, the start takes the next value of the state's startSeq, which orders it after every Host
       // restart recorded before it: such a restart's stop never applies to this run.
       await saveRuns(target, { [service]: run }, deps, (state) => {
@@ -541,7 +560,7 @@ async function settleStopped(
  * policy (within `scope`) retries that outcome, the outcome's budget allows and its backoff has passed; the start publishes
  * its paths again once it is verified. A due attempt waits, spending nothing, while a Service it depends on is not running,
  * and after an unknown exit while one of its ports still accepts connections.
- * Returns when the earliest scheduled attempt is due, in Unix milliseconds.
+ * Returns when the earliest scheduled attempt is due, in Unix milliseconds by the wall clock as it returns.
  * A route that cannot be withheld, or a record that cannot be saved, ends the Service's pass before anything is recorded or
  * started; every other Service is still supervised, and then the first such failure is thrown. */
 export async function superviseTarget(
@@ -600,7 +619,12 @@ async function superviseService(
     // recorded, so a route that cannot be withheld is tried again by the next pass.
     if (plannedRoutes(target.plan).some((route) => route.service === service))
       await deps.lifecycle.withhold(target, [service]);
-    const outcome = observedOutcome(run, observation, deps.now());
+    // Stamped: the delay before the next attempt is measured from it on elapsed time.
+    const outcome = observedOutcome(
+      run,
+      observation,
+      new Date(clockOr(deps.clock, deps.now).stamp()).toISOString(),
+    );
     run = {
       ...(run ?? {
         deployment: target.plan.workspacePath,
@@ -620,9 +644,10 @@ async function superviseService(
   const outcome = run.outcome!;
   const budget = restartBudget(policy, outcome, scope);
   if (!budget) return undefined;
-  const now = Date.parse(deps.now());
+  const clock = clockOr(deps.clock, deps.now);
+  const endedAt = Date.parse(outcome.at);
   if (run.retryAt === undefined) {
-    const scheduled = scheduleAttempt(run, budget, Date.parse(outcome.at), now);
+    const scheduled = scheduleAttempt(run, budget, endedAt, clock);
     if ("exhausted" in scheduled) {
       await saveRun(target, service, { ...run, exhausted: true }, deps, {
         action: "restart",
@@ -634,7 +659,8 @@ async function superviseService(
     run = scheduled.run;
     await saveRun(target, service, run, deps);
   }
-  if (now < run.retryAt!) return run.retryAt;
+  const wait = retryWait(run.retryAt!, endedAt, clock);
+  if (wait > 0) return clock.now() + wait;
   if (budget === "unknown-exit") {
     // Nothing says the process that ended is not still serving under another identity: its ports must be free first.
     const busy = await listeningPorts(target, component, deps);
@@ -667,7 +693,10 @@ async function superviseService(
       service,
       {
         ...(refusedBeforeStart
-          ? withAttempts(rest, budget, [...spentAttempts(rest, budget), now])
+          ? withAttempts(rest, budget, [
+              ...spentAttempts(rest, budget),
+              clock.stamp(),
+            ])
           : rest),
         outcome: failedAttemptOutcome(error, deps.now()),
       },

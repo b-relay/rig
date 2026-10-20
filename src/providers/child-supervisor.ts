@@ -318,7 +318,7 @@ export function createChildSupervisor(
       Math.max(request.graceMs, captured?.stopGraceMs ?? 0),
       options.stopTimings ?? PLATFORM_STOP_TIMINGS,
     );
-    const started = now().getTime();
+    const started = timing.elapsed();
     const graceEnd =
       started + (options.captureCommand ? budget.wrapperMs : budget.graceMs);
     const afterKill = options.captureCommand
@@ -332,7 +332,7 @@ export function createChildSupervisor(
     await inspection.signalGroup(pid, "SIGTERM");
     while (
       (await inspection.groupExists(pid)) &&
-      now().getTime() < deadline()
+      timing.elapsed() < deadline()
     ) {
       if (request.detach?.aborted) throw stopDetached({ key });
       // A wrapper written by an older rigd cannot be told to kill; it is left to its own short grace instead.
@@ -341,7 +341,7 @@ export function createChildSupervisor(
         killAskedAt === undefined &&
         (!options.captureCommand || captured?.stopGraceMs !== undefined)
       ) {
-        killAskedAt = now().getTime();
+        killAskedAt = timing.elapsed();
         // The wrapper alone: its group also holds the inspection helpers it runs.
         if (options.captureCommand)
           await inspection.signalProcess(pid, CAPTURE_KILL_SIGNAL);
@@ -356,10 +356,10 @@ export function createChildSupervisor(
           ? "request"
           : "timeout";
     }
-    const killDeadline = now().getTime() + budget.killWaitMs;
+    const killDeadline = timing.elapsed() + budget.killWaitMs;
     while (
       (await inspection.groupExists(pid)) &&
-      now().getTime() < killDeadline
+      timing.elapsed() < killDeadline
     )
       await timing.wait(STOP_POLL_MS);
     if (await inspection.groupExists(pid))
@@ -623,7 +623,7 @@ export function createChildSupervisor(
       if (options.captureCommand)
         await waitForCaptureStart(capturePath(request.key), {
           timeoutMs: options.captureStartMs ?? DEFAULT_CAPTURE_START_MS,
-          now: () => timing.now().getTime(),
+          elapsed: () => timing.elapsed(),
           wait: (ms) => timing.wait(ms),
         });
     } catch (error) {

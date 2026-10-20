@@ -61,6 +61,7 @@ import {
   platformKill,
 } from "../providers/process-inspection";
 import { createProcessTiming } from "../providers/process-timing";
+import { elapsedNow, systemClock } from "../providers/system-clock";
 import { createGitSourceStore } from "../providers/git-source-store";
 import { createArtifactInstaller } from "../providers/artifact-installer";
 import { createCaddyRouter } from "../providers/caddy-router";
@@ -161,7 +162,7 @@ export async function composeDaemon(
   // Writers read the Host's logs settings as they are now, so a change needs no daemon restart.
   const logRetention = hostLogRetention({
     read: () => readHostConfig(root),
-    now: Date.now,
+    elapsed: elapsedNow,
     refreshMs: LOG_RETENTION_REFRESH_MS,
   });
   const child = createChildSupervisor({
@@ -378,13 +379,14 @@ export async function composeDaemon(
     // The boot and GUI login rigd's first pass compares with the last recorded, to start Stable Targets after a restart.
     hostSession: daemonHostSession(mode, { run: runCommand, uid }),
     now: () => new Date().toISOString(),
+    clock: systemClock,
     id: randomUUID,
     diagnostic: recordingDiagnostic(diagnostic, notices),
   });
   health = createHealthMonitor({
     store,
     observations: effects.observations,
-    now: () => Date.now(),
+    clock: systemClock,
     id: randomUUID,
     busy: runtime.targetBusy,
     restart: runtime.restartUnhealthy,
@@ -401,7 +403,7 @@ export async function composeDaemon(
   const jobs = createJobScheduler({
     store,
     lifecycle,
-    clock: { now: () => Date.now(), timeZone: hostTimeZone },
+    clock: { ...systemClock, timeZone: hostTimeZone },
     id: randomUUID,
     busy: runtime.targetBusy,
     start: runtime.runScheduledJob,

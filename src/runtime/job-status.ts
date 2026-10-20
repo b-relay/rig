@@ -1,3 +1,4 @@
+import type { PlanJob } from "../config/types";
 import type { JobReport, JobRunReport } from "../domain/project-status";
 import type {
   BackupRecord,
@@ -44,7 +45,7 @@ export function jobReports(
       (job.scheduled === false
         ? `jobs.${job.name}.targets does not name ${target.kind}, so only rig run runs it here.`
         : undefined);
-    const next = why ? undefined : nextJobRun(job, now, clock);
+    const next = why ? undefined : nextRun(job, record, now, clock);
     const backup = backupSummary({ backups: [...backups] }, target.id, job);
     return {
       name: job.name,
@@ -82,6 +83,21 @@ export function jobReports(
           "rig.yaml no longer has this job since the last deploy; this run finishes on the checkout it started in, and it is not scheduled again.",
       });
   return reports.length ? reports : undefined;
+}
+/** When `job` runs next as the scheduler runs it: the next time after `now`, but not one its record says was already
+ * handled, which a clock set back since has not reached again. */
+function nextRun(
+  job: PlanJob,
+  record: JobRecord | undefined,
+  now: number,
+  clock: Pick<JobClock, "timeZone">,
+): number | undefined {
+  const next = nextJobRun(job, now, clock);
+  return next !== undefined &&
+    record?.lastScheduled !== undefined &&
+    next === Date.parse(record.lastScheduled)
+    ? nextJobRun(job, next, clock)
+    : next;
 }
 function runReport(run: JobRun): JobRunReport {
   return {

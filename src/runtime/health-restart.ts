@@ -1,5 +1,6 @@
 import type { ManagedComponent } from "../config/types";
 import { recordActivity } from "../domain/activity";
+import { clockOr } from "../domain/clock";
 import { diagnosticErrorCode } from "../domain/errors";
 import { boundedOutput, healthRestartDueAt } from "../domain/health-policy";
 import type { OperationPhase } from "../domain/operation-progress";
@@ -23,6 +24,7 @@ type Deps = Pick<
   RuntimeDependencies,
   | "store"
   | "now"
+  | "clock"
   | "id"
   | "lifecycle"
   | "observations"
@@ -83,7 +85,8 @@ export async function restartForHealth(
           observed.incarnation !== request.incarnation))
   )
     return { outcome: "skipped" };
-  const at = Date.parse(deps.now());
+  // Stamped: the back-off before the next health restart is measured from it on elapsed time.
+  const at = clockOr(deps.clock, deps.now).stamp();
   const stretch = { since: request.since, restarts: [...request.restarts, at] };
   // Written ahead, before the stop: the stretch with this attempt, owned by the health back-off until a start passes. A
   // refused write stops here, with nothing stopped.

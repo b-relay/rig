@@ -1,6 +1,7 @@
 import type { UsageMonitor } from "./usage-report";
 import type { UsageWindow } from "../domain/usage-summary";
 import { targetSelector } from "../domain/target-selector";
+import { clockOr } from "../domain/clock";
 import type {
   ProjectStatusReader,
   ProjectStatusReport,
@@ -1785,7 +1786,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             ...diagnosticCauses(error),
           })
           .catch(() => {});
-        return { outcome: "failed" as const, at: Date.parse(deps.now()) };
+        return {
+          outcome: "failed" as const,
+          at: clockOr(deps.clock, deps.now).stamp(),
+        };
       } finally {
         lease.release();
         operations.delete(operationId);
@@ -2072,7 +2076,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // Another run by now, started after the scheduler looked: what it judged is not about this one.
         if (run?.id !== request.runId) return;
         const held = { ...deps, lifecycle };
-        if (pastTimeout(run, Date.parse(deps.now())))
+        if (pastTimeout(run, clockOr(deps.clock, deps.now)))
           await stopJobRun(target, request.job, run, "timed-out", held);
         else await settleJobRun(target, request.job, run.id, held);
         await releaseHeldCheckouts(target, deps);

@@ -50,10 +50,10 @@ export const DEFAULT_CAPTURE_START_MS = 5000;
 const CAPTURE_START_POLL_MS = 20;
 /** The clock the startup poll lives by; a supervisor passes the timing it already holds, a test a scripted one. */
 export interface CaptureStartWait {
-  /** Budget on `now`'s clock before the wait fails as PROCESS_START_TIMEOUT. */
+  /** Budget on `elapsed`'s clock before the wait fails as PROCESS_START_TIMEOUT. */
   readonly timeoutMs: number;
-  /** Unix milliseconds. */
-  now(): number;
+  /** Monotonic milliseconds, so a correction of the Mac's clock never changes the budget. */
+  elapsed(): number;
   /** Resolves once `ms` have elapsed on the same clock. */
   wait(ms: number): Promise<void>;
 }
@@ -62,8 +62,8 @@ export async function waitForCaptureStart(
   requestPath: string,
   wait: CaptureStartWait,
 ): Promise<number> {
-  const deadline = wait.now() + wait.timeoutMs;
-  while (wait.now() < deadline) {
+  const deadline = wait.elapsed() + wait.timeoutMs;
+  while (wait.elapsed() < deadline) {
     const raw = await readFile(`${requestPath}.status.json`, "utf8").catch(
       (error) => {
         if (error.code === "ENOENT") return undefined;

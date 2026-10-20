@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { wallClock } from "../src/domain/clock";
 import type { ManagedComponent } from "../src/config/types";
 import type { RuntimeState } from "../src/domain/runtime";
 import {
@@ -328,7 +329,7 @@ function world(
               };
         },
       },
-      now: () => now,
+      clock: wallClock(() => now),
       id: () => `id${Math.random()}`,
       busy: () => false,
       async restart(request) {

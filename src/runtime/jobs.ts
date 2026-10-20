@@ -1,5 +1,6 @@
 import type { PlanJob } from "../config/types";
 import { recordActivity } from "../domain/activity";
+import { clockOr, type Clock } from "../domain/clock";
 import { RigError, diagnosticErrorCode } from "../domain/errors";
 import { targetSelector } from "../domain/target-selector";
 import type {
@@ -36,6 +37,8 @@ export interface JobRunDependencies extends BackupDependencies {
   lifecycle: Pick<TargetLifecycle, "startJob" | "observeJob" | "stopJob">;
   /** ISO timestamp. */
   now(): string;
+  /** What a run's timeout is measured on (`RuntimeDependencies.clock`); absent, on `now`. */
+  clock?: Clock;
 }
 /** What recording a run's end needs: the state, the clock, and a backup job's directories. */
 type EndDependencies = Pick<
@@ -45,11 +48,11 @@ type EndDependencies = Pick<
 /** The variable a backup job's command, and a restore, find their backup directory in. */
 export const BACKUP_DIR_VARIABLE = "RIG_BACKUP_DIR";
 
-/** Whether `run` is past its timeout at `now` (Unix milliseconds). */
-export function pastTimeout(run: JobRun, now: number): boolean {
+/** Whether `run` is past its timeout: its timeout has elapsed since it started, on `clock`'s elapsed time. */
+export function pastTimeout(run: JobRun, clock: Pick<Clock, "since">): boolean {
   return (
     run.timeout !== undefined &&
-    now >= Date.parse(run.startedAt) + run.timeout * 1000
+    clock.since(Date.parse(run.startedAt)) >= run.timeout * 1000
   );
 }
 /** The record of `job` of the Target `targetId`, if any. */
@@ -285,13 +288,14 @@ export async function enforceJobDeadline(
   target: TargetRecord,
   job: string,
   runId: string,
-  deps: Pick<EndDependencies, "store" | "now"> & {
+  deps: Pick<JobRunDependencies, "store" | "now" | "clock"> & {
     lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
   },
   stops?: StopControl,
 ): Promise<void> {
   const run = findJobRecord(await deps.store.read(), target.id, job)?.running;
-  if (run?.id !== runId || !pastTimeout(run, Date.parse(deps.now()))) return;
+  if (run?.id !== runId || !pastTimeout(run, clockOr(deps.clock, deps.now)))
+    return;
   await stopJobProcess(target, job, run, "timed-out", deps, stops);
 }
 
@@ -365,7 +369,10 @@ export async function startJobRun(
   deps: JobRunDependencies,
 ): Promise<JobRun> {
   await settlePreviousRun(target, job.name, deps);
-  const startedAt = deps.now();
+  // Stamped: its timeout is measured from it on elapsed time.
+  const startedAt = new Date(
+    clockOr(deps.clock, deps.now).stamp(),
+  ).toISOString();
   const restoreCommand = job.backup?.restore;
   if (request.restore && restoreCommand === undefined)
     throw noRestore(job.name);
@@ -397,7 +404,7 @@ export async function startJobRun(
     }
     const record = ensureJobRecord(state, target.id, job.name);
     record.running = run;
-    if (run.scheduledFor) record.lastScheduled = run.scheduledFor;
+    if (run.scheduledFor) handledTime(record, run.scheduledFor);
   });
   /** Whether this run made its directory, which is then its own to delete. */
   let created = false;
@@ -497,7 +504,7 @@ export async function recordSkippedRun(
   const at = new Date(scheduledFor).toISOString();
   await deps.store.update((state) => {
     const record = ensureJobRecord(state, target.id, job);
-    record.lastScheduled = at;
+    handledTime(record, at);
     const running = record.running;
     if (!running) return;
     const first = running.skipped === undefined;
@@ -636,11 +643,15 @@ export function recordScheduling(
   for (const fact of facts) {
     const record = ensureJobRecord(state, fact.target, fact.job);
     if (fact.watchedFrom !== undefined) record.watchedFrom ??= fact.watchedFrom;
-    if (
-      fact.passedOver !== undefined &&
-      (record.lastScheduled === undefined ||
-        Date.parse(record.lastScheduled) < Date.parse(fact.passedOver))
-    )
-      record.lastScheduled = fact.passedOver;
+    if (fact.passedOver !== undefined) handledTime(record, fact.passedOver);
   }
+}
+/** Records `at` (ISO) as a scheduled time handled, unless a later one is: one handled before the clock was set back stays
+ * recorded until it comes again, so a new rigd does not run it twice. */
+function handledTime(record: JobRecord, at: string): void {
+  if (
+    record.lastScheduled === undefined ||
+    Date.parse(record.lastScheduled) < Date.parse(at)
+  )
+    record.lastScheduled = at;
 }

@@ -1,4 +1,5 @@
 import type { ProxyPublication } from "../domain/proxy-publication";
+import type { Clock } from "../domain/clock";
 import type { FailureCauses } from "../domain/errors";
 import type { ProxyReport, ReportedTarget } from "../adapters/proxy-report";
 import type { DnsRecord, DnsZone } from "../domain/dns-records";
@@ -312,7 +313,11 @@ export interface RuntimeDependencies {
   /** Reads the Host's boot and login session, which the daemon's first pass compares with the one it last recorded to
    * tell a Host restart from a plain daemon restart. Absent, no Host restart is ever detected. */
   hostSession?: HostSessionProbe;
+  /** Wall-clock time, as an ISO timestamp, for what is recorded. */
   now(): string;
+  /** What durations are measured on: restart back-offs and budget windows, health restart back-offs, job run timeouts
+   * (`systemClock` in rigd). Absent, they are measured on `now`, as a test that scripts only the wall clock wants. */
+  clock?: Clock;
   id(): string;
   diagnostic(
     event: FailureCauses & {

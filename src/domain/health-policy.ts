@@ -1,5 +1,10 @@
 /** Ongoing health checks (ADR 0012): the pure rules for what one check result means, and when an unhealthy Service with
- * `on_failure: restart` is restarted. Times are Unix milliseconds; nothing here reads a clock. */
+ * `on_failure: restart` is restarted. Times are the wall-clock instants things happened, in Unix milliseconds; how long
+ * ago one was is elapsed time, which a `since` function given here measures (`Clock.since`), so nothing here reads a clock
+ * and a correction of the clock never moves a check or a restart. */
+
+/** Milliseconds elapsed since a wall-clock instant. */
+export type Since = (at: number) => number;
 
 /** A Service's ongoing check policy, as its plan records it, in milliseconds. */
 export interface HealthPolicy {
@@ -50,16 +55,18 @@ export function boundedOutput(text: string): string {
     ? `${line.slice(0, HEALTH_OUTPUT_LIMIT - 1)}…`
     : line;
 }
-/** When the next check of a Service is due: at once for a process not checked yet, then `interval` after the last check, and
- * never before the process became eligible. Undefined before it may be checked at all. */
-export function nextCheckAt(
+/** Whether the next check of a Service is due: once it may be checked, at once for a process not checked yet, then once
+ * `interval` has elapsed since the last check. */
+export function checkDue(
   state: HealthState,
   policy: Pick<HealthPolicy, "intervalMs">,
-): number | undefined {
-  if (state.eligibleSince === undefined) return undefined;
-  return state.checkedAt === undefined
-    ? state.eligibleSince
-    : Math.max(state.eligibleSince, state.checkedAt + policy.intervalMs);
+  since: Since,
+): boolean {
+  return (
+    state.eligibleSince !== undefined &&
+    (state.checkedAt === undefined ||
+      since(state.checkedAt) >= policy.intervalMs)
+  );
 }
 /** A change a check result makes that Activity records. */
 export type HealthEvent = "unhealthy" | "recovered";
@@ -104,33 +111,49 @@ export function isUnhealthy(state: HealthState): boolean {
 export type HealthAction =
   | { kind: "none" }
   | { kind: "restart"; attempt: number }
-  | { kind: "wait"; until: number };
+  | { kind: "wait"; ms: number };
 export function healthAction(
   state: HealthState,
   policy: HealthPolicy,
-  now: number,
+  since: Since,
 ): HealthAction {
   const stretch = state.stretch;
   if (policy.onFailure !== "restart" || !stretch) return { kind: "none" };
   if (state.passed !== false || state.failures < policy.retries)
     return { kind: "none" };
-  const due = healthRestartDueAt(stretch);
-  return now >= due
+  const wait = healthRestartWait(stretch, since);
+  return wait <= 0
     ? { kind: "restart", attempt: stretch.restarts.length + 1 }
-    : { kind: "wait", until: due };
+    : { kind: "wait", ms: wait };
 }
-/** When the next health restart of an unhealthy stretch is due: at once for the first, then the back-off after the last. */
+/** The back-off before the next health restart of an unhealthy stretch: none before the first, then the step for the
+ * restarts made so far. */
+function healthRestartBackoff(stretch: HealthStretch): number {
+  return stretch.restarts.length === 0
+    ? 0
+    : HEALTH_RESTART_BACKOFF_MS[
+        Math.min(
+          stretch.restarts.length - 1,
+          HEALTH_RESTART_BACKOFF_MS.length - 1,
+        )
+      ]!;
+}
+/** When the next health restart of an unhealthy stretch is due, as a wall-clock time to show: at once for the first, then
+ * the back-off after the last. Whether it is due is `healthRestartWait`'s to say. */
 export function healthRestartDueAt(stretch: HealthStretch): number {
-  const last = stretch.restarts.at(-1);
-  return last === undefined
-    ? stretch.since
-    : last +
-        HEALTH_RESTART_BACKOFF_MS[
-          Math.min(
-            stretch.restarts.length - 1,
-            HEALTH_RESTART_BACKOFF_MS.length - 1,
-          )
-        ]!;
+  return (
+    (stretch.restarts.at(-1) ?? stretch.since) + healthRestartBackoff(stretch)
+  );
+}
+/** How much longer the next health restart of an unhealthy stretch waits, in milliseconds; zero or less once it is due. */
+export function healthRestartWait(
+  stretch: HealthStretch,
+  since: Since,
+): number {
+  return (
+    healthRestartBackoff(stretch) -
+    since(stretch.restarts.at(-1) ?? stretch.since)
+  );
 }
 /** The state after a health restart was attempted at `at`: the stretch goes on and counts the attempt, and the count starts
  * again. It still names the process that was judged, so a new one is recognized when it is seen, and one whose stop failed

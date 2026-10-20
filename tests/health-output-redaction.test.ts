@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { wallClock } from "../src/domain/clock";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,7 +96,7 @@ async function world() {
   monitor = createHealthMonitor({
     store: w.store,
     observations: w.deps.observations,
-    now: () => w.clock.ms,
+    clock: wallClock(() => w.clock.ms),
     id: () => `h${Math.random()}`,
     busy: runtime.targetBusy,
     restart: runtime.restartUnhealthy,

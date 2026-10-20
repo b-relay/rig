@@ -110,9 +110,13 @@ export function SecretsEditor({
     revealedValue(draft.revealed, key, file.scope, file.revision);
   const moved = drift(draft, file);
   const locked = file.problem !== undefined;
+  // A name being edited stays until Keep or Cancel, even once another writer removed it, so what was typed is not lost.
   const keys = [
-    ...file.keys,
-    ...Object.keys(pending).filter((key) => !file.keys.includes(key)),
+    ...new Set([
+      ...file.keys,
+      ...Object.keys(pending),
+      ...(editing ? [editing.key] : []),
+    ]),
   ];
   const changes = draftChanges(draft);
   const reveal = async (key: string) => {
@@ -298,6 +302,10 @@ export function SecretsEditor({
                         ? "new"
                         : "edited"}
                   </span>
+                ) : isNew ? (
+                  <span className="text-[11px] font-medium text-bad">
+                    no longer in the file
+                  </span>
                 ) : null}
               </span>
               <div className="col-span-2 min-w-0 sm:order-none sm:col-span-1">
@@ -404,7 +412,7 @@ export function SecretsEditor({
                       <Undo2 />
                     </IconButton>
                   </>
-                ) : (
+                ) : isNew ? null : (
                   <>
                     {shownValue(key) === undefined ? (
                       <IconButton

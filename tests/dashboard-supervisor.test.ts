@@ -29,6 +29,8 @@ import { parseHostConfig } from "../src/config/schema";
 import { hostRoutes, proxyPaths } from "../src/domain/managed-proxy";
 import { createProxyInstallation } from "../src/daemon/proxy-installation";
 import { runCommand } from "../src/providers/command-runner";
+import { createListenerInspection } from "../src/providers/listener-inspection";
+import { probeLocalPort } from "../src/providers/port-probe";
 import { pendingSettings } from "../src/adapters/proxy-generation";
 import { accessPolicy } from "../web/server/guard";
 import {
@@ -66,6 +68,8 @@ async function installed(server: string) {
   const notes: string[] = [];
   const cleared: string[] = [];
   const waits: number[] = [];
+  /** Each change of whether Caddy may route to the dashboard, as rigd was told it. */
+  const serving: boolean[] = [];
   const deps: DashboardDependencies = {
     root,
     port: freePort(),
@@ -77,10 +81,14 @@ async function installed(server: string) {
       note: (channel, message) => notes.push(`${channel.name}: ${message}`),
       clear: (channel) => cleared.push(channel.name),
     },
+    listeners: createListenerInspection(runCommand),
+    portTaken: async (port) =>
+      (await probeLocalPort(port, AbortSignal.timeout(3000))).ready,
+    serving: async (listening) => void serving.push(listening),
     wait: async (ms) => void waits.push(ms),
     now: Date.now,
   };
-  return { root, directory, deps, notes, cleared, waits };
+  return { root, directory, deps, notes, cleared, waits, serving };
 }
 /** A server that answers with its own pid on PORT and HOSTNAME, as Next.js's standalone server reads them. */
 const SERVER = `
@@ -91,8 +99,11 @@ Bun.serve({
   fetch: () => new Response(String(process.pid)),
 });
 `;
-async function answer(url: string): Promise<string | undefined> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+async function answer(
+  url: string,
+  attempts = 100,
+): Promise<string | undefined> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const reply = await fetch(url).then(
       (response) => response.text(),
       () => undefined,
@@ -140,6 +151,94 @@ test("rigd serves the installed dashboard on 127.0.0.1 at its port, records its 
     stat(join(f.root, "dashboard", "process.json")),
   ).rejects.toThrow();
   expect(f.notes).toEqual([]);
+});
+
+/** Resolves once `ready` holds, polling for up to five seconds; false when it never did. */
+async function until(ready: () => boolean): Promise<boolean> {
+  for (let attempt = 0; attempt < 100 && !ready(); attempt++)
+    await Bun.sleep(50);
+  return ready();
+}
+
+test("Caddy may route to the dashboard only once its own process holds 127.0.0.1:<port>, and not from before a stop or once it ends", async () => {
+  const f = await installed(SERVER);
+  /** Whether the dashboard's process answered on its address as rigd was told each change. */
+  const answered: boolean[] = [];
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    wait: (_ms, signal) => waitForLogPoll(50, signal),
+    serving: async (listening) => {
+      f.serving.push(listening);
+      answered.push(
+        (await answer(`http://127.0.0.1:${f.deps.port}`, 1)) !== undefined,
+      );
+    },
+  }))!;
+  expect(dashboard.problem()).toBeUndefined();
+  dashboard.start();
+  const pid = Number(await answer(dashboard.url));
+  expect(await until(() => f.serving.length === 1)).toBe(true);
+  expect(f.serving).toEqual([true]);
+
+  // It ends on its own: withheld, then served again once its replacement is confirmed.
+  process.kill(pid, "SIGKILL");
+  expect(await until(() => f.serving.length === 3)).toBe(true);
+  // A stop withholds it while the process still runs.
+  await dashboard.stop();
+  expect(f.serving).toEqual([true, false, true, false]);
+  expect(answered).toEqual([true, false, true, true]);
+});
+
+test("a port another program holds is never routed: the dashboard is withheld, and the notice says that program holds the port", async () => {
+  const f = await installed(SERVER);
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: f.deps.port,
+    fetch: () => new Response("another program"),
+  });
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    wait: (ms, signal) => {
+      f.waits.push(ms);
+      return waitForLogPoll(100, signal);
+    },
+  }))!;
+  dashboard.start();
+  expect(await until(() => f.notes.length > 0)).toBe(true);
+  expect(f.notes[0]).toBe(
+    `${DASHBOARD.name}: The dashboard exited with code 1: another program holds port ${f.deps.port}; rigd starts it again in 1 s.`,
+  );
+  expect(dashboard.problem()).toBe(f.notes.at(-1)!.slice("dashboard: ".length));
+  expect(f.serving).toEqual([]);
+
+  // Once the port is free, the next start holds it and is served.
+  other.stop(true);
+  expect(await until(() => f.serving.length === 1)).toBe(true);
+  expect(dashboard.problem()).toBeUndefined();
+  await dashboard.stop();
+  expect(f.serving).toEqual([true, false]);
+});
+
+test("a dashboard that answers somewhere other than 127.0.0.1 is never routed, while another program holds 127.0.0.1 at its port", async () => {
+  const f = await installed(`
+Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Response("dashboard") });
+`);
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: f.deps.port,
+    fetch: () => new Response("another program"),
+  });
+  try {
+    const dashboard = (await openDashboard(f.deps))!;
+    dashboard.start();
+    expect(await answer(`http://[::1]:${f.deps.port}`)).toBe("dashboard");
+    await Bun.sleep(1500);
+    expect(f.serving).toEqual([]);
+    await dashboard.stop();
+    expect(f.serving).toEqual([]);
+  } finally {
+    other.stop(true);
+  }
 });
 
 test("a dashboard that exits is started again after a back-off that doubles while it keeps exiting, and doctor hears of it", async () => {

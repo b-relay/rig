@@ -735,12 +735,19 @@ export function createEffectTransactions(options: {
         await save(journal);
       }
     },
-    /** Run a change to the owned route with the same intent-then-capture record. */
+    /** Run a change to the owned route with the same intent-then-capture record. An interrupted transaction's journal
+     * records it too (a stop withholds the route before its recovery runs), so that recovery does not take the change for
+     * an outside one. */
     async withRouteChange(
       targetId: string,
       change: () => Promise<void>,
     ): Promise<void> {
-      const journal = active.get(targetId);
+      const journal =
+        active.get(targetId) ??
+        (await load(targetId).then(
+          (saved) => (saved?.phase === "pending" ? saved : undefined),
+          () => undefined,
+        ));
       if (!journal) return change();
       journal.route.applying = true;
       await save(journal);

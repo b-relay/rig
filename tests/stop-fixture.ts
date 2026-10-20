@@ -9,6 +9,9 @@ export function stopFixture(active: string[] = []) {
   const stops: string[] = [];
   const observations = new Map<string, ProcessObservation | Error>();
   const stopFailures = new Set<string>();
+  /** Each withholding asked of the route: the ports (none: every path), and how many stops came before it. */
+  const withheld: { ports?: number[]; afterStops: number }[] = [];
+  const routeFailure: { withhold?: Error } = {};
   const effects: TargetEffects = {
     async checkpoint(target) {
       return { targetId: target.id, async commit() {}, async rollback() {} };
@@ -57,6 +60,13 @@ export function stopFixture(active: string[] = []) {
     },
     async route() {},
     async removeRoute() {},
+    async withhold(_target, ports) {
+      withheld.push({
+        ...(ports ? { ports: [...ports].sort() } : {}),
+        afterStops: stops.length,
+      });
+      if (routeFailure.withhold) throw routeFailure.withhold;
+    },
     async withdrawRoute() {
       return undefined;
     },
@@ -72,5 +82,7 @@ export function stopFixture(active: string[] = []) {
     stops,
     observations,
     stopFailures,
+    withheld,
+    routeFailure,
   };
 }

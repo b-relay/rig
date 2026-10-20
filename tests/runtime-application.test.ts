@@ -3532,6 +3532,7 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     async route() {},
     listeners: async (pid: number) => loopbackListeners(pid, []),
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },

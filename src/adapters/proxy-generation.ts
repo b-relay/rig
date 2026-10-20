@@ -45,7 +45,7 @@ export async function currentGeneration(
     ? metadata.customRoutes.flatMap((entry: unknown) => {
         const route = entry as Partial<HostRoute> | null;
         return typeof route?.hostname === "string" &&
-          typeof route.upstream === "string"
+          (typeof route.upstream === "string" || route.upstream === null)
           ? [{ hostname: route.hostname, upstream: route.upstream }]
           : [];
       })

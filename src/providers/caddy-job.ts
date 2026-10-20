@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { openPrivateFile, replacePrivateFile } from "./private-files";
 import { dirname, join } from "node:path";
 import { RigError } from "../domain/errors";
 import { renderLaunchdPlist } from "../domain/launchd-plist";
@@ -331,8 +332,7 @@ export function createProcessCaddyJob(options: {
         : "stopped";
   }
   async function start(): Promise<void> {
-    await mkdir(paths.caddy, { recursive: true });
-    const log = await open(paths.jobLog, "a", 0o600);
+    const log = await openPrivateFile(options.root, paths.jobLog, "append");
     try {
       const [executable, ...args] = caddyCommand(paths);
       const child = spawn(executable!, args, {
@@ -347,10 +347,10 @@ export function createProcessCaddyJob(options: {
       });
       child.unref();
       const startedAt = await processStartTime(child.pid!);
-      await writeFile(
+      await replacePrivateFile(
+        options.root,
         paths.processRecord,
         JSON.stringify({ pid: child.pid, startedAt }) + "\n",
-        { mode: 0o600 },
       );
     } finally {
       await log.close();

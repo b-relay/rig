@@ -66,7 +66,7 @@ export function createCaddyRouter(options: {
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ): Promise<void> {
-    await mkdir(dirname(options.caddyfile), { recursive: true });
+    await mkdir(dirname(options.caddyfile), { recursive: true, mode: 0o700 });
     const file = await resolveRoutes();
     const before = await readRoutes(file);
     const edit = editRouteFile({

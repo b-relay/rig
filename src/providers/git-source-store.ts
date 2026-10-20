@@ -78,7 +78,7 @@ export function createGitSourceStore(options: {
         "Check the source repository.",
       );
     const mirror = mirrorPath(request.project);
-    await mkdir(options.root, { recursive: true });
+    await mkdir(options.root, { recursive: true, mode: 0o700 });
     if (!(await exists(mirror))) {
       const temporary = `${mirror}.${randomUUID()}.tmp`;
       try {
@@ -106,7 +106,7 @@ export function createGitSourceStore(options: {
       request.repository,
       commit,
     ]);
-    await mkdir(dirname(request.destination), { recursive: true });
+    await mkdir(dirname(request.destination), { recursive: true, mode: 0o700 });
     if (await exists(request.destination))
       throw new RigError(
         "WORKSPACE_EXISTS",

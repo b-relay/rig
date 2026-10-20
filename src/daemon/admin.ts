@@ -5,13 +5,17 @@ import {
   readFile,
   constants,
   mkdir,
-  rename,
   writeFile,
   rm,
-  open,
-  chmod,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import {
+  appendPrivateFile,
+  openPrivateFile,
+  privateDirectory,
+  replacePrivateFile,
+} from "../providers/private-files";
+import { securePrivateRoot } from "./private-root";
 import { DaemonClient } from "./client";
 import {
   daemonTokenPath,
@@ -292,10 +296,6 @@ export class DaemonAdmin {
     proxy?: ProxyMode,
     mode: DaemonMode = this.options.mode,
   ): Promise<void> {
-    await mkdir(join(this.options.root, "daemon"), {
-      recursive: true,
-      mode: 0o700,
-    });
     const record: InstallationRecord = {
       mode,
       command: [...this.options.command],
@@ -303,13 +303,11 @@ export class DaemonAdmin {
       ...(bun ? { bun } : {}),
       ...(proxy ? { proxy } : {}),
     };
-    const temporary = `${this.marker}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-      await rename(temporary, this.marker);
-    } finally {
-      await rm(temporary, { force: true });
-    }
+    await replacePrivateFile(
+      this.options.root,
+      this.marker,
+      JSON.stringify(record),
+    );
   }
   /** Called only once the record is known to exist, so an absent one is as unreadable as a torn one. */
   private async readInstallation(): Promise<InstallationRecord> {
@@ -324,6 +322,8 @@ export class DaemonAdmin {
     return installation;
   }
   async install(operationId?: string): Promise<DaemonStatus> {
+    // An unsafe root is refused before anything, Activity included, is written into it.
+    await securePrivateRoot(this.options.root);
     return this.recordAdministration("daemon-install", operationId, async () =>
       withToolBunWarning(await this.performInstall(), this.options.bun),
     );
@@ -449,8 +449,6 @@ export class DaemonAdmin {
         credential ? { credential: credential.details } : undefined,
       );
     const { root } = this.options;
-    await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
-    await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
     // No daemon is running here, so a fresh token strands nothing and retires
     // any credential a dead daemon's stale port may have exposed.
     await this.issueToken();
@@ -552,7 +550,7 @@ export class DaemonAdmin {
     proxyMode: ProxyMode | undefined,
   ): Promise<SystemJob[]> {
     const rendered = join(this.options.root, "daemon", "launchd");
-    await mkdir(rendered, { recursive: true, mode: 0o700 });
+    await privateDirectory(this.options.root, rendered);
     const agents = join(this.options.userHome, "Library", "LaunchAgents");
     const domain = `gui/${this.options.uid ?? process.getuid?.() ?? 501}`;
     const jobs: { label: string; plist: string }[] = [];
@@ -573,7 +571,9 @@ export class DaemonAdmin {
     const result: SystemJob[] = [];
     for (const job of jobs) {
       const source = join(rendered, `${job.label}.plist`);
-      await writeFile(source, job.plist, { mode: 0o644 });
+      await replacePrivateFile(this.options.root, source, job.plist, {
+        mode: 0o644,
+      });
       result.push({
         ...job,
         source,
@@ -642,8 +642,6 @@ export class DaemonAdmin {
         "rigd install must not run as root.",
         "Run rigd install as the user the jobs should run as; it prints the sudo lines it needs.",
       );
-    await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
-    await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
     const recorded = prior.installed
       ? await this.readInstallation().catch(() => undefined)
       : undefined;
@@ -677,8 +675,7 @@ export class DaemonAdmin {
         join(root, "daemon", "startup.log"),
         join(root, "caddy", "launchd.log"),
       ]) {
-        await mkdir(dirname(log), { recursive: true });
-        await writeFile(log, "", { flag: "a", mode: 0o600 });
+        await appendPrivateFile(root, log, "");
       }
       const lines = [
         ...(staleCaddy ? [systemRemoveLine(caddyLabel, this.places())] : []),
@@ -903,11 +900,14 @@ export class DaemonAdmin {
   private async issueToken(): Promise<void> {
     const tokenPath = daemonTokenPath(this.options.root);
     try {
-      await writeFile(tokenPath, randomBytes(32).toString("base64url"), {
-        mode: 0o600,
-      });
-      await chmod(tokenPath, 0o600);
+      // Replaced, never written through: a link planted at the path is replaced and what it led to is untouched.
+      await replacePrivateFile(
+        this.options.root,
+        tokenPath,
+        randomBytes(32).toString("base64url"),
+      );
     } catch (error) {
+      if (error instanceof RigError) throw error;
       const cause = (error as NodeJS.ErrnoException).code ?? "UNKNOWN";
       throw new RigError(
         "DAEMON_TOKEN",
@@ -930,10 +930,10 @@ export class DaemonAdmin {
         "No daemon executable is configured.",
         "Build rigd first.",
       );
-    const log = await open(
+    const log = await openPrivateFile(
+      this.options.root,
       join(this.options.root, "daemon", "startup.log"),
-      "a",
-      0o600,
+      "append",
     );
     try {
       const child = spawn(executable, args, {

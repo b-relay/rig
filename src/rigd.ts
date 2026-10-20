@@ -15,6 +15,7 @@ import { DaemonAdmin } from "./daemon/admin";
 import { composeDaemon } from "./daemon/composition";
 import { readInstallationRecord } from "./daemon/installation";
 import { runDaemonHost } from "./daemon/host";
+import { securePrivateRoot } from "./daemon/private-root";
 import { writeStartupFailure } from "./daemon/startup-failure";
 import { runCapturedProcess } from "./providers/captured-process";
 import { runCommand } from "./providers/command-runner";
@@ -48,6 +49,7 @@ export async function main(args: readonly string[]): Promise<number> {
     const command = await daemonCommand();
     let runtime;
     try {
+      await securePrivateRoot(root);
       // The installing shell chose bun; the daemon never looks it up itself.
       const installation = await readInstallationRecord(root);
       runtime = await composeDaemon(

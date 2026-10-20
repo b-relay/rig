@@ -1,15 +1,6 @@
-import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, stat } from "node:fs/promises";
 import { normalizeToken, proxyPaths } from "../domain/managed-proxy";
+import { replacePrivateFile } from "../providers/private-files";
 
 /** Stores the DNS provider token `rig proxy token` was given: trimmed and checked first, then written whole with mode 0600
  * by renaming a new file into place, so Caddy never reads half a token. Returns the path; never the token. */
@@ -19,15 +10,7 @@ export async function writeProxyToken(
 ): Promise<string> {
   const token = normalizeToken(input);
   const path = proxyPaths(root).token;
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, token, { mode: 0o600, flag: "wx" });
-    await chmod(temporary, 0o600);
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await replacePrivateFile(root, path, token);
   return path;
 }
 /** Whether the stored token can be used, judged without revealing any of it. */

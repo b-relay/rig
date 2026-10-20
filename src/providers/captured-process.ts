@@ -8,7 +8,7 @@ import { writeCaptureStatus } from "./capture-status";
 import type { Supervisor } from "./contracts";
 import { dirname } from "node:path";
 import { RigError } from "../domain/errors";
-import { readCaptureRequest } from "./capture-request";
+import { captureRequestRoot, readCaptureRequest } from "./capture-request";
 import { CAPTURE_KILL_SIGNAL, writeCaptureStop } from "./capture-stop";
 import { serviceGraceMs } from "../domain/stop-budget";
 import { createChildSupervisor } from "./child-supervisor";
@@ -69,6 +69,7 @@ async function runUntilStopped(
     });
   const supervisor = createChildSupervisor({
     stateRoot: dirname(requestPath),
+    root: captureRequestRoot(requestPath),
     timing: createProcessTiming(),
     processInspection,
     // The wrapper reads the Host's logs settings as rigd does, so every writer of the Target log rotates it alike.

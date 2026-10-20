@@ -1,13 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
-import {
-  readFile,
-  readdir,
-  mkdir,
-  writeFile,
-  rename,
-  rm,
-} from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { readFile, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { replacePrivateFile } from "../providers/private-files";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 import { fileDigest, type FileDigest } from "./file-digest";
@@ -338,7 +332,8 @@ export function createArtifactOwnership(
     const path = provenancePath(identity.destination);
     if (repository.kind !== "known") await rm(path, { force: true });
     else
-      await atomicFile(
+      await replacePrivateFile(
+        root,
         path,
         JSON.stringify({
           targetId: identity.targetId,
@@ -383,7 +378,8 @@ export function createArtifactOwnership(
             "The installer did not publish an executable.",
             "Inspect the Component installation.",
           );
-        await atomicFile(
+        await replacePrivateFile(
+          root,
           ownerPath(identity.destination),
           JSON.stringify({
             targetId: identity.targetId,
@@ -403,19 +399,5 @@ export async function optionalFile(path: string): Promise<Buffer | undefined> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
-  }
-}
-export async function atomicFile(
-  path: string,
-  bytes: string | Buffer,
-  mode = 0o600,
-): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = path + "." + randomUUID() + ".tmp";
-  try {
-    await writeFile(temporary, bytes, { mode });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
   }
 }

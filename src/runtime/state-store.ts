@@ -1,13 +1,9 @@
+import { access, link, readFile, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
-  access,
-  link,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-} from "node:fs/promises";
-import { join } from "node:path";
+  privateDirectory,
+  replacePrivateFile,
+} from "../providers/private-files";
 import { z } from "zod";
 import {
   MIGRATED_STATE_VERSIONS,
@@ -112,17 +108,14 @@ export class FileStateStore implements StateStore {
       const state = await this.read();
       await change(state);
       schema.parse(state);
-      const directory = join(this.root, "runtime");
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      const temporary = `${this.path}.next`;
-      try {
-        await writeDurably(temporary, `${JSON.stringify(state, null, 2)}\n`);
-        await keepPreviousGeneration(this.path, this.backupPath);
-        await rename(temporary, this.path);
-        await syncDirectory(directory);
-      } finally {
-        await rm(temporary, { force: true });
-      }
+      await privateDirectory(this.root, dirname(this.path));
+      await keepPreviousGeneration(this.path, this.backupPath);
+      await replacePrivateFile(
+        this.root,
+        this.path,
+        `${JSON.stringify(state, null, 2)}\n`,
+        { durable: true },
+      );
     });
     this.queue = operation.catch(() => {});
     return operation;
@@ -274,15 +267,6 @@ function readEnvironmentSources(state: RuntimeState): void {
             "$1environment.",
           );
 }
-async function writeDurably(path: string, content: string): Promise<void> {
-  const file = await open(path, "w", 0o600);
-  try {
-    await file.writeFile(content);
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-}
 /** Point `backup` at the bytes currently published at `path`; a first write has nothing to keep. */
 async function keepPreviousGeneration(
   path: string,
@@ -291,14 +275,6 @@ async function keepPreviousGeneration(
   if (!(await exists(path))) return;
   await rm(backup, { force: true });
   await link(path, backup);
-}
-async function syncDirectory(directory: string): Promise<void> {
-  const handle = await open(directory, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 async function exists(path: string): Promise<boolean> {
   try {

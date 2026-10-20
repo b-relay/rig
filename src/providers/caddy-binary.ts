@@ -1,8 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  chmod,
-  copyFile,
-  mkdir,
   readFile,
   readdir,
   readlink,
@@ -10,9 +7,9 @@ import {
   rm,
   stat,
   symlink,
-  writeFile,
 } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { privateDirectory, replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 import type { ProxyPaths } from "../domain/managed-proxy";
 import type { CommandRunner } from "./contracts";
@@ -77,13 +74,9 @@ export async function installCaddyBinary(options: {
   }
   const digest = createHash("sha256").update(content).digest("hex");
   const file = join(paths.bin, `caddy-${digest.slice(0, 16)}`);
-  await mkdir(paths.bin, { recursive: true, mode: 0o700 });
-  if (!(await stat(file).catch(() => undefined))) {
-    const temporary = `${file}.${randomUUID()}.tmp`;
-    await copyFile(options.source, temporary);
-    await chmod(temporary, 0o755);
-    await rename(temporary, file);
-  }
+  await privateDirectory(rootOf(paths), paths.bin);
+  if (!(await stat(file).catch(() => undefined)))
+    await replacePrivateFile(rootOf(paths), file, content, { mode: 0o755 });
   const version = await checkCaddyBinary({ ...options, file });
   const previous = await installedBinary(paths);
   const state = await readBinaryState(paths);
@@ -134,11 +127,14 @@ async function writeBinaryState(
   paths: ProxyPaths,
   state: BinaryState,
 ): Promise<void> {
-  const target = join(paths.bin, "state.json");
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  await writeFile(temporary, JSON.stringify(state) + "\n", { mode: 0o600 });
-  await rename(temporary, target);
+  await replacePrivateFile(
+    rootOf(paths),
+    join(paths.bin, "state.json"),
+    JSON.stringify(state) + "\n",
+  );
 }
+/** The Rig root that holds Rig's Caddy directory. */
+const rootOf = (paths: ProxyPaths) => dirname(paths.caddy);
 /** Whether a switched-to copy still waits to be confirmed running. */
 export async function binaryPending(paths: ProxyPaths): Promise<boolean> {
   // Only the copy the link names can be waiting: a pending record the link never reached was abandoned.

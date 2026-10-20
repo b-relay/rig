@@ -1,5 +1,6 @@
 import { createEffectPreparation } from "./effect-preparation";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import { copyFile, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -15,12 +16,12 @@ import type {
   TargetEffectCheckpoint,
 } from "../runtime/lifecycle";
 import {
-  atomicFile,
   createArtifactOwnership,
   describeOwner,
   ownerDetails,
 } from "./artifact-ownership";
 import { fileDigest } from "./file-digest";
+import { replacePrivateFile } from "../providers/private-files";
 import type { ArtifactIdentity, ArtifactOwner } from "./artifact-ownership";
 const routeSchema = z
   .object({
@@ -314,7 +315,8 @@ export function createEffectTransactions(options: {
     for (const path of destinations) claims.set(path, owner);
   };
   const save = (journal: Journal) =>
-    atomicFile(
+    replacePrivateFile(
+      options.root,
       join(directory(journal.targetId), "journal.json"),
       JSON.stringify({ ...journal, version: JOURNAL_VERSION }),
     );
@@ -525,10 +527,11 @@ export function createEffectTransactions(options: {
     for (const file of journal.files) {
       if (file.before === null) await rm(file.path, { force: true });
       else
-        await atomicFile(
+        await replacePrivateFile(
+          options.root,
           file.path,
           await readFile(join(directory(journal.targetId), file.backup)),
-          file.mode,
+          { mode: file.mode },
         );
       file.expected = file.before;
       delete file.applying;
@@ -665,7 +668,11 @@ export function createEffectTransactions(options: {
             backup = `${journal.files.length}.backup`,
             mode = before === null ? 0o600 : (await lstat(path)).mode & 0o777;
           if (before !== null)
-            await copyFile(path, join(directory(targetId), backup));
+            await copyFile(
+              path,
+              join(directory(targetId), backup),
+              constants.COPYFILE_EXCL,
+            );
           journal.files.push({ path, backup, mode, before, expected: before });
         }
         await save(journal);

@@ -108,6 +108,9 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "LOG_LIMIT",
   "DAEMON_MISSING",
   "DAEMON_TOKEN",
+  // The Rig root: a link, a foreign owner or a mode others can write, named with the command that fixes it.
+  "RIG_ROOT_UNSAFE",
+  "RIG_FILE_UNTRUSTED",
   "DAEMON_UNREACHABLE",
   "DAEMON_TIMEOUT",
   "DAEMON_PROTOCOL",

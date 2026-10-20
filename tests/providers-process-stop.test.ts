@@ -289,7 +289,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       command: [process.execPath, "-e", "setTimeout(()=>process.exit(9), 150)"],
       cwd: root,
       env: { ...process.env } as Record<string, string>,
-      logRoot: root,
+      logRoot: join(root, ".rig", "logs"),
       incarnation: "start-1",
     });
     probes.length = 0;

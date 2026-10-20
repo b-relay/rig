@@ -1,8 +1,9 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RigError } from "../domain/errors";
 import { environmentText } from "../domain/service-definition";
+import { openPrivateFile } from "../providers/private-files";
 
 /** `<RIG_ROOT>/auth/environment-digest.key`: the random key rigd takes environment digests with, readable by the user only. */
 export function environmentKeyPath(root: string): string {
@@ -22,7 +23,7 @@ export type EnvironmentDigest = (
 export function createEnvironmentDigest(root: string): EnvironmentDigest {
   let key: Promise<Buffer> | undefined;
   return async (env, checkout) => {
-    key ??= loadKey(environmentKeyPath(root)).catch((error: unknown) => {
+    key ??= loadKey(root).catch((error: unknown) => {
       key = undefined;
       throw error;
     });
@@ -31,8 +32,9 @@ export function createEnvironmentDigest(root: string): EnvironmentDigest {
       .digest("hex");
   };
 }
-/** The key at `path`, created when there is none; two rigd operations creating it at once agree on the one written first. */
-async function loadKey(path: string): Promise<Buffer> {
+/** The key under `root`, created when there is none; two rigd operations creating it at once agree on the one written first. */
+async function loadKey(root: string): Promise<Buffer> {
+  const path = environmentKeyPath(root);
   try {
     return parseKey(await readFile(path, "utf8"), path);
   } catch (error) {
@@ -40,12 +42,12 @@ async function loadKey(path: string): Promise<Buffer> {
       throw keyFailure(path, error);
   }
   try {
-    await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
-    await writeFile(path, randomBytes(32).toString("base64url"), {
-      mode: 0o600,
-      flag: "wx",
-    });
-    await chmod(path, 0o600);
+    const file = await openPrivateFile(root, path, "create");
+    try {
+      await file.writeFile(randomBytes(32).toString("base64url"));
+    } finally {
+      await file.close();
+    }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST")
       throw keyFailure(path, error);

@@ -1,8 +1,8 @@
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
 import { z } from "zod";
 import type { StopKill } from "./contracts";
-import { readCaptureRequest } from "./capture-request";
+import { captureRequestRoot, readCaptureRequest } from "./capture-request";
+import { replacePrivateFile } from "./private-files";
 
 /** The signal that tells a capture wrapper to cut its application's grace short: SIGTERM, then SIGKILL after the kill wait.
  * SIGUSR1 is left alone because runtimes reserve it for their debugger. */
@@ -23,14 +23,11 @@ export async function writeCaptureStop(
   requestPath: string,
   record: z.infer<typeof stopRecordSchema>,
 ): Promise<void> {
-  const path = stopRecordPath(requestPath),
-    temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await replacePrivateFile(
+    captureRequestRoot(requestPath),
+    stopRecordPath(requestPath),
+    JSON.stringify(record),
+  );
 }
 /** Why the wrapper of the request at `requestPath` had to SIGKILL its application, when its record names the start that
  * request carries; undefined when it did not, or nothing readable says so. */

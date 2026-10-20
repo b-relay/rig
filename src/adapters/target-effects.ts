@@ -64,7 +64,6 @@ import {
   failureReason as describedFailure,
 } from "../domain/errors";
 import {
-  atomicFile,
   createArtifactOwnership,
   type OrphanedArtifact,
   type RepositoryIdentity,
@@ -73,6 +72,10 @@ import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { createEnvironmentDigest } from "./environment-digest";
 import { appendTargetLog } from "../providers/target-log";
+import {
+  privateDirectory,
+  replacePrivateFile,
+} from "../providers/private-files";
 import type { LogRetention } from "../domain/log-retention";
 export interface TargetAdapterOptions {
   root: string;
@@ -164,7 +167,7 @@ export function createTargetEffects(
       guarded: component?.commandInputs ?? projectInputs,
       ...(component ? { component: component.name } : {}),
     });
-    await mkdir(tmp, { recursive: true, mode: 0o700 });
+    await privateDirectory(options.root, tmp);
     const notes = [
       ...loaded.warnings,
       ...composed.overrides.map(
@@ -278,6 +281,7 @@ export function createTargetEffects(
   ) => {
     if (!lines.length) return;
     await appendTargetLog(
+      options.root,
       target.logRoot,
       lines
         .map((line) =>
@@ -525,7 +529,7 @@ export function createTargetEffects(
     retireSuperseded: (previous, candidate) =>
       retireComponents(previous, superseded(previous, candidate)),
     async prepare(target, composed) {
-      await mkdir(target.logRoot, { recursive: true, mode: 0o700 });
+      await privateDirectory(options.root, target.logRoot);
       for (const component of target.plan.preparedComponents) {
         const directory =
           component.uses === "sqlite"
@@ -712,7 +716,7 @@ export function createTargetEffects(
               env,
             });
           });
-          await writeInstallReceipt(receiptFile, {
+          await writeInstallReceipt(options.root, receiptFile, {
             key,
             sourceRevision: (await installedSourceRevision(
               source,
@@ -944,10 +948,11 @@ async function readInstallReceipt(
   }
 }
 async function writeInstallReceipt(
+  root: string,
   path: string,
   receipt: InstallReceipt,
 ): Promise<void> {
-  await atomicFile(path, JSON.stringify(receipt));
+  await replacePrivateFile(root, path, JSON.stringify(receipt));
 }
 
 /** Keys a publication receipt on the public policy the Project declares: its public env and which env files it names, never their contents,

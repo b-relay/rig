@@ -116,7 +116,8 @@ main() {
 
 	# Both executables are staged in a fresh directory beside their destinations before either is replaced, then each is
 	# renamed over its destination, so a running rigd keeps the file it started from and nothing sees a half-written one.
-	mkdir -p "$root/bin" "$root/dashboard"
+	# Private whatever the umask: rigd refuses a Rig root directory that others can write.
+	(umask 077 && mkdir -p "$root/bin" "$root/dashboard")
 	stage="$(mktemp -d "$root/bin/.install.XXXXXX")"
 	for name in rig rigd; do
 		cp "$work/unpacked/$build/$name" "$stage/$name"

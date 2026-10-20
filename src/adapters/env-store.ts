@@ -1,16 +1,7 @@
-import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { RigError } from "../domain/errors";
+import { replacePrivateFile } from "../providers/private-files";
 import type { TargetRole } from "../config/schema";
 import { parseEnvironmentFile } from "./env-file";
 import {
@@ -154,23 +145,16 @@ export async function writeEnvFile(
   for (const directory of privateDirectories(privateRoot, dirname(path)))
     await chmod(directory, 0o700).catch(() => {});
   // The caller refused symlinks below the env root (assertNoSymlinkBelow), so this replaces the file the scope names.
-  const destination = path;
-  const temporary = `${destination}.${randomUUID()}.tmp`;
   try {
-    const file = await open(temporary, "wx", 0o600);
-    try {
-      await file.chmod(0o600);
-      await file.writeFile(next);
-      await file.sync();
-    } finally {
-      await file.close();
-    }
-    // Checked again just before the rename, so an edit saved meanwhile in an editor is not overwritten.
-    if (envRevision(await readText(path)) !== expectedRevision)
-      throw conflict();
-    await rename(temporary, destination);
+    await replacePrivateFile(privateRoot ?? dirname(path), path, next, {
+      durable: true,
+      // Checked again just before the rename, so an edit saved meanwhile in an editor is not overwritten.
+      confirm: async () => {
+        if (envRevision(await readText(path)) !== expectedRevision)
+          throw conflict();
+      },
+    });
   } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {});
     if (error instanceof RigError) throw error;
     throw new RigError(
       "ENV_WRITE",
@@ -179,13 +163,6 @@ export async function writeEnvFile(
       { path },
     );
   }
-  // The rename is durable once the directory entry is.
-  const directory = await open(dirname(destination), "r").catch(
-    () => undefined,
-  );
-  await directory?.sync().catch(() => {});
-  await directory?.close();
-  await chmod(destination, 0o600);
   return describeEnvFile(path, scope);
 }
 /** Fails ENV_SCOPE_SYMLINK when `path` is not inside `root`, or when any directory or file below `root` on the way to it is

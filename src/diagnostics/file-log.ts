@@ -1,16 +1,11 @@
 import { boundedEvidence, failureCategories } from "../domain/errors";
 import { Database } from "bun:sqlite";
-import {
-  appendFile,
-  chmod,
-  mkdir,
-  open,
-  readdir,
-  rm,
-  link,
-  stat,
-} from "node:fs/promises";
+import { chmod, open, readdir, rm, link, stat } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  appendPrivateFile,
+  privateDirectory,
+} from "../providers/private-files";
 import type { DiagnosticEntry, DiagnosticLog } from "./types";
 
 export interface FileDiagnosticOptions {
@@ -96,8 +91,7 @@ export function createFileDiagnosticLog(
         return {};
       let release: (() => void) | undefined;
       try {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        await chmod(directory, 0o700);
+        await privateDirectory(options.root, directory);
         release = await acquireLock(lock);
         const timestamp = options.now().toISOString();
         await rotateDiagnostic(
@@ -107,10 +101,10 @@ export function createFileDiagnosticLog(
           timestamp.slice(0, 10),
         );
         await appendRecord(
+          options.root,
           path,
           JSON.stringify(diagnosticRecord(entry, options.source, timestamp)),
         );
-        await chmod(path, 0o600);
         await pruneDiagnostics(
           directory,
           options.source,
@@ -160,9 +154,13 @@ async function acquireLock(path: string): Promise<() => void> {
   }
 }
 /** A record killed mid-write leaves a line without its newline; the next record starts on its own line rather than gluing onto it. */
-async function appendRecord(path: string, record: string): Promise<void> {
+async function appendRecord(
+  root: string,
+  path: string,
+  record: string,
+): Promise<void> {
   const separator = (await endsWithNewline(path)) ? "" : "\n";
-  await appendFile(path, `${separator}${record}\n`, { mode: 0o600 });
+  await appendPrivateFile(root, path, `${separator}${record}\n`);
 }
 async function endsWithNewline(path: string): Promise<boolean> {
   let file;

@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
+import { replacePrivateFile } from "./private-files";
 const exitRecordSchema = z.object({
   key: z.string().min(1).describe("Stable component ownership key."),
   incarnation: z
@@ -26,20 +27,18 @@ const exitPath = (stateRoot: string, key: string) =>
     "process-exits",
     `${createHash("sha256").update(key).digest("hex")}.json`,
   );
-/** Whoever holds the child handle when the process ends writes how it ended; the record is replaced whole. */
+/** Whoever holds the child handle when the process ends writes how it ended; the record is replaced whole. `stateRoot` is the
+ * Rig root `root` or a directory inside it. */
 export async function writeExitRecord(
   stateRoot: string,
   record: ExitRecord,
+  root = stateRoot,
 ): Promise<void> {
-  const path = exitPath(stateRoot, record.key);
-  await mkdir(join(stateRoot, "process-exits"), { recursive: true });
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(record), { mode: 0o600 });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await replacePrivateFile(
+    root,
+    exitPath(stateRoot, record.key),
+    JSON.stringify(record),
+  );
 }
 /** The recorded exit of `key`, or nothing when none was recorded or it cannot be read: an unreadable record proves nothing. */
 export async function readExitRecord(

@@ -767,27 +767,23 @@ export function createTargetEffects(
       );
     },
     async withhold(target, ports) {
-      const published = parseOwnedSites(
-        (await options.router.checkpoint(target.id)).value ?? "",
-      );
+      const saved = (await options.router.checkpoint(target.id)).value;
       const reaching = (upstream: string | null) =>
         upstream !== null && (!ports || ports.has(upstreamPort(upstream)));
-      if (
-        !published.some((site) =>
-          site.routes.some((path) => reaching(path.upstream)),
-        )
-      )
-        return;
+      // Asked of the router even when the route file already withholds every such path: the file says what Rig meant to
+      // publish, and only the router confirms what the proxy serves (a publication a crash cut short is made now).
       await transactions.withRouteChange(target.id, () =>
-        options.router.apply({
-          key: target.id,
-          sites: published.map((site) => ({
-            hostname: site.hostname,
-            routes: site.routes.map((path) =>
-              reaching(path.upstream) ? { ...path, upstream: null } : path,
-            ),
-          })),
-        }),
+        saved === null
+          ? options.router.remove(target.id)
+          : options.router.apply({
+              key: target.id,
+              sites: parseOwnedSites(saved).map((site) => ({
+                hostname: site.hostname,
+                routes: site.routes.map((path) =>
+                  reaching(path.upstream) ? { ...path, upstream: null } : path,
+                ),
+              })),
+            }),
       );
     },
     async checkRoute(target) {

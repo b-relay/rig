@@ -155,7 +155,8 @@ export function createProxyInstallation(
         settings,
         // Not rigd's publication, so nothing here confirms that rigd's own dashboard holds the port: its domain is withheld
         // until a rigd confirms one does.
-        withheld: () => (dashboard ? [dashboard.domain] : []),
+        dashboard: () =>
+          dashboard && { domain: dashboard.domain, listening: false },
         run: options.run,
         job,
         admin,

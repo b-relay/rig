@@ -69,6 +69,7 @@ import {
   createManagedCaddy,
   type CaddyJob,
   type ManagedCaddy,
+  type ManagedCaddyOptions,
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
 import { proxyReport } from "../adapters/proxy-report";
@@ -100,6 +101,7 @@ import {
   withDashboardRoute,
   type DashboardRoute,
   stopLeftOverDashboard,
+  takeOverDashboard,
 } from "./dashboard";
 import { waitForLogPoll } from "../adapters/log-follow-scheduler";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
@@ -178,12 +180,15 @@ export async function composeDaemon(
   // Caddy reaches the dashboard's port only while the dashboard itself is confirmed to hold it; until then, and once it
   // ends, its domain gets Rig's not-running reply, so a program that takes the port first never receives its requests.
   let dashboardListening = false;
-  const withheld = () =>
-    dashboardRoute && !dashboardListening ? [dashboardRoute.domain] : [];
+  const ownDashboard = () =>
+    dashboardRoute && {
+      domain: dashboardRoute.domain,
+      listening: dashboardListening,
+    };
   // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
   const managed =
     host.proxyMode === "managed"
-      ? composeManagedCaddy(root, mode, dashboardRoute, withheld)
+      ? composeManagedCaddy(root, mode, dashboardRoute, ownDashboard)
       : undefined;
   // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
   const external = managed
@@ -457,26 +462,27 @@ export async function composeDaemon(
           return false;
         },
       );
-      // One an earlier rigd left running is stopped whether or not this rigd serves one, but only once Caddy has taken a
-      // publication that withholds the dashboard's domain, so the port it frees is never routed: until then it keeps serving,
-      // and taking it over is tried every 5 s. This one only reads rigd, so it is served while the first pass still runs.
-      const takeOver = async () => {
-        await stopLeftOverDashboard(root);
-        dashboard?.start();
-      };
-      if (republished || !managed || !dashboardRoute) await takeOver();
-      else
-        void (async () => {
-          while (
-            !stopped &&
-            !(await managed.caddy.refresh().then(
-              () => true,
-              () => false,
-            ))
-          )
-            await Bun.sleep(5000);
-          if (!stopped) await takeOver();
-        })();
+      // One an earlier rigd left running is stopped whether or not this rigd serves one, but only once Caddy is confirmed to
+      // withhold every dashboard domain, this rigd's and any an earlier one published, so the port it frees is never routed.
+      // Until then it keeps serving, and the confirmation is tried again every 5 s. This one only reads rigd, so it is
+      // served while the first pass still runs.
+      let first = true;
+      const takeOver = takeOverDashboard({
+        async confirm() {
+          if (first && (republished || !managed)) return true;
+          first = false;
+          return await managed!.caddy.refresh().then(
+            () => true,
+            () => false,
+          );
+        },
+        stopLeftOver: () => stopLeftOverDashboard(root),
+        start: () => dashboard?.start(),
+        stopped: () => stopped,
+        wait: (ms) => Bun.sleep(ms),
+      });
+      if (republished || !managed) await takeOver;
+      else void takeOver;
       await runtime.reconcile();
       // Queued behind the republish, beside everything else: a route block no recorded Target owns (one an earlier rig
       // forget left, #336) is withdrawn so its hostnames can be published again, unless the route file lies outside the
@@ -544,7 +550,7 @@ function composeManagedCaddy(
   root: string,
   mode: DaemonMode,
   dashboardRoute: DashboardRoute | undefined,
-  withheld: () => readonly string[],
+  dashboard: ManagedCaddyOptions["dashboard"],
 ): { caddy: ManagedCaddy; control: ProxyControl; job: CaddyJob } {
   const paths = proxyPaths(root);
   const admin = createCaddyAdmin(paths.socket);
@@ -562,7 +568,7 @@ function composeManagedCaddy(
   const caddy = createManagedCaddy({
     root,
     settings,
-    withheld,
+    dashboard,
     run: runCommand,
     job,
     admin,

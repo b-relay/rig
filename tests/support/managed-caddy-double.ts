@@ -133,6 +133,9 @@ export async function managedCaddyWorld(
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
     beforeSettings: undefined as undefined | (() => Promise<void>),
     loaded: {} as unknown,
+    /** rigd's dashboard as the router is told of it; none when unset. */
+    dashboard: undefined as
+      undefined | { readonly domain: string; readonly listening: boolean },
   };
   const run: CommandRunner = async ({ command }) => {
     commands.push([...command]);
@@ -158,6 +161,7 @@ export async function managedCaddyWorld(
       await control.beforeSettings?.();
       return settings;
     },
+    dashboard: () => control.dashboard,
     run,
     job: {
       state: async () => control.state,

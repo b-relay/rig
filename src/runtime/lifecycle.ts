@@ -112,9 +112,9 @@ export interface TargetEffects {
    * moved to another Service follows that Service's port, and nothing a withheld port had carries over to another. */
   route(target: TargetRecord, change: RouteChange): Promise<void>;
   /** Withholds every path of the Target's published route whose upstream is one of `ports` (every path, without `ports`),
-   * confirmed in the proxy before it resolves, and leaves its other paths as published; asks nothing of the proxy when no
-   * such path is published. Read from the route as published, not from the plan, so a plan without some of its Services
-   * still withholds the rest. */
+   * and leaves its other paths as published. Resolves only once the proxy is confirmed to serve that, even when the route
+   * file already said so (a publication a crash cut short). Read from the route as published, not from the plan, so a plan
+   * without some of its Services still withholds the rest. */
   withhold(target: TargetRecord, ports?: ReadonlySet<number>): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
   /** Withdraws the Target's route, confirmed in the proxy before it resolves, and says how to publish it again exactly as it
@@ -267,8 +267,8 @@ export interface TargetLifecycle {
     service: string,
     stops?: StopControl,
   ): Promise<{ outcome: "stopped" | "unchanged" }>;
-  /** Withholds every path of the Target's published route, whatever plan it was published for, confirmed in the proxy; asks
-   * nothing of the proxy when none is live. A recovery that stops two plans' processes withholds this way first. */
+  /** Withholds every path of the Target's published route, whatever plan it was published for, confirmed in the proxy. A
+   * recovery that stops two plans' processes withholds this way first. */
   withhold(target: TargetRecord): Promise<void>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout. First every path the route publishes to
    * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without

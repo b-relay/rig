@@ -344,7 +344,7 @@ test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to
   const caddy = createManagedCaddy({
     root,
     settings: async () => settings,
-    withheld: () => (dashboardListening ? [] : [route.domain]),
+    dashboard: () => ({ domain: route.domain, listening: dashboardListening }),
     run: runCommand,
     job,
     admin,

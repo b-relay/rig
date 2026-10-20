@@ -13,7 +13,14 @@ import {
 import { binaryPending } from "../src/providers/caddy-binary";
 import { join } from "node:path";
 import { DaemonAdmin } from "../src/daemon/admin";
-import { createProxyInstallation } from "../src/daemon/proxy-installation";
+import {
+  createProxyInstallation,
+  type ProxyInstallation,
+} from "../src/daemon/proxy-installation";
+import { processExists } from "../src/daemon/host";
+import { dashboardDirectory } from "../src/daemon/dashboard";
+import { currentGeneration } from "../src/adapters/proxy-generation";
+import { RigError } from "../src/domain/errors";
 import { readInstallationRecord } from "../src/daemon/installation";
 import { proxyPaths } from "../src/domain/managed-proxy";
 import { createCaddyAdmin } from "../src/providers/caddy-admin";
@@ -59,13 +66,16 @@ async function world() {
     run: runCommand,
     startDeadlineMs: 8000,
   });
-  const admin = new DaemonAdmin({
-    root,
-    command: [process.execPath, script],
-    mode: "process",
-    userHome: home,
-    proxy,
-  });
+  /** rigd's administration of this root, with `installation` setting up and taking down its Caddy. */
+  const adminWith = (installation: ProxyInstallation) =>
+    new DaemonAdmin({
+      root,
+      command: [process.execPath, script],
+      mode: "process",
+      userHome: home,
+      proxy: installation,
+    });
+  const admin = adminWith(proxy);
   cleanups.push(async () => {
     await admin.uninstall().catch(() => {});
     await proxy.remove().catch(() => {});
@@ -75,7 +85,9 @@ async function world() {
   return {
     root,
     admin,
+    adminWith,
     proxy,
+    ports,
     paths: proxyPaths(root),
     caddyAdmin: createCaddyAdmin(proxyPaths(root).socket),
     async config(
@@ -192,3 +204,130 @@ test("a new Caddy that passes every check but cannot run is swapped back: the pr
   // rigd was started again despite the failure.
   expect(await w.admin.status()).toMatchObject({ reachable: true });
 }, 90_000);
+
+/** The pid a record (rigd's address, Caddy's process record) names. */
+async function recordedPid(file: string): Promise<number> {
+  return (JSON.parse(await readFile(file, "utf8")) as { pid: number }).pid;
+}
+async function stopRigd(root: string): Promise<void> {
+  const pid = await recordedPid(join(root, "daemon", "address.json"));
+  process.kill(pid, "SIGTERM");
+  for (
+    const deadline = Date.now() + 5000;
+    processExists(pid) && Date.now() < deadline;
+  )
+    await Bun.sleep(50);
+}
+
+test("an uninstall whose Caddy removal fails is finished by the next one: refused with rigd running or stopped, and when Caddy stopped but its record stayed", async () => {
+  for (const failure of ["refused", "refused, rigd stopped", "record"]) {
+    const w = await world();
+    await w.config({ tls: { ca: "internal" } });
+    await w.admin.install();
+    const caddyPid = await recordedPid(w.paths.processRecord);
+    const record = await readFile(w.paths.processRecord, "utf8");
+    if (failure === "refused, rigd stopped") await stopRigd(w.root);
+    // A refusal before Caddy stops, as launchctl's can be; or Caddy stops and its record cannot be removed, since a
+    // directory stands where it was.
+    let refuse = failure !== "record";
+    if (failure === "record") {
+      await rm(w.paths.processRecord);
+      await mkdir(w.paths.processRecord);
+    }
+    const admin = w.adminWith({
+      ...w.proxy,
+      async remove() {
+        if (!refuse) return w.proxy.remove();
+        refuse = false;
+        throw new RigError(
+          "LAUNCHD",
+          "Injected refusal to remove Rig's Caddy.",
+          "Retry rigd uninstall.",
+        );
+      },
+    });
+    await expect(admin.uninstall()).rejects.toBeDefined();
+    expect(processExists(caddyPid)).toBe(failure !== "record");
+    if (failure === "record") {
+      await rm(w.paths.processRecord, { recursive: true });
+      await writeFile(w.paths.processRecord, record);
+    }
+    expect(await admin.uninstall()).toMatchObject({
+      outcome: "uninstalled",
+      installed: false,
+    });
+    expect(processExists(caddyPid)).toBe(false);
+    expect(existsSync(w.paths.processRecord)).toBe(false);
+    // Certificates and generations stay for the next install.
+    expect(existsSync(w.paths.data)).toBe(true);
+    expect(await readdir(w.paths.generations)).not.toEqual([]);
+    expect(await admin.uninstall()).toMatchObject({ outcome: "unchanged" });
+  }
+}, 120_000);
+
+test("uninstall removes Rig's Caddy even when the daemon's record is already gone, as an install whose rigd never started leaves it", async () => {
+  const w = await world();
+  await w.config({ tls: { ca: "internal" } });
+  await w.admin.install();
+  const caddyPid = await recordedPid(w.paths.processRecord);
+  await stopRigd(w.root);
+  await rm(join(w.root, "daemon", "install.json"));
+  expect(await w.admin.status()).toMatchObject({
+    installed: false,
+    running: false,
+  });
+  expect(await w.admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
+  expect(processExists(caddyPid)).toBe(false);
+  expect(await w.admin.uninstall()).toMatchObject({ outcome: "unchanged" });
+}, 60_000);
+
+test("a dashboard address Caddy could not take is published by the next rigd install, which does not report it unchanged", async () => {
+  const w = await world();
+  const server = join(dashboardDirectory(w.root), "web", "server.js");
+  await mkdir(join(server, ".."), { recursive: true });
+  await writeFile(server, "");
+  const dashboardPort = freePort();
+  const configure = (domain: string, https: number) =>
+    writeFile(
+      join(w.root, "config.yaml"),
+      `proxy:\n  caddy: ${caddy}\n  ports: { http: ${w.ports.http}, https: ${https} }\n  tls: { ca: internal }\ndashboard:\n  domain: ${domain}\n  port: ${dashboardPort}\n`,
+    );
+  const served = async () => {
+    const generation = await currentGeneration(w.root);
+    return {
+      hostnames: generation?.customRoutes.map((route) => route.hostname),
+      https: generation?.proxy?.ports.https,
+    };
+  };
+  await configure("dash-a.example.test", w.ports.https);
+  expect(await w.admin.install()).toMatchObject({ outcome: "installed" });
+  // Another program holds the new HTTPS port, so Caddy refuses the new address and keeps the old one.
+  const https = freePort();
+  const blocker = Bun.serve({
+    hostname: "127.0.0.1",
+    port: https,
+    fetch: () => new Response(""),
+  });
+  cleanups.push(async () => blocker.stop(true));
+  await configure("dash-b.example.test", https);
+  await expect(w.admin.install()).rejects.toBeDefined();
+  expect(await served()).toEqual({
+    hostnames: ["dash-a.example.test"],
+    https: w.ports.https,
+  });
+  // Once the port is free, the same command publishes the new address and withdraws the old one.
+  blocker.stop(true);
+  expect(await w.admin.install()).toMatchObject({ outcome: "installed" });
+  expect(await served()).toEqual({
+    hostnames: ["dash-b.example.test"],
+    https,
+  });
+  expect(await w.admin.install()).toMatchObject({ outcome: "unchanged" });
+  // A dashboard taken off its domain is withdrawn the same way.
+  await writeFile(
+    join(w.root, "config.yaml"),
+    `proxy:\n  caddy: ${caddy}\n  ports: { http: ${w.ports.http}, https: ${https} }\n  tls: { ca: internal }\ndashboard:\n  port: ${dashboardPort}\n`,
+  );
+  expect(await w.admin.install()).toMatchObject({ outcome: "installed" });
+  expect(await served()).toEqual({ hostnames: [], https });
+}, 120_000);

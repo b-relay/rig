@@ -331,7 +331,15 @@ LaunchAgent beside rigd, and with `RIG_ROOT` set a detached process. A rigd
 restart or upgrade never stops it. Replacing the file `proxy.caddy` names
 changes nothing until the next `rigd install`. A new copy that does not start
 within 30 seconds is replaced by the previous one again (`PROXY_BINARY_START`).
-`rigd uninstall` stops the job and keeps the certificates and your files.
+`rigd install` also publishes the proxy section and the dashboard's domain
+whenever the configuration Caddy serves was accepted with other ones, so after
+an install whose publication failed (a new HTTPS port another program held, for
+example), running it again finishes the change rather than reporting
+`unchanged`. A new definition of the LaunchAgent is loaded only once launchd has
+let the old job go. `rigd uninstall` stops the job and keeps the certificates
+and your files; when stopping it fails, the installation record stays, and
+running `rigd uninstall` again finishes it, as it also removes a Caddy job left
+without any rigd installed.
 
 Caddy listens on ports 80 and 443 on every interface. macOS allows a process
 that is not root to bind ports below 1024 only that way. Ports from 1024 up
@@ -346,7 +354,10 @@ Every change is published as a new configuration generation under
 `<RIG_ROOT>/caddy/generations`: Caddy validates it, Rig switches one link to
 it, and Caddy reloads, or restarts when which CA issues which names changed, because a
 reload keeps the issuer it already has. A change Caddy rejects switches nothing, and
-the rejected generation is kept beside the others. If Caddy's admin socket does
+the rejected generation is kept beside the others. When a restart stops Caddy and
+its new process does not start, Rig switches back and starts Caddy again on the
+previous generation; if that fails too, the error says so, and `rig doctor`
+reports Caddy stopped. A Caddy that was stopped before a change stays stopped. If Caddy's admin socket does
 not answer while its job may still be running, the change fails with
 `PROXY_UNREACHABLE` rather than assume an old route stopped serving.
 

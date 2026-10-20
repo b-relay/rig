@@ -853,8 +853,15 @@ export class DaemonAdmin {
   private async performUninstall(): Promise<DaemonStatus> {
     const { root } = this.options;
     const { status, records, unverified } = await this.inspect();
+    // Rig's Caddy can outlive the daemon's record (an install whose rigd never started removes only the record), so it is
+    // removed whether or not rigd is installed.
     if (!status.installed && !status.running && !status.reachable)
-      return { ...status, outcome: "unchanged" };
+      return {
+        ...status,
+        outcome: (await this.options.proxy?.remove())
+          ? "uninstalled"
+          : "unchanged",
+      };
     const address = await readDaemonAddress(root);
     // Without a record the mode is unknown; the stop below then tries both
     // launchd and the pid, so a daemon is never left that nothing can remove.
@@ -920,9 +927,10 @@ export class DaemonAdmin {
       await client.command({ action: "cancel-uninstall" }).catch(() => {});
       throw error;
     }
-    await this.removeInstallation(installation.data.mode);
-    // Uninstall leaves no Rig process behind; Caddy's certificates and generations stay for the next install.
+    // Uninstall leaves no Rig process behind; Caddy's certificates and generations stay for the next install. Caddy goes
+    // before the record, so a removal that fails leaves the record a retried uninstall needs to finish it.
     await this.options.proxy?.remove();
+    await this.removeInstallation(installation.data.mode);
     return {
       installed: false,
       running: false,
@@ -967,8 +975,8 @@ export class DaemonAdmin {
         "rigd did not stop.",
         "Inspect daemon state before retrying.",
       );
-    await this.removeInstallation(mode);
     await this.options.proxy?.remove();
+    await this.removeInstallation(mode);
     return {
       installed: false,
       running: false,

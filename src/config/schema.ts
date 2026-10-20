@@ -24,13 +24,11 @@ import {
   type HealthcheckSettings,
 } from "./healthcheck";
 import { isTimeZone, parseCron } from "../domain/cron";
+import { MAX_NAME_LENGTH, nameSchema } from "../domain/names";
 const text = z.string().min(1);
-const name = text
-  .regex(
-    /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/,
-    "must start with a letter or digit and contain only letters, digits, '_' or '-'",
-  )
-  .describe("Stable registered Project name.");
+const name = nameSchema.describe(
+  `Stable registered Project name, at most ${MAX_NAME_LENGTH} characters. It names the Project's operator env directory under <RIG_ROOT>/env, so no two Projects on a Host may have names that differ only in case. Change it with rig rename.`,
+);
 const entryName = text
   .regex(
     /^[a-z0-9][a-z0-9-]*$/,

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   removeFileDurably,
   replacePrivateFile,
@@ -106,7 +106,17 @@ export function createArtifactOwnership(
   root: string,
   digest: FileDigest = fileDigest,
   recordedTargets?: () => Promise<ReadonlySet<string>>,
+  /** The Project and Target names state records now for a Target id, so a conflict names its owner as it is registered
+   * after a rename; the names in the ownership record stand in when absent or when state names none. */
+  currentNames?: (
+    targetId: string,
+  ) => Promise<{ project: string; target: string } | undefined>,
 ) {
+  /** `saved` with its Project and Target names as state records them now. */
+  const namedNow = async (saved: ArtifactOwner): Promise<ArtifactOwner> => {
+    const names = await currentNames?.(saved.targetId).catch(() => undefined);
+    return names ? { ...saved, ...names } : saved;
+  };
   const ownerPath = (destination: string) =>
     ownershipRecordPath(root, destination);
   /** Beside the ownership record of Rig's own executables: which repository published them. */
@@ -163,6 +173,19 @@ export function createArtifactOwnership(
       );
     }
   };
+  /** The executable beside `destination` whose name differs from its only in case, with its ownership record: on a disk that
+   * ignores case it is the file at `destination`, recorded under its own spelling. Undefined when there is none. */
+  const caseVariant = async (destination: string) => {
+    const name = basename(destination);
+    const names = await readdir(dirname(destination)).catch(() => []);
+    for (const other of names)
+      if (other !== name && other.toLowerCase() === name.toLowerCase()) {
+        const found = join(dirname(destination), other);
+        const saved = await owner(found).catch(() => undefined);
+        if (saved) return { destination: found, owner: saved };
+      }
+    return undefined;
+  };
   /** Whether `saved` names a Target state no longer records. Read only when another Target asks for its path, after the
    * record: every Target is recorded before it publishes a Tool, so one being created is never taken for released. */
   const released = async (saved: ArtifactOwner) =>
@@ -205,13 +228,32 @@ export function createArtifactOwnership(
       return { owner: undefined, revision: current, released: saved };
     }
     // A Target may hand its own executable to a renamed Component; only another Target is refused.
-    if (saved && saved.targetId !== identity.targetId)
+    if (saved && saved.targetId !== identity.targetId) {
+      const owner = await namedNow(saved);
       throw new RigError(
         "ARTIFACT_CONFLICT",
-        `${describeOwner(saved)} owns the installed executable ${identity.destination}.`,
+        `${describeOwner(owner)} owns the installed executable ${identity.destination}.`,
         "Rename one of the Tools in its rig.yaml; installed executables share one bin directory across Projects and Targets.",
-        { destination: identity.destination, owner: ownerDetails(saved) },
+        { destination: identity.destination, owner: ownerDetails(owner) },
       );
+    }
+    const alias =
+      !saved && current !== undefined
+        ? await caseVariant(identity.destination)
+        : undefined;
+    if (alias && alias.owner.targetId !== identity.targetId) {
+      const owner = await namedNow(alias.owner);
+      throw new RigError(
+        "ARTIFACT_CONFLICT",
+        `${describeOwner(owner)} owns the installed executable ${alias.destination}, which a Mac's disk does not tell apart from ${identity.destination}: their names differ only in case.`,
+        "Rename one of the Tools in its rig.yaml, or deploy this Target under a name that differs in more than case; installed executables share one bin directory across Projects and Targets.",
+        {
+          destination: identity.destination,
+          owner: ownerDetails(owner),
+          alias: alias.destination,
+        },
+      );
+    }
     if (!saved && current !== undefined)
       throw new RigError(
         "ARTIFACT_UNOWNED",

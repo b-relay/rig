@@ -6,6 +6,7 @@ import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { DiscoverySearch, RuntimeDependencies } from "./contracts";
 import { shellWord } from "../domain/target-selector";
+import { MAX_NAME_LENGTH, caseVariantOf, nameProblem } from "../domain/names";
 /** The commands a Project's recorded state answers without its rig.yaml: stopping or destroying a Target, and reading its
  * status, logs and activity. */
 const RECORDED_STATE_ACTIONS: ReadonlySet<RuntimeCommand["action"]> = new Set([
@@ -180,6 +181,16 @@ export async function prepareRegistration(
     command.repoPath,
     command,
   );
+  const problem = nameProblem(identity.name);
+  if (problem)
+    throw new RigError(
+      "PROJECT_NAME",
+      `The Project name '${identity.name.slice(0, MAX_NAME_LENGTH)}${identity.name.length > MAX_NAME_LENGTH ? "..." : ""}' ${problem}.`,
+      identity.configPath
+        ? `Change name in ${identity.configPath}, then run rig init again.`
+        : `Run rig init --project <name> with a name of 1 to ${MAX_NAME_LENGTH} letters, digits, dashes or underscores.`,
+      { name: identity.name },
+    );
   assertRegistrationAvailable((await deps.store.read()).projects, identity);
   return identity;
 }
@@ -247,6 +258,21 @@ function assertRegistrationAvailable(
     (project) =>
       project.name === identity.name || project.repoPath === identity.repoPath,
   );
+  // Names that differ only in case would share one env directory on a Mac's disk. Projects registered so before this rule
+  // keep working, and doctor reports them.
+  const variant = existing
+    ? undefined
+    : caseVariantOf(
+        identity.name,
+        projects.map((project) => project.name),
+      );
+  if (variant !== undefined)
+    throw new RigError(
+      "PROJECT_CONFLICT",
+      `Project '${variant}' is already registered, and its name differs from '${identity.name}' only in case: a Mac's disk does not tell them apart, so they would share operator env files and Tool paths.`,
+      `Choose another name: ${anotherName(identity)}.`,
+      { registeredName: variant },
+    );
   if (
     existing &&
     (existing.name !== identity.name || existing.repoPath !== identity.repoPath)

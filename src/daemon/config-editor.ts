@@ -7,6 +7,7 @@ import type {
   ProjectConfigPreview,
   ProjectConfigSource,
 } from "../config/documents";
+import { nameSchema } from "../domain/names";
 
 const pathSchema = z
   .array(z.string().min(1).max(256))
@@ -31,11 +32,7 @@ const patchSchema = z.discriminatedUnion("op", [
     })
     .strict(),
 ]);
-const project = z
-  .string()
-  .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/)
-  .max(128)
-  .describe("Registered Project name.");
+const project = nameSchema.describe("Registered Project name.");
 const mutation = {
   project,
   expectedRevision: z

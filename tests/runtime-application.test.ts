@@ -2668,12 +2668,10 @@ test.each(["commit", "restore", "rename", "activation", "pending"] as const)(
       },
     });
     const update = deps.store.update;
-    let failPersistence = phase === "rename" || phase === "pending";
+    // A rename marks itself on the registration first; the write that saves the new name is its second.
+    let failAt = phase === "rename" ? 2 : phase === "pending" ? 1 : 0;
     deps.store.update = async (change) => {
-      if (failPersistence) {
-        failPersistence = false;
-        throw primary;
-      }
+      if (--failAt === 0) throw primary;
       await update(change);
     };
     let renameCalls = 0;
@@ -5083,4 +5081,61 @@ test("a first logs page says when older entries match than it kept, even at 1000
   await logs({ lines: 2, after: "c" });
   await logs({ lines: 10000 });
   expect(reads.map((args) => args[2])).toEqual([3, 5, 2, 10001]);
+});
+test("names registered before the name rule keep working, and doctor reports each with the rename or redeploy that fixes it", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  // As state from before the rule may hold them: a Project whose name differs only in case, and Previews named all and DEV.
+  state.projects.push({
+    ...state.projects[0]!,
+    id: "upper",
+    name: "DEMO",
+    repoPath: "/tmp/upper",
+    configPath: "/tmp/upper/rig.yaml",
+  });
+  for (const name of ["all", "DEV"]) {
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature",
+      deployment: `legacy-${name}`,
+    });
+    const target = state.targets.at(-1)!;
+    target.name = name;
+    target.plan.deploymentName = name;
+  }
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as { checks: { name: string; ok: boolean; hint?: string }[] };
+  expect(
+    report.checks.find((check) => check.name === "project-names"),
+  ).toMatchObject({
+    ok: false,
+    hint: expect.stringContaining("rig rename <new name> --project DEMO"),
+  });
+  expect(
+    report.checks.find((check) => check.name === "all/name"),
+  ).toMatchObject({
+    ok: false,
+    hint: expect.stringContaining(
+      "rig deploy preview feature --deployment <new name>, then rig down preview --deployment all --destroy",
+    ),
+  });
+  expect(report.checks.find((check) => check.name === "DEV/name")?.ok).toBe(
+    false,
+  );
+  // They are still selected, started and stopped by their recorded names.
+  for (const name of ["all", "DEV"])
+    for (const action of ["up", "down"] as const)
+      await runtime.command({
+        action,
+        project: "demo",
+        target: "preview",
+        deployment: name,
+      });
+  expect(
+    state.targets.filter((t) => t.kind === "preview").map((t) => t.desired),
+  ).toEqual(["stopped", "stopped"]);
 });

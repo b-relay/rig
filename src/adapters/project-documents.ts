@@ -19,6 +19,7 @@ import type {
 import type { CommandRunner } from "../providers/contracts";
 import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
+import { MAX_NAME_LENGTH } from "../domain/names";
 import {
   createProjectDiscovery,
   inspectProjectLocation,
@@ -238,6 +239,7 @@ function projectSlug(directory: string): string {
       .replace(/[\u0300-\u036f]/g, "")
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
+      .slice(0, MAX_NAME_LENGTH)
       .replace(/^-+|-+$/g, "") || "project"
   );
 }

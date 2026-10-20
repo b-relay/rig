@@ -9,6 +9,11 @@ export interface ProjectRecord {
   repoPath: string;
   configPath: string;
   createdAt: string;
+  /** The names `rig rename` replaced, oldest first: a deployed Commit whose rig.yaml still names one is this Project's. */
+  formerNames?: string[];
+  /** The name a `rig rename` began to give the Project and has not finished or undone: its operator env files may already
+   * be under that name. Running the rename again, to any name, finishes or replaces it. */
+  renaming?: string;
 }
 
 /** The recorded outcome of one build unit. `started` read by anything but the operation that wrote it means the

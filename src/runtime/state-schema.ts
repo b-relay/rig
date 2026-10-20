@@ -447,12 +447,25 @@ const services = z
   )
   .optional()
   .describe("Intent and known process outcomes per managed Service name.");
+// `formerNames` and `renaming` joined without a STATE_VERSION bump: an older rigd keeps them as they are and only ignores
+// them, so it refuses a deployed Commit that names a former name, as it always did.
 const project = z.object({
   id: text,
   name: text,
   repoPath: absolutePath,
   configPath: absolutePath,
   createdAt: text,
+  formerNames: z
+    .array(text)
+    .optional()
+    .describe(
+      "The names rig rename replaced, oldest first: a deployed Commit whose rig.yaml names one is still this Project's.",
+    ),
+  renaming: text
+    .optional()
+    .describe(
+      "The name a rig rename began to give the Project and did not finish or undo; its operator env files may be under that name already.",
+    ),
 });
 const target = z.object({
   id: text,

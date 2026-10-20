@@ -145,6 +145,11 @@ export interface TargetAdapterOptions {
   /** The Target ids state records now. A Tool whose owner it does not name is released: the next Target that publishes
    * there takes it over while its bytes are the ones Rig published (#343). Absent: no Tool is ever taken over. */
   recordedTargets?: () => Promise<ReadonlySet<string>>;
+  /** The Project and Target names state records now for a Target id, so an ownership conflict names the owner as it is
+   * registered after a rename (#590). Absent: the names its ownership record kept. */
+  currentNames?: (
+    targetId: string,
+  ) => Promise<{ project: string; target: string } | undefined>;
   /** The registered repository path of Project `projectId`, read from state now, or undefined when it is not registered.
    * Rig's own Tools are identified by that repository's history (ADR 0019). Absent: no repository is ever identified. */
   projectRepository?: (projectId: string) => Promise<string | undefined>;
@@ -168,6 +173,7 @@ export function createTargetEffects(
     options.root,
     digestFile,
     options.recordedTargets,
+    options.currentNames,
   );
   const transactions = createEffectTransactions({
     root: options.root,

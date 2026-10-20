@@ -129,6 +129,7 @@ export function DeployForm({
               id="deploy-name"
               value={deployment}
               pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*"
+              maxLength={128}
               onChange={(event) => setDeployment(event.target.value)}
             />
           </Field>

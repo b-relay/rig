@@ -223,6 +223,27 @@ export interface BackupStorage {
    * deleting nothing, when another volume is mounted inside it. */
   remove(path: string): Promise<"removed" | "skipped">;
 }
+/** What a rename did to a Project's operator env directory, so it can be undone. */
+export type EnvCarry =
+  | { kind: "none" }
+  | { kind: "moved"; from: string; to: string }
+  /** The directory was another registered Project's too (`sharedWith`, a name that differs only in case): copied. */
+  | { kind: "copied"; from: string; to: string; sharedWith: string };
+/** The operator env files under `<RIG_ROOT>/env`, one directory per Project name (`<project>[/<service or job>]/...`). */
+export interface OperatorEnvFiles {
+  /** Gives Project name `to` the env directory of the first of `from` that has one, durably before it resolves: renamed
+   * to `to`, or copied (each file with its mode) when it is also the directory of one of `sharedWith`, other registered
+   * Projects' names, as a name that differs only in case is on a disk that ignores case. Resolves `none` when no name of
+   * `from` has one, or it is `to`'s already. Rejects ENV_CONFLICT, changing nothing, when `to` has a directory of its own;
+   * ENV_MOVE when the rename or copy fails, leaving the files where they were. */
+  carry(input: {
+    from: readonly string[];
+    to: string;
+    sharedWith: readonly string[];
+  }): Promise<EnvCarry>;
+  /** Puts the files back where `carry` found them: renamed back, or the copy removed. */
+  undo(carry: EnvCarry): Promise<void>;
+}
 /** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */
 export interface OrphanedTool {
   /** The executable's path in `<RIG_ROOT>/bin`. */
@@ -291,6 +312,8 @@ export interface RuntimeDependencies {
   usage?: UsageMonitor;
   store: StateStore;
   documents: ProjectDocuments;
+  /** The operator env directories a rename carries to the new name. Absent, as in tests that keep none: a rename moves none. */
+  operatorEnv?: OperatorEnvFiles;
   sources: DeploymentSources;
   lifecycle: TargetLifecycle;
   observations: ObservationEffects;

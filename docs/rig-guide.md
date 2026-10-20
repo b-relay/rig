@@ -894,7 +894,14 @@ is the Branch of the registered checkout. It fails from detached HEAD. A
 Preview deploy from the Production branch itself is rejected; create a branch
 such as `preview/main` when you want a preview of production code.
 `--deployment <name>` names the Preview explicitly instead of deriving the
-name from the Branch; only `preview` takes it.
+name from the Branch; only `preview` takes it. A new Preview's name follows
+the Project name rule (1 to 128 letters, digits, `_` or `-`), may not be any
+spelling of `working`, `stable`, `dev` (the working Target's Tools are
+`<tool>-dev`) or `all` (the dashboard Monitor's every-Target choice), and may
+not differ only in case from another of the Project's Previews, which would
+share its Tool paths on a Mac's disk: each is refused with `PREVIEW_NAME`. A
+Preview deployed under such a name before these rules keeps working, and `rig
+doctor` reports it (`<preview>/name`) with the deploy that replaces it.
 
 Deploy options:
 
@@ -3013,7 +3020,37 @@ Branch still deploys the worktree's own Branch.
 `rig rename <name>` and `rig repoint <path>` require stopped Targets (none
 running, meant to run, or mid-recovery) and validate registered identity/path
 conflicts. They do not delete Project data. `rig rename <current name>` is
-"unchanged" and leaves the config file alone. `repoint` requires the new
+"unchanged" and leaves the config file alone.
+
+A Project name is 1 to 128 letters, digits, `_` or `-`, starting with a letter
+or digit. Names that differ only in case are one name, since a Mac's disk does
+not tell `alpha/` from `ALPHA/`: `rig init` and `rig rename` refuse one that a
+registered Project's differs from only in case (`PROJECT_CONFLICT`), and a name
+over 128 characters (`PROJECT_NAME`, or the config error naming `name`).
+Projects registered so before these rules keep working, and `rig doctor`
+reports them as `project-names`. To separate two such Projects, rename one; to
+shorten an overlong name, change `name` in its `rig.yaml` and run `rig rename
+<that name>` in its repository.
+
+`rig rename` carries everything named after the Project. Its operator env
+directory `<RIG_ROOT>/env/<old>` becomes `<RIG_ROOT>/env/<new>`, files and
+modes unchanged, and every recorded plan reads its convention env files there,
+so the working, stable and Preview Targets keep their values. When another
+Project, registered before the case rule, reaches the same directory by a name
+that differs only in case, the directory is copied instead, so both keep their
+values, and a warning asks you to remove from each what belongs to the other.
+A `<RIG_ROOT>/env/<new>` that exists already (left by a forgotten Project, say)
+is refused with `ENV_CONFLICT` before anything changes. An `env_file` that
+`rig.yaml` lists is left as written: it is required, so one that pointed into
+the old directory fails the next start, naming the file. The rename is marked
+on the registration before anything moves; a failure puts rig.yaml and the env
+files back, and one interrupted by a crash is finished by running the same
+`rig rename` again, which finds the env files under either name. Rig keeps the
+names a Project had: a deployed Commit whose `rig.yaml` still names an old one
+is the Project's own, so `rig doctor` reports it as passing
+(`<target>/name`) instead of identity drift, and that Commit deploys and rolls
+back as before. Commit `rig.yaml` with the new name, and the next deploy records
+it. A Tool ownership conflict names its owner by the Project's current name. `repoint` requires the new
 directory to be a Git working repository (`GIT_REQUIRED` otherwise, since
 deploys would fail there) and re-plans the working Target from
 its config with the same port reservation as `rig up`: a port that another

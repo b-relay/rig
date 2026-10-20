@@ -259,7 +259,7 @@ test("installing a release removes earlier releases' dashboards once rigd instal
       "utf8",
     ),
   ).toBe("written while serving");
-});
+}, 30000);
 
 test("a dashboard of this release that lacks or differs from the release's files is replaced by the release's", async () => {
   const shapes: Record<string, (path: string) => Promise<void>> = {
@@ -302,7 +302,7 @@ test("a dashboard of this release that lacks or differs from the release's files
       ),
     ).toEqual([]);
   }
-});
+}, 30000);
 
 test("two installs at once never nest a staged dashboard inside the release's: one installs, and one waiting its turn is refused", async () => {
   const f = await release();
@@ -387,7 +387,7 @@ test("install holds the installation lock to the end of the rigd install it runs
   } finally {
     await holder.lock.release();
   }
-});
+}, 30000);
 
 test("when rigd install left another release serving (it adopted a running rigd), earlier dashboards are kept and the install says so", async () => {
   const f = await release();

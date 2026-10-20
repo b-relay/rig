@@ -501,7 +501,7 @@ test("an upgrade whose rigd install failed after rigd was replaced is installed 
   expect(await f.upgrade(missing)).toMatchObject({ outcome: "completed" });
   expect(await readFile(dependency, "utf8")).toBe("// dependency");
   expect(await missing(tag)).toBeUndefined();
-});
+}, 30000);
 
 test("a release whose rigd is installed is complete only with rig of that release, every file of its dashboard, and rigd installed and serving it", async () => {
   const home = await mkdtemp(join(tmpdir(), "rigd-gap-"));

@@ -2382,7 +2382,8 @@ jobs:
   id is never issued twice, so an id you name can only mean that one backup.
   The number also says which backup is newest: `latest`, `keep` and every
   list go by it, never by the time, so a clock set back or forward cannot
-  make Rig restore or keep older data.
+  make Rig restore or keep older data. Backups an earlier Rig made count as
+  older than any this one makes, in the order they were made.
 - **A run that fails leaves nothing.** A non-zero exit, a timeout, a stop by
   Rig (`rig down`, a Preview destroy) or a start that failed deletes the
   directory the run made. Rig records that it made the directory before the
@@ -2412,8 +2413,11 @@ jobs:
   backup that you may not write in (one the job made unwritable, or a backup
   an earlier Rig sealed read-only) is made writable again for you before it
   is deleted; only the backup's own directories are changed, never a file or
-  anything a symlink points at. A deletion that still fails (a busy disk, or
-  a directory another user owns) is retried every 30 seconds, by this rigd or
+  anything a symlink points at. A backup with another volume mounted inside
+  it (a disk image the job left attached, say) is not deleted at all, so
+  nothing on that volume is touched; unmount it and the next pass deletes the
+  backup. A deletion that still fails (a busy disk, a directory another user
+  owns, or that mounted volume) is retried every 30 seconds, by this rigd or
   the next; until it succeeds the run's summary says its directory was queued
   for deletion. A backup deleted by hand shows as missing in
   `rig backup list`.

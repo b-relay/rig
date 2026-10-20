@@ -385,7 +385,8 @@ in `rig.yaml` ([ADR 0017](docs/adr/0017-backups.md)). Each run gets a fresh,
 empty `$RIG_BACKUP_DIR` under `<RIG_ROOT>/backups/<project>/<target>/<job>/`,
 named for its UTC start and a number that only grows (an id never issued twice); a run that fails has
 it deleted when the run recorded making it, and a successful one is kept. The
-number, not the time, says which backup is newest.
+number (recorded as its `sequence`), not the time, says which backup is
+newest; one an older Rig recorded is older than every numbered one.
 _Avoid_: snapshot, dump (what a backup holds is the job's business), preset
 
 _Relationship_: A backup job is a Job with retention: after each successful

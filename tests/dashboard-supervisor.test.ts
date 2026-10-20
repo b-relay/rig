@@ -22,7 +22,6 @@ import {
   dashboardServing,
   openDashboard,
   stopLeftOverDashboard,
-  takeOverDashboard,
   type DashboardDependencies,
 } from "../src/daemon/dashboard";
 import { waitForLogPoll } from "../src/adapters/log-follow-scheduler";
@@ -30,8 +29,6 @@ import { parseHostConfig } from "../src/config/schema";
 import { hostRoutes, proxyPaths } from "../src/domain/managed-proxy";
 import { createProxyInstallation } from "../src/daemon/proxy-installation";
 import { runCommand } from "../src/providers/command-runner";
-import { createListenerInspection } from "../src/providers/listener-inspection";
-import { probeLocalPort } from "../src/providers/port-probe";
 import { pendingSettings } from "../src/adapters/proxy-generation";
 import { accessPolicy } from "../web/server/guard";
 import {
@@ -41,7 +38,6 @@ import {
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
-import { managedCaddyWorld } from "./support/managed-caddy-double";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -70,8 +66,6 @@ async function installed(server: string) {
   const notes: string[] = [];
   const cleared: string[] = [];
   const waits: number[] = [];
-  /** Each change of whether Caddy may route to the dashboard, as rigd was told it. */
-  const serving: boolean[] = [];
   const deps: DashboardDependencies = {
     root,
     port: freePort(),
@@ -83,14 +77,10 @@ async function installed(server: string) {
       note: (channel, message) => notes.push(`${channel.name}: ${message}`),
       clear: (channel) => cleared.push(channel.name),
     },
-    listeners: createListenerInspection(runCommand),
-    portTaken: async (port) =>
-      (await probeLocalPort(port, AbortSignal.timeout(3000))).ready,
-    serving: async (listening) => void serving.push(listening),
     wait: async (ms) => void waits.push(ms),
     now: Date.now,
   };
-  return { root, directory, deps, notes, cleared, waits, serving };
+  return { root, directory, deps, notes, cleared, waits };
 }
 /** A server that answers with its own pid on PORT and HOSTNAME, as Next.js's standalone server reads them. */
 const SERVER = `
@@ -101,11 +91,8 @@ Bun.serve({
   fetch: () => new Response(String(process.pid)),
 });
 `;
-async function answer(
-  url: string,
-  attempts = 100,
-): Promise<string | undefined> {
-  for (let attempt = 0; attempt < attempts; attempt++) {
+async function answer(url: string): Promise<string | undefined> {
+  for (let attempt = 0; attempt < 100; attempt++) {
     const reply = await fetch(url).then(
       (response) => response.text(),
       () => undefined,
@@ -153,162 +140,6 @@ test("rigd serves the installed dashboard on 127.0.0.1 at its port, records its 
     stat(join(f.root, "dashboard", "process.json")),
   ).rejects.toThrow();
   expect(f.notes).toEqual([]);
-});
-
-/** Resolves once `ready` holds, polling for up to five seconds; false when it never did. */
-async function until(ready: () => boolean): Promise<boolean> {
-  for (let attempt = 0; attempt < 100 && !ready(); attempt++)
-    await Bun.sleep(50);
-  return ready();
-}
-
-test("Caddy may route to the dashboard only once its own process holds 127.0.0.1:<port>, and not from before a stop or once it ends", async () => {
-  const f = await installed(SERVER);
-  /** Whether the dashboard's process answered on its address as rigd was told each change. */
-  const answered: boolean[] = [];
-  const dashboard = (await openDashboard({
-    ...f.deps,
-    wait: (_ms, signal) => waitForLogPoll(50, signal),
-    serving: async (listening) => {
-      f.serving.push(listening);
-      answered.push(
-        (await answer(`http://127.0.0.1:${f.deps.port}`, 1)) !== undefined,
-      );
-    },
-  }))!;
-  expect(dashboard.problem()).toBeUndefined();
-  dashboard.start();
-  const pid = Number(await answer(dashboard.url));
-  expect(await until(() => f.serving.length === 1)).toBe(true);
-  expect(f.serving).toEqual([true]);
-
-  // It ends on its own: withheld, then served again once its replacement is confirmed.
-  process.kill(pid, "SIGKILL");
-  expect(await until(() => f.serving.length === 3)).toBe(true);
-  // A stop withholds it while the process still runs.
-  await dashboard.stop();
-  expect(f.serving).toEqual([true, false, true, false]);
-  expect(answered).toEqual([true, false, true, true]);
-});
-
-test("a port another program holds is never routed: the dashboard is withheld, and the notice says that program holds the port", async () => {
-  const f = await installed(SERVER);
-  const other = Bun.serve({
-    hostname: "127.0.0.1",
-    port: f.deps.port,
-    fetch: () => new Response("another program"),
-  });
-  const dashboard = (await openDashboard({
-    ...f.deps,
-    wait: (ms, signal) => {
-      f.waits.push(ms);
-      return waitForLogPoll(100, signal);
-    },
-  }))!;
-  dashboard.start();
-  expect(await until(() => f.notes.length > 0)).toBe(true);
-  expect(f.notes[0]).toBe(
-    `${DASHBOARD.name}: The dashboard exited with code 1: another program holds port ${f.deps.port}; rigd starts it again in 1 s.`,
-  );
-  expect(dashboard.problem()).toBe(f.notes.at(-1)!.slice("dashboard: ".length));
-  expect(f.serving).toEqual([]);
-
-  // Once the port is free, the next start holds it and is served.
-  other.stop(true);
-  expect(await until(() => f.serving.length === 1)).toBe(true);
-  expect(dashboard.problem()).toBeUndefined();
-  await dashboard.stop();
-  expect(f.serving).toEqual([true, false]);
-});
-
-test("a dashboard that answers somewhere other than 127.0.0.1 is never routed while another program holds 127.0.0.1 at its port, and rigd reports it", async () => {
-  const f = await installed(`
-Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Response("dashboard") });
-`);
-  const other = Bun.serve({
-    hostname: "127.0.0.1",
-    port: f.deps.port,
-    fetch: () => new Response("another program"),
-  });
-  try {
-    const dashboard = (await openDashboard({
-      ...f.deps,
-      unconfirmedNoticeMs: 3000,
-    }))!;
-    dashboard.start();
-    expect(await answer(`http://[::1]:${f.deps.port}`)).toBe("dashboard");
-    await Bun.sleep(1000);
-    expect(f.serving).toEqual([]);
-    expect(f.notes).toEqual([]);
-    // Still unconfirmed past the notice time: doctor and rigd status hear why it is not served.
-    expect(await until(() => f.notes.length > 0)).toBe(true);
-    expect(f.notes).toEqual([
-      `${DASHBOARD.name}: The dashboard runs, but rigd has not confirmed that it listens on 127.0.0.1:${f.deps.port} (it listens elsewhere), so it is not served.`,
-    ]);
-    expect(dashboard.problem()).toBe(f.notes[0]!.slice("dashboard: ".length));
-    expect(f.serving).toEqual([]);
-    await dashboard.stop();
-    expect(f.serving).toEqual([]);
-    expect(
-      await readFile(
-        join(f.root, "logs", "dashboard", "dashboard.log"),
-        "utf8",
-      ),
-    ).toContain(`[rigd] ${dashboard.problem()}`);
-  } finally {
-    other.stop(true);
-  }
-});
-
-test("a dashboard whose route Caddy would not take is tried again until it does, saying why meanwhile", async () => {
-  const f = await installed(SERVER);
-  let refusals = 2;
-  const dashboard = (await openDashboard({
-    ...f.deps,
-    wait: (_ms, signal) => waitForLogPoll(50, signal),
-    serving: async (listening) => {
-      if (listening && refusals-- > 0) throw new Error("caddy is unreachable");
-      f.serving.push(listening);
-    },
-  }))!;
-  dashboard.start();
-  expect(await until(() => f.serving.length === 1)).toBe(true);
-  expect(f.notes.slice(0, 2)).toEqual([
-    `${DASHBOARD.name}: Rig's Caddy could not be made to route the dashboard's domain to it (caddy is unreachable); rigd tries again in 1 s.`,
-    `${DASHBOARD.name}: Rig's Caddy could not be made to route the dashboard's domain to it (caddy is unreachable); rigd tries again in 2 s.`,
-  ]);
-  expect(dashboard.problem()).toBeUndefined();
-  await dashboard.stop();
-  expect(f.serving).toEqual([true, false]);
-});
-
-test("a stop whose withholding Caddy would not take leaves the dashboard running and recorded, for the next rigd to stop once it can", async () => {
-  const f = await installed(SERVER);
-  let refuse = false;
-  const dashboard = (await openDashboard({
-    ...f.deps,
-    serving: async (listening) => {
-      if (refuse) throw new Error("caddy is unreachable");
-      f.serving.push(listening);
-    },
-  }))!;
-  dashboard.start();
-  const pid = Number(await answer(dashboard.url));
-  expect(await until(() => f.serving.length === 1)).toBe(true);
-  refuse = true;
-  await dashboard.stop();
-  // Never signalled: the port it holds is still routed to it, and freeing it would hand that route to any program.
-  expect(processExists(pid)).toBe(true);
-  expect(
-    JSON.parse(
-      await readFile(join(f.root, "dashboard", "process.json"), "utf8"),
-    ),
-  ).toMatchObject({ pid });
-  expect(dashboard.problem()).toContain(
-    "so the dashboard was left running for the next rigd",
-  );
-  await stopLeftOverDashboard(f.root);
-  expect(processExists(pid)).toBe(false);
 });
 
 test("a dashboard that exits is started again after a back-off that doubles while it keeps exiting, and doctor hears of it", async () => {
@@ -786,184 +617,3 @@ test("while rigd serves a published dashboard, settings that move Caddy's HTTPS 
     8444,
   );
 });
-
-test("an enable Caddy refused is tried again only for a process found on the address again: one that ended during the back-off, its port taken by another program, is never published", async () => {
-  const f = await installed(SERVER);
-  let refused = false;
-  let backOff: (() => void) | undefined;
-  /** What answered on the dashboard's port each time Caddy took an enable. */
-  const enabledFor: (string | undefined)[] = [];
-  const dashboard = (await openDashboard({
-    ...f.deps,
-    serving: async (listening) => {
-      if (listening && !refused) {
-        refused = true;
-        throw new Error("caddy is unreachable");
-      }
-      if (listening)
-        enabledFor.push(await answer(`http://127.0.0.1:${f.deps.port}`, 1));
-      f.serving.push(listening);
-    },
-    wait: (ms, signal) => {
-      f.waits.push(ms);
-      // The first back-off is held until the test has replaced the dashboard.
-      if (backOff === undefined)
-        return new Promise((resolve) => {
-          backOff = resolve;
-        });
-      return waitForLogPoll(100, signal);
-    },
-  }))!;
-  dashboard.start();
-  const pid = Number(await answer(dashboard.url));
-  expect(await until(() => backOff !== undefined)).toBe(true);
-  process.kill(pid, "SIGKILL");
-  expect(await until(() => !processExists(pid))).toBe(true);
-  const other = Bun.serve({
-    hostname: "127.0.0.1",
-    port: f.deps.port,
-    fetch: () => new Response("another program"),
-  });
-  try {
-    backOff!();
-    await Bun.sleep(1500);
-    await dashboard.stop();
-  } finally {
-    other.stop(true);
-  }
-  expect(enabledFor).toEqual([]);
-  expect(f.serving.filter(Boolean)).toEqual([]);
-});
-
-test("a stop while an enable is under way waits for it, withholds the domain, and only then signals the process", async () => {
-  const f = await installed(SERVER);
-  let asked = false;
-  let release = () => {};
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  let pid = 0;
-  /** Whether the dashboard's process was alive as each change reached Caddy. */
-  const alive: boolean[] = [];
-  const dashboard = (await openDashboard({
-    ...f.deps,
-    serving: async (listening) => {
-      if (listening) {
-        asked = true;
-        await held;
-      }
-      alive.push(processExists(pid));
-      f.serving.push(listening);
-    },
-  }))!;
-  dashboard.start();
-  pid = Number(await answer(dashboard.url));
-  expect(await until(() => asked)).toBe(true);
-  const stopping = dashboard.stop();
-  await Bun.sleep(300);
-  expect(processExists(pid)).toBe(true);
-  release();
-  await stopping;
-  expect(f.serving).toEqual([true, false]);
-  expect(alive).toEqual([true, true]);
-  expect(processExists(pid)).toBe(false);
-});
-
-/** Whether Caddy's loaded configuration reaches `port`. */
-const reaches = (loaded: unknown, port: number) =>
-  JSON.stringify(loaded).includes(`127.0.0.1:${port}`);
-
-test("a dashboard left running is stopped only once Caddy is confirmed to withhold its domain, not when Rig's files say so", async () => {
-  const caddy = await managedCaddyWorld({
-    tls: { ca: "internal" },
-    routes: { "rig.example.test": 4280 },
-  });
-  roots.push(caddy.root);
-  caddy.control.dashboard = { domain: "rig.example.test", listening: true };
-  await caddy.caddy.republish();
-  expect(reaches(caddy.control.loaded, 4280)).toBe(true);
-  const routed = caddy.control.loaded;
-  // The next rigd withheld the domain, then died after switching to that generation and before Caddy loaded it.
-  caddy.control.dashboard = { domain: "rig.example.test", listening: false };
-  await caddy.caddy.refresh();
-  expect(reaches(caddy.control.loaded, 4280)).toBe(false);
-  caddy.control.loaded = routed;
-  caddy.control.reachable = false;
-  // What the dashboard it left running holds: its record names it.
-  const f = await installed(SERVER);
-  const left = Bun.spawn([process.execPath, "server.js"], {
-    cwd: join(f.directory, "web"),
-    env: { ...process.env, PORT: String(f.deps.port), HOSTNAME: "127.0.0.1" },
-    stdout: "ignore",
-  });
-  expect(await answer(`http://127.0.0.1:${f.deps.port}`)).toBe(
-    String(left.pid),
-  );
-  await writeFile(
-    join(f.root, "dashboard", "process.json"),
-    JSON.stringify({
-      pid: left.pid,
-      startedAt: await processStartTime(left.pid),
-    }),
-  );
-  let started = false;
-  const takingOver = takeOverDashboard({
-    confirm: () =>
-      caddy.caddy.refresh().then(
-        () => true,
-        () => false,
-      ),
-    stopLeftOver: () => stopLeftOverDashboard(f.root),
-    start: () => void (started = true),
-    stopped: () => false,
-    wait: () => Bun.sleep(100),
-  });
-  await Bun.sleep(1000);
-  expect(processExists(left.pid)).toBe(true);
-  expect(started).toBe(false);
-  caddy.control.reachable = true;
-  await takingOver;
-  expect(reaches(caddy.control.loaded, 4280)).toBe(false);
-  expect(processExists(left.pid)).toBe(false);
-  expect(started).toBe(true);
-});
-
-test.each([
-  ["moved to another domain", { domain: "new.example.test", listening: false }],
-  ["turned off", undefined],
-] as const)(
-  "a dashboard domain an earlier rigd published stays withheld when the dashboard is %s and Host config is refused",
-  async (_label, dashboard) => {
-    const caddy = await managedCaddyWorld({
-      tls: { ca: "internal" },
-      routes: { "old.example.test": 4280 },
-    });
-    roots.push(caddy.root);
-    caddy.control.dashboard = { domain: "old.example.test", listening: true };
-    await caddy.caddy.router.apply({
-      key: "app",
-      sites: [
-        {
-          hostname: "app.example.test",
-          routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
-        },
-      ],
-    });
-    expect(reaches(caddy.control.loaded, 4280)).toBe(true);
-    // The next rigd: Host config names a hostname a Target serves, so Rig refuses it and goes on with the accepted settings.
-    caddy.control.dashboard = dashboard;
-    caddy.setSettings({
-      tls: { ca: "internal" },
-      routes: {
-        ...(dashboard ? { [dashboard.domain]: 4281 } : {}),
-        "app.example.test": 3001,
-      },
-    });
-    await expect(caddy.caddy.republish()).rejects.toMatchObject({
-      code: "ROUTE_CONFLICT",
-    });
-    await caddy.caddy.refresh();
-    expect(reaches(caddy.control.loaded, 4280)).toBe(false);
-    expect(reaches(caddy.control.loaded, 3000)).toBe(true);
-  },
-);

@@ -176,12 +176,7 @@ export class DaemonAdmin {
       ...(unverified ? [unverified] : []),
     ];
     const status = (
-      serving?: {
-        pid: number;
-        version?: string;
-        dashboard?: string;
-        dashboardProblem?: string;
-      },
+      serving?: { pid: number; version?: string; dashboard?: string },
       credential?: RigError,
     ) => {
       // A serving daemon of another version is the one thing `rigd install` can change here.
@@ -194,9 +189,6 @@ export class DaemonAdmin {
       const all = [
         ...warnings,
         ...skew,
-        ...(serving?.dashboardProblem
-          ? [`The dashboard is not served now. ${serving.dashboardProblem}`]
-          : []),
         ...(credential ? [`${credential.message} ${credential.hint}`] : []),
       ];
       return {
@@ -249,9 +241,6 @@ export class DaemonAdmin {
               pid: health.pid,
               ...(health.version ? { version: health.version } : {}),
               ...(health.dashboard ? { dashboard: health.dashboard } : {}),
-              ...(health.dashboardProblem
-                ? { dashboardProblem: health.dashboardProblem }
-                : {}),
             }
           : undefined,
       );

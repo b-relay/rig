@@ -454,6 +454,4 @@ export interface DaemonHealth {
   version?: string;
   /** Where rigd serves the dashboard; absent when it runs none. */
   dashboard?: string;
-  /** Why that dashboard is not served now; absent while it is, or while it first starts. */
-  dashboardProblem?: string;
 }

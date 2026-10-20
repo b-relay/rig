@@ -19,7 +19,6 @@ const healthSchema = z.object({
   running: z.literal(true),
   version: z.string().min(1).optional(),
   dashboard: z.string().min(1).optional(),
-  dashboardProblem: z.string().min(1).optional(),
 });
 const errorSchema = z.object({
   error: z.object({

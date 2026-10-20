@@ -17,8 +17,6 @@ import type { ProxySettings } from "../config/proxy-schema";
 import type { LogRetention } from "../domain/log-retention";
 import { RIG_VERSION } from "../domain/version";
 import { rotateLogFile } from "../providers/target-log";
-import type { ListenerInspection } from "../providers/listener-inspection";
-import { takesUpstream } from "../domain/route-upstream";
 import type { NoticeBoard, NoticeChannel } from "./notices";
 import {
   processStartTime,
@@ -33,11 +31,6 @@ const FIRST_RESTART_MS = 1_000;
 const MAX_RESTART_MS = 60_000;
 /** How long a stop waits after SIGTERM before SIGKILL. */
 const STOP_GRACE_MS = 5_000;
-/** The first wait between looks at what a starting dashboard listens on; each look doubles it, up to MAX_CONFIRM_MS. */
-const FIRST_CONFIRM_MS = 100;
-const MAX_CONFIRM_MS = 2_000;
-/** How long a running dashboard may go unconfirmed before rigd reports it, by default. */
-const UNCONFIRMED_NOTICE_MS = 30_000;
 
 export const DASHBOARD: NoticeChannel = {
   name: "dashboard",
@@ -213,28 +206,6 @@ export async function stopLeftOverDashboard(root: string): Promise<void> {
   await rm(record, { force: true });
 }
 
-/** How long a takeover waits before asking Caddy again. */
-const TAKEOVER_RETRY_MS = 5_000;
-/** Stops the dashboard an earlier rigd left running, then starts this rigd's, once `confirm` says Caddy is confirmed to
- * withhold every dashboard domain (this rigd's, and any an earlier one published): until then the left-over one keeps its
- * port, which Caddy may still route to it, and `confirm` is asked again every 5 s. Gives up once `stopped` holds. */
-export async function takeOverDashboard(deps: {
-  confirm(): Promise<boolean>;
-  stopLeftOver(): Promise<void>;
-  start(): void;
-  stopped(): boolean;
-  wait(ms: number): Promise<void>;
-}): Promise<void> {
-  while (!(await deps.confirm())) {
-    if (deps.stopped()) return;
-    await deps.wait(TAKEOVER_RETRY_MS);
-    if (deps.stopped()) return;
-  }
-  if (deps.stopped()) return;
-  await deps.stopLeftOver();
-  deps.start();
-}
-
 export interface DashboardDependencies {
   readonly root: string;
   readonly port: number;
@@ -247,16 +218,6 @@ export interface DashboardDependencies {
   /** The Host's Target log sizes, which the dashboard's log follows too. */
   retention(): Promise<LogRetention>;
   readonly notices: Pick<NoticeBoard, "note" | "clear">;
-  /** What the dashboard's process listens on: only once it holds 127.0.0.1:<port> itself is it served. */
-  readonly listeners: ListenerInspection;
-  /** Whether some program answers on `port` now, to tell a port another program holds from any other failed start. */
-  portTaken(port: number): Promise<boolean>;
-  /** Told, and awaited, when rigd confirms its own dashboard holds its address, and again when that ends, before a stop
-   * signals the process: Rig's Caddy routes the dashboard's domain to its port only in between. Resolves once Caddy serves
-   * that; rejects when it could not be made to, and the domain then stays withheld. */
-  serving(listening: boolean): Promise<void>;
-  /** How long a running dashboard may go unconfirmed before rigd reports it; 30 s when absent. */
-  readonly unconfirmedNoticeMs?: number;
   /** Resolves after `ms`, or early once `signal` aborts. */
   wait(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
@@ -268,9 +229,6 @@ export interface Dashboard {
   readonly url: string;
   /** How it is served, with where it is published (see describeDashboard). */
   readonly serving: string;
-  /** Why it is not served now, as its notice says: its last failure, until a run is confirmed to hold its address and Caddy
-   * routes to it; undefined while it serves or first starts. */
-  problem(): string | undefined;
   /** Starts it and keeps it running until `stop`. */
   start(): void;
   stop(): Promise<void>;
@@ -294,110 +252,6 @@ export async function openDashboard(
   const stopping = new AbortController();
   let current: Run | undefined;
   let running: Promise<void> | undefined;
-  /** What Caddy was last confirmed to do with the dashboard's domain: route it here (true) or withhold it (false); unknown
-   * after a publication that failed. */
-  let routed: boolean | "unknown" = false;
-  let problem: string | undefined;
-  /** Set by a stop that could not withhold the domain: the process is left running, recorded, for the next rigd. */
-  let leftBehind = false;
-  let leave = () => {};
-  const left = new Promise<string>((resolve) => {
-    leave = () => resolve("was left running");
-  });
-  /** Publications run one at a time, in order, so a stop's withholding follows any enable already under way. */
-  let publishing: Promise<unknown> = Promise.resolve();
-  const serve = (now: boolean): Promise<void> => {
-    const next = publishing
-      .catch(() => {})
-      .then(async () => {
-        if (routed === now || (now && stopping.signal.aborted)) return;
-        try {
-          await deps.serving(now);
-          routed = now;
-        } catch (error) {
-          routed = "unknown";
-          throw error;
-        }
-      });
-    publishing = next;
-    return next;
-  };
-  /** Says why the dashboard is not served, to doctor, rigd status and its log. */
-  const report = (message: string) => {
-    problem = message;
-    deps.notices.note(DASHBOARD, message);
-    void log(`[rigd] ${message}\n`);
-  };
-  /** Reports a publication Caddy did not take and waits out the back-off of `attempt`. */
-  const retryAfter = async (attempt: number, now: boolean, error: unknown) => {
-    const delay = Math.min(
-      FIRST_RESTART_MS * 2 ** (attempt - 1),
-      MAX_RESTART_MS,
-    );
-    report(
-      `Rig's Caddy could not be made to ${now ? "route the dashboard's domain to it" : "withhold the dashboard's domain"} (${error instanceof Error ? error.message : String(error)}); rigd tries again in ${Math.round(delay / 1000)} s.`,
-    );
-    await deps.wait(delay, stopping.signal);
-  };
-  /** Routes the domain to `run` once its own process is found on the dashboard's address, looking again before every
-   * attempt, so a process that ended or was replaced during a back-off is never published. Says whether it was ever found,
-   * and whether Caddy routes to it now. */
-  const enable = async (
-    run: Run,
-  ): Promise<{ confirmed: boolean; served: boolean }> => {
-    let confirmed = false;
-    for (let attempt = 1; ; attempt++) {
-      if (!(await confirm(run))) return { confirmed, served: false };
-      confirmed = true;
-      try {
-        await serve(true);
-        return { confirmed, served: routed === true };
-      } catch (error) {
-        await retryAfter(attempt, true, error);
-      }
-    }
-  };
-  /** Withholds the domain, tried again on the back-off until Caddy takes it or rigd stops, whose own stop withholds it. */
-  const disable = async () => {
-    for (let attempt = 1; !stopping.signal.aborted; attempt++)
-      try {
-        await serve(false);
-        return;
-      } catch (error) {
-        await retryAfter(attempt, false, error);
-      }
-  };
-  /** Waits until `run`'s own process holds the dashboard's address, 127.0.0.1:<port>: true once it does, false once it
-   * ended or rigd stops it first. Something else answering there is never taken for it. */
-  const confirm = async (run: Run): Promise<boolean> => {
-    const pid = run.child.pid;
-    if (pid === undefined) return false;
-    let ended = false;
-    void run.ended.then(() => (ended = true));
-    const reportAt =
-      Date.now() + (deps.unconfirmedNoticeMs ?? UNCONFIRMED_NOTICE_MS);
-    let reported = false;
-    for (let wait = FIRST_CONFIRM_MS; !ended && !stopping.signal.aborted;) {
-      const evidence = await deps.listeners.inspect(pid, stopping.signal);
-      if (!reported && Date.now() >= reportAt) {
-        reported = true;
-        report(
-          `The dashboard runs, but rigd has not confirmed that it listens on 127.0.0.1:${deps.port} (${evidence.state === "unknown" ? evidence.reason : "it listens elsewhere"}), so it is not served.`,
-        );
-      }
-      if (
-        evidence.state === "observed" &&
-        evidence.listeners.some(
-          (listener) =>
-            listener.port === deps.port && takesUpstream(listener.address),
-        )
-      )
-        return !ended && !stopping.signal.aborted;
-      await Promise.race([run.ended, Bun.sleep(wait)]);
-      wait = Math.min(wait * 2, MAX_CONFIRM_MS);
-    }
-    return false;
-  };
   // Output is appended in order, one write at a time, rotating a full file first.
   let writing: Promise<void> = Promise.resolve();
   const log = (text: string) => {
@@ -479,24 +333,13 @@ export async function openDashboard(
         await terminate(run);
         how = `could not be recorded in ${record}, so it was stopped`;
       } else {
-        let steady: ReturnType<typeof setTimeout> | undefined;
-        const { confirmed, served } = await enable(run);
-        if (served) {
-          problem = undefined;
-          // Once it has served steadily, an earlier failure no longer stands.
-          steady = setTimeout(() => deps.notices.clear(DASHBOARD), STEADY_MS);
-        }
-        how = await Promise.race([run.ended, left]);
+        // Once it has run steadily, an earlier failure no longer stands.
+        const steady = setTimeout(
+          () => deps.notices.clear(DASHBOARD),
+          STEADY_MS,
+        );
+        how = await run.ended;
         clearTimeout(steady);
-        if (leftBehind) break;
-        // Withheld as soon as it ended: any program may bind the port it freed.
-        await disable();
-        if (
-          !confirmed &&
-          !stopping.signal.aborted &&
-          (await deps.portTaken(deps.port))
-        )
-          how = `${how}: another program holds port ${deps.port}`;
       }
       current = undefined;
       if (stopping.signal.aborted) break;
@@ -506,39 +349,21 @@ export async function openDashboard(
         MAX_RESTART_MS,
       );
       const message = `The dashboard ${how}; rigd starts it again in ${Math.round(delay / 1000)} s.`;
-      problem = message;
       deps.notices.note(DASHBOARD, message);
       await log(`[rigd] ${message}\n`);
       await deps.wait(delay, stopping.signal);
     }
-    if (!leftBehind) await rm(record, { force: true });
+    await rm(record, { force: true });
   };
   return {
     url: `http://127.0.0.1:${deps.port}`,
     serving: describeDashboard(deps.port, deps.published),
-    problem: () => problem,
     start() {
       running ??= loop();
     },
     async stop() {
       stopping.abort();
-      // Withheld, and served so, before the process is signalled, so the port it frees is never routed; publications run in
-      // order, so this follows any enable already under way. When Caddy cannot be made to, the process keeps the port,
-      // recorded, and the next rigd stops it once it has withheld the domain.
-      const withheld = await serve(false).then(
-        () => true,
-        (error: unknown) => {
-          report(
-            `rigd stopped, but Rig's Caddy could not be made to withhold the dashboard's domain (${error instanceof Error ? error.message : String(error)}), so the dashboard was left running for the next rigd.`,
-          );
-          return false;
-        },
-      );
-      if (current && withheld) await terminate(current);
-      else if (current) {
-        leftBehind = true;
-        leave();
-      }
+      if (current) await terminate(current);
       await running;
       await writing;
     },

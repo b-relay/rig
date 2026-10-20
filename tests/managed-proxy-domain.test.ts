@@ -388,26 +388,6 @@ test("tls.ca is a named CA or a plain https URL: a placeholder that could expand
   ).toThrow(expect.objectContaining({ code: "PROXY_CONFIG_INVALID" }));
 });
 
-test("a withheld one of proxy.routes (the dashboard's, until rigd confirms it holds its port) answers 503 and reaches no upstream", () => {
-  const routes = { "grafana.example.com": 3000, "rig.example.com": 4280 };
-  const text = renderMainCaddyfile({
-    settings: settings({ routes }),
-    paths: proxyPaths("/r"),
-    generation: "/r/caddy/generations/g1",
-    hostnames: [],
-    withheld: ["rig.example.com"],
-  });
-  expect(text).toContain('"rig.example.com" {\n\trespond 503\n}');
-  expect(text).not.toContain("127.0.0.1:4280");
-  expect(text).toContain(
-    '"grafana.example.com" {\n\treverse_proxy "127.0.0.1:3000"\n}',
-  );
-  expect(hostRoutes(settings({ routes }), ["rig.example.com"])).toEqual([
-    { hostname: "grafana.example.com", upstream: "127.0.0.1:3000" },
-    { hostname: "rig.example.com", upstream: null },
-  ]);
-});
-
 test("Rig's own page answers for errors Caddy itself raises and for withheld paths, on every server", () => {
   const config = withDownPages({
     apps: {

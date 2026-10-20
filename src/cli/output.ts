@@ -352,7 +352,7 @@ function renderProxy(report: Record<string, unknown>): string {
         : `${word(site.project)} ${word(site.target)}`;
     const routes =
       site.source === "custom"
-        ? `/ -> ${site.upstream === null ? "withheld (503)" : word(site.upstream)}`
+        ? `/ -> ${word(site.upstream)}`
         : rows(site.routes)
             .map(
               (route) =>

@@ -20,18 +20,9 @@ import { runCommand } from "../src/providers/command-runner";
 import { createManagedCaddy } from "../src/providers/managed-caddy";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import type { Supervisor } from "../src/providers/contracts";
-import { createListenerInspection } from "../src/providers/listener-inspection";
-import { probeLocalPort } from "../src/providers/port-probe";
 import { createTargetEffects } from "../src/adapters/target-effects";
-import { waitForLogPoll } from "../src/adapters/log-follow-scheduler";
 import { createTargetLifecycle } from "../src/runtime/lifecycle";
 import type { TargetRecord } from "../src/domain/runtime";
-import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
-import {
-  dashboardDirectory,
-  openDashboard,
-  withDashboardRoute,
-} from "../src/daemon/dashboard";
 import { localActivation } from "./support/activation-doubles";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -305,7 +296,7 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
   expect(await job.state()).toBe("stopped");
 }, 60_000);
 
-test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to another program that takes the port: across a down, the dashboard's start, a port in use and a restart", async () => {
+test("real Caddy never hands a stopped Target's hostname to another program that takes its freed port", async () => {
   const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
     existsSync,
   );
@@ -317,18 +308,13 @@ test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to
   await mkdir(home, { recursive: true });
   const https = freePort();
   const servicePort = freePort();
-  const dashboardPort = freePort();
-  const route = { domain: "dash.example.test", port: dashboardPort, https };
-  const settings = withDashboardRoute(
-    parseHostConfig({
-      proxy: {
-        caddy: source,
-        ports: { http: freePort(), https },
-        tls: { ca: "internal" },
-      },
-    }).proxy!,
-    route,
-  );
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
   const paths = proxyPaths(root);
   await installCaddyBinary({
     source,
@@ -339,12 +325,9 @@ test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to
   const admin = createCaddyAdmin(paths.socket);
   const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
   cleanups.push(() => job.remove());
-  // As rigd composes it: the dashboard's domain is withheld until its own process is confirmed on its port.
-  let dashboardListening = false;
   const caddy = createManagedCaddy({
     root,
     settings: async () => settings,
-    dashboard: () => ({ domain: route.domain, listening: dashboardListening }),
     run: runCommand,
     job,
     admin,
@@ -452,103 +435,4 @@ test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to
     body: "503 - app.example.test is currently down",
   });
   expect(squatter.received).toEqual([]);
-
-  // The dashboard's port is taken before the dashboard starts: its start fails, and its domain never reaches that program.
-  const directory = dashboardDirectory(root);
-  await mkdir(join(directory, "web"), { recursive: true });
-  await writeFile(
-    join(directory, "web", "server.js"),
-    `Bun.serve({ port: Number(process.env.PORT), hostname: process.env.HOSTNAME, fetch: () => new Response("dashboard") });`,
-  );
-  const notes: string[] = [];
-  const open = () =>
-    openDashboard({
-      root,
-      port: dashboardPort,
-      directory,
-      executable: process.execPath,
-      retention: async () => DEFAULT_LOG_RETENTION,
-      notices: {
-        note: (_channel, message) => void notes.push(message),
-        clear() {},
-      },
-      listeners: createListenerInspection(runCommand),
-      portTaken: async (port) =>
-        (await probeLocalPort(port, AbortSignal.timeout(3000))).ready,
-      serving: async (listening) => {
-        dashboardListening = listening;
-        await caddy.refresh();
-      },
-      wait: (_ms, signal) => waitForLogPoll(200, signal),
-      now: Date.now,
-    });
-  const noted = async () => {
-    for (
-      let deadline = Date.now() + 10_000;
-      !notes.length && Date.now() < deadline;
-    )
-      await Bun.sleep(100);
-  };
-  let holder = another(dashboardPort);
-  let dashboard = (await open())!;
-  dashboard.start();
-  await noted();
-  expect(notes[0]).toContain(`another program holds port ${dashboardPort}`);
-  expect(await get("dash.example.test", https)).toEqual({
-    status: 503,
-    body: "503 - dash.example.test is currently down",
-  });
-  expect(holder.received).toEqual([]);
-
-  // Once the port is free, the dashboard's own process takes it and is served.
-  holder.stop();
-  for (
-    let deadline = Date.now() + 15_000;
-    (await get("dash.example.test", https)).body !== "dashboard" &&
-    Date.now() < deadline;
-  )
-    await Bun.sleep(200);
-  expect(await get("dash.example.test", https)).toEqual({
-    status: 200,
-    body: "dashboard",
-  });
-
-  // rigd restarts: its dashboard is withheld before it stops, and a program that takes the freed port first is never
-  // reached, nor while the next dashboard cannot start.
-  await dashboard.stop();
-  holder = another(dashboardPort);
-  notes.length = 0;
-  dashboard = (await open())!;
-  dashboard.start();
-  await noted();
-  expect(await get("dash.example.test", https, "/settings")).toEqual({
-    status: 503,
-    body: "503 - dash.example.test is currently down",
-  });
-  expect(holder.received).toEqual([]);
-  await dashboard.stop();
-
-  // A dashboard that runs, but answers on ::1 while that program holds 127.0.0.1 at its port, is not the one Caddy would
-  // reach, so it is never served either.
-  await writeFile(
-    join(directory, "web", "server.js"),
-    `Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Response("dashboard") });`,
-  );
-  dashboard = (await open())!;
-  dashboard.start();
-  for (
-    let deadline = Date.now() + 10_000;
-    !(await fetch(`http://[::1]:${dashboardPort}`).then(
-      () => true,
-      () => false,
-    )) && Date.now() < deadline;
-  )
-    await Bun.sleep(100);
-  await Bun.sleep(1000);
-  expect(await get("dash.example.test", https, "/settings")).toEqual({
-    status: 503,
-    body: "503 - dash.example.test is currently down",
-  });
-  expect(holder.received).toEqual([]);
-  await dashboard.stop();
-}, 90_000);
+}, 60_000);

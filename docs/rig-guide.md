@@ -107,17 +107,7 @@ dashboard:
 ```
 
 It is served like a `proxy.routes` entry, to the port of the dashboard `rigd`
-runs, and only once `rigd` has confirmed that the dashboard's own process holds
-`127.0.0.1:<dashboard.port>`. Before that, while it restarts, once it stops, and
-while another program holds the port, Caddy answers the hostname with Rig's
-page (`503 - rig.example.com is currently down`), so a program that takes the
-port never receives its requests. When Caddy cannot be made to withhold it, rigd
-leaves the dashboard running, recorded, rather than free its port, and the next
-`rigd` stops it once the domain is withheld. A dashboard that cannot start
-because another program holds its port, one that runs but is not confirmed on
-that address within 30 seconds, and a route Caddy would not take are reported in
-`rigd status`, in `rig doctor` and in its log; rigd keeps trying.
-A Target or `proxy.routes` naming the same
+runs, and only while one runs: a Target or `proxy.routes` naming the same
 hostname is refused (`rigd install` refuses a domain a Target already serves
 before it restarts anything). The route follows the dashboard `rigd` started
 with, so an edit to the domain, port or trusted clients applies when

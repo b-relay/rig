@@ -231,26 +231,28 @@ test("a rollback removes a file its change created, the removal flushed, before 
   });
 });
 
-test("retiring a Tool flushes each removal before the journal captures it", async () => {
-  const f = await fixture();
-  const workspace = join(f.root, "workspace");
+/** A working Target of `root` with one Tool, `cli`, in its workspace, and a way to make its Target effects afresh, as a
+ * new daemon does. */
+async function toolTarget(root: string) {
+  const workspace = join(root, "workspace");
   await real.mkdir(workspace);
   await real.writeFile(join(workspace, "cli"), "#!/bin/sh\necho cli\n", {
     mode: 0o755,
   });
-  const effects = createTargetEffects({
-    ...localActivation(),
-    root: f.root,
-    recordingTime: () => new Date().toISOString(),
-    supervisors: new Map(),
-    run: runCommand,
-    installer: createArtifactInstaller({
+  const effects = () =>
+    createTargetEffects({
+      ...localActivation(),
+      root,
+      recordingTime: () => new Date().toISOString(),
+      supervisors: new Map(),
       run: runCommand,
-      bunExecutable: undefined,
-    }),
-    router: noRoutes(),
-    environment: { PATH: process.env.PATH! },
-  });
+      installer: createArtifactInstaller({
+        run: runCommand,
+        bunExecutable: undefined,
+      }),
+      router: noRoutes(),
+      environment: { PATH: process.env.PATH! },
+    });
   const component = {
     name: "cli",
     kind: "installed" as const,
@@ -266,7 +268,7 @@ test("retiring a Tool flushes each removal before the journal captures it", asyn
     desired: "stopped" as const,
     createdAt: "now",
     updatedAt: "now",
-    logRoot: join(f.root, "logs"),
+    logRoot: join(root, "logs"),
     plan: {
       project: "demo",
       target: "working",
@@ -280,6 +282,13 @@ test("retiring a Tool flushes each removal before the journal captures it", asyn
       preparedComponents: [],
     },
   };
+  return { effects, component, record };
+}
+
+test("retiring a Tool flushes each removal before the journal captures it", async () => {
+  const f = await fixture();
+  const { effects: fresh, component, record } = await toolTarget(f.root);
+  const effects = fresh();
   await effects.install(component, record);
   const checkpoint = await effects.checkpoint(record);
   trace.length = 0;
@@ -377,4 +386,46 @@ test("a durable record in a fresh root flushes every directory from the root dow
   });
   expect(dirname(lease)).toBe(join(root, "process-leases"));
   await supervisor.disown!("t:preparation:run");
+});
+
+test("a retirement whose removal could not be flushed stays recorded as begun, and a new daemon's recovery puts the Tool back even when the removal did not last", async () => {
+  const f = await fixture();
+  const { effects, component, record } = await toolTarget(f.root);
+  const first = effects();
+  await first.install(component, record);
+  const destination = join(f.root, "bin", "cli-dev");
+  const published = await real.readFile(destination);
+  await first.checkpoint(record);
+  failingFlush = join(f.root, "bin");
+  await expect(first.retireArtifacts(record)).rejects.toMatchObject({
+    code: "FILE_NOT_DURABLE",
+  });
+  failingFlush = undefined;
+  const journal = JSON.parse(
+    await real.readFile(
+      join(
+        f.root,
+        "effect-checkpoints",
+        createHash("sha256").update("retiring").digest("hex"),
+        "journal.json",
+      ),
+      "utf8",
+    ),
+  );
+  expect(journal.files).toContainEqual(
+    expect.objectContaining({ path: destination, applying: true }),
+  );
+  // The Host lost the unflushed removal: the executable's old directory entry survived.
+  await real.writeFile(destination, published, { mode: 0o755 });
+  await effects().restoreEffects(record);
+  expect(await real.readFile(destination)).toEqual(published);
+  await expect(
+    real.stat(
+      join(
+        f.root,
+        "effect-checkpoints",
+        createHash("sha256").update("retiring").digest("hex"),
+      ),
+    ),
+  ).rejects.toMatchObject({ code: "ENOENT" });
 });

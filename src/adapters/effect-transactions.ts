@@ -731,7 +731,8 @@ export function createEffectTransactions(options: {
     },
     /** Run a change to owned files. The journal records the intent before the
      * change and the resulting bytes after it, so a crash in between is
-     * recognised as this transaction's own work. Without an active checkpoint
+     * recognised as this transaction's own work; a change that fails leaves its
+     * paths recorded as begun, never captured. Without an active checkpoint
      * the change simply runs. Rejects EFFECTS_SCOPE before changing anything
      * when a path was not checkpointed. */
     async withArtifactChange(
@@ -753,15 +754,14 @@ export function createEffectTransactions(options: {
       });
       for (const file of files) file.applying = true;
       await save(journal);
-      try {
-        await change();
-      } finally {
-        for (const file of files) {
-          file.expected = (await fileDigest(file.path)) ?? null;
-          delete file.applying;
-        }
-        await save(journal);
+      await change();
+      // Captured only once the change is in place and on disk: one that failed, its flush included, stays recorded as
+      // begun, so recovery takes whatever it finds there for this transaction's own work.
+      for (const file of files) {
+        file.expected = (await fileDigest(file.path)) ?? null;
+        delete file.applying;
       }
+      await save(journal);
     },
     /** Run a change to the owned route with the same intent-then-capture record. An interrupted transaction's journal
      * records it too (a stop withholds the route before its recovery runs), so that recovery does not take the change for

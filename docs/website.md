@@ -36,9 +36,12 @@ stable Target: `rig.b-relay.com` is the installed release's dashboard.
 It authenticates to `rigd` the way `rig` does. `rigd install` writes a random
 token to `<RIG_ROOT>/auth/control-plane.token` (mode 600) and `rigd` records its
 port in `<RIG_ROOT>/daemon/address.json`. For every read and action
-`web/server/daemon.ts` reads both, checks that the recorded process is still
-alive, and calls `rigd` with the token. A restarted `rigd` on a new port is
-found on the next request.
+`web/server/daemon.ts` finds `rigd` through the same discovery as `rig`
+(`src/daemon/connection.ts`): it checks that the recorded process is still the
+one that wrote the record (its pid and start time), and only then reads the
+token and calls `rigd` with it. A stale record is reported, never contacted. A
+restarted `rigd` on a new port is found on the next request. Editor replies are
+checked against the reply schemas the editors declare.
 
 `rigd` itself is unchanged: it still binds loopback, still requires the token,
 and still refuses foreign browser origins.

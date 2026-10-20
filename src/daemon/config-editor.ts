@@ -73,6 +73,55 @@ export const configEditorRequestSchema = z.discriminatedUnion("action", [
     .strict(),
 ]);
 export type ConfigEditorRequest = z.infer<typeof configEditorRequestSchema>;
+const revision = z.string().regex(/^[a-f0-9]{64}$/);
+const configFieldSchema = z.object({
+  path: z.string().describe("Dotted field path; `*` stands for any key."),
+  description: z.string().describe("The field's schema description."),
+  valueShape: z.string().describe("The JSON Schema type of its value."),
+});
+const configReadSchema = z.object({
+  project: z.string().min(1).describe("Registered Project name."),
+  configPath: z.string().min(1).describe("Path of the Project's rig.yaml."),
+  revision: revision.describe("Revision an edit must name."),
+  raw: z.string().describe("The file's text."),
+  config: z.record(z.string(), z.unknown()).describe("The parsed config."),
+  fields: z
+    .array(configFieldSchema)
+    .describe("Every field path an edit may name."),
+});
+const configChangeSchema = z.object({
+  project: z.string().min(1).describe("Registered Project name."),
+  configPath: z.string().min(1).describe("Path of the Project's rig.yaml."),
+  baseRevision: revision.describe("Revision the edit started from."),
+  nextRevision: revision.describe("Revision after the edit."),
+  patch: z.array(patchSchema).describe("The edits, as asked."),
+  raw: z.string().describe("The file's text after the edit."),
+  config: z
+    .record(z.string(), z.unknown())
+    .describe("The parsed config after the edit."),
+  diff: z
+    .array(
+      z.object({
+        path: z.string().describe("Dotted field path."),
+        before: z.unknown().describe("Its value before; absent when unset."),
+        after: z.unknown().describe("Its value after; absent when removed."),
+      }),
+    )
+    .describe("Each edited field's value before and after."),
+  applied: z.literal(true).optional().describe("Set once the edit is written."),
+  backupPath: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Where the file was backed up before the write."),
+});
+/** What each config editor action answers: a read, or a change previewed or (with its backup) applied. */
+export const configEditorReplySchemas = {
+  read: configReadSchema,
+  preview: configChangeSchema,
+  apply: configChangeSchema.required({ applied: true, backupPath: true }),
+} as const;
+type ConfigRead = z.infer<typeof configReadSchema>;
 export interface ConfigEditorDependencies {
   resolveProject(
     name: string,
@@ -205,7 +254,7 @@ export function createConfigEditor(dependencies: ConfigEditorDependencies) {
           raw: before.raw,
           config: before.config,
           fields,
-        };
+        } satisfies ConfigRead;
       const change = {
         repoPath: registered.repoPath,
         expectedRevision: request.expectedRevision,

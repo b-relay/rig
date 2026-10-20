@@ -122,12 +122,17 @@ export class DaemonClient {
     if (!health.success) throw protocolFailure();
     return health.data;
   }
-  async status(selection: StatusSelection): Promise<ProjectStatusReport> {
+  /** The signal abandons the read as CANCELLED, as for `command`. */
+  async status(
+    selection: StatusSelection,
+    signal?: AbortSignal,
+  ): Promise<ProjectStatusReport> {
     const envelope = resultSchema.safeParse(
       await this.request(
         "/v1/command",
         { ...selection, action: "status" },
         { ms: this.readDeadlineMs, subject: "status read" },
+        signal,
       ),
     );
     if (!envelope.success) throw protocolFailure();
@@ -145,7 +150,7 @@ export class DaemonClient {
     command: RuntimeCommand,
     signal?: AbortSignal,
   ): Promise<unknown> {
-    if (command.action === "status") return this.status(command);
+    if (command.action === "status") return this.status(command, signal);
     const envelope = resultSchema.safeParse(
       await this.request(
         "/v1/command",

@@ -1,6 +1,8 @@
-import { DaemonClient } from "../../src/daemon/client";
-import { readDaemonAddress, readDaemonToken } from "../../src/daemon/files";
-import type { DaemonAddress } from "../../src/daemon/protocol";
+import { z } from "zod";
+import type { DaemonClient } from "../../src/daemon/client";
+import { configEditorReplySchemas } from "../../src/daemon/config-editor";
+import { connectDaemon, liveDaemonAddress } from "../../src/daemon/connection";
+import { envEditorReplySchemas } from "../../src/daemon/env-editor";
 import { RigError } from "../../src/domain/errors";
 import type {
   Action,
@@ -11,21 +13,11 @@ import type {
 } from "../lib/types";
 import { site } from "./site";
 
-/** Fresh discovery per request, as rig does it: a restarted rigd has a new port. The health
- * probe, not a process check, tells whether the recorded daemon is alive. */
-export async function daemonAddress(root: string): Promise<DaemonAddress> {
-  const address = await readDaemonAddress(root);
-  if (!address)
-    throw new RigError(
-      "DAEMON_MISSING",
-      "rigd is not installed or reachable.",
-      "Run rigd install to start the daemon.",
-    );
-  return { port: address.port, token: await readDaemonToken(root) };
-}
-/** The site's rigd: the Host's, or the sandbox's when this copy is a Preview. */
-export async function daemon(): Promise<DaemonClient> {
-  return new DaemonClient(await daemonAddress(site().root));
+/** The site's rigd: the Host's, or the sandbox's when this copy is a Preview. Discovered afresh for each request,
+ * since a restarted rigd has a new port, and the way rig discovers it: the token goes only to the daemon whose
+ * recorded process is verified to still run. */
+export function daemon(root = site().root): Promise<DaemonClient> {
+  return connectDaemon(root);
 }
 /** One command, answered with the reply its action carries. Reads keep rigd's deadlines; a
  * mutation waits as long as rigd takes. */
@@ -35,26 +27,63 @@ export async function read<A extends Action>(
 ): Promise<Reply<A>> {
   return (await (await daemon()).command(command, signal)) as Reply<A>;
 }
-const protocolFailure = () =>
+const protocolFailure = (what: string) =>
   new RigError(
     "DAEMON_PROTOCOL",
-    "rigd returned an invalid response.",
+    `rigd returned an invalid ${what}.`,
     "Check that rig and rigd use the same version.",
   );
+type ConfigReply<A extends ConfigEditorRequest["action"]> = z.infer<
+  (typeof configEditorReplySchemas)[A]
+>;
+type EnvReply<A extends EnvEditorRequest["action"]> = z.infer<
+  (typeof envEditorReplySchemas)[A]
+>;
 /** The config editor route, which rig itself does not call: a read, a preview, or an apply. */
-export function editConfig(request: ConfigEditorRequest): Promise<unknown> {
-  return postEditor("/v1/config", request);
+export async function editConfig<A extends ConfigEditorRequest["action"]>(
+  request: ConfigEditorRequest & { action: A },
+  root = site().root,
+): Promise<ConfigReply<A>> {
+  return (await postEditor(
+    "/v1/config",
+    request,
+    configEditorReplySchemas[request.action],
+    root,
+  )) as ConfigReply<A>;
 }
 /** The env editor route for operator env files: names, one revealed value, or a write. The request
  * may hold a value, so it is never logged; rigd's refusals never echo it either. */
-export function editEnv(request: EnvEditorRequest): Promise<unknown> {
-  return postEditor("/v1/env", request);
+export async function editEnv<A extends EnvEditorRequest["action"]>(
+  request: EnvEditorRequest & { action: A },
+  root = site().root,
+): Promise<EnvReply<A>> {
+  return (await postEditor(
+    "/v1/env",
+    request,
+    envEditorReplySchemas[request.action],
+    root,
+  )) as EnvReply<A>;
 }
+const refusalSchema = z.object({
+  error: z.object({
+    code: z.string().min(1),
+    message: z.string().min(1),
+    hint: z.string().optional(),
+    // A config validation failure names each field's problem; the page shows each beside its field.
+    issues: z
+      .array(z.object({ path: z.array(z.string()), message: z.string() }))
+      .optional(),
+  }),
+});
+/** Posts one editor request and answers its result only once it matches the action's reply schema. */
 async function postEditor(
   path: "/v1/config" | "/v1/env",
   request: unknown,
+  reply: z.ZodType,
+  root: string,
 ): Promise<unknown> {
-  const address = await daemonAddress(site().root);
+  const editor = path === "/v1/config" ? "config editor" : "env editor";
+  const address = await liveDaemonAddress(root);
   let response: Response;
   try {
     response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
@@ -79,30 +108,19 @@ async function postEditor(
       "This rigd does not offer that editor yet.",
       "Run rigd install from this version of Rig to upgrade the daemon.",
     );
-  const payload = (await response.json().catch(() => undefined)) as
-    | {
-        result?: unknown;
-        error?: {
-          code?: string;
-          message?: string;
-          hint?: string;
-          issues?: unknown;
-        };
-      }
-    | undefined;
-  if (!payload || typeof payload !== "object") throw protocolFailure();
+  const payload: unknown = await response.json().catch(() => undefined);
   if (!response.ok) {
-    const error = payload.error;
-    if (typeof error?.code !== "string" || typeof error.message !== "string")
-      throw protocolFailure();
+    const refusal = refusalSchema.safeParse(payload);
+    if (!refusal.success) throw protocolFailure(`${editor} refusal`);
+    const { code, message, hint, issues } = refusal.data.error;
     throw new RigError(
-      error.code,
-      error.message,
-      error.hint ?? "Run 'rigd status'.",
-      // A config validation failure names each field's problem; the page shows each beside its field.
-      Array.isArray(error.issues) ? { issues: error.issues } : {},
+      code,
+      message,
+      hint ?? "Run 'rigd status'.",
+      issues ? { issues } : {},
     );
   }
-  if (!Object.hasOwn(payload, "result")) throw protocolFailure();
-  return payload.result;
+  const answered = z.object({ result: reply }).safeParse(payload);
+  if (!answered.success) throw protocolFailure(`${editor} reply`);
+  return answered.data.result;
 }

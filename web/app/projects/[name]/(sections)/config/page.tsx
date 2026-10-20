@@ -1,5 +1,5 @@
 import { attempt } from "@/lib/outcome";
-import type { ConfigRead, ConfigReport } from "@/lib/types";
+import type { ConfigReport } from "@/lib/types";
 import { editConfig, read } from "@/server/daemon";
 import { project } from "@/server/project";
 import { Failure } from "@/components/bits";
@@ -12,12 +12,7 @@ export default async function ConfigPage({
 }) {
   const found = await project(params);
   const [source, validated] = await Promise.all([
-    attempt(
-      editConfig({
-        action: "read",
-        project: found.name,
-      }) as Promise<ConfigRead>,
-    ),
+    attempt(editConfig({ action: "read", project: found.name })),
     attempt(
       read({ action: "config", project: found.name }) as Promise<ConfigReport>,
     ),

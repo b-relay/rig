@@ -793,71 +793,91 @@ test("a rigd that cannot confirm what Caddy serves after an unclean stop starts 
   expect(await through(a.domain, a.https)).toBeUndefined();
 }, 180_000);
 
-test("rigd uninstall stops a rigd whose recovery restart of Caddy is still waiting, within the stop deadline, and no clean stop is recorded", async () => {
+test("rigd uninstall stops a rigd whose recovery restart of Caddy is still waiting, for the new process or the old one's exit, within the stop deadline, and no clean stop is recorded", async () => {
   if (!caddy)
     throw new Error("Proxy installation tests require a local caddy.");
-  const root = await mkdtemp("/tmp/rig-pi-");
-  cleanups.push(() => rm(root, { recursive: true, force: true }));
-  const home = join(root, "home");
-  await mkdir(home, { recursive: true });
-  const paths = proxyPaths(root);
-  const installation = createProxyInstallation({
-    root,
-    userHome: home,
-    uid: process.getuid!(),
-    userName: "test",
-    mode: "process",
-    run: runCommand,
-    startDeadlineMs: 8000,
-  });
-  cleanups.push(() => installation.remove());
-  await writeFile(
-    join(root, "config.yaml"),
-    `proxy:\n  caddy: ${caddy}\n  ports: { http: ${freePort()}, https: ${freePort()} }\n  tls: { ca: internal }\n`,
-  );
-  await installation.install();
-  // An earlier rigd's unclean stop: the next rigd restarts Caddy before it trusts it, and that restart waits.
-  await rm(paths.cleanStop, { force: true });
-  await writeFile(join(root, "hold-caddy-restart"), "");
-  await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
-  await writeFile(join(root, "auth", "control-plane.token"), "t".repeat(43), {
-    mode: 0o600,
-  });
-  const rigd = Bun.spawn(
-    [process.execPath, join(import.meta.dir, "support", "system-rigd.ts")],
-    {
-      env: {
-        ...process.env,
-        RIG_ROOT: root,
-        RIG_DAEMON_CHILD: "1",
-        RIG_DAEMON_MODE: "system",
+  // new: the restarted Caddy never answers. old: the running Caddy does not exit when asked (tests/support/system-rigd.ts).
+  for (const stall of ["old", "new"] as const) {
+    const root = await mkdtemp("/tmp/rig-pi-");
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const home = join(root, "home");
+    await mkdir(home, { recursive: true });
+    const paths = proxyPaths(root);
+    const installation = createProxyInstallation({
+      root,
+      userHome: home,
+      uid: process.getuid!(),
+      userName: "test",
+      mode: "process",
+      run: runCommand,
+      startDeadlineMs: 8000,
+    });
+    cleanups.push(() => installation.remove());
+    await writeFile(
+      join(root, "config.yaml"),
+      `proxy:\n  caddy: ${caddy}\n  ports: { http: ${freePort()}, https: ${freePort()} }\n  tls: { ca: internal }\n`,
+    );
+    await installation.install();
+    // An earlier rigd's unclean stop: the next rigd restarts Caddy before it trusts it, and that restart waits.
+    await rm(paths.cleanStop, { force: true });
+    await writeFile(
+      join(root, stall === "new" ? "hold-caddy-restart" : "ignore-caddy-stop"),
+      "",
+    );
+    const caddyPid = await recordedPid(paths.processRecord);
+    await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, "auth", "control-plane.token"), "t".repeat(43), {
+      mode: 0o600,
+    });
+    const rigd = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "support", "system-rigd.ts")],
+      {
+        env: {
+          ...process.env,
+          RIG_ROOT: root,
+          RIG_DAEMON_CHILD: "1",
+          RIG_DAEMON_MODE: "system",
+        },
+        stdout: "ignore",
+        stderr: "ignore",
       },
-      stdout: "ignore",
-      stderr: "ignore",
-    },
-  );
-  cleanups.push(async () => {
-    rigd.kill();
-    await rigd.exited;
-  });
-  const admin = new DaemonAdmin({
-    root,
-    command: [process.execPath],
-    mode: "process",
-    userHome: home,
-    launchctl: async () => ({ code: 0, stdout: "", stderr: "" }),
-  });
-  expect(
-    await eventually(
-      async () => existsSync(join(root, "caddy-restart-held")),
-      true,
-    ),
-  ).toBe(true);
-  expect(await admin.status()).toMatchObject({ reachable: true });
-  const started = Date.now();
-  expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
-  expect(Date.now() - started).toBeLessThan(10_000);
-  expect(processExists(rigd.pid)).toBe(false);
-  // The restart was cut short, so this rigd cannot vouch for what Caddy holds: the next one restarts it first.
-  expect(existsSync(paths.cleanStop)).toBe(false);
-}, 120_000);
+    );
+    cleanups.push(async () => {
+      rigd.kill();
+      await rigd.exited;
+    });
+    const admin = new DaemonAdmin({
+      root,
+      command: [process.execPath],
+      mode: "process",
+      userHome: home,
+      launchctl: async () => ({ code: 0, stdout: "", stderr: "" }),
+    });
+    expect(
+      await eventually(
+        async () =>
+          existsSync(
+            join(
+              root,
+              stall === "new" ? "caddy-restart-held" : "caddy-stop-ignored",
+            ),
+          ),
+        true,
+      ),
+    ).toBe(true);
+    expect(await admin.status()).toMatchObject({ reachable: true });
+    const started = Date.now();
+    expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
+    expect(Date.now() - started).toBeLessThan(10_000);
+    expect(processExists(rigd.pid)).toBe(false);
+    // The restart was cut short, so this rigd cannot vouch for what Caddy holds: the next one restarts it first.
+    expect(existsSync(paths.cleanStop)).toBe(false);
+    expect(existsSync(paths.restore)).toBe(true);
+    // Cut short before the old process exited, it is still recorded, so the next rigd finds and restarts it; no new one was
+    // started.
+    if (stall === "old") {
+      expect(await recordedPid(paths.processRecord)).toBe(caddyPid);
+      expect(processExists(caddyPid)).toBe(true);
+    }
+  }
+}, 180_000);

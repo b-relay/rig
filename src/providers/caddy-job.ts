@@ -387,18 +387,28 @@ export function createProcessCaddyJob(options: {
         ? restartCancelled(paths)
         : startFailure(paths, deadlineMs);
   }
-  async function stop(): Promise<void> {
+  /** Stops the recorded process. A `signal` that aborts ends the waits for it to exit: the restart is cancelled, and the
+   * record stays while the process may still run, so whoever reads it next finds it. */
+  async function stop(signal?: AbortSignal): Promise<void> {
     const recorded = await record();
     await options.admin.stop();
     if (recorded && (await recordedProcess(recorded)) === "running") {
       const gone = await until(
         async () => !processExists(recorded.pid),
         10_000,
+        signal,
       );
+      if (!gone && signal?.aborted) throw restartCancelled(paths);
       if (!gone) {
         process.kill(recorded.pid, "SIGKILL");
         // The record goes only once the process is confirmed gone; otherwise it may still serve stale routes.
-        if (!(await until(async () => !processExists(recorded.pid), 5_000)))
+        const killed = await until(
+          async () => !processExists(recorded.pid),
+          5_000,
+          signal,
+        );
+        if (!killed && signal?.aborted) throw restartCancelled(paths);
+        if (!killed)
           throw new RigError(
             "PROXY_STOP",
             `Rig's Caddy (pid ${recorded.pid}) did not exit.`,
@@ -416,7 +426,9 @@ export function createProcessCaddyJob(options: {
     pid: async () =>
       (await state()) === "running" ? (await record())?.pid : undefined,
     async restart(signal) {
-      await stop();
+      await stop(signal);
+      // Never a new process once the restart is cancelled.
+      if (signal?.aborted) throw restartCancelled(paths);
       await start(signal);
     },
     async install() {
@@ -424,7 +436,7 @@ export function createProcessCaddyJob(options: {
       await start();
       return { changed: true };
     },
-    remove: stop,
+    remove: () => stop(),
   };
 }
 /** The Caddy job that sits beside rigd: a detached process, a LaunchAgent, or a system job, as rigd itself runs. */

@@ -202,12 +202,21 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     );
   /** Restarts Caddy's job, cut short by `close`: a restart under way then fails PROXY_CLOSED, and no clean stop is recorded,
    * so the next rigd restarts Caddy before it trusts what Caddy serves. */
-  async function restartJob(): Promise<void> {
+  async function restartJob(guard?: () => void): Promise<void> {
+    // Recorded first: until Caddy answers again it may be stopped by this restart, and then recovery starts it again.
+    await replacePrivateFile(
+      options.root,
+      paths.restore,
+      JSON.stringify({ pid: process.pid, at: now().toISOString() }) + "\n",
+    );
+    if (closing.signal.aborted) throw closed();
+    guard?.();
     await options.job.restart(closing.signal).catch((error: unknown) => {
       if (!closing.signal.aborted) throw error;
       unanswered = true;
       throw closed();
     });
+    await rm(paths.restore, { force: true });
   }
   function queued<T>(work: () => Promise<T>): Promise<T> {
     const operation = pending
@@ -745,16 +754,36 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
    * applied. One that stopped in order recorded so (`close`). After any other end, a crash or a kill, Caddy may hold a
    * load that rigd sent but that Caddy applies only after this rigd has read its configuration, so a running Caddy is
    * restarted: its new process reads the current generation, made to withhold the dashboard first when it routes it (rigd
-   * has not found its dashboard yet), and nothing the old process held. Every route is down for that restart. */
+   * has not found its dashboard yet), and nothing the old process held. Every route is down for that restart. A restart
+   * an earlier rigd did not see through (ProxyPaths.restore) is made again whatever the job's state, since Caddy may be
+   * stopped by it; this rigd's own rollbacks start Caddy themselves (see publish). */
   async function recover(): Promise<void> {
+    const exists = (path: string) =>
+      stat(path).then(
+        () => true,
+        () => false,
+      );
     if (recovered) return;
-    const clean = await stat(paths.cleanStop).then(
-      () => true,
-      () => false,
-    );
+    const restore = await exists(paths.restore);
     const current = await currentGeneration();
-    if (!clean && current && (await options.job.state()) !== "stopped") {
-      if ((await metadataOf(current))?.dashboard?.port != null) {
+    if (
+      current &&
+      (restore ||
+        (!(await exists(paths.cleanStop)) &&
+          (await options.job.state()) !== "stopped"))
+    ) {
+      // The restarted Caddy reads `current`: it must not route the dashboard to a port rigd does not confirm now (before
+      // rigd has found its dashboard, none).
+      const routed = async () =>
+        (await metadataOf(await currentGeneration()))?.dashboard;
+      const unconfirmed = async () => {
+        const recorded = await routed();
+        return (
+          recorded?.port != null &&
+          !Bun.deepEquals(recorded, await options.dashboard?.confirmed())
+        );
+      };
+      if (await unconfirmed()) {
         const { settings, ownerRoutesOnly } = await accepted();
         await publish(
           (await readText(generationFiles(current).routes)) ?? "",
@@ -763,17 +792,26 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           ownerRoutesOnly,
           false,
         ).catch(() => {});
-        // The restarted Caddy reads `current`: it must not route the dashboard to a port this rigd has not found it on.
-        const now = await currentGeneration();
-        if (now && (await metadataOf(now))?.dashboard?.port != null)
+        if (await unconfirmed())
           throw new RigError(
             "PROXY_RECOVERY",
             "Rig's Caddy could not be given a configuration that withholds the dashboard's domain before its restart.",
             "Run rig doctor; rigd tries again with its next change.",
           );
       }
-      if (closing.signal.aborted) throw closed();
-      await restartJob();
+      const recorded = await routed();
+      // Checked again with nothing awaited before the restart: a route rigd stopped asking for meanwhile is never served.
+      await restartJob(() => {
+        if (
+          recorded?.port != null &&
+          !Bun.deepEquals(recorded, options.dashboard?.current())
+        )
+          throw new RigError(
+            "PROXY_RECOVERY",
+            "The dashboard's route changed as Rig's Caddy was about to restart.",
+            "rigd tries again with its next change.",
+          );
+      });
     }
     await rm(paths.cleanStop, { force: true });
     recovered = true;

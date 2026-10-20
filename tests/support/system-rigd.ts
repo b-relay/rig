@@ -16,7 +16,21 @@ const original = { ...caddyJob };
 mock.module(join(import.meta.dir, "../../src/providers/caddy-job.ts"), () => ({
   ...original,
   createCaddyJob: (options: Parameters<typeof original.createCaddyJob>[0]) => {
-    const job = original.createCaddyJob({ ...options, mode: "process" });
+    // While `<RIG_ROOT>/ignore-caddy-stop` exists, the job's request that Caddy stop goes unheeded (its admin API answers
+    // nothing), so a restart waits for the old process to exit; `<RIG_ROOT>/caddy-stop-ignored` is written as it does.
+    const job = original.createCaddyJob({
+      ...options,
+      mode: "process",
+      admin: {
+        ...options.admin,
+        async stop() {
+          if (!existsSync(join(root, "ignore-caddy-stop")))
+            return options.admin.stop();
+          await writeFile(join(root, "caddy-stop-ignored"), "");
+          return false;
+        },
+      },
+    });
     return {
       ...job,
       async restart(signal?: AbortSignal) {

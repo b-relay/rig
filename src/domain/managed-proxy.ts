@@ -40,6 +40,9 @@ export interface ProxyPaths {
   /** Written by a rigd once nothing it sent can reach Caddy any more (it stopped in order), and taken by the next as it
    * starts; without it, Caddy may still hold a configuration an earlier rigd sent, and is restarted. */
   readonly cleanStop: string;
+  /** Written as Rig restarts Caddy's job and removed once Caddy answers again: while it exists, Caddy may be stopped by a
+   * restart Rig did not see through (cancelled, or failed with its rollback), not by its owner, so recovery starts it again. */
+  readonly restore: string;
 }
 export function proxyPaths(root: string): ProxyPaths {
   const caddy = join(root, "caddy");
@@ -63,6 +66,7 @@ export function proxyPaths(root: string): ProxyPaths {
     token: join(root, "auth", "acme-dns.token"),
     rejectedSettings: join(caddy, "settings-rejected.json"),
     cleanStop: join(caddy, "clean-stop.json"),
+    restore: join(caddy, "restore.json"),
   };
 }
 /** The files of one generation; every import of its main file names one of them, so a generation never mixes with another. */

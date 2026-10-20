@@ -81,6 +81,10 @@ export async function main(args: readonly string[]): Promise<number> {
     }),
     mode,
     userHome: homedir(),
+    // The release installer passes its installation lock down on this descriptor (see scripts/install).
+    ...(/^\d+$/.test(process.env.RIG_INSTALL_LOCK_FD ?? "")
+      ? { inheritedLock: Number(process.env.RIG_INSTALL_LOCK_FD) }
+      : {}),
     start: async () => (await readHostConfig(root)).daemon.start,
     dashboard: async () => dashboardServing(root, await readHostConfig(root)),
     proxy: createProxyInstallation({

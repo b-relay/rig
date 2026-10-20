@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { closeSync, constants, openSync } from "node:fs";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireProcessLock } from "../src/adapters/process-lock";
@@ -9,6 +17,14 @@ import type { ProxyInstallation } from "../src/daemon/proxy-installation";
 
 const HOST = join(import.meta.dir, "../src/daemon/host.ts");
 const IDENTITY = join(import.meta.dir, "../src/daemon/process-identity.ts");
+const ADMIN = join(import.meta.dir, "../src/daemon/admin.ts");
+/** macOS open(2): take flock(2)'s exclusive lock as the file opens. */
+const O_EXLOCK = 0x20;
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -24,6 +40,7 @@ async function fixture(prefix: string) {
   );
   return {
     root,
+    script,
     admin: (options: Partial<ConstructorParameters<typeof DaemonAdmin>[0]>) =>
       new DaemonAdmin({
         root,
@@ -189,25 +206,96 @@ test("rigd install twice at once: the second is refused while the first runs, an
   }
 }, 30000);
 
-test("rigd install goes ahead under the installation lock only when the process that ran it holds it", async () => {
+test("rigd install holds the installation lock through the descriptor its installer hands it, and only one open on that lock", async () => {
   const f = await fixture("rig-install-under-installer-");
+  const lockPath = installLockPath(f.root);
   await mkdir(join(f.root, "daemon"), { recursive: true });
-  const held = await acquireProcessLock(installLockPath(f.root), {
-    keep: true,
-  });
-  if (!("lock" in held)) throw new Error("refused");
+  // As the installer's shell does: the lock taken on a descriptor of its own.
+  const installer = openSync(
+    lockPath,
+    constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK,
+    0o600,
+  );
+  const elsewhere = openSync(join(f.root, "elsewhere"), "w");
   try {
+    // Without the descriptor, or with one open on another file, the lock is someone else's.
+    for (const options of [{}, { inheritedLock: elsewhere }])
+      await expect(f.admin(options).install()).rejects.toMatchObject({
+        code: "DAEMON_INSTALL_LOCKED",
+      });
+    expect(await f.admin({ inheritedLock: installer }).install()).toMatchObject(
+      { outcome: "installed", reachable: true },
+    );
+    // The install closed the descriptor when done, and the rigd it started was never handed it, so the lock is free.
+    const after = await acquireProcessLock(lockPath, { keep: true });
+    expect("lock" in after).toBe(true);
+    if ("lock" in after) await after.lock.release();
+  } finally {
+    closeSync(elsewhere);
+    await f.admin({}).uninstall();
+  }
+}, 30000);
+
+test("an installer killed while its rigd install runs leaves the lock held by that rigd install until it ends", async () => {
+  const f = await fixture("rig-installer-killed-");
+  const lockPath = installLockPath(f.root);
+  await mkdir(join(f.root, "daemon"), { recursive: true });
+  const entered = join(f.root, "entered"),
+    resume = join(f.root, "resume"),
+    out = join(f.root, "out.json");
+  // A rigd install that pauses as it asks how routes are published, holding the lock it was handed.
+  const install = join(f.root, "install.ts");
+  await writeFile(
+    install,
+    `import { existsSync, writeFileSync } from "node:fs";
+     import { DaemonAdmin } from ${JSON.stringify(ADMIN)};
+     const [root, child, entered, resume, out] = process.argv.slice(2);
+     const admin = new DaemonAdmin({
+       root, command: [process.execPath, child], mode: "process", userHome: root,
+       inheritedLock: Number(process.env.RIG_INSTALL_LOCK_FD),
+       proxy: {
+         mode: async () => {
+           writeFileSync(entered, "");
+           while (!existsSync(resume)) await Bun.sleep(10);
+           return "external";
+         },
+         remove: async () => {},
+       },
+     });
+     const outcome = await admin.install().then((status) => status.outcome, (error) => error.code);
+     writeFileSync(out, JSON.stringify(outcome));`,
+  );
+  // The installer, as scripts/install takes the lock and runs rigd install.
+  const installer = Bun.spawn([
+    "/bin/sh",
+    "-c",
+    `exec 9<>"$1"; /usr/bin/lockf -s -t 0 9 || exit 75; RIG_INSTALL_LOCK_FD=9 "$2" "$3" "$4" "$5" "$6" "$7" "$8"; exit $?`,
+    "installer",
+    lockPath,
+    process.execPath,
+    install,
+    f.root,
+    f.script,
+    entered,
+    resume,
+    out,
+  ]);
+  try {
+    while (!(await exists(entered))) await Bun.sleep(10);
+    installer.kill("SIGKILL");
+    await installer.exited;
+    // The installer is gone; its rigd install still holds the lock, so another is refused.
     await expect(f.admin({}).install()).rejects.toMatchObject({
       code: "DAEMON_INSTALL_LOCKED",
-      details: { pid: process.pid },
     });
-    // Run by the release installer that holds it.
-    expect(await f.admin({ parent: process.pid }).install()).toMatchObject({
-      outcome: "installed",
-      reachable: true,
+    await writeFile(resume, "");
+    while (!(await exists(out))) await Bun.sleep(10);
+    expect(JSON.parse(await readFile(out, "utf8"))).toBe("installed");
+    expect(await f.admin({}).install()).toMatchObject({
+      outcome: "unchanged",
     });
   } finally {
-    await held.lock.release();
+    await writeFile(resume, "");
     await f.admin({}).uninstall();
   }
 }, 30000);

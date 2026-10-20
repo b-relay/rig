@@ -12,8 +12,7 @@
 #
 #   RIG_ROOT  where Rig keeps everything (default ~/.rig); an absolute path, written without //, . or .. parts.
 #
-# Everything runs from main, called in braces on the last line, so a download cut short runs nothing at all; braces rather
-# than parentheses, so main runs in this shell, whose pid is the one the installation lock records.
+# Everything runs from main, called in parentheses on the last line, so a download cut short runs nothing at all.
 set -eu
 
 # The release this copy installs: the release workflow writes its tag here.
@@ -84,9 +83,10 @@ check_private_root() {
 }
 
 # Takes the installation lock, which rigd install and rigd uninstall take too, so one install, upgrade or uninstall changes
-# the Rig root at a time; the rigd install this runs goes ahead under it. lockf(1) takes flock(2)'s lock on descriptor 9,
-# which this shell keeps open, so the lock is released when the shell exits, however it exits. The file names this shell's
-# pid for whoever is refused, and for that rigd install.
+# the Rig root at a time. lockf(1) takes flock(2)'s lock on descriptor 9, which this shell keeps open, so the lock is
+# released once nothing has it open, however the shell ends. The rigd install this runs is handed descriptor 9 and holds
+# the lock through it to its own end, even if this shell is killed first. The file names the holder, pid and start time
+# as rigd records them, for whoever is refused.
 lock_installation() {
 	lock="$root/daemon/install.lock"
 	[ ! -L "$lock" ] || fail "$lock is a symbolic link; remove it, then install again. Nothing was installed."
@@ -94,7 +94,7 @@ lock_installation() {
 	exec 9<>"$lock"
 	lockf -s -t 0 9 || fail "another rigd install, upgrade or uninstall is changing $root. Wait for it to finish, then install again. Nothing was installed."
 	: >"$lock"
-	printf '{"pid":%s}\n' "$$" >&9
+	printf '{"pid":%s,"startedAt":"%s"}\n' "$$" "$(ps -p $$ -o lstart= | sed 's/^ *//; s/ *$//')" >&9
 }
 
 # Whether the dashboard at $2 holds every file of the release's dashboard staged at $1, byte for byte. Files only at $2,
@@ -171,6 +171,10 @@ main() {
 	# The dashboard goes in beside the ones already there, under its release; rigd runs the one of its own release.
 	board="$(mktemp -d "$root/dashboard/.install.XXXXXX")"
 	cp -R "$work/unpacked/$build/dashboard/." "$board/"
+	# Its file list, SHA-256 per file of the verified archive's dashboard, goes with it: rigd upgrade checks the installed
+	# dashboard against it.
+	(cd "$board" && find . -type f -exec shasum -a 256 {} +) >"$work/files.sha256"
+	cp "$work/files.sha256" "$board/files.sha256"
 	# Checked again just before the renames: a Target may have published one while the release downloaded. rigd
 	# serializes its own publications in-process, so only an instant between this check and the renames is left uncovered.
 	check_destinations
@@ -191,7 +195,7 @@ main() {
 	done
 	printf 'Installed rig and rigd %s in %s/bin, and the dashboard in %s/dashboard/%s.\n' "$version" "$root" "$root" "$version"
 
-	"$root/bin/rigd" install 9>&-
+	RIG_INSTALL_LOCK_FD=9 "$root/bin/rigd" install
 
 	# Earlier releases' dashboards go once rigd serves this release, which then runs this release's dashboard. A rigd
 	# install that adopted a running rigd of another release leaves it serving its own, so they stay until then.
@@ -215,4 +219,4 @@ main() {
 	esac
 }
 
-{ main "$@"; }
+(main "$@")

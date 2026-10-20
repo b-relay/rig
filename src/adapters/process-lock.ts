@@ -1,4 +1,11 @@
-import { constants, type Stats } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  ftruncateSync,
+  writeSync,
+  type Stats,
+} from "node:fs";
 import { lstat, open, readFile, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { z } from "zod";
@@ -16,6 +23,8 @@ const LOCK_FLAGS =
   constants.O_NONBLOCK |
   O_EXLOCK |
   O_CLOEXEC;
+/** lockf(1)'s exit status when another holds the lock. */
+const EX_TEMPFAIL = 75;
 /** How often an acquisition retries a lock file another holder removed between this open and its lock. */
 const REOPENS = 10;
 const holderSchema = z.object({
@@ -61,24 +70,17 @@ export async function acquireProcessLock(
         continue;
       }
       const prior = await recordedHolder(lockPath);
-      // A rig from before flock took its lock by creating the file alone; while its recorded process runs, it holds it.
-      if (
-        prior &&
-        prior.pid !== process.pid &&
-        (await recordedProcess(prior)) === "running"
-      ) {
+      // A rig from before flock took its lock by creating the file alone; while its recorded process is alive (one that
+      // recorded no start time cannot be told from a reused pid), it holds it.
+      const liveness =
+        prior && prior.pid !== process.pid
+          ? await recordedProcess(prior)
+          : "exited";
+      if (prior && (liveness === "running" || liveness === "unverified")) {
         await handle.close();
         return { held: { lockPath, pid: prior.pid } };
       }
-      const startedAt = await processStartTime(process.pid);
-      await handle.truncate(0);
-      await handle.write(
-        JSON.stringify({
-          pid: process.pid,
-          ...(startedAt ? { startedAt } : {}),
-        }),
-        0,
-      );
+      await recordHolder(handle.fd);
       return { lock: heldLock(lockPath, handle, mine, options.keep === true) };
     } catch (error) {
       await handle.close().catch(() => {});
@@ -86,6 +88,52 @@ export async function acquireProcessLock(
     }
   }
   return { held: { lockPath } };
+}
+/** Holds the lock at `lockPath` through `fd`, a descriptor open on that lock file that the process which started this one
+ * passed down, so the lock stays held while this process runs even if that one has died. The descriptor must be open on
+ * the file now at `lockPath`; then lockf(1) takes the lock on it, which succeeds when its open file (shared with the parent)
+ * already holds it or no one does, and fails when another holds it. Undefined when `fd` is not open on that file; the
+ * caller then takes the lock itself. Released, the descriptor is closed and the file left in place. */
+export async function inheritProcessLock(
+  lockPath: string,
+  fd: number,
+): Promise<LockAcquisition | undefined> {
+  let inherited: Stats;
+  try {
+    inherited = fstatSync(fd);
+  } catch {
+    return undefined;
+  }
+  if (!sameFile(inherited, await lstat(lockPath).catch(() => undefined)))
+    return undefined;
+  const code = await Bun.spawn(["/usr/bin/lockf", "-s", "-t", "0", "3"], {
+    stdio: ["ignore", "ignore", "ignore", fd],
+  }).exited;
+  if (code === EX_TEMPFAIL)
+    return { held: { lockPath, ...(await recordedPid(lockPath)) } };
+  if (code !== 0)
+    throw new Error(`lockf could not lock ${lockPath} (exit ${code}).`);
+  await recordHolder(fd);
+  let released = false;
+  return {
+    lock: {
+      async release() {
+        if (released) return;
+        released = true;
+        closeSync(fd);
+      },
+    },
+  };
+}
+/** Records this process, pid and start time, as the holder in the lock file open at `fd`, for whoever is refused. */
+async function recordHolder(fd: number): Promise<void> {
+  const startedAt = await processStartTime(process.pid);
+  ftruncateSync(fd, 0);
+  writeSync(
+    fd,
+    JSON.stringify({ pid: process.pid, ...(startedAt ? { startedAt } : {}) }),
+    0,
+  );
 }
 function heldLock(
   lockPath: string,

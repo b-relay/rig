@@ -130,15 +130,18 @@ test("whatever an unlocked lock file records, it is taken: a dead or replaced ho
   }
 });
 
-test("a lock file an older rig created for a process still running is held by it", async () => {
+test("a lock file an older rig created for a process still running is held by it, with or without its start time", async () => {
   const path = await lockPath();
   const older = Bun.spawn(["/bin/sleep", "30"]);
   try {
     const startedAt = await processStartTime(older.pid);
-    await writeFile(path, JSON.stringify({ pid: older.pid, startedAt }));
-    expect(await acquireProcessLock(path)).toEqual({
-      held: { lockPath: path, pid: older.pid },
-    });
+    for (const record of [{ pid: older.pid, startedAt }, { pid: older.pid }]) {
+      await writeFile(path, JSON.stringify(record));
+      expect(await acquireProcessLock(path)).toEqual({
+        held: { lockPath: path, pid: older.pid },
+      });
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual(record);
+    }
   } finally {
     older.kill();
     await older.exited;
@@ -193,4 +196,38 @@ test("a kept lock stays as an empty file, and is the lock lockf(1) takes", async
     if (held?.pid) process.kill(held.pid);
     await holder.exited;
   }
+});
+
+test("an acquisition whose lock file a releasing holder removed meanwhile does not hold the lock beside the next holder", async () => {
+  const path = await lockPath();
+  // In a process of its own, the path is swapped just after this acquisition opened and locked the file: its holder
+  // releases (removes the file), and the next holder creates and locks a new one there.
+  const script = `${path}.ts`;
+  await writeFile(
+    script,
+    `import { mock } from "bun:test";
+     import * as fs from "node:fs/promises";
+     import { constants } from "node:fs";
+     const path = process.argv[2];
+     const { lstat, open, unlink } = fs;
+     let next;
+     mock.module("node:fs/promises", () => ({
+       ...fs,
+       lstat: async (target, ...rest) => {
+         if (target === path && !next) {
+           await unlink(path);
+           next = await open(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | 0x20, 0o600);
+         }
+         return lstat(target, ...rest);
+       },
+     }));
+     const { acquireProcessLock } = await import(${JSON.stringify(join(import.meta.dir, "../src/adapters/process-lock.ts"))});
+     const acquired = await acquireProcessLock(path);
+     process.stdout.write("lock" in acquired ? "held both" : "refused");`,
+  );
+  const child = Bun.spawn([process.execPath, script, path], {
+    stdout: "pipe",
+  });
+  expect(await new Response(child.stdout).text()).toBe("refused");
+  expect(await child.exited).toBe(0);
 });

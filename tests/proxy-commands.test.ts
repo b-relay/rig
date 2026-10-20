@@ -173,6 +173,13 @@ test("the proxy report names each site's owner, routes and certificate, the owne
           upstream: "127.0.0.1:8080",
           certificate: "*.example.com",
         },
+        // The dashboard's domain, while rigd has not found its dashboard on its port.
+        {
+          hostname: "rig.example.com",
+          source: "custom",
+          upstream: null,
+          certificate: "*.example.com",
+        },
       ],
       pending: {
         fields: ["routes"],
@@ -188,6 +195,7 @@ test("the proxy report names each site's owner, routes and certificate, the owne
       "",
       "api.melody.example.com  melody stable  /v1 -> withheld (503), / -> 127.0.0.1:3002  [*.melody.example.com]",
       "code.example.com  proxy.routes  / -> 127.0.0.1:8080  [*.example.com]",
+      "rig.example.com  proxy.routes  / -> withheld (503)  [*.example.com]",
       "",
       "Pending    proxy settings in config.yaml (routes) are not served: proxy.routes in Host config names api.melody.example.com, which a Target serves.",
       "",

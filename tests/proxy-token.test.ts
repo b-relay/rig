@@ -241,6 +241,7 @@ test("doctor pins one generation for the whole inspection: a publication that sw
         return { generation: 1 };
       },
       stop: async () => true,
+      load: async () => undefined,
     },
     job: { state: async () => "running", description: "test job" },
   });

@@ -25,6 +25,7 @@ import {
   settingsDigest,
   type HostRoute,
   type ProxyPaths,
+  type PublishedDashboard,
 } from "../domain/managed-proxy";
 import {
   issuancePolicies,
@@ -73,6 +74,22 @@ export interface CaddyAdmin {
   reachable(): Promise<boolean>;
   /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. */
   config(): Promise<unknown>;
+  /** Has Caddy run `config` (POST /load): resolves to undefined once Caddy has taken it, or to why it refused it; rejects
+   * when Caddy did not answer (cancelled, timed out, unreachable), since Caddy may still hold the request and apply it.
+   * Made by rigd itself, never by a process of its own, so nothing rigd started can submit a configuration after rigd is
+   * gone. */
+  load(config: unknown, signal?: AbortSignal): Promise<string | undefined>;
+}
+/** Thrown by activation, before anything is loaded, when the generation routes the dashboard to a port rigd no longer
+ * asks for: its callers build the generation again instead. */
+class DashboardRouteChanged extends Error {}
+/** The dashboard's route as rigd asks for it (see PublishedDashboard). */
+export interface DashboardRouteSource {
+  /** The route as rigd asks for it now; undefined when it serves none. */
+  current(): PublishedDashboard | undefined;
+  /** `current()`, its port kept only once rigd has found its own dashboard's process still listening there: what a
+   * publication renders. */
+  confirmed(): Promise<PublishedDashboard | undefined>;
 }
 /** What one generation was built from, recorded beside it. */
 interface GenerationMetadata {
@@ -84,8 +101,15 @@ interface GenerationMetadata {
   /** The proxy settings it was rendered from: once it serves, the last accepted ones, which every route change and recovery
    * publishes with until a republish of newer Host config is accepted. */
   proxy?: ProxySettings;
-  /** The owner's own routes it serves, from `proxy.routes`: what reporting and verify list beside Rig's. */
+  /** The owner's own routes it serves, from `proxy.routes`, and the dashboard's: what reporting and verify list beside
+   * Rig's. */
   customRoutes: HostRoute[];
+  /** The dashboard's route it serves, as rigd asked for it; null for none. Absent from an older rigd's generations. */
+  dashboard?: PublishedDashboard | null;
+  /** True when `proxy.routes` in `proxy` is known to hold the owner's routes alone. An older rigd folded the dashboard's
+   * route into them without recording which it was, so in its generations, and in those published with their settings, a
+   * route to an earlier rigd's dashboard may be among them: unknown, until Host config is published again. */
+  ownerRoutesOnly?: boolean;
   createdAt: string;
 }
 /** Why a publication was made, which decides the failure codes: a route change, or a republish of the current settings. */
@@ -110,6 +134,9 @@ export interface ManagedCaddyOptions {
   readonly root: string;
   /** The `proxy` settings as Host config says now; read at every publication. */
   readonly settings: () => Promise<ProxySettings>;
+  /** The dashboard's route, served beside `proxy.routes`: confirmed at every publication, and recorded with it. None when
+   * absent. */
+  readonly dashboard?: DashboardRouteSource;
   /** Runs Rig's Caddy binary for validate and reload. */
   readonly run: CommandRunner;
   readonly job: CaddyJob;
@@ -130,6 +157,15 @@ export interface ManagedCaddy {
    * with the reason and the error is thrown; Caddy keeps serving the last accepted ones, and a route file ahead of what it
    * serves is still published with them. */
   republish(): Promise<{ published: boolean }>;
+  /** Makes Caddy serve the dashboard's route as `dashboard` says now, with the settings it last accepted, unless Caddy is
+   * confirmed to serve exactly that already; Host config is not read. Resolves once Caddy is confirmed to serve it, to
+   * whether its routes are known to hold no other dashboard route: false while it serves `proxy.routes` an older rigd
+   * recorded (see GenerationMetadata.ownerRoutesOnly). */
+  refreshDashboard(): Promise<{ known: boolean }>;
+  /** Ends publishing, for a rigd that stops: the Caddy command or load under way is cancelled, every change queued or
+   * asked for later fails PROXY_CLOSED, and once nothing of the queue runs this records that the stop was clean (see
+   * `ProxyPaths.cleanStop`). What Caddy serves then is confirmed by the next rigd as it starts. */
+  close(): Promise<void>;
   readonly paths: ProxyPaths;
 }
 export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
@@ -143,8 +179,25 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   let pending: Promise<unknown> = Promise.resolve();
   /** Hostnames a deploy checked and is about to publish, by route key, held in this process only. */
   const reservations = new Map<string, string[]>();
+  /** Aborted by `close`: commands under way are killed, and nothing more is published. */
+  const closing = new AbortController();
+  /** Set once Caddy is known to hold nothing an earlier rigd sent (see recover). */
+  let recovered = false;
+  /** Set when a load of this rigd's went unanswered: Caddy may still apply it, so this rigd cannot record a clean stop. */
+  let unanswered = false;
+  const closed = () =>
+    new RigError(
+      "PROXY_CLOSED",
+      "rigd is stopping, so Rig's Caddy takes no more changes from it.",
+      "The next rigd confirms what Caddy serves as it starts.",
+    );
   function queued<T>(work: () => Promise<T>): Promise<T> {
-    const operation = pending.catch(() => {}).then(work);
+    const operation = pending
+      .catch(() => {})
+      .then(() => {
+        if (closing.signal.aborted) throw closed();
+        return work();
+      });
     pending = operation;
     return operation;
   }
@@ -176,12 +229,28 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       return undefined;
     }
   }
-  /** The settings the current generation was accepted with; Host config as it is before the first generation. A generation
-   * that recorded none (only unreleased builds made such) is no last-good either: there is no migration, by decision. */
-  async function acceptedSettings(): Promise<ProxySettings> {
-    const recorded = (await metadataOf(await currentGeneration()))?.proxy;
-    const parsed = proxySettingsSchema.safeParse(recorded);
-    return parsed.success ? parsed.data : await options.settings();
+  /** The settings the current generation was accepted with, and whether their `proxy.routes` are known to be the owner's
+   * alone; Host config as it is before the first generation. A generation that recorded none (only unreleased builds made
+   * such) is no last-good either: there is no migration, by decision. */
+  async function accepted(): Promise<{
+    settings: ProxySettings;
+    ownerRoutesOnly: boolean;
+  }> {
+    const metadata = await metadataOf(await currentGeneration());
+    const parsed = proxySettingsSchema.safeParse(metadata?.proxy);
+    return parsed.success
+      ? {
+          settings: parsed.data,
+          ownerRoutesOnly: metadata?.ownerRoutesOnly === true,
+        }
+      : { settings: await options.settings(), ownerRoutesOnly: true };
+  }
+  /** Whether generation `metadata` serves the dashboard's route exactly as rigd asks for it now. */
+  function servesDashboard(metadata: GenerationMetadata | undefined): boolean {
+    return (
+      metadata?.dashboard !== undefined &&
+      Bun.deepEquals(metadata.dashboard, options.dashboard?.current() ?? null)
+    );
   }
   async function recordRejection(
     settings: ProxySettings,
@@ -252,11 +321,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     command: readonly string[],
     secret: string | undefined,
   ): Promise<{ exitCode: number; stderr: string }> {
-    const result = await options.run({ command }).catch((error: unknown) => ({
-      exitCode: 1,
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    }));
+    const result = await options
+      .run({ command, signal: closing.signal })
+      .catch((error: unknown) => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error),
+      }));
     return {
       exitCode: result.exitCode,
       stderr: redactSecrets(result.stderr, secret ? [secret] : []),
@@ -271,6 +342,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   ): Promise<{ config?: unknown; reason?: string }> {
     const result = await options
       .run({
+        signal: closing.signal,
         command: [
           executable,
           "adapt",
@@ -308,17 +380,24 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     }
   }
 
-  /** Builds, validates and switches to a generation of `routes` and `settings`, then makes Caddy serve it, and confirms that
-   * it does. A failure at any step leaves the previous generation current and served. */
+  /** Builds, validates and switches to a generation of `routes`, `settings` and the dashboard's route as rigd asks for it now,
+   * then makes Caddy serve it, and confirms that it does. A failure at any step leaves the previous generation current and
+   * served. `ownerRoutesOnly` says whether `settings`' routes are known to be the owner's alone. Without `rollBack`, a
+   * failure leaves the new generation current, for a caller that must never serve the previous one again. */
   async function publish(
     routes: string,
     kind: PublicationKind,
     settings: ProxySettings,
+    ownerRoutesOnly: boolean,
+    rollBack = true,
   ): Promise<void> {
     // Only what Rig renders from its owned blocks is ever published, whatever a caller passed.
     routes = canonicalRouteFile(routes).text;
     const rigHosts = routeFileHostnames(routes);
-    const customRoutes = hostRoutes(settings);
+    // Confirmed as the publication is built, not when it was queued, and read once, so what is rendered and what is
+    // recorded agree.
+    const dashboard = await options.dashboard?.confirmed();
+    const customRoutes = hostRoutes(settings, dashboard);
     // The invariant, at the one point every publication passes (apply, restore, a recovery stop, a republish, a reload): a
     // hostname has one owner, a Target's block or a proxy.routes entry. One name is one site to a client, whatever scheme or
     // port it is written with, and Caddy would merge two blocks for it, so they are compared bare.
@@ -381,6 +460,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       settings: settingsDigest(settings),
       proxy: settings,
       customRoutes,
+      dashboard: dashboard ?? null,
+      ownerRoutesOnly,
       createdAt: now().toISOString(),
     };
     await writeFile(
@@ -390,6 +471,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         paths,
         generation: directory,
         hostnames: rigHosts,
+        ...(dashboard ? { dashboard } : {}),
       }),
     );
     await writeFile(staged.metadata, JSON.stringify(metadata, null, 2) + "\n");
@@ -426,14 +508,30 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         lastOutputLine(validation.stderr),
         validation.stderr,
       );
+    // A route to the dashboard that rigd stopped asking for while the generation was built (its dashboard ended, or rigd
+    // began to stop it) is built again, as rigd asks now.
+    if (
+      dashboard?.port != null &&
+      !Bun.deepEquals(options.dashboard?.current(), dashboard)
+    ) {
+      await rm(directory, { recursive: true, force: true });
+      return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
+    }
     await switchTo(directory);
     try {
       await activate(directory, executable, secret, kind, "publish");
     } catch (error) {
+      if (error instanceof DashboardRouteChanged) {
+        await switchTo(previous);
+        await rm(directory, { recursive: true, force: true });
+        return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
+      }
+      if (!rollBack) throw error;
       await switchTo(previous);
-      // Put back what was served, and say whether that worked: the error alone cannot tell.
+      // Put back what was served, and say whether that worked: the error alone cannot tell. Reconciling never serves a
+      // dashboard route rigd no longer confirms.
       const restored = previous
-        ? await activate(previous, executable, secret, kind, "reconcile").then(
+        ? await reconcile(kind).then(
             () => true,
             () => false,
           )
@@ -471,6 +569,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         ? "; the previous configuration was restored."
         : "; Caddy still serves another configuration, so nothing was changed.";
     const expected = await adaptedOf(directory);
+    const dashboard = (await metadataOf(directory))?.dashboard;
     let loaded = await options.admin.config();
     if (loaded === undefined) {
       let state = await options.job.state();
@@ -481,6 +580,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         loaded === undefined && state !== "stopped" && Date.now() < deadline;
       ) {
         await new Promise((resolve) => setTimeout(resolve, 250));
+        if (closing.signal.aborted) throw closed();
         loaded = await options.admin.config();
         if (loaded === undefined) state = await options.job.state();
       }
@@ -496,6 +596,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         );
     }
     if (expected !== undefined && Bun.deepEquals(loaded, expected)) return;
+    // Checked after every wait, with nothing awaited between it and the load: a route to the dashboard that rigd stopped
+    // asking for meanwhile (its dashboard ended, or a stop began) is never loaded.
+    if (
+      dashboard?.port != null &&
+      !Bun.deepEquals(options.dashboard?.current(), dashboard)
+    )
+      throw new DashboardRouteChanged();
+    if (closing.signal.aborted) throw closed();
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
     // Any change in which CA issues which subjects restarts, conservatively: a Caddy with no issuer yet holds no certificates.
     if (
@@ -505,28 +613,29 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     )
       await options.job.restart();
     else {
-      const files = generationFiles(directory);
-      const reload = await caddy(
+      // A generation built before adapted JSON was kept is adapted from its Caddyfile, once.
+      const adapted =
         expected !== undefined
-          ? [executable, "reload", "--config", files.adapted]
-          : // A generation built before adapted JSON was kept is reloaded from its Caddyfile, once.
-            [
-              executable,
-              "reload",
-              "--config",
-              files.main,
-              "--adapter",
-              "caddyfile",
-            ],
-        secret,
-      );
-      if (reload.exitCode !== 0) {
-        const reason = lastOutputLine(reload.stderr);
+          ? { config: expected }
+          : await adapt(executable, generationFiles(directory).main, secret);
+      const refused =
+        adapted.config === undefined
+          ? adapted.reason
+          : await options.admin
+              .load(adapted.config, closing.signal)
+              .catch((error: unknown) => {
+                unanswered = true;
+                return error instanceof Error ? error.message : String(error);
+              });
+      if (refused !== undefined) {
+        const reason = lastOutputLine(
+          redactSecrets(refused, secret ? [secret] : []),
+        );
         throw new RigError(
           kind === "route" ? "ROUTE_RELOAD" : "PROXY_RELOAD",
           `Caddy could not reload${reason ? ` (${reason})` : ""}${outcome}`,
           "Inspect Caddy's log and retry.",
-          { stderr: reload.stderr, evidence: boundedEvidence(reason ?? "") },
+          { stderr: reason ?? "", evidence: boundedEvidence(reason ?? "") },
         );
       }
     }
@@ -544,10 +653,74 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
    * activating, or a reload that never happened. Every change runs this first, so nothing touches an upstream while what
    * Caddy serves is unknown. */
   async function reconcile(kind: PublicationKind): Promise<void> {
+    await recover();
     const current = await currentGeneration();
     if (!current) return;
-    const secret = await token(await acceptedSettings()).catch(() => undefined);
-    await activate(current, await binary(), secret, kind, "reconcile");
+    const { settings, ownerRoutesOnly } = await accepted();
+    // Never activated with a dashboard route rigd does not confirm: Caddy is made to serve the same routes and settings
+    // with the dashboard's route as rigd confirms it now, and that generation stays current even when Caddy does not take
+    // it.
+    const confirmed = () =>
+      readText(generationFiles(current).routes).then((routes) =>
+        publish(routes ?? "", kind, settings, ownerRoutesOnly, false),
+      );
+    if (await unconfirmedDashboard(current)) return confirmed();
+    const secret = await token(settings).catch(() => undefined);
+    await activate(current, await binary(), secret, kind, "reconcile").catch(
+      (error: unknown) => {
+        if (!(error instanceof DashboardRouteChanged)) throw error;
+        return confirmed();
+      },
+    );
+  }
+  /** Makes sure, once, before anything trusts what Caddy reports, that no configuration an earlier rigd sent can still be
+   * applied. One that stopped in order recorded so (`close`). After any other end, a crash or a kill, Caddy may hold a
+   * load that rigd sent but that Caddy applies only after this rigd has read its configuration, so a running Caddy is
+   * restarted: its new process reads the current generation, made to withhold the dashboard first when it routes it (rigd
+   * has not found its dashboard yet), and nothing the old process held. Every route is down for that restart. */
+  async function recover(): Promise<void> {
+    if (recovered) return;
+    const clean = await stat(paths.cleanStop).then(
+      () => true,
+      () => false,
+    );
+    const current = await currentGeneration();
+    if (!clean && current && (await options.job.state()) !== "stopped") {
+      if ((await metadataOf(current))?.dashboard?.port != null) {
+        const { settings, ownerRoutesOnly } = await accepted();
+        await publish(
+          (await readText(generationFiles(current).routes)) ?? "",
+          "settings",
+          settings,
+          ownerRoutesOnly,
+          false,
+        ).catch(() => {});
+        // The restarted Caddy reads `current`: it must not route the dashboard to a port this rigd has not found it on.
+        const now = await currentGeneration();
+        if (now && (await metadataOf(now))?.dashboard?.port != null)
+          throw new RigError(
+            "PROXY_RECOVERY",
+            "Rig's Caddy could not be given a configuration that withholds the dashboard's domain before its restart.",
+            "Run rig doctor; rigd tries again with its next change.",
+          );
+      }
+      if (closing.signal.aborted) throw closed();
+      await options.job.restart();
+    }
+    await rm(paths.cleanStop, { force: true });
+    recovered = true;
+  }
+  /** Whether generation `directory` routes the dashboard's domain to a port rigd does not confirm now, and Caddy does not
+   * serve it already: activating it would send the domain to whatever holds that port. */
+  async function unconfirmedDashboard(directory: string): Promise<boolean> {
+    const recorded = (await metadataOf(directory))?.dashboard;
+    if (recorded?.port == null) return false;
+    if (Bun.deepEquals(recorded, await options.dashboard?.confirmed()))
+      return false;
+    return !Bun.deepEquals(
+      await options.admin.config(),
+      await adaptedOf(directory),
+    );
   }
 
   /** Writes the route file whole, through a symlink and keeping its mode, as the external router does: the emergency
@@ -581,6 +754,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   async function republishWith(
     settings: ProxySettings,
     kind: PublicationKind,
+    ownerRoutesOnly: boolean,
   ): Promise<void> {
     const { file, raw } = await readRoutes();
     const routes = canonicalRouteFile(raw).text;
@@ -588,7 +762,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     assertOwners(routes, settings);
     if (routes !== raw) await writeRoutes(routes, raw, file);
     try {
-      await publish(routes, kind, settings);
+      await publish(routes, kind, settings, ownerRoutesOnly);
     } catch (error) {
       // Text Rig did not write is never put back.
       if (routes !== raw)
@@ -596,12 +770,19 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       throw error;
     }
   }
-  /** The one-owner invariant for Rig's Caddy: `text`'s Target blocks and `settings`' proxy.routes, by bare hostname. */
+  /** The one-owner invariant for Rig's Caddy: `text`'s Target blocks, and `settings`' proxy.routes with the dashboard's
+   * domain, by bare hostname. */
   function assertOwners(text: string, settings: ProxySettings): void {
     assertSingleOwners(text, bareHostname, {
-      sites: hostRoutes(settings).map((route) => route.hostname),
+      sites: hostnames(settings),
       owner: "proxy.routes in Host config",
     });
+  }
+  /** The hostnames `proxy.routes` and the dashboard's route serve beside Rig's route file. */
+  function hostnames(settings: ProxySettings): string[] {
+    return hostRoutes(settings, options.dashboard?.current()).map(
+      (route) => route.hostname,
+    );
   }
   /** The route file as Rig's Caddy may publish it: only what Rig renders from its owned blocks. */
   async function canonicalRoutes(): Promise<{
@@ -627,9 +808,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       (restoration?.saved.value
         ? parseOwnedSites(restoration.saved.value)
         : []);
-    const owned = hostRoutes(await acceptedSettings()).map(
-      (entry) => entry.hostname,
-    );
+    const owned = hostnames((await accepted()).settings);
     for (const site of sites) {
       const hostname = bareHostname(site.hostname);
       const holder = [...reservations].find(
@@ -670,7 +849,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const { file, raw, routes: before } = await canonicalRoutes();
     const current = await currentGeneration();
     // A route change publishes with the settings Caddy last accepted: Host config Rig refused never blocks one.
-    const settings = await acceptedSettings();
+    const { settings, ownerRoutesOnly } = await accepted();
     const edit = await edited(before, key, route, restoration);
     const after = edit?.after ?? before;
     // Done only when Caddy serves exactly this, which reconcile just confirmed for the current generation. A route file
@@ -698,7 +877,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     assertOwners(after, settings);
     if (after !== raw) await writeRoutes(after, raw, file);
     try {
-      await publish(after, "route", settings);
+      await publish(after, "route", settings, ownerRoutesOnly);
     } catch (error) {
       if (after !== before) await writeRoutes(before, after, file);
       throw error;
@@ -721,11 +900,11 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (after === before) return [];
     // As every change: nothing is edited while what Caddy serves is unknown.
     await reconcile("route");
-    const settings = await acceptedSettings();
+    const { settings, ownerRoutesOnly } = await accepted();
     assertOwners(after, settings);
     await writeRoutes(after, raw, file);
     try {
-      await publish(after, "route", settings);
+      await publish(after, "route", settings, ownerRoutesOnly);
     } catch (error) {
       await writeRoutes(before, after, file);
       throw error;
@@ -741,6 +920,35 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   }
   return {
     paths,
+    async close() {
+      closing.abort();
+      await pending.catch(() => {});
+      // Only a rigd that made sure of what Caddy holds, and had every load of its own answered, can vouch for it; otherwise
+      // the next one restarts Caddy, which discards whatever it still holds.
+      if (!recovered || unanswered) return;
+      await replacePrivateFile(
+        options.root,
+        paths.cleanStop,
+        JSON.stringify({ pid: process.pid, at: now().toISOString() }) + "\n",
+      );
+    },
+    refreshDashboard: () =>
+      queued(async () => {
+        const current = await currentGeneration();
+        // Before the first generation Caddy serves nothing of Rig's; the first publication renders the dashboard as it is.
+        if (!current) return { known: true };
+        // The files say what Rig meant to publish; Caddy is confirmed to serve the current generation first (made to, after
+        // a crash between switching and loading), and a route file ahead of it is published below.
+        await reconcile("route");
+        const { settings, ownerRoutesOnly } = await accepted();
+        if (
+          !servesDashboard(await metadataOf(current)) ||
+          (await canonicalRoutes()).routes !==
+            (await readText(generationFiles(current).routes))
+        )
+          await republishWith(settings, "route", ownerRoutesOnly);
+        return { known: ownerRoutesOnly };
+      }),
     router: {
       apply: (route) => queued(() => change(route.key, route)),
       remove: (key) => queued(() => change(key)),
@@ -769,7 +977,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
             route.key,
             route.sites.length ? route : undefined,
           );
-          assertOwners(edit?.after ?? routes, await acceptedSettings());
+          assertOwners(edit?.after ?? routes, (await accepted()).settings);
           const serving = parseOwnedSites(ownedBlock(routes, route.key) ?? "");
           reservations.set(route.key, [
             ...new Set(
@@ -782,13 +990,17 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     },
     republish: () =>
       queued(async () => {
+        await recover();
         const requested = await options.settings();
         const before = (await readText(paths.routes)) ?? "";
         const current = await currentGeneration();
+        const metadata = await metadataOf(current);
         if (
           current &&
           !canonicalRouteFile(before).dropped &&
-          (await metadataOf(current))?.settings === settingsDigest(requested) &&
+          metadata?.settings === settingsDigest(requested) &&
+          metadata.ownerRoutesOnly === true &&
+          servesDashboard(metadata) &&
           (await readText(generationFiles(current).routes)) === before &&
           (await adaptedOf(current)) !== undefined
         ) {
@@ -799,7 +1011,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           return { published: false };
         }
         try {
-          await republishWith(requested, "settings");
+          // Host config holds the owner's routes alone: it refuses a dashboard.domain proxy.routes names.
+          await republishWith(requested, "settings", true);
           await rm(paths.rejectedSettings, { force: true });
           return { published: true };
         } catch (error) {
@@ -810,15 +1023,18 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           )
             throw error;
           await recordRejection(requested, error);
-          // Rig's routes go on with the settings Caddy last accepted, so a route file ahead of what Caddy serves still is.
-          const accepted = await acceptedSettings();
+          // Rig's routes go on with the settings Caddy last accepted, so a route file ahead of what Caddy serves still is, and
+          // so is the dashboard's route as rigd asks for it now.
+          const last = await accepted();
           await reconcile("settings");
           const routes = canonicalRouteFile(before).text;
+          const served = await metadataOf(current);
           if (
             routes !== (await readText(generationFiles(current).routes)) ||
-            (await metadataOf(current))?.settings !== settingsDigest(accepted)
+            served?.settings !== settingsDigest(last.settings) ||
+            !servesDashboard(served)
           )
-            await republishWith(accepted, "route");
+            await republishWith(last.settings, "route", last.ownerRoutesOnly);
           throw new RigError(
             error.code,
             error.message,

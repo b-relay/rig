@@ -11,6 +11,8 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { managedCaddyWorld, TOKEN } from "./support/managed-caddy-double";
+import { createManagedCaddy } from "../src/providers/managed-caddy";
+import { parseHostConfig } from "../src/config";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -48,7 +50,8 @@ test("a route change is published as a generation: adapted, validated as the fro
     ],
     // Only the frozen JSON is provisioned, and it is exactly what Caddy will load.
     [binary, "validate", "--config", join(generation, "adapted.json")],
-    [binary, "reload", "--config", join(generation, "adapted.json")],
+    // Loaded by rigd itself through Caddy's admin socket, never by a process of its own.
+    ["admin", "load"],
   ]);
   const routes = await w.routes();
   expect(routes).toContain(
@@ -201,7 +204,7 @@ test("a change of CA restarts Caddy instead of reloading it, since a reload keep
   w.setSettings({ tls: { ca: "letsencrypt" } });
   expect(await w.caddy.republish()).toEqual({ published: true });
   expect(w.control.restarts).toBe(1);
-  expect(w.verbs().filter((verb) => verb === "reload")).toHaveLength(1);
+  expect(w.verbs().filter((verb) => verb === "load")).toHaveLength(1);
   expect(await w.caddy.republish()).toEqual({ published: false });
 });
 
@@ -799,4 +802,68 @@ test("ownership is checked on the prospective file before any write: a refused r
     code: "ROUTE_CONFLICT",
   });
   expect(await w.generations()).toEqual(generations);
+});
+
+test("close cancels the Caddy command under way, refuses every change after it, and resolves once nothing of the queue runs", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // The next reload is held until its command is cancelled.
+  let cancelled = false;
+  w.control.afterLoad = (signal) =>
+    new Promise<void>((_, reject) => {
+      signal?.addEventListener("abort", () => {
+        cancelled = true;
+        reject(new Error("cancelled"));
+      });
+    });
+  const reloads = () => w.verbs().filter((verb) => verb === "load").length;
+  const before = reloads();
+  const held = w.caddy.router.apply(app("127.0.0.1:3002"));
+  const queued = w.caddy.router.apply(app("127.0.0.1:3003"));
+  for (let i = 0; i < 200 && reloads() === before; i++) await Bun.sleep(10);
+  await w.caddy.close();
+  expect(cancelled).toBe(true);
+  await expect(held).rejects.toBeDefined();
+  await expect(queued).rejects.toMatchObject({ code: "PROXY_CLOSED" });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_CLOSED",
+  });
+});
+
+test("after an earlier rigd's unclean stop Caddy is restarted before anything reads what it serves; after a clean one it is not", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // This publisher stops in order: it records that nothing it sent can reach Caddy any more.
+  await w.caddy.close();
+  const cleanStop = join(w.root, "caddy", "clean-stop.json");
+  await stat(cleanStop);
+  const next = () =>
+    createManagedCaddy({
+      root: w.root,
+      settings: async () =>
+        parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } }).proxy!,
+      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      job: {
+        state: async () => "running",
+        restart: async () => void events.push("restart"),
+      },
+      admin: {
+        reachable: async () => true,
+        config: async () => {
+          events.push("read");
+          return w.control.loaded;
+        },
+        load: async () => undefined,
+      },
+    });
+  const events: string[] = [];
+  // After a clean stop: the record is taken, and Caddy is read as it is.
+  await next().refreshDashboard();
+  expect(events).toEqual(["read"]);
+  await expect(stat(cleanStop)).rejects.toThrow();
+  // After an unclean one (no record): Caddy is restarted first.
+  events.length = 0;
+  await next().refreshDashboard();
+  expect(events[0]).toBe("restart");
+  expect(events).toContain("read");
 });

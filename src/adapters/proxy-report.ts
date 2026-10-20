@@ -31,10 +31,10 @@ export type ProxySite =
     }
   | {
       readonly hostname: string;
-      /** One of the owner's own routes, from proxy.routes in Host config. */
+      /** One of the owner's own routes, from proxy.routes in Host config, or the dashboard's. */
       readonly source: "custom";
-      /** The loopback address it reaches. */
-      readonly upstream: string;
+      /** The loopback address it reaches; null while it is withheld (the dashboard's, until rigd verifies it). */
+      readonly upstream: string | null;
       readonly certificate?: string;
     };
 /** What `rig proxy` shows: the job and every served site, Rig's Targets' and the owner's own routes, all as the current

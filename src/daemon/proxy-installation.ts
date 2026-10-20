@@ -11,7 +11,7 @@ import {
   type ProxyPaths,
 } from "../domain/managed-proxy";
 import { assertSingleOwners } from "../providers/route-file";
-import { configuredDashboardRoute, withDashboardRoute } from "./dashboard";
+import { configuredDashboardRoute } from "./dashboard";
 import {
   createCaddyAdmin,
   type CaddyAdminClient,
@@ -114,11 +114,7 @@ export function createProxyInstallation(
         "Host config has both a proxy section and providers.caddy.",
         "Delete providers.caddy from config.yaml under the Rig root: the proxy section replaces it.",
       );
-    // The dashboard's route as the rigd this install starts will publish it.
-    return withDashboardRoute(
-      host.proxy,
-      await configuredDashboardRoute(options.root, host),
-    );
+    return host.proxy;
   }
   return {
     mode: async () => (await readHostConfig(options.root)).proxyMode,
@@ -146,9 +142,20 @@ export function createProxyInstallation(
       const warnings: string[] = [];
       const job = await currentJob();
       const wasRunning = (await job.state()) === "running";
+      // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
+      // does.
+      const configured = await configuredDashboardRoute(
+        options.root,
+        await readHostConfig(options.root),
+      );
+      const withheld = configured && {
+        domain: configured.domain,
+        port: null,
+      };
       const caddy = createManagedCaddy({
         root: options.root,
         settings,
+        dashboard: { current: () => withheld, confirmed: async () => withheld },
         run: options.run,
         job,
         admin,
@@ -170,7 +177,12 @@ export function createProxyInstallation(
       };
       try {
         // The current settings, proxy.routes included, are published.
-        await (how.publish ? how.publish() : caddy.republish());
+        if (how.publish) await how.publish();
+        else {
+          await caddy.republish();
+          // This install published nothing more after it, and says so for the rigd it starts (see ProxyPaths.cleanStop).
+          await caddy.close();
+        }
       } catch (error) {
         await restoreBinary();
         throw error;

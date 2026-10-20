@@ -99,7 +99,9 @@ export function managedProxyRoutes(
             url,
             prefix: "/",
             source: "custom",
-            upstream: site.upstream,
+            ...(site.upstream === null
+              ? { withheld: true }
+              : { upstream: site.upstream }),
             published: true,
           },
         ];

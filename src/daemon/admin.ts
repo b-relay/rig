@@ -140,7 +140,12 @@ export class DaemonAdmin {
     records: ProcessRecord[];
     unverified?: string;
     /** The reachable daemon's pid and reported version, for an install deciding whether to replace it. */
-    serving?: { pid: number; version?: string; dashboard?: string };
+    serving?: {
+      pid: number;
+      version?: string;
+      dashboard?: string;
+      dashboardProblem?: string;
+    };
     /** Why the recorded daemon could not be contacted: its credential is empty or unreadable. */
     credential?: RigError;
   }> {
@@ -176,7 +181,12 @@ export class DaemonAdmin {
       ...(unverified ? [unverified] : []),
     ];
     const status = (
-      serving?: { pid: number; version?: string; dashboard?: string },
+      serving?: {
+        pid: number;
+        version?: string;
+        dashboard?: string;
+        dashboardProblem?: string;
+      },
       credential?: RigError,
     ) => {
       // A serving daemon of another version is the one thing `rigd install` can change here.
@@ -189,6 +199,9 @@ export class DaemonAdmin {
       const all = [
         ...warnings,
         ...skew,
+        ...(serving?.dashboardProblem
+          ? [`Dashboard: ${serving.dashboardProblem}`]
+          : []),
         ...(credential ? [`${credential.message} ${credential.hint}`] : []),
       ];
       return {
@@ -241,6 +254,9 @@ export class DaemonAdmin {
               pid: health.pid,
               ...(health.version ? { version: health.version } : {}),
               ...(health.dashboard ? { dashboard: health.dashboard } : {}),
+              ...(health.dashboardProblem
+                ? { dashboardProblem: health.dashboardProblem }
+                : {}),
             }
           : undefined,
       );
@@ -269,6 +285,34 @@ export class DaemonAdmin {
       return [
         `The installed daemon program ${executable} is missing or not executable; run rigd install again.`,
       ];
+    }
+  }
+  /** Asks the serving rigd to ready itself to stop (`prepare-stop`): it has Rig's Caddy withhold the dashboard's domain and
+   * stops its dashboard once Caddy confirms that. A rigd that cannot keeps serving, reachable, and this fails with its reason
+   * (DAEMON_STOP). An older rigd, which has no such step, stops as before. */
+  private async prepareStop(client?: DaemonClient): Promise<void> {
+    const address = client
+      ? undefined
+      : await readDaemonAddress(this.options.root);
+    const daemon =
+      client ??
+      new DaemonClient({
+        port: address!.port,
+        token: await readDaemonToken(this.options.root),
+      });
+    try {
+      await daemon.command({ action: "prepare-stop" });
+    } catch (error) {
+      if (error instanceof RigError && error.code === "DAEMON_PROTOCOL") return;
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new RigError(
+        "DAEMON_STOP",
+        `The running rigd could not stop safely, so it keeps serving: ${reason}`,
+        error instanceof RigError && error.hint
+          ? `${error.hint} Then run this command again.`
+          : "Run rigd status and rig doctor, then run this command again.",
+        { reason },
+      );
     }
   }
   /** Stops a serving daemon so a newer one can take its place; a daemon that will not stop keeps its installation. */
@@ -431,6 +475,7 @@ export class DaemonAdmin {
       }
       // Another version or command is serving: stop it and start this one. Managed
       // processes keep serving under their leases and the new daemon adopts them.
+      await this.prepareStop();
       await this.stopForReplacement(recorded.mode, serving.pid);
       replaced = {
         pid: serving.pid,
@@ -700,6 +745,8 @@ export class DaemonAdmin {
       recorded.bun === this.options.bun &&
       (recorded.proxy ?? "external") === (proxyMode ?? "external") &&
       (await this.servesDashboardAsAsked(serving));
+    // Before anything is recorded: a rigd that cannot stop safely keeps serving as it was installed.
+    if (!current && prior.reachable && serving) await this.prepareStop();
     await this.writeInstallation(this.options.bun, proxyMode, "system");
     let replaced: DaemonStatus["replaced"];
     if (!current) {
@@ -818,6 +865,7 @@ export class DaemonAdmin {
       }
     }
     try {
+      await this.prepareStop(client);
       if ("assumed" in installation.data) {
         await this.launchctl(["bootout", this.labelDomain()]).catch(() => {});
         if (processExists(address.pid)) process.kill(address.pid, "SIGTERM");

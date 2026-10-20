@@ -324,7 +324,9 @@ _Relationship_: A route's upstream is a listener Rig has verified it owns at
 that moment: a Service's paths reach its port only from its verified start
 until just before it stops (one that exits on its own keeps them until the next
 start or stop of its Target). Otherwise the proxy answers with Rig's not-running reply, so a program that takes a freed port
-never receives the route's requests.
+never receives the route's requests. The dashboard's published domain follows
+the same rule: it reaches the dashboard's port only while `rigd` has found its
+own running dashboard listening there.
 
 ### Service
 

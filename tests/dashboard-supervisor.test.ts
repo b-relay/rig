@@ -29,6 +29,7 @@ import { parseHostConfig } from "../src/config/schema";
 import { hostRoutes, proxyPaths } from "../src/domain/managed-proxy";
 import { createProxyInstallation } from "../src/daemon/proxy-installation";
 import { runCommand } from "../src/providers/command-runner";
+import { createListenerInspection } from "../src/providers/listener-inspection";
 import { pendingSettings } from "../src/adapters/proxy-generation";
 import { accessPolicy } from "../web/server/guard";
 import {
@@ -77,6 +78,7 @@ async function installed(server: string) {
       note: (channel, message) => notes.push(`${channel.name}: ${message}`),
       clear: (channel) => cleared.push(channel.name),
     },
+    listeners: createListenerInspection(runCommand),
     wait: async (ms) => void waits.push(ms),
     now: Date.now,
   };
@@ -211,14 +213,21 @@ test("a recorded process that is not the one recorded (its pid reused) is left a
   other.kill();
 });
 
-test("rigd's health reply names where it serves the dashboard, and omits it when it serves none", async () => {
-  for (const dashboard of ["http://127.0.0.1:4280", undefined]) {
+test("rigd's health reply names where it serves the dashboard and why it is not served now, and omits them when it serves none", async () => {
+  for (const [dashboard, problem] of [
+    ["http://127.0.0.1:4280", "another program holds 127.0.0.1:4280"],
+    ["http://127.0.0.1:4280", undefined],
+    // One an earlier rigd left running, while this rigd serves none.
+    [undefined, "A dashboard an earlier rigd left running keeps running"],
+    [undefined, undefined],
+  ]) {
     const server = startControlPlane({
       port: 0,
       token: "test",
       instanceId: "dashboard",
       handle: async () => ({}),
       ...(dashboard ? { dashboard } : {}),
+      dashboardProblem: () => problem,
     });
     try {
       const health = await new DaemonClient({
@@ -226,6 +235,7 @@ test("rigd's health reply names where it serves the dashboard, and omits it when
         token: "test",
       }).health();
       expect(health.dashboard).toBe(dashboard);
+      expect(health.dashboardProblem).toBe(problem);
     } finally {
       server.stop(true);
     }
@@ -458,7 +468,7 @@ Bun.serve({
   await local.stop();
 });
 
-test("Caddy is given the dashboard's route only when a dashboard is installed, on, and published, to the port it serves", async () => {
+test("a dashboard's route exists only when a dashboard is installed, on, and published, to the port it serves, and DNS names it beside proxy.routes", async () => {
   const f = await installed(SERVER);
   const proxy = {
     caddy: "/usr/local/bin/caddy",
@@ -520,24 +530,24 @@ test("a dashboard edit waits for rigd install: doctor says so, and it is never a
   const proxy = parseHostConfig({
     proxy: { caddy: "/usr/local/bin/caddy" },
   }).proxy!;
-  // rigd started serving rig.example.com on 4280, and Caddy accepted that; Host config now asks for 4281.
-  const started = { domain: "rig.example.com", port: 4280, https: 443 };
-  const accepted = withDashboardRoute(proxy, started);
-  expect(
-    await pendingSettings(f.root, withDashboardRoute(proxy, started), accepted),
-  ).toBeUndefined();
+  // rigd started serving rig.example.com on 4280; Host config now asks for 4281. The dashboard's route is not among the
+  // proxy settings Caddy accepts (Caddy serves it as rigd verified it), so the edit is never pending for rig proxy reload.
   expect(
     await pendingSettings(
       f.root,
-      withDashboardRoute(proxy, {
+      publishedProxySettings(proxy, {
         domain: "rig.example.com",
         port: 4281,
         https: 443,
       }),
-      accepted,
+      publishedProxySettings(proxy, {
+        domain: "rig.example.com",
+        port: 4280,
+        https: 443,
+      }),
     ),
-  ).toMatchObject({ fields: ["routes"] });
-  // So rigd compares proxy settings with the route it publishes, and the dashboard check reports the edit.
+  ).toBeUndefined();
+  // The dashboard check reports the edit.
   expect(
     dashboardCheck(
       "https://rig.example.com via http://127.0.0.1:4281",
@@ -601,9 +611,8 @@ test("while rigd serves a published dashboard, settings that move Caddy's HTTPS 
       proxy: { caddy: "/usr/local/bin/caddy", ports: { http: 8080, https } },
     }).proxy!;
   const route = { domain: "rig.example.com", port: 4280, https: 8443 };
-  expect(publishedProxySettings(settings(8443), route).routes).toEqual({
-    "rig.example.com": 4280,
-  });
+  // The dashboard's route is not among them: Caddy serves it as rigd verified it.
+  expect(publishedProxySettings(settings(8443), route)).toEqual(settings(8443));
   expect(() => publishedProxySettings(settings(8444), route)).toThrow(
     expect.objectContaining({
       code: "PROXY_CONFIG",

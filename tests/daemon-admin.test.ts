@@ -1353,3 +1353,32 @@ test("rigd install restarts a running rigd that serves the dashboard elsewhere t
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);
+test("rigd status warns while the dashboard rigd runs is not served, saying why", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-dashboard-down-"));
+  const script = join(root, "child.ts");
+  const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
+  const problem =
+    "The dashboard exited with code 1, and another program holds 127.0.0.1:4280; rigd starts it again in 4 s.";
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0,dashboard:"http://127.0.0.1:4280",dashboardProblem:()=>${JSON.stringify(problem)}});`,
+  );
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+    dashboard: async () => "http://127.0.0.1:4280",
+  });
+  try {
+    await admin.install();
+    expect(await admin.status()).toMatchObject({
+      reachable: true,
+      dashboard: "http://127.0.0.1:4280",
+      warnings: [`Dashboard: ${problem}`],
+    });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);

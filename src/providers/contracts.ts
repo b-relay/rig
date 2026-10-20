@@ -85,6 +85,14 @@ export interface Supervisor {
   shutdown(): Promise<void>;
   /** Releases in-memory ownership and leaves processes running; recorded leases let the next daemon adopt them. */
   detach(): Promise<void>;
+  /** Records `pid`, the process group of a command rigd runs itself under `key` (a build), as a lease before it resolves,
+   * so `observe` and `stop` find the group even after the daemon that ran it died. The group counts as running while any
+   * of its members does, its leader gone or not. Rejects, recording nothing, when the group is already gone. Absent: such a
+   * command is not recorded. */
+  own?(key: string, pid: number): Promise<void>;
+  /** Once its command has ended, stops what is left of the group `own` recorded for `key` (a process the command started in
+   * the background) within the default grace, then forgets it. Fails, keeping the record, when the group cannot be stopped. */
+  disown?(key: string): Promise<void>;
 }
 export interface CommandRequest {
   readonly command: readonly string[];
@@ -94,6 +102,11 @@ export interface CommandRequest {
   readonly timeoutMs?: number;
   /** Receives each chunk of output as the command produces it; the result still carries the bounded whole. */
   readonly onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
+  /** Told the pid of the command's process group once it is spawned and before the command runs: the command waits at a
+   * gate until this resolves, so the group can be recorded first, and ends without running when it rejects, which the
+   * command then rejects with. With it, an executable that cannot start ends with the shell's 126 or 127 rather than
+   * COMMAND_START. */
+  readonly started?: (pid: number) => Promise<void>;
 }
 export interface CommandResult {
   readonly exitCode: number;

@@ -22,7 +22,11 @@ import {
   ownerDetails,
 } from "./artifact-ownership";
 import { fileDigest } from "./file-digest";
-import { replacePrivateFile } from "../providers/private-files";
+import {
+  flushFile,
+  removeFileDurably,
+  replacePrivateFile,
+} from "../providers/private-files";
 import type { ArtifactIdentity, ArtifactOwner } from "./artifact-ownership";
 const routeSchema = z
   .object({
@@ -315,11 +319,14 @@ export function createEffectTransactions(options: {
     }
     for (const path of destinations) claims.set(path, owner);
   };
+  /** Saves `journal` durably: it is on disk, with the backups beside it, before the change it records is made, and a
+   * committed journal is on disk before its checkpoint is removed. */
   const save = (journal: Journal) =>
     replacePrivateFile(
       options.root,
       join(directory(journal.targetId), "journal.json"),
       JSON.stringify({ ...journal, version: JOURNAL_VERSION }),
+      { durable: true },
     );
   /** The saved journal, or undefined when none exists. Refuses a journal from a
    * newer rigd or one with an invalid value, naming the file and the problem. */
@@ -526,13 +533,20 @@ export function createEffectTransactions(options: {
       throw error;
     }
     for (const file of journal.files) {
-      if (file.before === null) await rm(file.path, { force: true });
+      // Recorded as begun first, so a rollback cut short (by a crash, or a flush that failed) takes what it already put
+      // back for its own work when it runs again.
+      if (!file.applying) {
+        file.applying = true;
+        await save(journal);
+      }
+      // Each file is back on disk, its removal or replacement flushed, before the journal records it restored.
+      if (file.before === null) await removeFileDurably(file.path);
       else
         await replacePrivateFile(
           options.root,
           file.path,
           await readFile(join(directory(journal.targetId), file.backup)),
-          { mode: file.mode },
+          { mode: file.mode, durable: true },
         );
       file.expected = file.before;
       delete file.applying;
@@ -678,12 +692,15 @@ export function createEffectTransactions(options: {
           const before = (await fileDigest(path)) ?? null,
             backup = `${journal.files.length}.backup`,
             mode = before === null ? 0o600 : (await lstat(path)).mode & 0o777;
-          if (before !== null)
+          if (before !== null) {
             await copyFile(
               path,
               join(directory(targetId), backup),
               constants.COPYFILE_EXCL,
             );
+            // The journal that names it is flushed with its directory next, so the backup's own bytes are flushed first.
+            await flushFile(join(directory(targetId), backup));
+          }
           journal.files.push({ path, backup, mode, before, expected: before });
         }
         await save(journal);
@@ -714,7 +731,8 @@ export function createEffectTransactions(options: {
     },
     /** Run a change to owned files. The journal records the intent before the
      * change and the resulting bytes after it, so a crash in between is
-     * recognised as this transaction's own work. Without an active checkpoint
+     * recognised as this transaction's own work; a change that fails leaves its
+     * paths recorded as begun, never captured. Without an active checkpoint
      * the change simply runs. Rejects EFFECTS_SCOPE before changing anything
      * when a path was not checkpointed. */
     async withArtifactChange(
@@ -736,15 +754,14 @@ export function createEffectTransactions(options: {
       });
       for (const file of files) file.applying = true;
       await save(journal);
-      try {
-        await change();
-      } finally {
-        for (const file of files) {
-          file.expected = (await fileDigest(file.path)) ?? null;
-          delete file.applying;
-        }
-        await save(journal);
+      await change();
+      // Captured only once the change is in place and on disk: one that failed, its flush included, stays recorded as
+      // begun, so recovery takes whatever it finds there for this transaction's own work.
+      for (const file of files) {
+        file.expected = (await fileDigest(file.path)) ?? null;
+        delete file.applying;
       }
+      await save(journal);
     },
     /** Run a change to the owned route with the same intent-then-capture record. An interrupted transaction's journal
      * records it too (a stop withholds the route before its recovery runs), so that recovery does not take the change for

@@ -62,6 +62,16 @@ _Relationship_: Unresolved Target recovery also blocks uninstall, even when
 the candidate is stopped. Keep daemon control available so explicit `rig down`
 can finish recovery before uninstall is retried.
 
+_Relationship_: Every process Rig starts is recorded durably (pid and birth
+time) before it runs: Services, job runs, and builds and dependency
+installation alike. A build is its whole process group: it runs while any
+member does, and its record goes only once the group is gone. A build that
+outlives a `rigd` that died is stopped by the next daemon's startup pass (on a
+Target meant to be stopped), by `rig down`, or by the next build of its Target,
+and blocks uninstall with `TARGETS_RUNNING` while it may still run. Every record
+directory on the way to such a record, and every removal an effect journal
+counts on, is flushed to disk before the journal moves on.
+
 _Relationship_: There is no `rigd uninstall --force`. Bulk stop/delete cleanup semantics require separate design.
 
 _Relationship_: `rigd status` reports installed, running, reachable, the serving
@@ -800,7 +810,10 @@ _Relationship_: Lifecycle commands for the stable Target and Previews use the
 Deployment record, so they stop, start, or restart the same materialized Target
 with the supervisor, ports, commands, source Branch, Commit, and resolved
 component plan that Rig actually deployed. The working Target is re-planned from
-the current `rig.yaml` on `up` (when stopped) and on `restart`.
+the current `rig.yaml` on `up` (when stopped) and on `restart`. A Service the new
+plan drops is stopped first (one a failed `down` left running); while it cannot
+be, `up` fails and the plan that names it stays recorded, so status, `down` and
+`rigd uninstall` still see it. One the new plan keeps is adopted as it runs.
 
 _Relationship_: `rig status` shows recorded runtime state and configured
 Targets. It does not diagnose config drift.

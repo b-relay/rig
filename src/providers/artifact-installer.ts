@@ -71,6 +71,8 @@ export function createArtifactInstaller(options: {
         {
           mode:
             shimBun !== undefined ? 0o755 : (sourceStat.mode | 0o111) & 0o777,
+          // On disk before an effect journal records it as published.
+          durable: true,
         },
       );
       return { path: request.destination };

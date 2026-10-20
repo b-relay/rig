@@ -56,6 +56,8 @@ function world(
     activity: [],
   };
   const running = new Set<string>();
+  /** Every checkout given back to the mirror. */
+  const released: string[] = [];
   const held: HeldStop[] = [];
   const stops: { key: string; graceMs: number; kill: boolean }[] = [];
   let holding = false;
@@ -261,7 +263,9 @@ function world(
       async currentBranch() {
         return "main";
       },
-      async release() {},
+      async release(request) {
+        released.push(request.workspacePath);
+      },
       async changed() {
         return true;
       },
@@ -333,6 +337,7 @@ function world(
     state,
     stops,
     running,
+    released,
     failing,
     unconfirmed,
     detachedStarts,
@@ -1199,4 +1204,135 @@ test("a Service whose plan was recorded before stop_timeout existed is stopped w
   expect(convex.request.graceMs).toBe(10_000);
   convex.exit();
   expect(await down).toMatchObject({ outcome: "stopped" });
+});
+
+test("a Service a failed down left running is stopped before a Working copy up drops it from the plan, and while it cannot be, the plan that names it stays", async () => {
+  const declared = (services: Record<string, object>) =>
+    parseProjectConfig({
+      name: "fletcher",
+      services,
+      targets: { working: true },
+    });
+  const config = declared({
+    keep: { command: "keep" },
+    old: { command: "old", stop_timeout: "1s" },
+  });
+  const w = await registered(config);
+  await w.command({ action: "up", target: "working" });
+  const id = w.state.targets[0]!.id;
+  w.hold();
+  const down = w.command({ action: "down", target: "working" });
+  (await w.stopOf("old")).fail(new Error("stop refused"));
+  (await w.stopOf("keep")).fail(new Error("stop refused"));
+  await expect(down).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
+  // old leaves rig.yaml; keep stays as it was.
+  config.services = declared({
+    keep: { command: "keep" },
+    new: { command: "new" },
+  }).services;
+
+  // Its stop is refused again: the up fails, and old stays in the recorded plan, where status, down and uninstall see it.
+  const refused = w.command({ action: "up", target: "working" });
+  (await w.stopOf("old")).fail(new Error("still refused"));
+  await expect(refused).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
+  expect(
+    w.state.targets[0]!.plan.components.map((component) => component.name),
+  ).toEqual(["keep", "old"]);
+  await expect(
+    w.runtime.command({ action: "prepare-uninstall" }),
+  ).rejects.toMatchObject({ code: "TARGETS_RUNNING" });
+
+  // Once it stops, the up replaces the plan; keep, still running, is adopted rather than started again.
+  w.hold(false);
+  const stopsBefore = w.stops.length;
+  expect(await w.command({ action: "up", target: "working" })).toMatchObject({
+    outcome: "started",
+  });
+  expect(w.stops.slice(stopsBefore).map((stop) => stop.key)).toEqual([
+    `${id}:old`,
+  ]);
+  expect([...w.running].sort()).toEqual([`${id}:keep`, `${id}:new`]);
+  expect(
+    w.state.targets[0]!.plan.components.map((component) => component.name),
+  ).toEqual(["keep", "new"]);
+});
+
+test("a build an earlier rigd left running blocks uninstall until rig down stops it, and is stopped before the next build", async () => {
+  const w = await registered();
+  await w.command({ action: "up", target: "working" });
+  await w.command({ action: "down", target: "working" });
+  const build = `${w.state.targets[0]!.id}:preparation:run`;
+  // As a daemon that died while building leaves it: a recorded process group no Target's status shows.
+  w.running.add(build);
+  await expect(
+    w.runtime.command({ action: "prepare-uninstall" }),
+  ).rejects.toMatchObject({
+    code: "TARGETS_RUNNING",
+    details: { targets: ["fletcher working"] },
+  });
+  expect(await w.command({ action: "down", target: "working" })).toMatchObject({
+    outcome: "stopped",
+  });
+  expect(w.running.has(build)).toBe(false);
+  expect(await w.runtime.command({ action: "prepare-uninstall" })).toEqual({
+    ready: true,
+  });
+  await w.runtime.command({ action: "cancel-uninstall" });
+
+  w.running.add(build);
+  await w.command({ action: "up", target: "working" });
+  expect(w.running.has(build)).toBe(false);
+  expect(w.stops.filter((stop) => stop.key === build).length).toBe(2);
+  await w.command({ action: "down", target: "working" });
+});
+
+test("rig down settling a deploy interrupted while committing reports the Services it stopped in its result and Activity, and holds the superseded checkout for the sweep", async () => {
+  const w = await registered();
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
+  const previous = structuredClone(w.state.targets[0]!);
+  await w.command({
+    action: "deploy",
+    target: "stable",
+    branch: "main",
+    commit: "c2",
+  });
+  const deployed = w.state.targets[0]!;
+  expect(deployed.plan.workspacePath).not.toBe(previous.plan.workspacePath);
+  // As a daemon that died after saving its commit decision, before it finished the commit, leaves it.
+  deployed.recovery = {
+    plan: previous.plan,
+    branch: "main",
+    commit: previous.commit!,
+    desired: "running",
+    stage: "committing",
+  };
+  w.state.heldCheckouts = [];
+  w.released.length = 0;
+  expect(
+    await w.command({
+      action: "down",
+      target: "stable",
+      operationId: "settle",
+    }),
+  ).toMatchObject({ outcome: "stopped" });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    id: "settle",
+    action: "down",
+    outcome: "stopped",
+  });
+  expect(w.state.targets[0]).toMatchObject({
+    commit: "c2",
+    desired: "stopped",
+  });
+  expect(w.state.targets[0]!.recovery).toBeUndefined();
+  // The superseded checkout is given back by this down; one the mirror could not give back would stay held for the sweep.
+  expect(w.state.heldCheckouts).toEqual([]);
+  expect(
+    w.state.targets.some(
+      (target) =>
+        target.plan.workspacePath === previous.plan.workspacePath ||
+        target.recovery?.plan.workspacePath === previous.plan.workspacePath,
+    ),
+  ).toBe(false);
+  expect(w.released).toContain(previous.plan.workspacePath);
 });

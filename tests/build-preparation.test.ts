@@ -373,7 +373,7 @@ test("recovering a failed replacement restores the previous Deployment's prepara
   await expect(prepareTarget(interrupted, "all", f.deps)).rejects.toMatchObject(
     { code: "BUILD_UNKNOWN" },
   );
-  const recovered = await stopForRecovery(interrupted, f.deps);
+  const { target: recovered } = await stopForRecovery(interrupted, f.deps);
   expect(recovered.preparation).toEqual(previous.preparation);
   // The abandoned attempt's uncertainty outlives its record.
   expect(recovered.uncertainBuild).toEqual({

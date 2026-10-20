@@ -45,8 +45,9 @@ export async function privateDirectory(
 
 /** Replaces `path` whole: the bytes go to a new private file beside it (created exclusively, never through a link), which is
  * then renamed over whatever `path` was, so a reader sees the old file or the new one and a link at `path` is replaced, not
- * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename and its directory after it; a directory
- * that cannot be flushed fails FILE_NOT_DURABLE, with the new contents already in place (`published: true`). `confirm` runs
+ * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename, and after it every
+ * directory from the root down to the file, so the whole path to it (directories made just now included) survives a crash;
+ * a directory that cannot be flushed fails FILE_NOT_DURABLE, with the new contents already in place (`published: true`). `confirm` runs
  * once the new file is written, just before the rename; what it throws abandons the replacement. Any other failure leaves
  * `path` as it was and removes the temporary file. */
 export async function replacePrivateFile(
@@ -76,9 +77,21 @@ export async function replacePrivateFile(
     await rm(temporary, { force: true });
   }
   if (options.durable)
-    await syncDirectory(directory).catch((error: NodeJS.ErrnoException) => {
-      throw notDurable(path, error);
-    });
+    await syncDirectories(root, directory).catch(
+      (error: NodeJS.ErrnoException) => {
+        throw notDurable(path, error);
+      },
+    );
+}
+
+/** Removes the file at `path`, if there is one, and flushes its directory, so the removal survives a crash before anything
+ * records it as done. A directory that cannot be flushed fails FILE_NOT_DURABLE, with the file already gone. */
+export async function removeFileDurably(path: string): Promise<void> {
+  await rm(path, { force: true });
+  await syncDirectory(dirname(path)).catch((error: NodeJS.ErrnoException) => {
+    // No directory: nothing was there to remove.
+    if (error.code !== "ENOENT") throw notDurable(path, error, "removed");
+  });
 }
 
 /** For a store a library opens itself, following links as it goes (SQLite): makes `directory` 0700 when it is missing and
@@ -195,6 +208,28 @@ export async function readPrivateFile(
     return await file.readFile("utf8");
   } finally {
     await file.close();
+  }
+}
+
+/** Flushes the bytes of the file at `path` to disk, so a record that names it can rely on them after a crash. */
+export async function flushFile(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Flushes every directory from `root` down to `directory`, each one's entries, so the path to `directory` and what was
+ * renamed into it survive a crash. */
+async function syncDirectories(root: string, directory: string): Promise<void> {
+  const base = resolve(root);
+  let current = resolve(directory);
+  for (;;) {
+    await syncDirectory(current);
+    if (current === base || !within(base, current)) return;
+    current = dirname(current);
   }
 }
 
@@ -333,12 +368,16 @@ const notPrivate = (path: string, problem: string) =>
     { path, problem },
   );
 
-/** FILE_NOT_DURABLE: `path` holds its new contents, but the rename may not survive a crash. A caller that promises
+/** FILE_NOT_DURABLE: `path` was replaced or removed, but that change may not survive a crash. A caller that promises
  * durability reports it; others may take the write as done. */
-const notDurable = (path: string, error: NodeJS.ErrnoException) =>
+const notDurable = (
+  path: string,
+  error: NodeJS.ErrnoException,
+  change: "replaced" | "removed" = "replaced",
+) =>
   new RigError(
     "FILE_NOT_DURABLE",
-    `${path} was replaced, but its directory could not be flushed to disk (${error.code ?? "error"}).`,
-    "The new contents are in place but may not survive a crash. Check the disk, then retry.",
+    `${path} was ${change}, but its directory could not be flushed to disk (${error.code ?? "error"}).`,
+    `The ${change === "replaced" ? "new contents are in place" : "file is gone"} but may not survive a crash. Check the disk, then retry.`,
     { path, published: true, cause: error.code ?? "error" },
   );

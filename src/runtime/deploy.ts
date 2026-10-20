@@ -507,22 +507,31 @@ function managedService(
       component.kind === "managed" && component.name === service,
   );
 }
-/** Explicit down is the recovery path; it stops both recorded providers before clearing the transition. */
+/** Explicit down is the recovery path; it stops both recorded plans (and a build a daemon that died left running) before
+ * clearing the transition. Resolves the Target as now recorded, and `stopped` when either stop ended a process. The
+ * checkout of the plan it drops is held in the same write that drops that plan, so it is given back once nothing runs in
+ * it, by the down that follows or by the sweep. */
 export async function stopForRecovery(
   target: TargetRecord,
   deps: RuntimeDependencies,
-): Promise<TargetRecord> {
-  if (!target.recovery) return target;
+): Promise<{ target: TargetRecord; outcome: "stopped" | "unchanged" }> {
+  if (!target.recovery) return { target, outcome: "unchanged" };
   // Both plans' processes stop here under one set of process keys, and the route may name either plan's ports: all of it
   // is withheld before either plan stops anything.
   await deps.lifecycle.withhold(target);
-  await deps.lifecycle.down(target);
+  const stops = [await deps.lifecycle.down(target)];
+  const outcome = () =>
+    stops.some((stop) => stop.outcome === "stopped") ? "stopped" : "unchanged";
   if (target.recovery.stage === "committing") {
     await deps.lifecycle.commitEffects(target);
     const completed = { ...target, desired: "stopped" as const };
     delete completed.recovery;
-    await persistTarget(completed, deps.store);
-    return completed;
+    await settleRecovery(
+      completed,
+      { ...target, plan: target.recovery.plan },
+      deps,
+    );
+    return { target: completed, outcome: outcome() };
   }
   const previous: TargetRecord = {
     ...target,
@@ -543,8 +552,28 @@ export async function stopForRecovery(
     const uncertain = uncertainAttempt(target);
     if (uncertain) previous.uncertainBuild = uncertain;
   }
-  await deps.lifecycle.down(previous);
+  stops.push(await deps.lifecycle.down(previous));
   await deps.lifecycle.restoreEffects(target);
-  await persistTarget(previous, deps.store);
-  return previous;
+  await settleRecovery(previous, target, deps);
+  return { target: previous, outcome: outcome() };
+}
+/** Saves `settled`, the Target a recovery leaves, and holds the checkout of `dropped`, the plan it no longer records, in
+ * the same write: a deployed Target's own revision that is not `settled`'s is never left on disk with nothing naming it. */
+async function settleRecovery(
+  settled: TargetRecord,
+  dropped: TargetRecord,
+  deps: Pick<RuntimeDependencies, "store">,
+): Promise<void> {
+  const workspace = ownedRevision(dropped);
+  await deps.store.update((state) => {
+    const index = state.targets.findIndex((t) => t.id === settled.id);
+    if (index === -1) state.targets.push(settled);
+    else state.targets[index] = settled;
+    if (workspace !== undefined && workspace !== settled.plan.workspacePath)
+      holdCheckout(state, {
+        target: settled.id,
+        project: settled.projectId,
+        workspace,
+      });
+  });
 }

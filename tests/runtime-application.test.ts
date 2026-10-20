@@ -146,6 +146,9 @@ function fixture() {
       async observeJob() {
         return { state: "stopped" as const };
       },
+      async observePreparation() {
+        return { state: "stopped" as const };
+      },
       async stopJob() {
         return { outcome: "unchanged" as const };
       },

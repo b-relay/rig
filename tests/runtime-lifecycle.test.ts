@@ -394,7 +394,8 @@ test("down attempts every process even when one process stop fails", async () =>
     listeners: async (pid: number) => loopbackListeners(pid, [4000, 4001]),
   });
   await expect(lifecycle.down(target)).rejects.toThrow();
-  expect(stopped).toEqual(["t1:web", "t1:api"]);
+  // A build a daemon that died left running is attempted too, after the Services.
+  expect(stopped).toEqual(["t1:web", "t1:api", "t1:preparation:run"]);
 });
 
 import { stopFixture } from "./stop-fixture";

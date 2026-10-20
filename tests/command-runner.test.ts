@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
 
 const env = { PATH: process.env.PATH! };
@@ -74,4 +77,39 @@ test("output reaches onOutput as it is produced, before the command ends", async
     "stdout:first\n",
     "stdout:second\n",
   ]);
+});
+
+test("with started, the command runs only once its group was recorded, and never when the record fails", async () => {
+  const order: string[] = [];
+  const result = await runCommand({
+    command: ["/bin/sh", "-c", 'echo "ran in $$"'],
+    env,
+    async started(pid) {
+      order.push(`recorded ${pid}`);
+      // Held a moment: the command must still be waiting at its gate.
+      await Bun.sleep(50);
+      order.push("released");
+    },
+  });
+  expect(order).toEqual([expect.stringMatching(/^recorded \d+$/), "released"]);
+  // The command runs as the recorded group's leader: the pid it was told is the one recorded.
+  expect(result).toEqual({
+    exitCode: 0,
+    stdout: `ran in ${order[0]!.slice("recorded ".length)}\n`,
+    stderr: "",
+  });
+
+  const unrecorded = new Error("the record could not be written");
+  const marker = join(await mkdtemp(join(tmpdir(), "rig-runner-gate-")), "ran");
+  await expect(
+    runCommand({
+      command: ["/bin/sh", "-c", `touch '${marker}'`],
+      env,
+      started: async () => {
+        throw unrecorded;
+      },
+    }),
+  ).rejects.toBe(unrecorded);
+  expect(await Bun.file(marker).exists()).toBe(false);
+  await rm(dirname(marker), { recursive: true });
 });

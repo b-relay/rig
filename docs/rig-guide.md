@@ -221,6 +221,11 @@ before its stop began, so the next daemon's startup pass stops it again (a
 `restart` cut short this way leaves the Target stopped; run `rig up`). An
 interrupted deploy, Preview destroy or a `down` that was resolving an
 unfinished deploy is left for you to run again, and `rig status` says so.
+`rig down` on an interrupted deploy stops both recorded Deployments and any
+build still running, reports `stopped` when it ended a process, keeps one
+Deployment (the previous one, unless the deploy had already committed), and
+gives back the other's checkout (or holds it, like any checkout something still
+runs in, until nothing does).
 `rigd uninstall` is the exception: it refuses while any Target is running.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they
@@ -2612,7 +2617,16 @@ Commit out again and builds a fresh Deployment. Rig cannot know what a shell
 command did when `rigd` stopped before its outcome was recorded, so it never
 runs that unit again under the same Deployment: `rig up`, `rig restart`, and a
 plain deploy of the same Commit are refused as `BUILD_UNKNOWN`, and
-`rig deploy <target> --force` (or a new Commit) is the way through. A
+`rig deploy <target> --force` (or a new Commit) is the way through. Each build
+and dependency installation is recorded with its process group (pid and birth
+time) before its command runs. The group counts as running while any process
+in it does, even after the command's own shell has ended, and a process a build
+leaves running in the background is stopped when the build ends (the build
+fails `PREPARATION_LEFTOVER`, its record kept, when it cannot be). So a build
+that outlives a `rigd` that died is never lost: the next daemon's startup pass
+stops it on a Target meant to be stopped, `rig down` stops it (and says
+`stopped`), the next build of the Target stops it before it begins, and
+`rigd uninstall` refuses with `TARGETS_RUNNING` while one may still run. A
 Deployment with a failed or missing unit is refused as
 `PREPARATION_INCOMPLETE` the same way. Builds see `env_file` values when they
 run, but a changed value never reruns a completed build; it reaches the next

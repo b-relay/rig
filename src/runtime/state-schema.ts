@@ -758,7 +758,7 @@ export const runtimeStateSchema = z
       )
       .optional()
       .describe(
-        "Superseded checkouts something may still run in: one a job run kept after a deploy, recorded with the run's end, or one a Service a deploy kept running runs in, recorded by that deploy. Each is offered back every 30 seconds and given back once no job run or Service process runs in it; a rigd that stops first finds them again. State version 6 called them jobCheckouts.",
+        "Superseded checkouts something may still run in: one a job run kept after a deploy, recorded with the run's end, one a Service a deploy kept running runs in, recorded by that deploy, or the checkout of the plan a recovery dropped, recorded in the same write. Each is offered back every 30 seconds and given back once no job run or Service process runs in it; a rigd that stops first finds them again. State version 6 called them jobCheckouts.",
       ),
     backups: z
       .array(

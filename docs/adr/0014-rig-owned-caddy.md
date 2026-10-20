@@ -216,7 +216,7 @@ Publishing one change goes like this:
    - The result is kept as `adapted.json`, and `caddy validate --config adapted.json` provisions exactly what Caddy will run.
    - If any step fails, the generation is set aside as `.rejected`; nothing else has changed.
 3. **Switch.** Rename a new `current` link over the old one.
-4. **Activate.** Reload Caddy with the generation's `adapted.json`, or restart it when the issuance policies changed, then confirm from `GET /config/` that it runs `adapted.json`.
+4. **Activate.** Load the generation's `adapted.json` into Caddy (`POST /load` on its admin socket, made by rigd itself rather than by a `caddy reload` process, so a rigd that is killed leaves nothing behind that could submit a configuration later), or restart it when the issuance policies changed, then confirm from `GET /config/` that it runs `adapted.json`.
    - If that fails, put `current` back and make Caddy serve the previous generation, again confirmed.
    - If Caddy is unreachable, follow the rule under **The Caddy process**.
 

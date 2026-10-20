@@ -74,6 +74,9 @@ export interface CaddyAdmin {
   reachable(): Promise<boolean>;
   /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. */
   config(): Promise<unknown>;
+  /** Has Caddy run `config` (POST /load): resolves to undefined once Caddy has taken it, or to why it did not. Made by
+   * rigd itself, never by a process of its own, so nothing rigd started can submit a configuration after rigd is gone. */
+  load(config: unknown, signal?: AbortSignal): Promise<string | undefined>;
 }
 /** Thrown by activation, before anything is loaded, when the generation routes the dashboard to a port rigd no longer
  * asks for: its callers build the generation again instead. */
@@ -604,28 +607,24 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     )
       await options.job.restart();
     else {
-      const files = generationFiles(directory);
-      const reload = await caddy(
+      // A generation built before adapted JSON was kept is adapted from its Caddyfile, once.
+      const adapted =
         expected !== undefined
-          ? [executable, "reload", "--config", files.adapted]
-          : // A generation built before adapted JSON was kept is reloaded from its Caddyfile, once.
-            [
-              executable,
-              "reload",
-              "--config",
-              files.main,
-              "--adapter",
-              "caddyfile",
-            ],
-        secret,
-      );
-      if (reload.exitCode !== 0) {
-        const reason = lastOutputLine(reload.stderr);
+          ? { config: expected }
+          : await adapt(executable, generationFiles(directory).main, secret);
+      const refused =
+        adapted.config === undefined
+          ? adapted.reason
+          : await options.admin.load(adapted.config, closing.signal);
+      if (refused !== undefined) {
+        const reason = lastOutputLine(
+          redactSecrets(refused, secret ? [secret] : []),
+        );
         throw new RigError(
           kind === "route" ? "ROUTE_RELOAD" : "PROXY_RELOAD",
           `Caddy could not reload${reason ? ` (${reason})` : ""}${outcome}`,
           "Inspect Caddy's log and retry.",
-          { stderr: reload.stderr, evidence: boundedEvidence(reason ?? "") },
+          { stderr: reason ?? "", evidence: boundedEvidence(reason ?? "") },
         );
       }
     }

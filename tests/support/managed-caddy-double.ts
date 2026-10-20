@@ -141,8 +141,11 @@ export async function managedCaddyWorld(
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
     beforeSettings: undefined as undefined | (() => Promise<void>),
-    /** Runs on each reload once Caddy has loaded the configuration, before the reload command ends; `signal` is the one the
-     * command was given. */
+    /** Runs on each load before Caddy takes the configuration; `signal` is the one the load was given. */
+    beforeLoad: undefined as
+      undefined | ((signal?: AbortSignal) => Promise<unknown>),
+    /** Runs on each load once Caddy has taken the configuration, before the load answers; `signal` is the one the load was
+     * given. */
     afterLoad: undefined as
       undefined | ((signal?: AbortSignal) => Promise<unknown>),
     /** Runs each time Caddy's admin API is asked what it runs, before it answers. */
@@ -151,7 +154,7 @@ export async function managedCaddyWorld(
     onLoad: undefined as undefined | ((config: unknown) => Promise<void>),
     loaded: {} as unknown,
   };
-  const run: CommandRunner = async ({ command, signal }) => {
+  const run: CommandRunner = async ({ command }) => {
     commands.push([...command]);
     const verb = command[1]!;
     if (verb === "adapt")
@@ -160,15 +163,8 @@ export async function managedCaddyWorld(
         stdout: JSON.stringify(await fakeAdapt(command[3]!)),
         stderr: "",
       };
-    const failure = failures[verb as "validate" | "reload"];
+    const failure = failures[verb as "validate"];
     if (failure) return { exitCode: 1, stdout: "", stderr: failure };
-    if (verb === "reload" && !control.ignoreReload) {
-      control.loaded = command[3]!.endsWith(".json")
-        ? JSON.parse(await readFile(command[3]!, "utf8"))
-        : await fakeAdapt(command[3]!);
-      await control.onLoad?.(control.loaded);
-      await control.afterLoad?.(signal);
-    }
     return { exitCode: 0, stdout: "", stderr: "" };
   };
   let id = 0;
@@ -197,6 +193,18 @@ export async function managedCaddyWorld(
       config: async () => {
         await control.beforeConfig?.();
         return control.reachable ? control.loaded : undefined;
+      },
+      // Recorded among the commands as `admin load`, so a load reads as one step of a publication.
+      load: async (config, signal) => {
+        commands.push(["admin", "load"]);
+        await control.beforeLoad?.(signal);
+        if (failures.reload) return failures.reload;
+        if (!control.ignoreReload) {
+          control.loaded = config;
+          await control.onLoad?.(control.loaded);
+          await control.afterLoad?.(signal);
+        }
+        return undefined;
       },
     },
     ...(dashboard

@@ -436,3 +436,84 @@ test("real Caddy never hands a stopped Target's hostname to another program that
   });
   expect(squatter.received).toEqual([]);
 }, 60_000);
+
+test("real Caddy never takes a configuration from a rigd killed while it published one: the next rigd's withholding stands", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const https = freePort();
+  const dashboardPort = freePort();
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  // The next rigd asks for the dashboard's domain withheld: its dashboard is not found on its port.
+  const withheld = { domain: "rig.example.test", port: null };
+  const next = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    dashboard: { current: () => withheld, confirmed: async () => withheld },
+    run: runCommand,
+    job,
+    admin,
+  });
+  await next.republish();
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("rig.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect((await get("rig.example.test", https)).status).toBe(503);
+  // A rigd publishing the domain to its dashboard is killed before its configuration reaches Caddy.
+  const old = Bun.spawn(
+    [
+      process.execPath,
+      join(import.meta.dir, "support", "caddy-crash-publisher.ts"),
+      root,
+      JSON.stringify(settings),
+      String(dashboardPort),
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  cleanups.push(async () => old.kill("SIGKILL"));
+  for (let i = 0; i < 400 && !existsSync(join(root, "held")); i++)
+    await Bun.sleep(25);
+  expect(existsSync(join(root, "held"))).toBe(true);
+  old.kill("SIGKILL");
+  await old.exited;
+  // Another program takes the port; the next rigd starts and confirms what Caddy serves.
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: dashboardPort,
+    fetch: () => new Response("another program"),
+  });
+  cleanups.push(async () => other.stop(true));
+  await next.republish();
+  await next.refreshDashboard();
+  expect((await get("rig.example.test", https)).status).toBe(503);
+  // Whatever the killed rigd left waiting may go on now: nothing of it reaches Caddy.
+  await writeFile(join(root, "resume"), "");
+  await Bun.sleep(1500);
+  expect(await get("rig.example.test", https)).toMatchObject({ status: 503 });
+}, 60_000);

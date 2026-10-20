@@ -48,7 +48,8 @@ test("a route change is published as a generation: adapted, validated as the fro
     ],
     // Only the frozen JSON is provisioned, and it is exactly what Caddy will load.
     [binary, "validate", "--config", join(generation, "adapted.json")],
-    [binary, "reload", "--config", join(generation, "adapted.json")],
+    // Loaded by rigd itself through Caddy's admin socket, never by a process of its own.
+    ["admin", "load"],
   ]);
   const routes = await w.routes();
   expect(routes).toContain(
@@ -201,7 +202,7 @@ test("a change of CA restarts Caddy instead of reloading it, since a reload keep
   w.setSettings({ tls: { ca: "letsencrypt" } });
   expect(await w.caddy.republish()).toEqual({ published: true });
   expect(w.control.restarts).toBe(1);
-  expect(w.verbs().filter((verb) => verb === "reload")).toHaveLength(1);
+  expect(w.verbs().filter((verb) => verb === "load")).toHaveLength(1);
   expect(await w.caddy.republish()).toEqual({ published: false });
 });
 
@@ -813,7 +814,7 @@ test("close cancels the Caddy command under way, refuses every change after it, 
         reject(new Error("cancelled"));
       });
     });
-  const reloads = () => w.verbs().filter((verb) => verb === "reload").length;
+  const reloads = () => w.verbs().filter((verb) => verb === "load").length;
   const before = reloads();
   const held = w.caddy.router.apply(app("127.0.0.1:3002"));
   const queued = w.caddy.router.apply(app("127.0.0.1:3003"));

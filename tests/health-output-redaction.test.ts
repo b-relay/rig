@@ -169,3 +169,30 @@ test("a failing health check that prints an env-file value shows it as [redacted
   expect(kept).toContain("[redacted]");
   expect(kept).not.toContain(SECRET);
 }, 20_000);
+
+test("health output a rigd before redaction recorded in Activity is withheld from the Activity the dashboard reads", async () => {
+  const w = await world();
+  // State as the previous rigd left it: version 8, with a check's output as printed.
+  const path = join(w.root, "runtime", "state.json");
+  const state = JSON.parse(await readFile(path, "utf8"));
+  state.version = 8;
+  state.activity.push({
+    id: "legacy",
+    projectId: state.projects[0].id,
+    project: "demo",
+    target: "working",
+    component: { kind: "service", name: "web" },
+    action: "health",
+    outcome: "failed",
+    occurredAt: "2026-10-19T08:00:00.000Z",
+    message: `web is unhealthy: 1 health check in a row failed (exit code 1: auth failed for ${SECRET}). Its healthcheck's on_failure is report, so Rig only reports it.`,
+  });
+  await writeFile(path, JSON.stringify(state));
+  const activity = JSON.stringify(
+    await w.runtime.command({ action: "activity", project: "demo" }),
+  );
+  expect(activity).not.toContain(SECRET);
+  expect(activity).toContain(
+    "web is unhealthy: 1 health check in a row failed (output withheld: recorded before Rig redacted health output).",
+  );
+});

@@ -4,6 +4,7 @@ import { replacePrivateFile } from "../providers/private-files";
 import { z } from "zod";
 import {
   MIGRATED_STATE_VERSIONS,
+  REDACTED_HEALTH_STATE_VERSION,
   STATE_VERSION,
   UNFIXED_NAMES_STATE_VERSION,
   runtimeStateSchema as schema,
@@ -43,6 +44,7 @@ export class FileStateStore implements StateStore {
     try {
       parsed = JSON.parse(raw);
       this.assertSupportedVersion(parsed);
+      withholdUnredactedHealthOutput(parsed);
       readFixedTargetNames(parsed);
       readEarlierVersions(parsed);
       schema.parse(parsed);
@@ -174,6 +176,33 @@ export function readFixedTargetNames(parsed: unknown): void {
       taken.add(`${target.projectId}:${name}`);
       renameTarget(target, "preview", name);
     }
+  }
+}
+/** A health check's output in Activity a version before REDACTED_HEALTH_STATE_VERSION recorded, which may hold an env-file
+ * value as the check printed it. Those values cannot be told apart any more, so each such health or health-restart message
+ * is cut where the output began and says it is withheld. It runs before validation, on the parsed JSON, and changes nothing
+ * it does not recognize. */
+export function withholdUnredactedHealthOutput(parsed: unknown): void {
+  if (
+    !loose(parsed) ||
+    typeof parsed.version !== "number" ||
+    parsed.version >= REDACTED_HEALTH_STATE_VERSION ||
+    !Array.isArray(parsed.activity)
+  )
+    return;
+  for (const record of parsed.activity.filter(loose)) {
+    if (
+      (record.action !== "health" && record.action !== "health-restart") ||
+      typeof record.message !== "string"
+    )
+      continue;
+    // Every format a rigd recorded: "... in a row (output)", "... in a row failed (output)" and "(last output: output)".
+    const output = record.message.search(
+      /in a row(?: failed)? \(|\(last output: /,
+    );
+    if (output === -1) continue;
+    const open = record.message.indexOf("(", output);
+    record.message = `${record.message.slice(0, open)}(output withheld: recorded before Rig redacted health output).`;
   }
 }
 /** Every earlier version this rigd reads besides version 4 (see `MIGRATED_STATE_VERSIONS`) is the current one with less in

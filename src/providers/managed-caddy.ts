@@ -517,6 +517,9 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       await rm(directory, { recursive: true, force: true });
       return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
     }
+    // A Caddy that ran before this publication must run after a failed one too, even when the publication stopped it (a
+    // restart whose new process never answered); one that was stopped stays stopped.
+    const ran = (await options.job.state()) !== "stopped";
     await switchTo(directory);
     try {
       await activate(directory, executable, secret, kind, "publish");
@@ -531,7 +534,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       // Put back what was served, and say whether that worked: the error alone cannot tell. Reconciling never serves a
       // dashboard route rigd no longer confirms.
       const restored = previous
-        ? await reconcile(kind).then(
+        ? await reconcile(kind, ran).then(
             () => true,
             () => false,
           )
@@ -556,13 +559,15 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
    * so that is a failure, never a success, after a bounded wait for a Caddy that is still opening its socket. Caddy already
    * running it needs nothing; a different CA needs a restart, since a reload keeps the certificates Caddy has cached;
    * anything else a reload of the generation's adapted JSON, which never re-reads a Caddyfile or an import. `restoring`
-   * says what a failure means to the caller: a publication rolls back, reconciling has nothing to roll back to. */
+   * says what a failure means to the caller: a publication rolls back, reconciling has nothing to roll back to. With
+   * `start`, a Caddy that does not answer is started on `directory` instead: a rollback after its publication stopped it. */
   async function activate(
     directory: string,
     executable: string,
     secret: string | undefined,
     kind: PublicationKind,
     during: "publish" | "reconcile",
+    start = false,
   ): Promise<void> {
     const outcome =
       during === "publish"
@@ -570,7 +575,25 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         : "; Caddy still serves another configuration, so nothing was changed.";
     const expected = await adaptedOf(directory);
     const dashboard = (await metadataOf(directory))?.dashboard;
+    /** Confirmed from what Caddy reports it runs; a generation built before adapted JSON was kept cannot be. */
+    const confirm = async () => {
+      if (expected === undefined) return;
+      const serving = await options.admin.config();
+      if (!Bun.deepEquals(serving, expected))
+        throw new RigError(
+          "PROXY_ACTIVATION",
+          `Caddy answered, but does not serve generation ${basename(directory)}${outcome}`,
+          "Run rig doctor and read Caddy's log before retrying.",
+          { generation: basename(directory) },
+        );
+    };
     let loaded = await options.admin.config();
+    if (loaded === undefined && start) {
+      if (closing.signal.aborted) throw closed();
+      // Its job starts it from the current generation, which is `directory`.
+      await options.job.restart();
+      return confirm();
+    }
     if (loaded === undefined) {
       let state = await options.job.state();
       if (state === "stopped") return;
@@ -611,7 +634,16 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       issuerCas(loaded).length > 0 &&
       issuancePolicies(loaded) !== issuancePolicies(expected)
     )
-      await options.job.restart();
+      await options.job.restart().catch((error: unknown) => {
+        // A publication puts the previous generation back, and says whether that worked (see publish).
+        if (!(error instanceof RigError) || during !== "publish") throw error;
+        throw new RigError(
+          error.code,
+          `${error.message.replace(/\.$/, "")}${outcome}`,
+          error.hint,
+          error.details,
+        );
+      });
     else {
       // A generation built before adapted JSON was kept is adapted from its Caddyfile, once.
       const adapted =
@@ -639,20 +671,15 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         );
       }
     }
-    if (expected === undefined) return;
-    const serving = await options.admin.config();
-    if (!Bun.deepEquals(serving, expected))
-      throw new RigError(
-        "PROXY_ACTIVATION",
-        `Caddy answered, but does not serve generation ${basename(directory)}${outcome}`,
-        "Run rig doctor and read Caddy's log before retrying.",
-        { generation: basename(directory) },
-      );
+    await confirm();
   }
   /** Confirms Caddy serves the current generation, making it do so when it does not: after a crash between switching and
    * activating, or a reload that never happened. Every change runs this first, so nothing touches an upstream while what
-   * Caddy serves is unknown. */
-  async function reconcile(kind: PublicationKind): Promise<void> {
+   * Caddy serves is unknown. With `start`, a Caddy that does not answer is started on it (see activate). */
+  async function reconcile(
+    kind: PublicationKind,
+    start = false,
+  ): Promise<void> {
     await recover();
     const current = await currentGeneration();
     if (!current) return;
@@ -666,12 +693,17 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       );
     if (await unconfirmedDashboard(current)) return confirmed();
     const secret = await token(settings).catch(() => undefined);
-    await activate(current, await binary(), secret, kind, "reconcile").catch(
-      (error: unknown) => {
-        if (!(error instanceof DashboardRouteChanged)) throw error;
-        return confirmed();
-      },
-    );
+    await activate(
+      current,
+      await binary(),
+      secret,
+      kind,
+      "reconcile",
+      start,
+    ).catch((error: unknown) => {
+      if (!(error instanceof DashboardRouteChanged)) throw error;
+      return confirmed();
+    });
   }
   /** Makes sure, once, before anything trusts what Caddy reports, that no configuration an earlier rigd sent can still be
    * applied. One that stopped in order recorded so (`close`). After any other end, a crash or a kill, Caddy may hold a

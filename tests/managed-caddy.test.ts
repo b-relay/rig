@@ -208,6 +208,49 @@ test("a change of CA restarts Caddy instead of reloading it, since a reload keep
   expect(await w.caddy.republish()).toEqual({ published: false });
 });
 
+test("a CA change whose restart stops Caddy and cannot start it again rolls back to the previous generation and starts Caddy on it", async () => {
+  const w = await world({ tls: { ca: "internal" } });
+  await w.caddy.router.apply(app());
+  const old = await w.current();
+  const served = w.control.loaded;
+  w.control.failingRestarts = 1;
+  w.setSettings({ tls: { ca: "https://127.0.0.1:65534/acme" } });
+  const failure = await w.caddy.republish().catch((error: unknown) => error);
+  expect(failure).toMatchObject({
+    code: "PROXY_START",
+    message: expect.stringContaining(
+      "; the previous configuration was restored.",
+    ),
+  });
+  expect(
+    (failure as { details?: Record<string, unknown> }).details,
+  ).not.toHaveProperty("rollbackReloaded");
+  expect(await w.current()).toBe(old);
+  // Started again, on the previous generation: serving, not only linked.
+  expect(w.control.restarts).toBe(2);
+  expect(w.control.state).toBe("running");
+  expect(w.control.loaded).toEqual(served);
+});
+
+test("when the previous generation cannot start either, the failed rollback is reported, not a restored configuration", async () => {
+  const w = await world({ tls: { ca: "internal" } });
+  await w.caddy.router.apply(app());
+  const old = await w.current();
+  w.control.failingRestarts = 2;
+  w.setSettings({ tls: { ca: "https://127.0.0.1:65534/acme" } });
+  const failure = await w.caddy.republish().catch((error: unknown) => error);
+  expect(failure).toMatchObject({
+    code: "PROXY_START",
+    hint: expect.stringContaining(
+      "Serving the previous configuration again failed too",
+    ),
+    details: { rollbackReloaded: false },
+  });
+  expect((failure as Error).message).not.toContain("restored");
+  expect(await w.current()).toBe(old);
+  expect(w.control.restarts).toBe(2);
+});
+
 test("republishing rewrites every owned block, dropping directives an external router's extra_config left in them", async () => {
   const w = await world();
   await w.caddy.router.apply(app());

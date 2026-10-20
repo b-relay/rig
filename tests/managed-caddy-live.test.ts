@@ -6,7 +6,10 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  readlink,
+  realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { verifyProxyCertificates } from "../src/adapters/proxy-verify";
@@ -760,3 +763,128 @@ test("real Caddy never applies a load a stopping rigd cancelled after sending it
     await next.close();
   }
 }, 180_000);
+
+test("real Caddy whose CA-change restart cannot start the new generation serves the previous one again; when that cannot start either, the failure says so", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("app"),
+  });
+  cleanups.push(async () => upstream.stop(true));
+  const https = freePort();
+  const internal = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
+  let settings = internal;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  // A well-formed token that names no account: the ACME CA below is a closed loopback port, so nothing is ever issued.
+  await mkdir(join(root, "auth"), { recursive: true });
+  await writeFile(paths.token, "Syn_thetic-Token-0123456789abcdefABCDEF", {
+    mode: 0o600,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({
+    root,
+    paths,
+    userHome: home,
+    admin,
+    deadlineMs: 5_000,
+  });
+  cleanups.push(() => job.remove());
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  await caddy.router.apply({
+    key: "app",
+    sites: [
+      {
+        hostname: "app.example.test",
+        routes: [{ prefix: "/", upstream: `127.0.0.1:${upstream.port}` }],
+      },
+    ],
+  });
+  await job.install();
+  const serves = async () => {
+    for (
+      let deadline = Date.now() + 15_000;
+      (await get("app.example.test", https)).status === 0 &&
+      Date.now() < deadline;
+    )
+      await Bun.sleep(200);
+    return get("app.example.test", https);
+  };
+  expect(await serves()).toEqual({ status: 200, body: "app" });
+  const previous = await readlink(paths.current);
+
+  // Rig's binary, made to refuse `run` once (`once`, removed as it refuses) or every time (`always`): adapt and validate are
+  // still real Caddy's.
+  const copy = await realpath(paths.binary);
+  const once = join(root, "refuse-once");
+  const always = join(root, "refuse-always");
+  const fixture = join(paths.bin, "caddy-refusing");
+  await writeFile(
+    fixture,
+    [
+      "#!/bin/sh",
+      `if [ "$1" = run ] && [ -e '${once}' ]; then rm -f '${once}'; echo 'Injected failure starting Caddy' >&2; exit 78; fi`,
+      `if [ "$1" = run ] && [ -e '${always}' ]; then echo 'Injected failure starting Caddy' >&2; exit 78; fi`,
+      `exec '${copy}' "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  await rm(paths.binary);
+  await symlink(fixture, paths.binary);
+
+  // One refused start: the restart a change of CA needs stops Caddy, and its new process exits. The rollback starts Caddy
+  // again on the previous generation.
+  await writeFile(once, "");
+  settings = {
+    ...internal,
+    tls: { ...internal.tls, ca: "https://127.0.0.1:65534/acme" },
+  };
+  await expect(caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_START",
+    message: expect.stringContaining("the previous configuration was restored"),
+  });
+  expect(existsSync(once)).toBe(false);
+  expect(await readlink(paths.current)).toBe(previous);
+  expect(await job.state()).toBe("running");
+  expect(await serves()).toEqual({ status: 200, body: "app" });
+
+  // Every start refused: the previous generation cannot start either, and the failure says the rollback failed.
+  await writeFile(always, "");
+  const failure = await caddy.republish().catch((error: unknown) => error);
+  expect(failure).toMatchObject({
+    code: "PROXY_START",
+    hint: expect.stringContaining(
+      "Serving the previous configuration again failed too",
+    ),
+    details: { rollbackReloaded: false },
+  });
+  expect(await readlink(paths.current)).toBe(previous);
+  expect(await job.state()).toBe("stopped");
+}, 60_000);

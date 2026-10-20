@@ -21,6 +21,7 @@ import {
   type PublishedDashboard,
 } from "../../src/domain/managed-proxy";
 import { routeFileHostnames } from "../../src/providers/route-file";
+import { RigError } from "../../src/domain/errors";
 import type { CommandRunner } from "../../src/providers/contracts";
 
 export const TOKEN = "Syn_thetic-Token-0123456789abcdefABCDEF";
@@ -137,6 +138,9 @@ export async function managedCaddyWorld(
     reachable: true,
     state: "running" as CaddyJobState,
     restarts: 0,
+    /** How many restarts to come stop Caddy and then fail, as a new process that exits at once does; the one after starts
+     * it again. */
+    failingRestarts: 0,
     /** Set to make a reload succeed without Caddy loading anything. */
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
@@ -179,6 +183,18 @@ export async function managedCaddyWorld(
       state: async () => control.state,
       restart: async () => {
         control.restarts++;
+        if (control.failingRestarts > 0) {
+          control.failingRestarts--;
+          control.state = "stopped";
+          control.reachable = false;
+          throw new RigError(
+            "PROXY_START",
+            "Rig's Caddy did not answer on its socket within 1 seconds.",
+            "Read the end of Caddy's log.",
+          );
+        }
+        control.state = "running";
+        control.reachable = true;
         control.loaded = JSON.parse(
           await readFile(
             join(root, "caddy", "current", "adapted.json"),

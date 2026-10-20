@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { parseProjectConfig } from "../src/config";
-import { createClock } from "../src/domain/clock";
 import type {
   ProcessObservation,
   Supervisor,
@@ -19,7 +18,7 @@ const HOUR = 3_600_000;
 
 /** One `restart: always` Service under the real runtime, over a scripted supervisor and two clocks: time passing (`wait`)
  * moves both, a correction of the Mac's clock (`step`) only the wall clock. `restartDaemon` is a new rigd: a new runtime
- * over the same state, whose clock remembers nothing. */
+ * over the same state, which remembers nothing of the one before. */
 async function fixture() {
   const processes = new Map<string, ProcessObservation>();
   const starts: string[] = [];
@@ -44,8 +43,7 @@ async function fixture() {
     async detach() {},
   };
   let elapsed = 0;
-  const daemonClock = () =>
-    createClock({ wall: () => world.clock.ms, elapsed: () => elapsed });
+  const clock = { now: () => world.clock.ms, elapsed: () => elapsed };
   const world = await runtimeWorld({
     name: "supervision-clock",
     config: parseProjectConfig({
@@ -58,7 +56,7 @@ async function fixture() {
     readinessDeadlineMs: 250,
   });
   roots.push(world.root);
-  let runtime = createRuntime({ ...world.deps, clock: daemonClock() });
+  let runtime = createRuntime({ ...world.deps, clock });
   await runtime.command({ action: "init", repoPath: world.repo });
   await runtime.command({ action: "up", project: "demo" });
   const web = async () => (await world.store.read()).targets[0]!;
@@ -84,7 +82,7 @@ async function fixture() {
     },
     async restartDaemon() {
       await runtime.drain();
-      runtime = createRuntime({ ...world.deps, clock: daemonClock() });
+      runtime = createRuntime({ ...world.deps, clock });
       await runtime.reconcile();
     },
     run: async () => (await web()).services!.web!,
@@ -141,4 +139,26 @@ test("correcting the clock forward neither hastens a restart nor gives a crashin
   await f.supervise();
   expect(f.starts).toHaveLength(RESTART_LIMIT + 1);
   expect((await f.run()).exhausted).toBe(true);
+});
+
+test("restart attempts long past their window still count as old after the clock is set back near them", async () => {
+  const f = await fixture();
+  // Five automatic restarts, 20 s apart: never five within a minute.
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await f.crash();
+    await f.supervise();
+    f.wait(2000);
+    await f.supervise();
+    f.wait(18_000);
+  }
+  expect(f.starts).toHaveLength(6);
+  // Three healthy hours, then the clock is set back to just after those attempts.
+  f.wait(3 * HOUR);
+  f.step(-3 * HOUR);
+  await f.crash();
+  await f.supervise();
+  f.wait(100);
+  await f.supervise();
+  expect((await f.run()).exhausted).toBeUndefined();
+  expect(f.starts).toHaveLength(7);
 });

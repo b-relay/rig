@@ -305,8 +305,11 @@ export interface JobRecord {
   /** The latest run that ended. */
   last?: JobRun;
   /** The latest scheduled time rigd acted on, by running, skipping or passing over it (ISO 8601). One acted on before the
-   * clock was set back stays recorded until a later one is acted on, so no rigd acts on it twice. */
+   * clock was set back stays recorded until a later one is acted on. */
   lastScheduled?: string;
+  /** The scheduled times rigd acted on most recently (ISO 8601), oldest first, at most JOB_HANDLED_LIMIT: none is acted on
+   * again, even after the clock was set back past it. Absent from a record an older rigd wrote. */
+  handled?: string[];
   /** When rigd first saw the job in this Target's plan (ISO 8601), so a time due after it that a rigd restart missed still
    * runs within the late limit, before any time was acted on. */
   watchedFrom?: string;

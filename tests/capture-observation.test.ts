@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, setSystemTime, test } from "bun:test";
 import { throttledPublisher } from "../src/providers/capture-observation";
 
 test("unchanged evidence is republished only at the heartbeat, so an idle component does not rewrite its file every poll", async () => {
@@ -8,7 +8,7 @@ test("unchanged evidence is republished only at the heartbeat, so an idle compon
     async (observation, applicationIdentity) => {
       writes.push([observation, applicationIdentity]);
     },
-    { heartbeatMs: 250, now: () => clock },
+    { heartbeatMs: 250, elapsed: () => clock },
   );
   const running = { state: "running" as const, pid: 7 };
   await publish(running, "id");
@@ -26,4 +26,26 @@ test("unchanged evidence is republished only at the heartbeat, so an idle compon
   clock = 270;
   await publish({ state: "stopped", exitCode: 0 }, undefined);
   expect(writes).toHaveLength(3);
+});
+
+test("the heartbeat goes on in elapsed time when the Mac's clock is set back", async () => {
+  setSystemTime(new Date("2026-10-13T12:00:00Z"));
+  try {
+    let elapsed = 0;
+    const writes: unknown[] = [];
+    const publish = throttledPublisher(
+      async (observation) => {
+        writes.push(observation);
+      },
+      { heartbeatMs: 250, elapsed: () => elapsed },
+    );
+    const running = { state: "running" as const, pid: 7 };
+    await publish(running);
+    setSystemTime(new Date("2026-10-13T11:00:00Z"));
+    elapsed = 250;
+    await publish(running);
+    expect(writes).toHaveLength(2);
+  } finally {
+    setSystemTime();
+  }
 });

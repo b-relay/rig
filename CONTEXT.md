@@ -1027,17 +1027,22 @@ journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 
 ### Elapsed time
 
-How long something took or must still wait, as `rigd` measures it: on a
-monotonic clock, apart from the Mac's wall clock. Every duration is elapsed
-time: a `stop_timeout`, a Service's restart delays and budget windows, a
-healthcheck's `interval` and the health restart back-off, a job's `timeout`,
-and how often `rigd` offers its own work again. Wall time is what records,
-Activity and status show, and what job schedules follow. Correcting the Mac's
-clock, forwards or back, moves wall time only, so it never shortens or
-lengthens a wait. Elapsed time does not survive a `rigd` restart: the next
-`rigd` measures a wait the previous one began from its recorded time, a time
-that the clock, set back meanwhile, puts in the future counting as now, so the
-wait is never longer than it was meant to be.
+How long something must still wait, as `rigd` measures it: on a monotonic
+clock, apart from the Mac's wall clock. These waits are elapsed time: a
+`stop_timeout` and the waits around a stop, a Service's restart delays and
+budget windows, a healthcheck's `interval` and the health restart back-off, a
+job's `timeout`, how often the job scheduler offers its own work again, and how
+often log writers reread the `logs` settings. Wall time is what records,
+Activity and status show (a run's duration included), and what job schedules
+follow. Correcting the Mac's clock, forwards or back, moves wall time only, so
+it never shortens or lengthens one of these waits. Elapsed time stops while
+the Mac sleeps, so a wait resumes after sleep where it was, as the process it
+times does. It does not survive a `rigd` restart: the next `rigd` measures a
+wait the previous one began by the wall-clock age of its recorded time, which
+counts time asleep, and counts a time that the clock, set back meanwhile, puts
+in the future as now, so the wait is never longer than it was meant to be. A
+clock moved forward while no `rigd` ran can shorten it, and can age restart
+attempts out of their budget's window.
 _Avoid_: uptime, real time
 
 ### Port selection

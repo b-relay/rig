@@ -85,8 +85,10 @@ export async function restartForHealth(
           observed.incarnation !== request.incarnation))
   )
     return { outcome: "skipped" };
-  // Stamped: the back-off before the next health restart is measured from it on elapsed time.
-  const at = clockOr(deps.clock, deps.now).stamp();
+  // The back-off before the next health restart is waited from here, in elapsed time.
+  const clock = clockOr(deps.clock, deps.now);
+  const at = clock.now();
+  const elapsed = clock.elapsed();
   const stretch = { since: request.since, restarts: [...request.restarts, at] };
   // Written ahead, before the stop: the stretch with this attempt, owned by the health back-off until a start passes. A
   // refused write stops here, with nothing stopped.
@@ -125,7 +127,7 @@ export async function restartForHealth(
         "failed",
         `${request.service} was to be restarted because ${why}, but it could not be stopped (${diagnosticErrorCode(error)}). ${next}`,
       );
-      return { outcome: "failed", at };
+      return { outcome: "failed", at, elapsed };
     }
   }
   phase("starting");
@@ -141,7 +143,7 @@ export async function restartForHealth(
       "failed",
       `${request.service} was ${request.start ? "to be started" : "stopped"} because ${why}, and its start did not pass its start check (${diagnosticErrorCode(error)}). It is unhealthy. ${next}`,
     );
-    return { outcome: "failed", at };
+    return { outcome: "failed", at, elapsed };
   }
   // The start passed: the stretch goes on until a check passes, but the health back-off no longer owns starting it. A
   // refused write leaves pendingStart, and the monitor, finding the process running, checks it as any other.
@@ -152,5 +154,5 @@ export async function restartForHealth(
     "started",
     `${request.service} was ${request.start ? "started again" : "restarted"} because ${why} (health restart ${request.attempt}).`,
   );
-  return { outcome: "restarted", at };
+  return { outcome: "restarted", at, elapsed };
 }

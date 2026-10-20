@@ -53,6 +53,7 @@ import {
   intendStopped,
   superviseTarget,
   supervisionScope,
+  type RestartMarks,
 } from "./supervision";
 import {
   findHostRestart,
@@ -158,7 +159,6 @@ import {
 } from "./backups";
 import {
   JOB_LATE_LIMIT_MS,
-  pastTimeout,
   schedulesJobs,
   type JobSettleRequest,
   type ScheduledRunRequest,
@@ -306,6 +306,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
     : input;
   const locks = createOperationLocks();
+  /** Where on the elapsed clock this daemon saw each Service's exits and automatic attempts. */
+  const restartMarks: RestartMarks = new Map();
   /** How supervision went: reading the state (`STATE_WORK`), and each Target's share by its id. */
   const supervision = trackedWorkReport(deps.supervision);
   const reservations = createHostReservations();
@@ -1786,9 +1788,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             ...diagnosticCauses(error),
           })
           .catch(() => {});
+        const clock = clockOr(deps.clock, deps.now);
         return {
           outcome: "failed" as const,
-          at: clockOr(deps.clock, deps.now).stamp(),
+          at: clock.now(),
+          elapsed: clock.elapsed(),
         };
       } finally {
         lease.release();
@@ -2076,7 +2080,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // Another run by now, started after the scheduler looked: what it judged is not about this one.
         if (run?.id !== request.runId) return;
         const held = { ...deps, lifecycle };
-        if (pastTimeout(run, clockOr(deps.clock, deps.now)))
+        if (request.timedOut)
           await stopJobRun(target, request.job, run, "timed-out", held);
         else await settleJobRun(target, request.job, run.id, held);
         await releaseHeldCheckouts(target, deps);
@@ -2502,6 +2506,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           target,
           { ...deps, lifecycle },
           supervisionScope(target),
+          restartMarks,
         );
       }
       if (action === "reconcile") {

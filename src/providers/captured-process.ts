@@ -153,7 +153,7 @@ async function runUntilStopped(
           applicationIdentity,
           observation,
         }),
-      { heartbeatMs: OBSERVATION_HEARTBEAT_MS, now: Date.now },
+      { heartbeatMs: OBSERVATION_HEARTBEAT_MS, elapsed: elapsedNow },
     );
     try {
       return ended(

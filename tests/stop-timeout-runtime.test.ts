@@ -1120,6 +1120,7 @@ test("a health restart stops the Service within its stop_timeout under its Targe
   expect(await restart).toEqual({
     outcome: "restarted",
     at: Date.parse("2026-09-27T04:00:00.000Z"),
+    elapsed: Date.parse("2026-09-27T04:00:00.000Z"),
   });
   const after = working().services!.web!;
   expect(after.incarnation).not.toBe(before.incarnation);

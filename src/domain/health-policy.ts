@@ -1,10 +1,7 @@
 /** Ongoing health checks (ADR 0012): the pure rules for what one check result means, and when an unhealthy Service with
- * `on_failure: restart` is restarted. Times are the wall-clock instants things happened, in Unix milliseconds; how long
- * ago one was is elapsed time, which a `since` function given here measures (`Clock.since`), so nothing here reads a clock
- * and a correction of the clock never moves a check or a restart. */
-
-/** Milliseconds elapsed since a wall-clock instant. */
-export type Since = (at: number) => number;
+ * `on_failure: restart` is restarted. Recorded times are wall-clock Unix milliseconds; whether a check or a restart is due
+ * is decided on elapsed time, which the caller measures, so nothing here reads a clock and a correction of the clock
+ * never moves a check or a restart. */
 
 /** A Service's ongoing check policy, as its plan records it, in milliseconds. */
 export interface HealthPolicy {
@@ -28,9 +25,13 @@ export interface HealthState {
   readonly incarnation?: string;
   /** Which check the results are about (the plan's test and policy, as the monitor names them); another starts afresh. */
   readonly check?: string;
-  /** Since when this process may be checked: its start check passed and nothing is starting or stopping its Target. */
+  /** Since when this process may be checked, in elapsed milliseconds: its start check passed and nothing is starting or
+   * stopping its Target. */
   readonly eligibleSince?: number;
+  /** When it was last checked: wall-clock Unix milliseconds, as shown, and elapsed milliseconds, which its interval counts
+   * from. */
   readonly checkedAt?: number;
+  readonly checkedMark?: number;
   readonly passed?: boolean;
   /** The last failed check's output, bounded. */
   readonly output?: string;
@@ -55,17 +56,17 @@ export function boundedOutput(text: string): string {
     ? `${line.slice(0, HEALTH_OUTPUT_LIMIT - 1)}…`
     : line;
 }
-/** Whether the next check of a Service is due: once it may be checked, at once for a process not checked yet, then once
- * `interval` has elapsed since the last check. */
+/** Whether the next check of a Service is due at `elapsed` (elapsed milliseconds): once it may be checked, at once for a
+ * process not checked yet, then once `interval` has elapsed since the last check. */
 export function checkDue(
   state: HealthState,
   policy: Pick<HealthPolicy, "intervalMs">,
-  since: Since,
+  elapsed: number,
 ): boolean {
   return (
     state.eligibleSince !== undefined &&
-    (state.checkedAt === undefined ||
-      since(state.checkedAt) >= policy.intervalMs)
+    (state.checkedMark === undefined ||
+      elapsed - state.checkedMark >= policy.intervalMs)
   );
 }
 /** A change a check result makes that Activity records. */
@@ -75,13 +76,15 @@ export type HealthEvent = "unhealthy" | "recovered";
 export function recordCheck(
   state: HealthState,
   result: { passed: boolean; output?: string },
-  at: number,
+  /** When it was checked: wall-clock and elapsed milliseconds. */
+  at: { wall: number; elapsed: number },
   policy: Pick<HealthPolicy, "retries">,
 ): { state: HealthState; event?: HealthEvent } {
+  const checked = { checkedAt: at.wall, checkedMark: at.elapsed };
   if (result.passed) {
     const { output: _output, stretch, ...rest } = state;
     return {
-      state: { ...rest, checkedAt: at, passed: true, failures: 0 },
+      state: { ...rest, ...checked, passed: true, failures: 0 },
       ...(stretch ? { event: "recovered" as const } : {}),
     };
   }
@@ -90,13 +93,13 @@ export function recordCheck(
   return {
     state: {
       ...state,
-      checkedAt: at,
+      ...checked,
       passed: false,
       failures,
       ...(result.output !== undefined
         ? { output: boundedOutput(result.output) }
         : {}),
-      ...(marked ? { stretch: { since: at, restarts: [] } } : {}),
+      ...(marked ? { stretch: { since: at.wall, restarts: [] } } : {}),
     },
     ...(marked ? { event: "unhealthy" as const } : {}),
   };
@@ -112,16 +115,17 @@ export type HealthAction =
   | { kind: "none" }
   | { kind: "restart"; attempt: number }
   | { kind: "wait"; ms: number };
+/** `sinceRestart` is the elapsed time since the stretch's latest health restart (`healthRestartWait`). */
 export function healthAction(
   state: HealthState,
   policy: HealthPolicy,
-  since: Since,
+  sinceRestart: number,
 ): HealthAction {
   const stretch = state.stretch;
   if (policy.onFailure !== "restart" || !stretch) return { kind: "none" };
   if (state.passed !== false || state.failures < policy.retries)
     return { kind: "none" };
-  const wait = healthRestartWait(stretch, since);
+  const wait = healthRestartWait(stretch, sinceRestart);
   return wait <= 0
     ? { kind: "restart", attempt: stretch.restarts.length + 1 }
     : { kind: "wait", ms: wait };
@@ -145,15 +149,15 @@ export function healthRestartDueAt(stretch: HealthStretch): number {
     (stretch.restarts.at(-1) ?? stretch.since) + healthRestartBackoff(stretch)
   );
 }
-/** How much longer the next health restart of an unhealthy stretch waits, in milliseconds; zero or less once it is due. */
+/** How much longer the next health restart of an unhealthy stretch waits, in milliseconds, `sinceRestart` of elapsed time
+ * after its latest health restart (any value before the first); zero or less once it is due. */
 export function healthRestartWait(
   stretch: HealthStretch,
-  since: Since,
+  sinceRestart: number,
 ): number {
-  return (
-    healthRestartBackoff(stretch) -
-    since(stretch.restarts.at(-1) ?? stretch.since)
-  );
+  return stretch.restarts.length === 0
+    ? 0
+    : healthRestartBackoff(stretch) - sinceRestart;
 }
 /** The state after a health restart was attempted at `at`: the stretch goes on and counts the attempt, and the count starts
  * again. It still names the process that was judged, so a new one is recognized when it is seen, and one whose stop failed

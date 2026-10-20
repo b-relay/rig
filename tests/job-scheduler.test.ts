@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { createClock } from "../src/domain/clock";
+import { JOB_HANDLED_LIMIT } from "../src/runtime/jobs";
+import type { Clock } from "../src/domain/clock";
 import type { PlanJob } from "../src/config/types";
 import type {
   JobRecord,
@@ -13,7 +14,6 @@ import {
   JOB_LATE_LIMIT_MS,
   JOB_OFF_CHECK_MS,
   createJobScheduler,
-  pastTimeout,
   type ScheduledRunRequest,
   type ScheduledRunResult,
 } from "../src/runtime/job-scheduler";
@@ -123,10 +123,10 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
   });
   /** The wall clock (`ms`) and the elapsed one; time passing moves both, a correction of the clock (`step`) only `ms`. */
   const clock = { ms: 0, elapsed: 0 };
-  const platform = createClock({
-    wall: () => clock.ms,
+  const platform: Clock = {
+    now: () => clock.ms,
     elapsed: () => clock.elapsed,
-  });
+  };
   /** Time passes until the wall clock reads `iso`. */
   const until = (iso: string) => {
     clock.elapsed += at(iso) - clock.ms;
@@ -177,7 +177,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       return { outcome: "stopped" as const };
     },
   };
-  const runDeps = { store, lifecycle, now, clock: platform };
+  const runDeps = { store, lifecycle, now };
   /** The notices rigd's doctor would report, as composition wires them. */
   const board = createNoticeBoard(now);
   /** Each settlement fails with this while set, as a state write on a full disk. */
@@ -232,7 +232,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
           (r) => r.job === request.job,
         )?.running;
         if (run?.id !== request.runId) return;
-        if (pastTimeout(run, platform))
+        if (request.timedOut)
           await stopJobRun(target, request.job, run, "timed-out", runDeps);
         else await settleJobRun(target, request.job, run.id, runDeps);
       },
@@ -367,6 +367,7 @@ test("a due time starts one run, which is recorded as it ends with its exit, and
     job: "link-resolver",
     watchedFrom: "2026-10-10T17:16:00.000Z",
     lastScheduled: "2026-10-10T17:17:00.000Z",
+    handled: ["2026-10-10T17:17:00.000Z"],
     last: expect.objectContaining({
       id: "id1",
       outcome: "succeeded",
@@ -551,6 +552,7 @@ test("a Target not meant to run passes its times over and records that it did, s
     job: "tick",
     watchedFrom: "2026-10-10T12:00:30.000Z",
     lastScheduled: "2026-10-10T12:01:00.000Z",
+    handled: ["2026-10-10T12:01:00.000Z"],
   });
   // rig up, then rigd restarts within the late limit: 12:01 was passed over, not missed.
   stopped.store.state.targets[0]!.desired = "running";
@@ -1054,11 +1056,11 @@ test("a run's timeout is elapsed time: correcting the clock forward does not sto
     await w.pass("2026-10-14T11:59:00Z");
     await w.pass("2026-10-14T12:00:00Z");
     expect(w.record("mb-mirror")!.running).toBeDefined();
+    // Corrected before the pass that first sees the run, which comes a second later: it is timed from no later than then.
     w.step(jump);
-    await w.after(5000);
+    for (let second = 1; second < 30; second++) await w.after(1000);
     expect(w.stops).toEqual([]);
-    await w.after(24_000);
-    expect(w.stops).toEqual([]);
+    await w.after(1000);
     await w.after(1000);
     expect(w.stops).toEqual(["mb-mirror"]);
     expect(w.record("mb-mirror")!.last).toMatchObject({ outcome: "timed-out" });
@@ -1207,4 +1209,120 @@ test("correcting a clock that ran fast holds no job back: the times up to the on
     back.end("tick", 0);
   }
   expect(minutes(back)).toEqual(["12:00", "12:01", "12:02"]);
+});
+
+test("after the clock is set back and rigd restarts, no time already run, skipped or passed over runs again, and status agrees", async () => {
+  const minutes = (w: ReturnType<typeof world>) =>
+    w.requests.map((r) => new Date(r.scheduledFor).toISOString().slice(11, 16));
+  const next = (w: ReturnType<typeof world>) =>
+    jobReports(
+      w.store.state.targets[0]!,
+      w.store.state.jobs,
+      w.clock.ms,
+      { timeZone: () => "UTC" },
+      true,
+    )![0]!.nextRunAt;
+  /** The clock jumps an hour ahead for one pass, then is set back to 12:00:31 while rigd restarts; then 150 s pass. */
+  const corrected = async (w: ReturnType<typeof world>) => {
+    w.end("tick", 0);
+    w.step(3_600_000);
+    await w.after(1000);
+    w.end("tick", 0);
+    w.step(Date.parse("2026-10-13T12:00:31Z") - w.clock.ms);
+    w.restart();
+    await w.after(0);
+    const status = next(w);
+    for (let second = 0; second < 150; second++) {
+      await w.after(1000);
+      w.end("tick", 0);
+    }
+    return status;
+  };
+  // Run: 12:01 and 12:02 ran.
+  const ran = world(stableTarget([job("tick", "* * * * *")]));
+  await ran.pass("2026-10-13T12:00:30Z");
+  await ran.pass("2026-10-13T12:01:00.500Z");
+  ran.end("tick", 0);
+  await ran.pass("2026-10-13T12:02:00.500Z");
+  expect(await corrected(ran)).toBe("2026-10-13T12:03:00.000Z");
+  expect(minutes(ran)).toEqual(["12:01", "12:02", "13:02", "12:03"]);
+  // Skipped: 12:02 came while the run of 12:01 still went.
+  const skipped = world(stableTarget([job("tick", "* * * * *")]));
+  await skipped.pass("2026-10-13T12:00:30Z");
+  await skipped.pass("2026-10-13T12:01:00.500Z");
+  await skipped.pass("2026-10-13T12:02:00.500Z");
+  expect(skipped.started).toHaveLength(1);
+  expect(await corrected(skipped)).toBe("2026-10-13T12:03:00.000Z");
+  expect(minutes(skipped)).toEqual(["12:01", "12:02", "13:02", "12:03"]);
+  expect(skipped.started).toHaveLength(3);
+  // Passed over: the Target was stopped at 12:01 and 12:02, and is up again.
+  const stopped = world(
+    stableTarget([job("tick", "* * * * *")], { desired: "stopped" }),
+  );
+  await stopped.pass("2026-10-13T12:00:30Z");
+  await stopped.pass("2026-10-13T12:01:00.500Z");
+  await stopped.pass("2026-10-13T12:02:00.500Z");
+  stopped.store.state.targets[0]!.desired = "running";
+  expect(await corrected(stopped)).toBe("2026-10-13T12:03:00.000Z");
+  expect(minutes(stopped)).toEqual(["13:02", "12:03"]);
+});
+
+test("a job's record keeps only its latest handled times", async () => {
+  const w = world(stableTarget([job("tick", "* * * * *")]));
+  await w.pass("2026-10-13T12:00:30Z");
+  for (let minute = 0; minute < JOB_HANDLED_LIMIT + 10; minute++) {
+    w.end("tick", 0);
+    await w.after(60_000);
+  }
+  const handled = w.record("tick")!.handled!;
+  expect(handled).toHaveLength(JOB_HANDLED_LIMIT);
+  expect(handled.at(-1)).toBe(w.record("tick")!.lastScheduled);
+});
+
+test("runs that share a wall-clock start after a correction are timed apart", async () => {
+  const run = (job: string) => ({
+    target: "t1",
+    job,
+    running: {
+      id: `${job}-run`,
+      trigger: "manual" as const,
+      startedAt: "2026-10-13T12:00:00.000Z",
+      workspace: "/rig/targets/p1/t1/revisions/r2",
+      timeout: 30,
+    },
+  });
+  const w = world(
+    stableTarget([
+      job("first", "0 0 1 1 *", { timeout: 30 }),
+      job("second", "0 0 1 1 *", { timeout: 30 }),
+    ]),
+    [run("first")],
+  );
+  w.processes.set("first", { state: "running", incarnation: "first-run" });
+  await w.pass("2026-10-13T12:00:00Z");
+  for (let second = 0; second < 20; second++) await w.after(1000);
+  // The clock is set back 20 s, and another run starts at the same wall-clock time as the first.
+  w.step(-20_000);
+  w.record("second")!.running = run("second").running;
+  w.processes.set("second", { state: "running", incarnation: "second-run" });
+  for (let second = 0; second < 10; second++) await w.after(1000);
+  expect(w.stops).toEqual(["first"]);
+  for (let second = 0; second < 21; second++) await w.after(1000);
+  expect(w.stops).toEqual(["first", "second"]);
+});
+
+test("time the Mac sleeps does not count toward a run's timeout", async () => {
+  const w = world(
+    stableTarget([job("mb-mirror", "0 7 * * 3,6", { timeout: 30 })]),
+  );
+  await w.pass("2026-10-14T11:59:00Z");
+  await w.pass("2026-10-14T12:00:00Z");
+  for (let second = 0; second < 5; second++) await w.after(1000);
+  // An hour asleep: the wall clock moves on, elapsed time does not.
+  w.step(3_600_000);
+  for (let second = 5; second < 29; second++) await w.after(1000);
+  expect(w.stops).toEqual([]);
+  await w.after(1000);
+  await w.after(1000);
+  expect(w.stops).toEqual(["mb-mirror"]);
 });

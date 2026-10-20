@@ -1,6 +1,6 @@
 import type { ManagedComponent } from "../config/types";
 import { recordActivity } from "../domain/activity";
-import type { Clock } from "../domain/clock";
+import { placed, type Clock } from "../domain/clock";
 import { diagnosticErrorCode, failureReason } from "../domain/errors";
 import {
   NEW_HEALTH,
@@ -13,7 +13,7 @@ import {
   type HealthAction,
   type HealthPolicy,
   type HealthState,
-  type Since,
+  type HealthStretch,
 } from "../domain/health-policy";
 import type { ServiceHealth } from "../domain/project-status";
 import type {
@@ -68,7 +68,13 @@ export type HealthResults = (
  * the Service's record holds; skipped because the process that was judged is gone or was replaced; or deferred because
  * nothing could be established about it, so it is asked again. */
 export type HealthRestartResult =
-  | { outcome: "restarted" | "failed"; at: number }
+  | {
+      outcome: "restarted" | "failed";
+      /** When it was attempted, Unix milliseconds. */
+      at: number;
+      /** `at` on the elapsed clock of the process that made the restart, which is the monitor's own. */
+      elapsed: number;
+    }
   | { outcome: "skipped" | "deferred" };
 /** A health restart rigd is asked for: which Service, and what the checks saw. */
 export interface HealthRestartRequest {
@@ -93,8 +99,8 @@ export interface HealthMonitorDependencies {
   store: Pick<StateStore, "read" | "update">;
   observations: Pick<ObservationEffects, "process" | "health">;
   /** Wall-clock time for what is recorded and shown, and the elapsed time every check interval and restart back-off is
-   * measured on (`systemClock` in rigd). */
-  clock: Pick<Clock, "now" | "stamp" | "since">;
+   * waited in (`systemClock` in rigd, the clock `restart` reads too). */
+  clock: Clock;
   id(): string;
   /** Whether an Operation holds or waits for the Target, so one of its Services may be starting or stopping. */
   busy(target: TargetRecord): boolean;
@@ -192,9 +198,9 @@ interface Verdict {
 function actionFor(
   state: HealthState,
   policy: HealthPolicy,
-  age: Since,
+  sinceRestart: number,
 ): HealthAction {
-  const action = healthAction(state, policy, age);
+  const action = healthAction(state, policy, sinceRestart);
   return action.kind === "restart" && state.incarnation === undefined
     ? { kind: "none" }
     : action;
@@ -216,8 +222,27 @@ export function createHealthMonitor(
 ): HealthMonitor {
   const states = new Map<string, HealthState>();
   const policies = new Map<string, HealthPolicy>();
-  /** How long ago a wall-clock instant of a check or restart was, in elapsed time. */
-  const age: Since = (at) => deps.clock.since(at);
+  /** Where on the elapsed clock each Service's latest health restart lies, by `<target id>:<service>`, with the stretch and
+   * attempt it is: the one the monitor saw made, else the one its record names, placed by its wall-clock age. */
+  const restartMarks = new Map<
+    string,
+    { since: number; attempt: number; mark: number }
+  >();
+  /** The elapsed time since the latest health restart of `stretch`, the Service's at `key`. */
+  const sinceRestart = (key: string, stretch: HealthStretch | undefined) => {
+    if (!stretch) return 0;
+    const attempt = stretch.restarts.length;
+    let known = restartMarks.get(key);
+    if (known?.since !== stretch.since || known.attempt !== attempt) {
+      known = {
+        since: stretch.since,
+        attempt,
+        mark: placed(deps.clock, stretch.restarts.at(-1) ?? stretch.since),
+      };
+      restartMarks.set(key, known);
+    }
+    return deps.clock.elapsed() - known.mark;
+  };
   let clock = 0;
   /** The clock at each Service's last lifecycle transition, by `<target id>:<service>`. */
   const serviceMarks = new Map<string, number>();
@@ -364,13 +389,19 @@ export function createHealthMonitor(
       // Its start check passed. A start that carries an unhealthy stretch on (an automatic or health restart) stays
       // unhealthy until an ongoing check passes; any other is healthy as of now.
       const base = seeded(target, service);
-      const at = deps.clock.stamp();
+      const elapsed = deps.clock.elapsed();
       states.set(key, {
         ...base,
         incarnation,
         check: checkIdentity(component),
-        eligibleSince: at,
-        ...(base.stretch ? {} : { checkedAt: at, passed: true }),
+        eligibleSince: elapsed,
+        ...(base.stretch
+          ? {}
+          : {
+              checkedAt: deps.clock.now(),
+              checkedMark: elapsed,
+              passed: true,
+            }),
       });
     },
     async pass() {
@@ -434,7 +465,7 @@ export function createHealthMonitor(
                   await checkTurn(target, component);
                 else if (
                   seen.state === "stopped" &&
-                  healthRestartWait(stretch, age) <= 0
+                  healthRestartWait(stretch, sinceRestart(key, stretch)) <= 0
                 )
                   await act(target.id, component.name, verdict);
               }
@@ -454,11 +485,15 @@ export function createHealthMonitor(
             continue;
           }
           write(target.id, component.name, since, state);
-          const action = actionFor(state, policy, age);
+          const action = actionFor(
+            state,
+            policy,
+            sinceRestart(key, state.stretch),
+          );
           if (
             !isDue(action) &&
             state.eligibleSince !== undefined &&
-            !checkDue(state, policy, age)
+            !checkDue(state, policy, deps.clock.elapsed())
           )
             continue;
           inFlight.add(key);
@@ -512,6 +547,7 @@ export function createHealthMonitor(
         states.delete(key);
         policies.delete(key);
         serviceMarks.delete(key);
+        restartMarks.delete(key);
       }
       for (const [targetId, mark] of targetMarks)
         if (!targetsKept.has(targetId) && !stopped && mark <= since)
@@ -720,15 +756,15 @@ export function createHealthMonitor(
         ...seeded(saved ?? target, service),
         ...(identity !== undefined ? { incarnation: identity } : {}),
         check,
-        eligibleSince: deps.clock.stamp(),
+        eligibleSince: deps.clock.elapsed(),
       };
       if (!write(target.id, service, since, state)) return undefined;
     } else if (state.eligibleSince === undefined) {
       // Seen with its Target free: its start check has passed, so it may be checked from now.
-      state = { ...state, eligibleSince: deps.clock.stamp() };
+      state = { ...state, eligibleSince: deps.clock.elapsed() };
       if (!write(target.id, service, since, state)) return undefined;
     }
-    if (!checkDue(state, policy, age)) return undefined;
+    if (!checkDue(state, policy, deps.clock.elapsed())) return undefined;
     if (paused(target, service, since)) return undefined;
     // Await: the probe itself, bounded by the healthcheck's timeout and aborted by stop.
     const result = await withinTimeout(
@@ -765,7 +801,7 @@ export function createHealthMonitor(
       cached.incarnation !== identity
     )
       return undefined;
-    const at = deps.clock.stamp();
+    const at = { wall: deps.clock.now(), elapsed: deps.clock.elapsed() };
     const outcome = recordCheck(
       cached,
       result === undefined
@@ -803,9 +839,14 @@ export function createHealthMonitor(
         message: `${service} is healthy again: its health check passed.`,
       });
       await forgetStretch(target, service, since, identity);
+      restartMarks.delete(key);
     }
     report.succeeded(key);
-    const action = actionFor(outcome.state, policy, age);
+    const action = actionFor(
+      outcome.state,
+      policy,
+      sinceRestart(key, outcome.state.stretch),
+    );
     return isDue(action)
       ? { action, since, check, incarnation: identity }
       : undefined;
@@ -838,12 +879,12 @@ export function createHealthMonitor(
         run?.incarnation !== verdict.incarnation ||
         !healthStartPending(run) ||
         stretch === undefined ||
-        healthRestartWait(stretch, age) > 0
+        healthRestartWait(stretch, sinceRestart(key, stretch)) > 0
       )
         return;
       // Await: the start, an Operation that waits for the Target. Its start is a transition; what it means reaches the
       // cache through `started` or, when it fails again, through the record it writes.
-      await deps.restart({
+      const started = await deps.restart({
         targetId,
         service,
         check: verdict.check!,
@@ -855,6 +896,7 @@ export function createHealthMonitor(
         since: stretch.since,
         restarts: stretch.restarts,
       });
+      if ("at" in started) madeRestart(key, stretch, started.elapsed);
       return;
     }
     if (
@@ -869,7 +911,7 @@ export function createHealthMonitor(
     )
       return;
     const stretch = state.stretch;
-    const action = actionFor(state, now.policy, age);
+    const action = actionFor(state, now.policy, sinceRestart(key, stretch));
     if (!stretch || !isDue(action)) return;
     // Await: the restart, an Operation that waits for the Target. Its stop and start are transitions, so what it means for
     // the back-off reaches the cache from the run record it writes, through the next pass, when it did either.
@@ -895,6 +937,7 @@ export function createHealthMonitor(
       return;
     }
     // A failed restart counts for the back-off too, so a Service that cannot start is not asked again at once.
+    madeRestart(key, stretch, result.elapsed);
     write(targetId, service, verdict.since, restarted(after, result.at));
   }
 
@@ -964,6 +1007,18 @@ export function createHealthMonitor(
         id: deps.id(),
         occurredAt: new Date(deps.clock.now()).toISOString(),
       },
+    });
+  }
+  /** A health restart of `stretch` was made at `elapsed`: the back-off before the next one counts from it. */
+  function madeRestart(
+    key: string,
+    stretch: HealthStretch,
+    elapsed: number,
+  ): void {
+    restartMarks.set(key, {
+      since: stretch.since,
+      attempt: stretch.restarts.length + 1,
+      mark: elapsed,
     });
   }
   /** Queues a write about a change of the Service's health behind those not written yet, then writes the queue. The queue

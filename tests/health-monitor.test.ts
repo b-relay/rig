@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createClock } from "../src/domain/clock";
+import type { Clock } from "../src/domain/clock";
 import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
@@ -28,7 +28,7 @@ function fixture(
   /** The wall clock, and the elapsed one: time passing moves both, a correction of the clock (`step`) only the wall clock. */
   let now = 0;
   let elapsed = 0;
-  const clock = createClock({ wall: () => now, elapsed: () => elapsed });
+  const clock: Clock = { now: () => now, elapsed: () => elapsed };
   /** Timers, by when they fire on the elapsed clock. */
   const timers: { at: number; fire: () => void }[] = [];
   const services = options.services ?? ["web"];
@@ -196,11 +196,11 @@ function fixture(
         // It waited for its Target's lock, then was attempted.
         now += lockWait;
         elapsed += lockWait;
-        return { outcome: "failed", at: clock.stamp() };
+        return { outcome: "failed", at: now, elapsed };
       }
       const next = incarnations.get(request.service)! + 1;
       incarnations.set(request.service, next);
-      const at = clock.stamp();
+      const at = now;
       // As the restart's journal records it on the Service.
       state.targets[0]!.services![request.service] = {
         deployment: "/work",
@@ -212,7 +212,7 @@ function fixture(
           restarts: [...request.restarts, at],
         },
       };
-      return { outcome: "restarted", at };
+      return { outcome: "restarted", at, elapsed };
     },
     schedule(delayMs, fire) {
       const timer = { at: elapsed + delayMs, fire };
@@ -277,16 +277,9 @@ function fixture(
     get now() {
       return now;
     },
-    /** A new rigd: nothing in memory, the same records. With `clock`, one whose clock remembers no instant. */
-    restartDaemon(options: { freshClock?: boolean } = {}) {
-      monitorUnderTest = createHealthMonitor(
-        options.freshClock
-          ? {
-              ...dependencies,
-              clock: createClock({ wall: () => now, elapsed: () => elapsed }),
-            }
-          : dependencies,
-      );
+    /** A new rigd: nothing in memory, the same records. */
+    restartDaemon() {
+      monitorUnderTest = createHealthMonitor(dependencies);
     },
     state,
     checks,
@@ -1201,9 +1194,22 @@ test("a new rigd after the clock was set back continues a recorded unhealthy str
   expect(f.elapsedAt.restarts).toEqual([1 * SECOND]);
   // rigd restarts while the clock is set back an hour: the recorded restart lies in the new clock's future.
   f.step(-3_600_000);
-  f.restartDaemon({ freshClock: true });
+  f.restartDaemon();
   await f.runFor(70 * SECOND);
   // At most the 1 min back-off after the new rigd first measured it, not an hour.
   expect(f.elapsedAt.restarts).toEqual([1 * SECOND, 71 * SECOND]);
   expect(f.restarts[1]).toMatchObject({ attempt: 2 });
+});
+
+test("time the Mac sleeps does not count toward a check's interval: checks resume where they were", async () => {
+  const f = fixture({ interval: 30 });
+  await f.runFor(1 * SECOND);
+  expect(f.elapsedAt.checks).toEqual([1 * SECOND]);
+  await f.runFor(9 * SECOND);
+  // An hour asleep: the wall clock moves on, elapsed time does not.
+  f.step(3_600_000);
+  await f.runFor(20 * SECOND);
+  expect(f.elapsedAt.checks).toEqual([1 * SECOND]);
+  await f.runFor(1 * SECOND);
+  expect(f.elapsedAt.checks).toEqual([1 * SECOND, 31 * SECOND]);
 });

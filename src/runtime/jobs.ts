@@ -1,6 +1,5 @@
 import type { PlanJob } from "../config/types";
 import { recordActivity } from "../domain/activity";
-import { clockOr, type Clock } from "../domain/clock";
 import { RigError, diagnosticErrorCode } from "../domain/errors";
 import { targetSelector } from "../domain/target-selector";
 import type {
@@ -37,23 +36,21 @@ export interface JobRunDependencies extends BackupDependencies {
   lifecycle: Pick<TargetLifecycle, "startJob" | "observeJob" | "stopJob">;
   /** ISO timestamp. */
   now(): string;
-  /** What a run's timeout is measured on (`RuntimeDependencies.clock`); absent, on `now`. */
-  clock?: Clock;
 }
 /** What recording a run's end needs: the state, the clock, and a backup job's directories. */
 type EndDependencies = Pick<
   JobRunDependencies,
   "store" | "now" | "backups" | "diagnostic" | "id"
 >;
+/** How many of the scheduled times a job handled most recently its record keeps: an hour of an every-minute schedule.
+ * The clock set back past one of them never runs it again. */
+export const JOB_HANDLED_LIMIT = 60;
 /** The variable a backup job's command, and a restore, find their backup directory in. */
 export const BACKUP_DIR_VARIABLE = "RIG_BACKUP_DIR";
 
-/** Whether `run` is past its timeout: its timeout has elapsed since it started, on `clock`'s elapsed time. */
-export function pastTimeout(run: JobRun, clock: Pick<Clock, "since">): boolean {
-  return (
-    run.timeout !== undefined &&
-    clock.since(Date.parse(run.startedAt)) >= run.timeout * 1000
-  );
+/** Whether `run` is past its timeout once `elapsedMs` of elapsed time have passed since it started. */
+export function pastTimeout(run: JobRun, elapsedMs: number): boolean {
+  return run.timeout !== undefined && elapsedMs >= run.timeout * 1000;
 }
 /** The record of `job` of the Target `targetId`, if any. */
 export function findJobRecord(
@@ -281,21 +278,20 @@ async function stopJobProcess(
   }
   return "ended";
 }
-/** Stops the run `runId` of `job` once it is past its timeout, whether or not an Operation holds its Target, recorded as
- * timed out: a deploy or another long Operation on the Target never extends a run's limit. Its end is recorded later,
- * under the Target's lease (`settleJobRun`). Nothing when the record names another run by now, or no timeout has passed. */
+/** Stops the run `runId` of `job`, which the scheduler found past its timeout, whether or not an Operation holds its
+ * Target, recorded as timed out: a deploy or another long Operation on the Target never extends a run's limit. Its end is
+ * recorded later, under the Target's lease (`settleJobRun`). Nothing when the record names another run by now. */
 export async function enforceJobDeadline(
   target: TargetRecord,
   job: string,
   runId: string,
-  deps: Pick<JobRunDependencies, "store" | "now" | "clock"> & {
+  deps: Pick<JobRunDependencies, "store" | "now"> & {
     lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
   },
   stops?: StopControl,
 ): Promise<void> {
   const run = findJobRecord(await deps.store.read(), target.id, job)?.running;
-  if (run?.id !== runId || !pastTimeout(run, clockOr(deps.clock, deps.now)))
-    return;
+  if (run?.id !== runId) return;
   await stopJobProcess(target, job, run, "timed-out", deps, stops);
 }
 
@@ -369,10 +365,7 @@ export async function startJobRun(
   deps: JobRunDependencies,
 ): Promise<JobRun> {
   await settlePreviousRun(target, job.name, deps);
-  // Stamped: its timeout is measured from it on elapsed time.
-  const startedAt = new Date(
-    clockOr(deps.clock, deps.now).stamp(),
-  ).toISOString();
+  const startedAt = deps.now();
   const restoreCommand = job.backup?.restore;
   if (request.restore && restoreCommand === undefined)
     throw noRestore(job.name);
@@ -646,12 +639,22 @@ export function recordScheduling(
     if (fact.passedOver !== undefined) handledTime(record, fact.passedOver);
   }
 }
-/** Records `at` (ISO) as a scheduled time handled, unless a later one is: one handled before the clock was set back stays
- * recorded until it comes again, so a new rigd does not run it twice. */
+/** Records `at` (ISO) as a scheduled time handled: among the latest JOB_HANDLED_LIMIT handled, and as `lastScheduled`
+ * unless a later time is. */
 function handledTime(record: JobRecord, at: string): void {
   if (
     record.lastScheduled === undefined ||
     Date.parse(record.lastScheduled) < Date.parse(at)
   )
     record.lastScheduled = at;
+  const handled = (record.handled ?? []).filter((time) => time !== at);
+  record.handled = [...handled, at].slice(-JOB_HANDLED_LIMIT);
+}
+/** The scheduled times `record` says were handled, in Unix milliseconds: what the scheduler and status both skip. */
+export function handledTimes(
+  record: Pick<JobRecord, "handled" | "lastScheduled"> | undefined,
+): ReadonlySet<number> {
+  const times = [...(record?.handled ?? [])];
+  if (record?.lastScheduled) times.push(record.lastScheduled);
+  return new Set(times.map((at) => Date.parse(at)));
 }

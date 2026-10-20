@@ -1,5 +1,5 @@
 import type { PlanJob } from "../config/types";
-import type { Clock } from "../domain/clock";
+import { placed, type Clock } from "../domain/clock";
 import { nextRun, parseCron, type CronSchedule } from "../domain/cron";
 import { diagnosticErrorCode } from "../domain/errors";
 import type {
@@ -11,6 +11,7 @@ import type {
 import type { RuntimeDependencies, WorkReport } from "./contracts";
 import {
   findJobRecord,
+  handledTimes,
   pastTimeout,
   pruneJobRecords,
   recordScheduling,
@@ -25,9 +26,6 @@ export const JOB_SCHEDULER_TICK_MS = 1000;
 /** How late a scheduled time may still start. A time found later than this (the Mac slept, rigd was not running, or its
  * Target was busy that long) is dropped without a record: nothing is caught up. */
 export const JOB_LATE_LIMIT_MS = 5 * 60_000;
-/** How long the scheduled times a job ran, skipped or passed over are remembered: a clock set back by up to this never
- * runs one of them again. */
-export const JOB_HANDLED_MEMORY_MS = 24 * 60 * 60_000;
 /** How often a Target with a job run in progress is checked for rig.yaml turning its role off. */
 export const JOB_OFF_CHECK_MS = 10_000;
 /** How often a held checkout (one a job run or a kept Service ran in) is offered back again while it cannot be given back yet. */
@@ -37,7 +35,7 @@ const JOB_SCHEDULER_STOP_MS = 5000;
 
 /** The time the scheduler lives by: the platform clock and the Host's time zone in rigd, a script in tests. Scheduled
  * times follow the wall clock; a run's timeout and how often work is offered again are elapsed time. */
-export interface JobClock extends Pick<Clock, "now" | "elapsed" | "since"> {
+export interface JobClock extends Clock {
   /** The Host's IANA time zone, the zone of a job without `timezone`. */
   timeZone(): string;
 }
@@ -61,6 +59,8 @@ export interface JobSettleRequest {
   job: string;
   /** The run the scheduler judged; a record naming another run by then is left alone. */
   runId: string;
+  /** The scheduler found it past its timeout, which it alone measures (in elapsed time); absent, the run ended. */
+  timedOut?: true;
 }
 export interface JobSchedulerDependencies {
   store: Pick<StateStore, "read" | "update">;
@@ -74,8 +74,8 @@ export interface JobSchedulerDependencies {
    * the job, and starts a run, or records the time skipped while a run is still going. Rejects when that could not be done
    * or recorded. */
   start(request: ScheduledRunRequest): Promise<ScheduledRunResult>;
-  /** Under the Target's lease, reads the run again and, when it is still the one judged, records its end, or stops it past
-   * its timeout and records it timed out. Rejects when that could not be done. */
+  /** Under the Target's lease, reads the run again and, when it is still the one judged, records its end, or, when the
+   * request says it timed out, stops it and records it timed out. Rejects when that could not be done. */
   settle(request: JobSettleRequest): Promise<void>;
   /** Stops a run past its timeout while an Operation holds its Target, without its lease: only that run's own process is
    * signalled, and its end is left to `settle` once the Target is free. Rejects when that could not be done. */
@@ -132,6 +132,18 @@ export function jobSchedule(
   }
   return schedules.get(job.schedule);
 }
+/** When `job` next runs after `after` (Unix milliseconds) that is not one of the times `handled` (`handledTimes`), or
+ * undefined when its schedule names no such time. The scheduler and status both count a job's next run this way. */
+export function nextUnhandledRun(
+  job: Pick<PlanJob, "schedule" | "timeZone">,
+  after: number,
+  handled: ReadonlySet<number>,
+  clock: Pick<JobClock, "timeZone">,
+): number | undefined {
+  let at = nextJobRun(job, after, clock);
+  while (at !== undefined && handled.has(at)) at = nextJobRun(job, at, clock);
+  return at;
+}
 /** When `job` next runs after `after` (Unix milliseconds), or undefined when its schedule names no time. */
 export function nextJobRun(
   job: Pick<PlanJob, "schedule" | "timeZone">,
@@ -164,11 +176,10 @@ export function createJobScheduler(
 ): JobScheduler {
   /** The latest time handled (or passed over) per `<target id>:<job>`, Unix milliseconds. */
   const watermarks = new Map<string, number>();
-  /** The times handled (run, skipped or passed over) per `<target id>:<job>` within JOB_HANDLED_MEMORY_MS, oldest first,
-   * seeded with the one its record names: a clock set back past one never runs it again. */
-  const handled = new Map<string, number[]>();
-  /** When the last pass began, elapsed milliseconds. */
+  /** When the last pass read the state, elapsed milliseconds. */
   let lastPass: number | undefined;
+  /** When each run in progress started, elapsed milliseconds, by run id. */
+  const runStarts = new Map<string, number>();
   /** When each Target with a run in progress was last checked for an off switch, elapsed milliseconds. */
   const offChecks = new Map<string, number>();
   /** When each Target's kept checkouts were last offered back, elapsed milliseconds. */
@@ -220,23 +231,10 @@ export function createJobScheduler(
     const from = record?.lastScheduled ?? record?.watchedFrom;
     return from ? Date.parse(from) : now;
   };
-  /** The times handled for `key`, those older than JOB_HANDLED_MEMORY_MS dropped. */
-  const handledTimes = (
-    key: string,
-    record: JobRecord | undefined,
-    now: number,
-  ): number[] => {
-    const times = (
-      handled.get(key) ??
-      (record?.lastScheduled ? [Date.parse(record.lastScheduled)] : [])
-    ).filter((at) => at > now - JOB_HANDLED_MEMORY_MS);
-    handled.set(key, times);
-    return times;
-  };
-  /** The latest scheduled time due now that has not been handled, or undefined. Times older than the late limit are
-   * dropped here, so a long sleep runs at most the one time that came due within the limit. When the clock was set back
-   * past where the times count from (a clock that ran fast was corrected), the times that came due since the last pass,
-   * `sincePass` of elapsed time, are due, and every time after them as it comes, except one already handled. */
+  /** The latest scheduled time due now that its record does not say was handled, or undefined. Times older than the late
+   * limit are dropped here, so a long sleep runs at most the one time that came due within the limit. When the clock was
+   * set back past where the times count from (a clock that ran fast was corrected), the times that came due since the last
+   * pass, `sincePass` of elapsed time, are due, and every time after them as it comes. */
   const due = (
     key: string,
     job: PlanJob,
@@ -248,17 +246,14 @@ export function createJobScheduler(
     if (from > now) from = now - sincePass;
     from = Math.max(from, now - JOB_LATE_LIMIT_MS);
     watermarks.set(key, from);
-    const done = handledTimes(key, record, now);
+    const handled = handledTimes(record);
     let latest: number | undefined;
     for (
-      let at = nextJobRun(job, from, deps.clock);
+      let at = nextUnhandledRun(job, from, handled, deps.clock);
       at !== undefined && at <= now;
-      at = nextJobRun(job, at, deps.clock)
+      at = nextUnhandledRun(job, at, handled, deps.clock)
     )
-      if (done.includes(at)) {
-        watermarks.set(key, at);
-        latest = undefined;
-      } else latest = at;
+      latest = at;
     return latest;
   };
   return {
@@ -281,7 +276,29 @@ export function createJobScheduler(
       const now = deps.clock.now();
       const elapsed = deps.clock.elapsed();
       const sincePass = lastPass === undefined ? 0 : elapsed - lastPass;
+      // A run not running at the last read started since: its age is at most `sincePass`. One running at this rigd's first
+      // read is placed by its wall-clock age.
+      const inProgress = new Set<string>();
+      for (const record of state.jobs ?? []) {
+        const run = record.running;
+        if (!run) continue;
+        inProgress.add(run.id);
+        if (!runStarts.has(run.id))
+          runStarts.set(
+            run.id,
+            placed(
+              deps.clock,
+              Date.parse(run.startedAt),
+              lastPass === undefined ? Infinity : sincePass,
+            ),
+          );
+      }
+      for (const id of runStarts.keys())
+        if (!inProgress.has(id)) runStarts.delete(id);
       lastPass = elapsed;
+      /** Whether `run` is past its timeout now, in elapsed time. */
+      const late = (run: JobRun) =>
+        pastTimeout(run, deps.clock.elapsed() - runStarts.get(run.id)!);
       const at = new Date(now).toISOString();
       const planned = new Set<string>();
       const facts: SchedulingFact[] = [];
@@ -297,9 +314,14 @@ export function createJobScheduler(
           `Recording the end of the run of ${job} on ${target.name} of ${target.plan.project}`,
           async () => {
             const seen = await deps.lifecycle.observeJob(target, job);
-            if (seen.state === "running" && !pastTimeout(run, deps.clock))
-              return "skipped";
-            await deps.settle({ targetId: target.id, job, runId: run.id });
+            const timedOut = late(run);
+            if (seen.state === "running" && !timedOut) return "skipped";
+            await deps.settle({
+              targetId: target.id,
+              job,
+              runId: run.id,
+              ...(timedOut ? { timedOut } : {}),
+            });
           },
         );
       };
@@ -322,8 +344,6 @@ export function createJobScheduler(
           if (scheduledFor !== undefined) {
             const before = watermarks.get(key)!;
             watermarks.set(key, scheduledFor);
-            const times = handled.get(key)!;
-            times.push(scheduledFor);
             if (!schedulesJobs(target)) {
               // A Target not meant to run passes its times over, and records it, so a later restart never runs one.
               facts.push({
@@ -346,10 +366,7 @@ export function createJobScheduler(
                     id: deps.id(),
                   });
                   // Nothing could start yet: the time stays due until the late limit.
-                  if (result === "deferred") {
-                    watermarks.set(key, before);
-                    times.splice(times.indexOf(scheduledFor), 1);
-                  }
+                  if (result === "deferred") watermarks.set(key, before);
                 },
               );
               continue;
@@ -372,13 +389,12 @@ export function createJobScheduler(
         // Keyed by the run: its failure is about that run alone, and goes once the run is gone.
         const key = `deadline:${record.target}:${record.job}:${run?.id}`;
         const target = state.targets.find((t) => t.id === record.target);
-        // Measured for every run at every pass, so the clock keeps its start for as long as it goes.
         if (
           !run ||
-          !pastTimeout(run, deps.clock) ||
           !target ||
           inFlight.has(key) ||
-          !deps.busy(target)
+          !deps.busy(target) ||
+          !late(run)
         )
           continue;
         dispatch(
@@ -393,6 +409,7 @@ export function createJobScheduler(
               targetId: target.id,
               job: record.job,
               runId: run.id,
+              timedOut: true,
             });
           },
         );
@@ -486,8 +503,6 @@ export function createJobScheduler(
       );
       for (const key of watermarks.keys())
         if (!planned.has(key)) watermarks.delete(key);
-      for (const key of handled.keys())
-        if (!planned.has(key)) handled.delete(key);
       const prunable = state.jobs?.some(
         (record) =>
           !record.running &&

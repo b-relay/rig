@@ -387,10 +387,12 @@ test("a run past its timeout is stopped under its Target's lease, its decision r
   const f = await fixture();
   expect(await f.scheduled("run-a")).toBe("started");
   f.world.clock.ms += 3600_000 + 1000;
+  // The scheduler found it past its timeout.
   await f.runtime.settleJob({
     targetId: f.target.id,
     job: "link-resolver",
     runId: "run-a",
+    timedOut: true,
   });
   expect(f.signalled.map((stop) => stop.key)).toEqual([f.key]);
   expect(
@@ -719,6 +721,7 @@ test("a run past its timeout is stopped while an Operation holds its Target, wit
     targetId: f.target.id,
     job: "link-resolver",
     runId: "run-a",
+    timedOut: true,
   });
   expect(f.signalled.map((stop) => stop.key)).toEqual([f.key]);
   // The decision was on record before the signal.

@@ -167,7 +167,6 @@ async function world(others: string[] = [], configName = "before") {
   });
   await envFile(root, "before/all.env", "A=1\n");
   const rigYaml = { name: configName };
-  const never = () => new Promise<never>(() => {});
   const deps = (
     options: {
       crash?: Crash;
@@ -176,7 +175,14 @@ async function world(others: string[] = [], configName = "before") {
       /** Every flush of the env directory fails. */
       failFlush?: boolean;
     } = {},
+    /** Told when the rename reaches its crash point, where it then waits for good. */
+    crashed: () => void = () => {},
   ) => {
+    /** The crash point: the rename stops here for good, as a dead rigd does, and nothing after it runs. */
+    const never = () => {
+      crashed();
+      return new Promise<never>(() => {});
+    };
     const env = createOperatorEnvFiles(root, async (directory) => {
       if (options.crash === "flush") return never();
       if (options.failFlush) throw new Error("EIO");
@@ -233,13 +239,29 @@ async function world(others: string[] = [], configName = "before") {
     registered,
     /** Renames the Project as registered now, through a new rigd. */
     async rename(name: string, options: Parameters<typeof deps>[0] = {}) {
-      const run = renameProject(await registered(), name, deps(options));
-      if (options.crash) {
-        // It never returns; what it wrote is what the next rigd finds.
-        await Bun.sleep(50);
-        return undefined;
-      }
-      return await run;
+      if (!options.crash)
+        return await renameProject(await registered(), name, deps(options));
+      // It stops at its crash point and never returns; what it wrote by then is what the next rigd finds.
+      let reached!: () => void;
+      const crashed = new Promise<void>((resolve) => (reached = resolve));
+      const run = renameProject(
+        await registered(),
+        name,
+        deps(options, reached),
+      );
+      const settled = run.then(
+        () =>
+          new Error(
+            `the rename returned before its ${options.crash} crash point`,
+          ),
+        (error: unknown) => error,
+      );
+      const ended = await Promise.race([
+        crashed.then(() => undefined),
+        settled,
+      ]);
+      if (ended !== undefined) throw ended;
+      return undefined;
     },
   };
 }

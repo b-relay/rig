@@ -10,6 +10,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { binaryPending } from "../src/providers/caddy-binary";
 import { join } from "node:path";
 import { DaemonAdmin } from "../src/daemon/admin";
@@ -264,6 +265,30 @@ test("an uninstall whose Caddy removal fails is finished by the next one: refuse
     expect(await admin.uninstall()).toMatchObject({ outcome: "unchanged" });
   }
 }, 120_000);
+
+test("a proxy.routes hostname a Target serves is refused before rigd is replaced, however often install is run", async () => {
+  const w = await world();
+  await w.config({ tls: { ca: "internal" } });
+  await w.admin.install();
+  const rigd = await recordedPid(join(w.root, "daemon", "address.json"));
+  const token = createHash("sha256").update("app").digest("hex");
+  await mkdir(join(w.root, "proxy"), { recursive: true });
+  await writeFile(
+    w.paths.routes,
+    `# rig begin ${token}\napp.example.test {\n  reverse_proxy 127.0.0.1:3001\n}\n# rig end ${token}\n`,
+  );
+  await w.config({
+    tls: { ca: "internal" },
+    routes: { "app.example.test": 3999 },
+  });
+  for (let attempt = 0; attempt < 2; attempt++)
+    await expect(w.admin.install()).rejects.toMatchObject({
+      code: "ROUTE_CONFLICT",
+    });
+  expect(await recordedPid(join(w.root, "daemon", "address.json"))).toBe(rigd);
+  expect(processExists(rigd)).toBe(true);
+  expect(await w.admin.status()).toMatchObject({ reachable: true });
+}, 60_000);
 
 test("uninstall removes Rig's Caddy even when the daemon's record is already gone, as an install whose rigd never started leaves it", async () => {
   const w = await world();

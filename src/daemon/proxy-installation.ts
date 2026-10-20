@@ -55,7 +55,8 @@ export interface ProxyInstallation {
   /** The plist of Rig's Caddy as a system job (`daemon.start: boot`). */
   systemJob(): { label: string; plist: string };
   /** Refuses, before anything stops, what install would refuse from Host config alone: a missing proxy section, both
-   * sections written, the token, and a proxy.caddy that is not Caddy 2.10 or later with the DNS module. */
+   * sections written, a proxy.routes hostname or dashboard.domain a Target serves, the token, and a proxy.caddy that is not
+   * Caddy 2.10 or later with the DNS module. */
   preflight(): Promise<void>;
   /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined, and resolves to whether
    * one was. Certificates, generations and the token stay. */
@@ -251,13 +252,17 @@ export function createProxyInstallation(
     },
     async preflight() {
       const wanted = await settings();
-      // A dashboard.domain a Target already serves is refused while the running rigd still serves the dashboard as before,
-      // rather than by Caddy after the restart, when the new dashboard would expect a hostname Caddy kept from it.
+      // A proxy.routes hostname or a dashboard.domain a Target already serves is refused while the running rigd still serves
+      // as before, rather than by Caddy after the restart, when the new dashboard would expect a hostname Caddy kept from it.
       const route = await configuredDashboardRoute(
         options.root,
         await readHostConfig(options.root),
       );
       const routes = await readFile(paths.routes, "utf8").catch(() => "");
+      assertSingleOwners(routes, bareHostname, {
+        sites: Object.keys(wanted.routes),
+        owner: "proxy.routes in Host config",
+      });
       if (route)
         assertSingleOwners(routes, bareHostname, {
           sites: [route.domain],

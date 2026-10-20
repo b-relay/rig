@@ -6,7 +6,12 @@ import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { DiscoverySearch, RuntimeDependencies } from "./contracts";
 import { shellWord } from "../domain/target-selector";
-import { MAX_NAME_LENGTH, caseVariantOf, nameProblem } from "../domain/names";
+import {
+  MAX_NAME_LENGTH,
+  caseVariantOf,
+  nameKey,
+  nameProblem,
+} from "../domain/names";
 /** The commands a Project's recorded state answers without its rig.yaml: stopping or destroying a Target, and reading its
  * status, logs and activity. */
 const RECORDED_STATE_ACTIONS: ReadonlySet<RuntimeCommand["action"]> = new Set([
@@ -273,6 +278,20 @@ function assertRegistrationAvailable(
       `Choose another name: ${anotherName(identity)}.`,
       { registeredName: variant },
     );
+  // The name an unfinished rename gives another Project is that Project's: its env files may be there already.
+  const renaming = projects.find(
+    (project) =>
+      project.repoPath !== identity.repoPath &&
+      project.renaming &&
+      nameKey(project.renaming.to) === nameKey(identity.name),
+  );
+  if (renaming)
+    throw new RigError(
+      "PROJECT_CONFLICT",
+      `Project '${renaming.name}' has an unfinished rename to '${renaming.renaming!.to}', so its env files may be under that name already.`,
+      `Choose another name: ${anotherName(identity)}. Or finish or undo that rename first (rig rename ${renaming.renaming!.to} --project ${renaming.name}, or rig rename ${renaming.name} --project ${renaming.name}).`,
+      { registeredName: renaming.name },
+    );
   if (
     existing &&
     (existing.name !== identity.name || existing.repoPath !== identity.repoPath)
@@ -303,13 +322,14 @@ export function assertIdentity(
 /** `rig rename <new>` on a config that already declares `<new>` adopts the edit instead of refusing it. */
 function adoptsConfigName(
   command: RuntimeCommand,
-  project: Pick<ProjectRecord, "name">,
+  project: Pick<ProjectRecord, "name" | "renaming">,
   document: ConfigDocument<ProjectConfig>,
 ): boolean {
   return (
     command.action === "rename" &&
     document.config.name !== project.name &&
-    command.newName === document.config.name
+    // An unfinished rename may have written rig.yaml already: rename finishes or undoes it whatever it says.
+    (command.newName === document.config.name || project.renaming !== undefined)
   );
 }
 /** The config's name and the registration disagree; rename adopts the config, or the config is restored. */

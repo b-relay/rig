@@ -68,6 +68,8 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "PROJECT_MOVED",
   "PROJECT_PATH",
   "PROJECT_ACTIVE",
+  "RENAME_PENDING",
+  "ENV_DIRECTORY_TAKEN",
   "PATH_REQUIRED",
   "PREVIEW_REQUIRED",
   "PREVIEW_NAME",

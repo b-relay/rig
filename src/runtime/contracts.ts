@@ -223,26 +223,26 @@ export interface BackupStorage {
    * deleting nothing, when another volume is mounted inside it. */
   remove(path: string): Promise<"removed" | "skipped">;
 }
-/** What a rename did to a Project's operator env directory, so it can be undone. */
-export type EnvCarry =
-  | { kind: "none" }
-  | { kind: "moved"; from: string; to: string }
-  /** The directory was another registered Project's too (`sharedWith`, a name that differs only in case): copied. */
-  | { kind: "copied"; from: string; to: string; sharedWith: string };
-/** The operator env files under `<RIG_ROOT>/env`, one directory per Project name (`<project>[/<service or job>]/...`). */
+/** How a rename carries a Project's operator env directory to its new name: there is none to carry, it is renamed, or it
+ * is copied, since another registered Project reaches it by a name that differs only in case. */
+export type EnvCarry = "none" | "move" | "copy";
+/** The operator env files under `<RIG_ROOT>/env`, one directory per Project name (`<project>[/<service or job>]/...`).
+ * `from` is the Project's name and `to` the name a rename gives it. */
 export interface OperatorEnvFiles {
-  /** Gives Project name `to` the env directory of the first of `from` that has one, durably before it resolves: renamed
-   * to `to`, or copied (each file with its mode) when it is also the directory of one of `sharedWith`, other registered
-   * Projects' names, as a name that differs only in case is on a disk that ignores case. Resolves `none` when no name of
-   * `from` has one, or it is `to`'s already. Rejects ENV_CONFLICT, changing nothing, when `to` has a directory of its own;
-   * ENV_MOVE when the rename or copy fails, leaving the files where they were. */
-  carry(input: {
-    from: readonly string[];
+  /** How the directory of `from` will be carried to `to`: copied when it is also the directory of one of `sharedWith`, other
+   * registered Projects' names. Changes nothing. Rejects ENV_DIRECTORY_TAKEN when `to` has a directory that is not `from`'s,
+   * whether or not `from` has one. */
+  plan(input: {
+    from: string;
     to: string;
     sharedWith: readonly string[];
   }): Promise<EnvCarry>;
-  /** Puts the files back where `carry` found them: renamed back, or the copy removed. */
-  undo(carry: EnvCarry): Promise<void>;
+  /** Carries the directory as `how` says, durably before it resolves; a copy is made aside and published whole by one
+   * rename. Run again after a crash, it finishes the work: a move made or a copy published is recognised as done.
+   * Rejects ENV_DIRECTORY_TAKEN when `to` has a directory that is not this rename's; ENV_MOVE when the rename or copy fails. */
+  carry(input: { from: string; to: string; how: EnvCarry }): Promise<void>;
+  /** Puts the files back where they were before `carry`, however far it got: renamed back, or the copy removed. */
+  undo(input: { from: string; to: string; how: EnvCarry }): Promise<void>;
 }
 /** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */
 export interface OrphanedTool {

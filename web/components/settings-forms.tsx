@@ -34,7 +34,8 @@ export function SettingsForms({
             void rename
               .run({ action: "rename", project, newName })
               .then((result) => {
-                if (result)
+                // A rename with warnings (env files copied, a save not confirmed on disk) stays here until they are read.
+                if (result && !result.warnings?.length)
                   router.push(
                     `/projects/${encodeURIComponent(newName)}/settings`,
                   );
@@ -55,6 +56,17 @@ export function SettingsForms({
           </Button>
         </form>
         <Failure failure={rename.failure} />
+        {rename.result?.warnings?.length ? (
+          <>
+            <OperationNotice result={rename.result} />
+            <a
+              href={`/projects/${encodeURIComponent(rename.result.project ?? newName)}/settings`}
+              className="text-sm underline"
+            >
+              Go to {rename.result.project ?? newName}
+            </a>
+          </>
+        ) : null}
       </Section>
       <Section
         title="Repoint"

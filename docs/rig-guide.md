@@ -3020,7 +3020,12 @@ Branch still deploys the worktree's own Branch.
 `rig rename <name>` and `rig repoint <path>` require stopped Targets (none
 running, meant to run, or mid-recovery) and validate registered identity/path
 conflicts. They do not delete Project data. `rig rename <current name>` is
-"unchanged" and leaves the config file alone.
+"unchanged" and leaves the config file alone. `repoint` requires the new
+directory to be a Git working repository (`GIT_REQUIRED` otherwise, since
+deploys would fail there) and re-plans the working Target from
+its config with the same port reservation as `rig up`: a port that another
+Target records is refused with `PORT_RESERVED` and the registration is left
+unchanged.
 
 A Project name is 1 to 128 letters, digits, `_` or `-`, starting with a letter
 or digit. Names that differ only in case are one name, since a Mac's disk does
@@ -3040,22 +3045,22 @@ Project, registered before the case rule, reaches the same directory by a name
 that differs only in case, the directory is copied instead, so both keep their
 values, and a warning asks you to remove from each what belongs to the other.
 A `<RIG_ROOT>/env/<new>` that exists already (left by a forgotten Project, say)
-is refused with `ENV_CONFLICT` before anything changes. An `env_file` that
+is refused with `ENV_DIRECTORY_TAKEN` before anything changes. An `env_file` that
 `rig.yaml` lists is left as written: it is required, so one that pointed into
-the old directory fails the next start, naming the file. The rename is marked
-on the registration before anything moves; a failure puts rig.yaml and the env
-files back, and one interrupted by a crash is finished by running the same
-`rig rename` again, which finds the env files under either name. Rig keeps the
+the old directory fails the next start, naming the file. Before anything
+changes, the rename is recorded on the registration: the new name, which no
+other Project may then take by `rig init` or `rig rename`, and how the env
+directory is carried (a copy is made aside and published whole). A failure
+puts rig.yaml and the env files back. A rename interrupted by a crash is
+reported by `rig doctor` (`project-rename`): `rig rename <new> --project <old>`
+finishes it, and `rig rename <old> --project <old>` undoes it, whatever step it
+reached; any other rename of the Project is refused with `RENAME_PENDING` until
+then. Rig keeps the
 names a Project had: a deployed Commit whose `rig.yaml` still names an old one
 is the Project's own, so `rig doctor` reports it as passing
 (`<target>/name`) instead of identity drift, and that Commit deploys and rolls
 back as before. Commit `rig.yaml` with the new name, and the next deploy records
-it. A Tool ownership conflict names its owner by the Project's current name. `repoint` requires the new
-directory to be a Git working repository (`GIT_REQUIRED` otherwise, since
-deploys would fail there) and re-plans the working Target from
-its config with the same port reservation as `rig up`: a port that another
-Target records is refused with `PORT_RESERVED` and the registration is left
-unchanged.
+it. A Tool ownership conflict names its owner by the Project's current name.
 
 `rig forget <name>` removes a Project's registration under the same stopped
 requirement. The repository and its `rig.yaml` are not touched, and the Project's activity history is kept. A Preview must be

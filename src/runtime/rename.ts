@@ -1,20 +1,42 @@
 import { join, sep } from "node:path";
 import type { EnvFileRef, TargetPlan } from "../config/types";
-import type { ProjectRecord, RuntimeState } from "../domain/runtime";
+import type {
+  PendingRename,
+  ProjectRecord,
+  RuntimeState,
+} from "../domain/runtime";
 import { RigError, failureCauses, failureReason } from "../domain/errors";
 import { MAX_NAME_LENGTH, nameKey, nameProblem } from "../domain/names";
-import type { EnvCarry, RuntimeDependencies } from "./contracts";
+import type { RuntimeDependencies } from "./contracts";
 
 /** What a rename did: the record as stored, and what the operator should know about the files it carried. */
 export interface RenameResult {
   project: ProjectRecord;
   warnings: string[];
 }
+/** The registered Project other than `except` that holds `name` in any case: as its name, or as the name an unfinished
+ * rename of it gives it, whose env files may already be there. Undefined when none does. */
+export function nameHolder(
+  projects: readonly ProjectRecord[],
+  name: string,
+  except?: string,
+): { project: ProjectRecord; pending: boolean } | undefined {
+  for (const project of projects) {
+    if (project.id === except) continue;
+    if (nameKey(project.name) === nameKey(name))
+      return { project, pending: false };
+    if (project.renaming && nameKey(project.renaming.to) === nameKey(name))
+      return { project, pending: true };
+  }
+  return undefined;
+}
 /** Renames a stopped Project as one operation: its rig.yaml, its operator env directory, and its registration with every
- * recorded plan's Project name and env-file paths. The rename is first marked on the registration (`renaming`), so one
- * interrupted by a crash is finished or replaced by the next rename, which looks for the env files under that name too.
- * A failure before the registration is saved puts the env files and rig.yaml back; a save that may have reached the disk
- * is never undone. The caller holds the Project's scope and the new name's, and has checked every Target is stopped. */
+ * recorded plan's Project name and env-file paths. Before anything changes, the rename is recorded on the registration
+ * (`renaming`): the new name, which no other Project may take from then on, how the env directory is carried, and what
+ * rig.yaml said. Every step can run again, so after a crash `rig rename <to>` finishes it and `rig rename <name>` undoes it;
+ * no other rename starts meanwhile. A failure before the registration is saved puts rig.yaml and the env files back and
+ * clears the record; a save that may have reached the disk is never undone. The caller holds the Project's scope and the
+ * new name's, and has checked every Target is stopped. */
 export async function renameProject(
   project: ProjectRecord,
   newName: string,
@@ -31,81 +53,77 @@ export async function renameProject(
       `Choose a name of 1 to ${MAX_NAME_LENGTH} letters, digits, dashes or underscores, starting with a letter or digit.`,
       { name: newName },
     );
-  const holder = (projects: readonly ProjectRecord[]) =>
-    projects.find(
-      (p) => p.id !== project.id && nameKey(p.name) === nameKey(newName),
-    );
-  const state = await deps.store.read();
-  const taken = holder(state.projects);
-  if (taken) throw nameTaken(taken.name, newName);
   const current = (state: RuntimeState) =>
     state.projects.find((p) => p.id === project.id)!;
-  const pending = current(state).renaming;
-  // Every name its env files may be under: its own, then the one an interrupted rename began to give it.
-  const from = [
-    project.name,
-    ...(pending && pending !== project.name ? [pending] : []),
-  ];
+  // Its own name is never taken from it, even by a Project registered before names were compared without case.
+  const assertFree = (state: RuntimeState) => {
+    const holder =
+      newName === project.name
+        ? undefined
+        : nameHolder(state.projects, newName, project.id);
+    if (holder) throw nameTaken(holder, newName);
+  };
+  const state = await deps.store.read();
+  assertFree(state);
   const sharedWith = state.projects
     .filter(
-      (p) =>
-        p.id !== project.id &&
-        from.some((name) => nameKey(name) === nameKey(p.name)),
+      (p) => p.id !== project.id && nameKey(p.name) === nameKey(project.name),
     )
     .map((p) => p.name);
-  // The name rig.yaml has now, which a failed rename puts back.
-  const configName = (await deps.documents.read(project.repoPath)).config.name;
-  await deps.store.update((state) => {
-    // Checked again in the write itself: an init running beside this rename may have taken the name since.
-    const taken = holder(state.projects);
-    if (taken) throw nameTaken(taken.name, newName);
-    current(state).renaming = newName;
-  });
-  let configPath: string | undefined;
-  let carry: EnvCarry = { kind: "none" };
-  /** Puts back what this rename changed before the registration was saved, then fails with `error`; RENAME_ROLLBACK when
-   * something cannot be put back, and the mark stays, so the next rename finds the env files under either name. */
-  const undo = async (error: unknown): Promise<never> => {
-    try {
-      await deps.operatorEnv?.undo(carry);
-      // rig.yaml gets back the name it had; a rename that adopted a hand edit leaves it.
-      if (configPath !== undefined && configName !== newName)
-        await deps.documents.rename({ ...project, name: newName }, configName);
-    } catch (recovery) {
-      throw new RigError(
-        "RENAME_ROLLBACK",
-        `Project '${project.name}' was not renamed, and its rig.yaml or env files could not be put back.`,
-        `Run rig rename ${newName} --project ${project.name} again to finish the rename; it finds the env files under either name.`,
-        { from: project.name, to: newName },
-        failureCauses(error, recovery),
-      );
-    }
-    await deps.store
-      .update((state) => {
-        if (current(state).renaming === newName) delete current(state).renaming;
-      })
-      .catch(() => {});
+  const pending = current(state).renaming;
+  if (pending && newName !== pending.to && newName !== project.name)
+    throw new RigError(
+      "RENAME_PENDING",
+      `Project '${project.name}' has an unfinished rename to '${pending.to}', so it cannot be renamed '${newName}' yet.`,
+      `Run rig rename ${pending.to} --project ${project.name} to finish it, or rig rename ${project.name} --project ${project.name} to undo it; then rename it again.`,
+      { to: pending.to },
+    );
+  if (pending && newName === project.name)
+    return await undoRename(project, pending, deps);
+  let record = pending;
+  if (!record) {
+    record = {
+      to: newName,
+      env:
+        (await deps.operatorEnv?.plan({
+          from: project.name,
+          to: newName,
+          sharedWith,
+        })) ?? "none",
+      config: (await deps.documents.read(project.repoPath)).config.name,
+    };
+    const begun = record;
+    await deps.store.update((state) => {
+      // Checked again in the write itself: an init running beside this rename may have taken the name since.
+      assertFree(state);
+      current(state).renaming = begun;
+    });
+  }
+  const carried = record;
+  const envRoot = join(deps.root, "env");
+  const fail = async (error: unknown): Promise<never> => {
+    await putBack(project, carried, error, deps);
     throw error;
   };
+  let configPath: string;
   try {
     configPath = (await deps.documents.rename(project, newName)).path;
-    carry =
-      (await deps.operatorEnv?.carry({ from, to: newName, sharedWith })) ??
-      carry;
+    await deps.operatorEnv?.carry({
+      from: project.name,
+      to: newName,
+      how: carried.env,
+    });
   } catch (error) {
-    await undo(error);
+    return await fail(error);
   }
-  const envRoot = join(deps.root, "env");
-  const path = configPath!;
   try {
     await deps.store.update((state) => {
-      const taken = holder(state.projects);
-      if (taken) throw nameTaken(taken.name, newName);
+      assertFree(state);
       const record = current(state);
       const formerNames = formerNamesAfter(record, newName);
       if (formerNames) record.formerNames = formerNames;
       record.name = newName;
-      record.configPath = path;
+      record.configPath = configPath;
       delete record.renaming;
       for (const target of state.targets)
         if (target.projectId === project.id)
@@ -128,26 +146,78 @@ export async function renameProject(
       .catch(() => undefined);
     if (saved === true)
       return {
-        project: renamed(project, newName, path),
+        project: renamed(project, newName, configPath),
         warnings: [
-          ...carryWarnings(carry, envRoot),
-          `The rename was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig rename ${newName} --project ${project.name} again.`,
+          ...copyWarnings(project, newName, carried, sharedWith, envRoot),
+          `The rename was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig rename ${newName} --project ${project.name} to finish the rename.`,
         ],
       };
     if (saved === undefined)
       throw new RigError(
         "RENAME_UNCERTAIN",
         `Project '${project.name}' may or may not be renamed '${newName}': its rig.yaml and env files have the new name, saving the registration failed, and the state could not be read back.`,
-        `Run rig list. If ${project.name} is still listed, run rig rename ${newName} --project ${project.name} again to finish the rename.`,
+        `Run rig list. If ${project.name} is still listed, run rig rename ${newName} --project ${project.name} to finish the rename.`,
         { from: project.name, to: newName },
         failureCauses(error),
       );
-    await undo(error);
+    return await fail(error);
   }
   return {
-    project: renamed(project, newName, path),
-    warnings: carryWarnings(carry, envRoot),
+    project: renamed(project, newName, configPath),
+    warnings: copyWarnings(project, newName, carried, sharedWith, envRoot),
   };
+}
+/** `rig rename <name>` of a Project with an unfinished rename: rig.yaml and the env files are put back, then the record of
+ * the rename is cleared. */
+async function undoRename(
+  project: ProjectRecord,
+  pending: PendingRename,
+  deps: Pick<RuntimeDependencies, "store" | "documents" | "operatorEnv">,
+): Promise<RenameResult> {
+  await putBack(project, pending, undefined, deps);
+  return {
+    project: { ...project, renaming: undefined },
+    warnings: [],
+  };
+}
+/** Puts rig.yaml and the env files back as they were before `pending` began, then clears its record, so nothing is left
+ * half done. Fails RENAME_ROLLBACK, keeping the record, when something cannot be put back: running the rename again
+ * finishes it, or undoes it. `error` is the failure that called for it, if any. */
+async function putBack(
+  project: ProjectRecord,
+  pending: PendingRename,
+  error: unknown,
+  deps: Pick<RuntimeDependencies, "store" | "documents" | "operatorEnv">,
+): Promise<void> {
+  try {
+    await deps.operatorEnv?.undo({
+      from: project.name,
+      to: pending.to,
+      how: pending.env,
+    });
+    if (
+      (await deps.documents.read(project.repoPath)).config.name !==
+      pending.config
+    )
+      await deps.documents.rename(
+        { ...project, name: pending.to },
+        pending.config,
+      );
+    await deps.store.update((state) => {
+      const record = state.projects.find((p) => p.id === project.id);
+      if (record?.renaming?.to === pending.to) delete record.renaming;
+    });
+  } catch (recovery) {
+    throw new RigError(
+      "RENAME_ROLLBACK",
+      `Project '${project.name}' was not renamed '${pending.to}', and its rig.yaml or env files could not all be put back.`,
+      `Run rig rename ${pending.to} --project ${project.name} to finish the rename, or rig rename ${project.name} --project ${project.name} to undo it.`,
+      { from: project.name, to: pending.to },
+      error === undefined
+        ? failureCauses(recovery)
+        : failureCauses(error, recovery),
+    );
+  }
 }
 function renamed(
   project: ProjectRecord,
@@ -171,22 +241,37 @@ function formerNamesAfter(
     project.name,
   ];
 }
-/** The rename's new name is another registered Project's, or differs from it only in case. */
-function nameTaken(registered: string, wanted: string): RigError {
+/** The rename's new name is another registered Project's, a spelling of it that differs only in case, or the name an
+ * unfinished rename gives another Project. */
+function nameTaken(
+  holder: { project: ProjectRecord; pending: boolean },
+  wanted: string,
+): RigError {
+  const { project, pending } = holder;
   return new RigError(
     "PROJECT_CONFLICT",
-    registered === wanted
-      ? "The new Project name is already registered."
-      : `The new Project name differs only in case from Project '${registered}', and a Mac's disk does not tell them apart: they would share operator env files and Tool paths.`,
-    "Choose another name.",
-    { registeredName: registered },
+    pending
+      ? `Project '${project.name}' has an unfinished rename to '${project.renaming!.to}', so its env files may be under that name already.`
+      : project.name === wanted
+        ? "The new Project name is already registered."
+        : `The new Project name differs only in case from Project '${project.name}', and a Mac's disk does not tell them apart: they would share operator env files and Tool paths.`,
+    pending
+      ? `Choose another name, or finish or undo that rename first (rig rename ${project.renaming!.to} --project ${project.name}, or rig rename ${project.name} --project ${project.name}).`
+      : "Choose another name.",
+    { registeredName: project.name },
   );
 }
-/** What the operator should know of a copied env directory: the other Project keeps the original. */
-function carryWarnings(carry: EnvCarry, envRoot: string): string[] {
-  return carry.kind === "copied"
+/** What the operator should know of a copied env directory: the Projects that share the original keep it. */
+function copyWarnings(
+  project: ProjectRecord,
+  to: string,
+  carried: PendingRename,
+  sharedWith: readonly string[],
+  envRoot: string,
+): string[] {
+  return carried.env === "copy"
     ? [
-        `Its operator env files in ${join(envRoot, carry.from)} were also Project '${carry.sharedWith}''s, whose name differs only in case; they stay there for it, and ${carry.to} now has its own copy in ${join(envRoot, carry.to)}. Remove from each what belongs to the other Project.`,
+        `Its operator env files in ${join(envRoot, project.name)} were also Project ${sharedWith.map((name) => `'${name}'`).join(", ")}'s, whose name differs only in case; they stay there, and ${to} now has its own copy in ${join(envRoot, to)}. Remove from each what belongs to the other Project.`,
       ]
     : [];
 }

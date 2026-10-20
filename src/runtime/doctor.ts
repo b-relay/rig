@@ -338,6 +338,14 @@ export async function doctor(
     deps.documents,
   );
   checks.push(projectConfigCheck(project, repository));
+  if (project.renaming)
+    checks.push({
+      name: "project-rename",
+      ok: false,
+      message: `A rename of '${project.name}' to '${project.renaming.to}' did not finish: its rig.yaml or operator env files may have the new name already.`,
+      reason: "rename-unfinished",
+      hint: `Run rig rename ${project.renaming.to} --project ${project.name} to finish it, or rig rename ${project.name} --project ${project.name} to undo it.`,
+    });
   for (const target of targets) {
     const named = previewNameCheck(target, targets);
     if (named) checks.push(named);

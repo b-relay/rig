@@ -477,9 +477,11 @@ registered so before the rule keep working; `rig doctor` reports them
 _Relationship_: `rig rename` is one operation over everything named after the
 Project: its rig.yaml, its operator env directory (moved under the new name,
 or copied when a Project whose name differs only in case shares it), and its
-registration with every recorded plan's Project name and env-file paths. It
-marks itself on the registration first, so a rename a crash interrupted is
-finished by running it again. The names a Project had are kept, so a deployed
+registration with every recorded plan's Project name and env-file paths. It is
+recorded on the registration before anything changes, and its new name is
+reserved from then on, so a rename a crash interrupted is finished by running
+it again, or undone by renaming the Project to its own name; no other rename
+starts until then. The names a Project had are kept, so a deployed
 Commit whose rig.yaml still names a former name stays the Project's: it
 deploys again, and `rig doctor` does not count it as drift. A Tool ownership
 conflict names its owner as it is registered now.

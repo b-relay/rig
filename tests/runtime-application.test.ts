@@ -2675,9 +2675,17 @@ test.each(["commit", "restore", "rename", "activation", "pending"] as const)(
       await update(change);
     };
     let renameCalls = 0;
-    deps.documents.rename = async () => {
+    // rig.yaml's name as the renames write it, so putting it back is needed.
+    let written = "demo";
+    const read = deps.documents.read.bind(deps.documents);
+    deps.documents.read = async (path) => {
+      const document = await read(path);
+      return { ...document, config: { ...document.config, name: written } };
+    };
+    deps.documents.rename = async (_project, name) => {
       events.push("rename");
       if (++renameCalls === 2) throw recovery;
+      written = name;
       return deps.documents.read("/tmp/developer");
     };
     const command =
@@ -5138,4 +5146,19 @@ test("names registered before the name rule keep working, and doctor reports eac
   expect(
     state.targets.filter((t) => t.kind === "preview").map((t) => t.desired),
   ).toEqual(["stopped", "stopped"]);
+});
+test("doctor reports an unfinished rename with the commands that finish and undo it", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  state.projects[0]!.renaming = { to: "after", env: "move", config: "demo" };
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as { checks: { name: string; ok: boolean; hint?: string }[] };
+  expect(
+    report.checks.find((check) => check.name === "project-rename"),
+  ).toMatchObject({
+    ok: false,
+    hint: "Run rig rename after --project demo to finish it, or rig rename demo --project demo to undo it.",
+  });
 });

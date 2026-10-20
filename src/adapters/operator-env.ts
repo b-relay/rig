@@ -2,92 +2,96 @@ import type { Stats } from "node:fs";
 import { lstat, readFile, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { RigError, failureReason } from "../domain/errors";
-import { replacePrivateFile, syncDirectory } from "../providers/private-files";
+import { nameKey } from "../domain/names";
+import {
+  privateDirectory,
+  replacePrivateFile,
+  syncDirectory,
+} from "../providers/private-files";
 import type { OperatorEnvFiles } from "../runtime/contracts";
 
-/** The operator env directories under `<root>/env`, one per Project name, as a rename carries them to the new name. */
+/** The operator env directories under `<root>/env`, one per Project name, as a rename carries them to the new name. Every
+ * step can be run again after a crash: a move already made, or a copy already published, is recognised as done. */
 export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
   const envRoot = join(root, "env");
   const directory = (name: string) => join(envRoot, name);
-  return {
-    async carry({ from, to, sharedWith }) {
-      let source: { name: string; info: Stats } | undefined;
-      for (const name of from) {
-        const info = await entry(directory(name));
-        if (info) {
-          source = { name, info };
-          break;
-        }
-      }
-      if (!source || source.name === to) return { kind: "none" };
-      const destination = await entry(directory(to));
-      // The same directory under a spelling that differs only in case, on a disk that ignores case: renamed in place.
-      if (destination && !sameEntry(destination, source.info))
-        throw new RigError(
-          "ENV_CONFLICT",
-          `The operator env files of '${to}' already exist at ${directory(to)}, so the env files at ${directory(source.name)} cannot be given that name.`,
-          `Nothing was renamed. Move ${directory(to)} aside (it may be left from a forgotten Project, or from a rename that was interrupted), then retry.`,
-          { path: directory(to), from: directory(source.name) },
+  /** Where a copy is made before it is published under `to` by one rename; no Project name starts with a dot. */
+  const staging = (to: string) => join(envRoot, `.renaming-${nameKey(to)}`);
+  /** ENV_DIRECTORY_TAKEN unless `to` has no directory of its own: none at all, or `from`'s under a spelling that differs only in
+   * case on a disk that ignores case. */
+  const assertFree = async (from: string, to: string) => {
+    const [source, destination] = [
+      await entry(directory(from)),
+      await entry(directory(to)),
+    ];
+    if (destination && !(source && sameEntry(source, destination)))
+      throw new RigError(
+        "ENV_DIRECTORY_TAKEN",
+        `Operator env files for '${to}' already exist at ${directory(to)}, and they are not this Project's.`,
+        `Nothing was renamed. Move ${directory(to)} aside (it may be left from a forgotten Project), then retry.`,
+        { path: directory(to) },
+      );
+    return source;
+  };
+  const failed = (from: string, to: string, error: unknown) =>
+    error instanceof RigError
+      ? error
+      : new RigError(
+          "ENV_MOVE",
+          `The operator env files at ${directory(from)} could not be given the name '${to}': ${failureReason(error)}`,
+          `Check that ${envRoot} is writable by this user, then run the rename again.`,
+          { path: directory(from) },
         );
-      const origin = directory(source.name);
-      const failed = (error: unknown) =>
-        error instanceof RigError
-          ? error
-          : new RigError(
-              "ENV_MOVE",
-              `The operator env files at ${origin} could not be given the name '${to}': ${failureReason(error)}`,
-              `Nothing was renamed. Check that ${envRoot} is writable by this user, then retry.`,
-              { path: origin },
-            );
-      const shared = await sharedName(source.info, sharedWith);
-      if (shared !== undefined) {
-        try {
-          await copyTree(root, origin, directory(to));
-        } catch (error) {
-          await rm(directory(to), { recursive: true, force: true }).catch(
-            () => {},
-          );
-          throw failed(error);
-        }
-        return { kind: "copied", from: source.name, to, sharedWith: shared };
+  return {
+    async plan({ from, to, sharedWith }) {
+      if (from === to) return "none";
+      const source = await assertFree(from, to);
+      if (!source) return "none";
+      for (const name of sharedWith) {
+        const other = await entry(directory(name));
+        if (other && sameEntry(other, source)) return "copy";
       }
-      try {
-        await rename(origin, directory(to));
-      } catch (error) {
-        throw failed(error);
-      }
-      try {
-        await syncDirectory(envRoot);
-      } catch (error) {
-        // Not on disk for sure: put back, so nothing saved names the new place. Should that fail too, the files are where
-        // the rename put them, and the caller records them there.
-        if (
-          await rename(directory(to), origin).then(
-            () => true,
-            () => false,
-          )
-        )
-          throw failed(error);
-      }
-      return { kind: "moved", from: source.name, to };
+      return "move";
     },
-    async undo(carry) {
-      if (carry.kind === "moved") {
-        await rename(directory(carry.to), directory(carry.from));
+    async carry({ from, to, how }) {
+      if (how === "none") {
+        if (from !== to) await assertFree(from, to);
+        return;
+      }
+      try {
+        if (how === "copy") {
+          // The destination was free when the rename began, and its name is reserved since: one there now is this
+          // rename's published copy.
+          if (await entry(directory(to))) return;
+          await rm(staging(to), { recursive: true, force: true });
+          await copyTree(root, directory(from), staging(to));
+          await rename(staging(to), directory(to));
+          await syncDirectory(envRoot);
+          return;
+        }
+        const source = await entry(directory(from));
+        if (!source) return; // Moved by an earlier attempt, or there was nothing to move.
+        await assertFree(from, to);
+        await rename(directory(from), directory(to));
         await syncDirectory(envRoot);
-      } else if (carry.kind === "copied")
-        await rm(directory(carry.to), { recursive: true, force: true });
+      } catch (error) {
+        throw failed(from, to, error);
+      }
+    },
+    async undo({ from, to, how }) {
+      if (how === "copy") {
+        await rm(staging(to), { recursive: true, force: true });
+        await rm(directory(to), { recursive: true, force: true });
+        await syncDirectory(envRoot);
+      } else if (how === "move") {
+        const moved = await entry(directory(to));
+        const original = await entry(directory(from));
+        if (!moved || (original && !sameEntry(original, moved))) return;
+        await rename(directory(to), directory(from));
+        await syncDirectory(envRoot);
+      }
     },
   };
-  /** The first of `names` whose env directory is `info`'s own: another Project's name that differs only in case reaches
-   * it on a disk that ignores case. */
-  async function sharedName(info: Stats, names: readonly string[]) {
-    for (const name of names) {
-      const other = await entry(directory(name));
-      if (other && sameEntry(other, info)) return name;
-    }
-    return undefined;
-  }
 }
 /** Copies the directory tree at `from` to a new `to`: directories 0700, each file with its own mode, flushed. Anything but
  * a regular file or a directory is refused before anything is written. */
@@ -108,12 +112,13 @@ async function copyTree(root: string, from: string, to: string) {
         throw new RigError(
           "ENV_SCOPE_SYMLINK",
           `${join(from, path)} is not a regular file or directory, so the operator env files cannot be copied.`,
-          "Nothing was renamed. Replace it with the real file, then retry.",
+          "Replace it with the real file, then run the rename again.",
           { path: join(from, path) },
         );
     }
   };
   await visit("");
+  await privateDirectory(root, to);
   for (const file of files)
     await replacePrivateFile(
       root,

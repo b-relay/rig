@@ -461,10 +461,21 @@ const project = z.object({
     .describe(
       "The names rig rename replaced, oldest first: a deployed Commit whose rig.yaml names one is still this Project's.",
     ),
-  renaming: text
+  renaming: z
+    .object({
+      to: text.describe("The name the rename gives the Project."),
+      env: z
+        .enum(["none", "move", "copy"])
+        .describe(
+          "How it carries the operator env directory: nothing to carry, renamed, or copied because a Project whose name differs only in case shares it.",
+        ),
+      config: text.describe(
+        "The name rig.yaml had before the rename, which undoing it puts back.",
+      ),
+    })
     .optional()
     .describe(
-      "The name a rig rename began to give the Project and did not finish or undo; its operator env files may be under that name already.",
+      "A rig rename that began and did not finish or undo: its rig.yaml or env files may have the new name already, which no other Project may take until rig rename finishes or undoes it.",
     ),
 });
 const target = z.object({

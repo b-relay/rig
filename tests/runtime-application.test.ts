@@ -134,6 +134,7 @@ function fixture() {
     },
     lifecycle: {
       async checkRoute() {},
+      async withhold() {},
       async releaseRoute() {},
       async withdrawRoutes() {
         return { hostnames: [], async restore() {} };

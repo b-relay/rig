@@ -206,6 +206,58 @@ test("failed candidate restores stopped previous binaries and route before resto
     ),
   ).toBe("installed");
 });
+test("a failed deploy's rollback restores the previous route withheld: it reaches the stopped Services' ports only once the previous plan's start verifies them", async () => {
+  const f = await fixture();
+  f.previous.desired = "running";
+  await f.lifecycle.up(f.previous);
+  expect((await f.router.checkpoint(f.previous.id)).value).toContain(
+    "reverse_proxy 127.0.0.1:12345",
+  );
+  failReadiness(f.candidate);
+  // The previous plan cannot be started again, so whatever the rollback left is what stays published.
+  const up = f.deps.lifecycle.up.bind(f.deps.lifecycle);
+  f.deps.lifecycle.up = async (target, ...rest) => {
+    if (target.commit === "old")
+      throw new Error("the previous plan cannot start");
+    return up(target, ...rest);
+  };
+  await expect(
+    activateDeployment(
+      f.candidate,
+      f.previous,
+      { activation: "start" },
+      f.deps,
+    ),
+  ).rejects.toMatchObject({ code: "DEPLOY_RESTORE_FAILED" });
+  const restored = (await f.router.checkpoint(f.previous.id)).value!;
+  expect(restored).toContain("old.test {");
+  expect(restored).toContain("respond 503");
+  expect(restored).not.toContain("reverse_proxy");
+});
+test("rig down of an interrupted deploy withholds the route inside the interrupted transaction, so its recovery is not refused as an outside change", async () => {
+  const f = await fixture();
+  f.previous.desired = "running";
+  await f.lifecycle.up(f.previous);
+  // A rigd that stopped after the candidate's route was published, before the deploy was decided.
+  await f.lifecycle.checkpoint(f.candidate, f.previous);
+  await f.effects.route(f.candidate, { verified: new Set(["web"]) });
+  const recovering: TargetRecord = {
+    ...f.candidate,
+    recovery: {
+      plan: f.previous.plan,
+      branch: "main",
+      commit: "old",
+      desired: "running",
+      stage: "pending",
+    },
+  };
+  const next = createTargetLifecycle(f.adapters());
+  await next.down(recovering);
+  await next.restoreEffects(recovering);
+  const route = (await f.router.checkpoint(f.previous.id)).value!;
+  expect(route).toContain("old.test {");
+  expect(route).not.toContain("reverse_proxy");
+});
 test("successful route-free deployment removes only its previous owned route", async () => {
   const f = await fixture();
   await f.lifecycle.up(f.previous);

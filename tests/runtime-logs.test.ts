@@ -369,11 +369,11 @@ test("the Target log writer rotates at its size limit and keeps one previous gen
   const retention = { maxBytes: 20, generations: 1 };
   // Eight-byte lines against a 20-byte limit: the file rotates once it holds three.
   for (let n = 1; n <= 7; n += 1)
-    await appendTargetLog(target.logRoot, line(n), retention);
+    await appendTargetLog(target.logRoot, target.logRoot, line(n), retention);
   expect(await readFile(path, "utf8")).toBe(line(7));
   expect(await readFile(`${path}.1`, "utf8")).toBe(line(4) + line(5) + line(6));
   await rm(target.logRoot, { recursive: true, force: true });
-  await appendTargetLog(target.logRoot, line(8), retention);
+  await appendTargetLog(target.logRoot, target.logRoot, line(8), retention);
   expect(await readFile(path, "utf8")).toBe(line(8));
 });
 test("the default retention is today's: 64 MiB and one previous generation", () => {
@@ -390,7 +390,7 @@ test("the writer keeps the configured number of generations, newest as .1, and d
   // Two eight-byte lines fill a file; a stale .4 left by a larger setting is removed at the next rotation.
   await writeFile(`${path}.4`, "stale\n");
   for (let n = 1; n <= 11; n += 1)
-    await appendTargetLog(target.logRoot, line(n), retention);
+    await appendTargetLog(target.logRoot, target.logRoot, line(n), retention);
   expect(await readFile(path, "utf8")).toBe(line(11));
   expect(await readFile(`${path}.1`, "utf8")).toBe(line(9) + line(10));
   expect(await readFile(`${path}.2`, "utf8")).toBe(line(7) + line(8));
@@ -404,7 +404,12 @@ test("zero generations starts a fresh file at the limit and keeps no older one",
   await writeFile(`${path}.1`, "stale\n");
   const retention = { maxBytes: 16, generations: 0 };
   for (let n = 1; n <= 3; n += 1)
-    await appendTargetLog(target.logRoot, `{"n":${n}}\n`, retention);
+    await appendTargetLog(
+      target.logRoot,
+      target.logRoot,
+      `{"n":${n}}\n`,
+      retention,
+    );
   expect(await readFile(path, "utf8")).toBe(`{"n":3}\n`);
   expect(await exists(`${path}.1`)).toBe(false);
 });
@@ -1168,11 +1173,17 @@ test("a long follow stops following generations two rotations old once read, so 
     files = createRuntimeFiles(),
     path = join(target.logRoot, "target.jsonl");
   const retention = { maxBytes: 64, generations: 20 };
-  await appendTargetLog(target.logRoot, entry("start"), retention);
+  await appendTargetLog(
+    target.logRoot,
+    target.logRoot,
+    entry("start"),
+    retention,
+  );
   let cursor = (await files.logs(target, undefined, 10)).cursor;
   const seen: string[] = [];
   for (let n = 0; n < 12; n++) {
     await appendTargetLog(
+      target.logRoot,
       target.logRoot,
       entry(
         `line ${n}`,
@@ -1215,6 +1226,7 @@ test("two rotations between follow reads leave a generation the follow never saw
   const retention = { maxBytes: 64, generations: 1 };
   await appendTargetLog(
     target.logRoot,
+    target.logRoot,
     entry("start", "2026-09-09T12:00:00Z"),
     retention,
   );
@@ -1222,6 +1234,7 @@ test("two rotations between follow reads leave a generation the follow never saw
   // Two rotations: the followed file is evicted, the one after it is now .1, and a third is current.
   for (let n = 1; n <= 4; n++)
     await appendTargetLog(
+      target.logRoot,
       target.logRoot,
       entry(`line ${n}`, `2026-09-09T12:00:0${n}Z`),
       retention,

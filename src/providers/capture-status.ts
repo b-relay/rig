@@ -1,6 +1,6 @@
-import { readFile, writeFile, rename, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile, rm } from "node:fs/promises";
 import { z } from "zod";
+import { replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 const statusSchema = z.discriminatedUnion("state", [
   z.object({
@@ -34,17 +34,15 @@ export async function clearCaptureStatus(requestPath: string): Promise<void> {
   await rm(`${requestPath}.status.json`, { force: true });
 }
 export async function writeCaptureStatus(
+  root: string,
   requestPath: string,
   status: CaptureStatus,
 ): Promise<void> {
-  const path = `${requestPath}.status.json`,
-    temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(status), { mode: 0o600 });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await replacePrivateFile(
+    root,
+    `${requestPath}.status.json`,
+    JSON.stringify(status),
+  );
 }
 /** How long a managed app may take to confirm startup once its wrapper exists; a supervisor's `captureStartMs` replaces it. */
 export const DEFAULT_CAPTURE_START_MS = 5000;

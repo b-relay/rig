@@ -4,16 +4,13 @@ import {
   waitForCaptureStart,
 } from "./capture-status";
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
+import { readFile, rm, stat } from "node:fs/promises";
 import {
-  appendFile,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+  appendPrivateFile,
+  privateDirectory,
+  replacePrivateFile,
+} from "./private-files";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { RigError, failureReason } from "../domain/errors";
@@ -65,11 +62,17 @@ import { assertContainedDirectory } from "./contained-directory";
 const STOP_POLL_MS = 20;
 /** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
 function recordLine(
+  root: string,
   logRoot: string,
   entry: TargetLogEntry,
   retention: LogRetention | undefined,
 ): Promise<void> {
-  return appendTargetLog(logRoot, JSON.stringify(entry) + "\n", retention);
+  return appendTargetLog(
+    root,
+    logRoot,
+    JSON.stringify(entry) + "\n",
+    retention,
+  );
 }
 /** Longest run of output characters recorded as one log record. */
 const MAX_RECORD_CHARS = 64 * 1024;
@@ -89,6 +92,9 @@ interface OwnedProcess {
 }
 export interface ChildSupervisorOptions {
   readonly stateRoot: string;
+  /** The Rig root every file this supervisor writes lives under (its state, leases, exit records and Target logs); `stateRoot`
+   * when absent, which is then the root itself. */
+  readonly root?: string;
   /** The kill wait and wrapper headroom every stop budget adds to its grace; `PLATFORM_STOP_TIMINGS` when absent. */
   readonly stopTimings?: StopTimings;
   /** Clock and timers; `createProcessTiming()` on the platform, scripted in tests. */
@@ -124,6 +130,7 @@ export function createChildSupervisor(
   const now = timing.now;
   const inspection = options.processInspection;
   const inspect = inspection.identity;
+  const root = options.root ?? options.stateRoot;
   const leaseRoot = processLeaseRoot(options.stateRoot);
   const captureRoot = join(options.stateRoot, "capture");
   /** Where the holder of the application's child handle records exits. */
@@ -174,15 +181,8 @@ export function createChildSupervisor(
   };
   const leasePath = (key: string) => processLeasePath(options.stateRoot, key);
   /** Replaces the lease for `lease.key` whole, so a reader sees the previous lease or this one, never a partial one. */
-  const writeLease = async (lease: ProcessLease) => {
-    const temporary = `${leasePath(lease.key)}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(temporary, JSON.stringify(lease), { mode: 0o600 });
-      await rename(temporary, leasePath(lease.key));
-    } finally {
-      await rm(temporary, { force: true });
-    }
-  };
+  const writeLease = (lease: ProcessLease) =>
+    replacePrivateFile(root, leasePath(lease.key), JSON.stringify(lease));
   function serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const pending = (operations.get(key) ?? Promise.resolve())
       .catch(() => {})
@@ -297,7 +297,7 @@ export function createChildSupervisor(
     // A wrapper holds the grace its start was given, which may be longer than the one asked for now (a plan changed in
     // between): it is never cut off before that grace can finish.
     const captured = options.captureCommand
-      ? await readCaptureRequest(capturePath(key)).catch(() => undefined)
+      ? await readCaptureRequest(root, capturePath(key)).catch(() => undefined)
       : undefined;
     const budget = stopBudget(
       Math.max(request.graceMs, captured?.stopGraceMs ?? 0),
@@ -399,7 +399,7 @@ export function createChildSupervisor(
     await rm(leasePath(key), { force: true });
     if (options.captureCommand) {
       // A wrapper that had to kill its application said so before it ended.
-      killed ??= await readCaptureStop(capturePath(key));
+      killed ??= await readCaptureStop(root, capturePath(key));
       await removeCaptureStop(capturePath(key));
       await rm(capturePath(key), { force: true });
     }
@@ -486,15 +486,14 @@ export function createChildSupervisor(
       );
     // A record left by an earlier start must not explain the end of this one.
     await removeExitRecords(request.key);
-    await mkdir(request.logRoot, { recursive: true });
-    await mkdir(leaseRoot, { recursive: true });
-    await appendFile(join(request.logRoot, "target.jsonl"), "", {
-      mode: 0o600,
-    });
+    await privateDirectory(root, leaseRoot);
+    await appendPrivateFile(root, join(request.logRoot, "target.jsonl"), "");
     if (options.captureCommand) {
-      await mkdir(captureRoot, { recursive: true });
+      // Private whatever the umask: the wrapper runs the command a request here names.
+      await privateDirectory(root, captureRoot);
       await clearCaptureStatus(capturePath(request.key));
       await writeCaptureRequest(
+        root,
         capturePath(request.key),
         request,
         options.configRoot,
@@ -531,17 +530,21 @@ export function createChildSupervisor(
     };
     // An exit that cannot be written stays unknown: nothing is remembered that a later daemon could not also read.
     const recordExit = (
-      root: string,
+      directory: string,
       code: number | null,
       signal: NodeJS.Signals | null,
     ) =>
-      writeExitRecord(root, {
-        key: request.key,
-        incarnation: request.incarnation,
-        ...(code === null ? {} : { exitCode: code }),
-        ...(signal === null ? {} : { signal }),
-        at: now().toISOString(),
-      }).catch(() => {});
+      writeExitRecord(
+        directory,
+        {
+          key: request.key,
+          incarnation: request.incarnation,
+          ...(code === null ? {} : { exitCode: code }),
+          ...(signal === null ? {} : { signal }),
+          at: now().toISOString(),
+        },
+        root,
+      ).catch(() => {});
     if (!options.captureCommand)
       child.once("exit", (code, signal) => {
         owned.exitRecorded = recordExit(exitRoot, code, signal);
@@ -555,7 +558,7 @@ export function createChildSupervisor(
         ),
       );
     if (!options.captureCommand)
-      captureOutput(owned, request, now, options.logRetention);
+      captureOutput(root, owned, request, now, options.logRetention);
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", (error) =>
@@ -641,6 +644,7 @@ function graceOf(request: ManagedProcess): number {
   return request.stopGraceMs ?? serviceGraceMs(undefined);
 }
 function captureOutput(
+  root: string,
   owned: OwnedProcess,
   request: ManagedProcess,
   now: () => Date,
@@ -669,7 +673,7 @@ function captureOutput(
           };
           owned.writes = owned.writes
             .then(async () =>
-              recordLine(request.logRoot, entry, await retention?.()),
+              recordLine(root, request.logRoot, entry, await retention?.()),
             )
             .then(
               () => {

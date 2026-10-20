@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, rm, readFile, rename, stat } from "node:fs/promises";
+import { mkdir, writeFile, rm, readFile, stat } from "node:fs/promises";
+import {
+  privateDirectory,
+  replacePrivateFile,
+} from "../providers/private-files";
 import { join } from "node:path";
 import { writeStartupFailure } from "./startup-failure";
 import { startControlPlane } from "./server";
@@ -56,6 +60,7 @@ async function acquireGuard(
       await mkdir(guard, { mode: 0o700 });
       await writeFile(join(guard, "holder.json"), JSON.stringify(owner), {
         mode: 0o600,
+        flag: "wx",
       });
       return;
     } catch (error) {
@@ -138,21 +143,11 @@ async function recordedInstance(path: string): Promise<string | undefined> {
     return undefined;
   }
 }
-/** Writes the record through a sibling temp file so readers see the old record or the new one. */
-async function writeAtomically(
-  path: string,
-  record: object,
-  instanceId: string,
-): Promise<void> {
-  const next = `${path}.${instanceId}.next`;
-  await writeFile(next, JSON.stringify(record), { mode: 0o600 });
-  await rename(next, path);
-}
 async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
   const directory = join(options.root, "daemon"),
     lease = join(directory, "owner.json"),
     guard = join(directory, "acquiring");
-  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await privateDirectory(options.root, directory);
   const owner = {
     pid: process.pid,
     instanceId: randomUUID(),
@@ -183,7 +178,7 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
         );
     }
     // Written whole, so a crash here leaves the previous record or a valid one, never a torn one.
-    await writeAtomically(lease, owner, owner.instanceId);
+    await replacePrivateFile(options.root, lease, JSON.stringify(owner));
     acquired = true;
   } finally {
     await rm(guard, { recursive: true });
@@ -204,10 +199,10 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       ...(options.env ? { env: options.env } : {}),
       ...(options.dashboard ? { dashboard: options.dashboard } : {}),
     });
-    await writeAtomically(
+    await replacePrivateFile(
+      options.root,
       join(directory, "address.json"),
-      { ...owner, port: server.port },
-      owner.instanceId,
+      JSON.stringify({ ...owner, port: server.port }),
     );
   } catch (error) {
     await server?.stop(true);

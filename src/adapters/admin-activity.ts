@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import { open, readFile, rm } from "node:fs/promises";
+import { openPrivateFile, privateDirectory } from "../providers/private-files";
 import { join } from "node:path";
 import { z } from "zod";
 import type { OperationRecord } from "../domain/runtime";
@@ -133,15 +134,14 @@ export function createAdminActivityJournal(options: {
           id: input.id ?? options.id(),
           occurredAt: options.now(),
         });
-        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await privateDirectory(options.root, directory);
         lock = await acquireLock(
           lockPath,
           options.lockWait ?? DEFAULT_LOCK_WAIT,
         );
         await read();
-        const file = await open(path, "a", 0o600);
+        const file = await openPrivateFile(options.root, path, "append");
         try {
-          await file.chmod(0o600);
           await file.writeFile(JSON.stringify(entry) + "\n");
           await file.sync();
         } finally {

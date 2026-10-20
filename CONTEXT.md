@@ -162,6 +162,19 @@ be shown when an unexpected failure requires investigation.
 
 A computer that can run `rigd` and own Rig runtime state.
 
+### Rig root
+
+The directory that holds one Host's Rig: `~/.rig`, or `RIG_ROOT`. It is the
+user's alone: every directory Rig keeps there is a real directory the user owns
+that no one else can write, and Rig never writes there through a link: a
+record is a new private file renamed into place, and a log is appended only
+when it is not a link. `rigd install` and `rigd`'s
+start refuse a root that is not (`RIG_ROOT_UNSAFE`), and the capture wrapper
+runs only a request that is private to the user (`RIG_FILE_UNTRUSTED`). The
+checks keep other users and links planted at rest from steering Rig's writes;
+they are not a boundary against a process running as the same user, which can
+edit the root directly ([ADR 0014](docs/adr/0014-rig-owned-caddy.md)).
+
 ### Host config
 
 The user-authored configuration for one Host, stored at

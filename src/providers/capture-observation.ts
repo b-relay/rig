@@ -1,6 +1,6 @@
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { replacePrivateFile } from "./private-files";
 import { z } from "zod";
 import type { ProcessObservation } from "./contracts";
 import type { ProcessIdentityReader } from "./process-identity";
@@ -60,17 +60,15 @@ export type CaptureObservation = z.infer<typeof observationSchema>;
 
 /** Capture's existing observation loop publishes a complete, atomic child snapshot. */
 export async function writeCaptureObservation(
+  root: string,
   requestPath: string,
   evidence: CaptureObservation,
 ): Promise<void> {
-  const path = `${requestPath}.observation.json`;
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, JSON.stringify(evidence), { mode: 0o600 });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await replacePrivateFile(
+    root,
+    `${requestPath}.observation.json`,
+    JSON.stringify(evidence),
+  );
 }
 
 /** What a supervisor reports about the application of a capture wrapper that is gone: nothing when that application is gone

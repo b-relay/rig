@@ -8,6 +8,7 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -294,6 +295,43 @@ test("install refuses a destination that is not a regular file, before replacing
     `${f.root}/bin/rig is not a regular file; move it aside and run install again.`,
   );
   expect(await exists(join(f.root, "bin", "rigd"))).toBe(false);
+});
+
+test("install stages nothing through a linked bin or dashboard directory, or into one others can write, and a linked root still installs", async () => {
+  for (const name of ["bin", "dashboard"]) {
+    const f = await release();
+    const outside = join(f.home, "outside");
+    await mkdir(outside);
+    await mkdir(f.root, { mode: 0o700 });
+    await symlink(outside, join(f.root, name));
+    const result = await f.install();
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `${f.root}/${name} is a symbolic link; Rig keeps its files only in real directories under its root.`,
+    );
+    expect(await readdir(outside)).toEqual([]);
+    expect(await exists(f.ran)).toBe(false);
+  }
+
+  const open = await release();
+  await mkdir(join(open.root, "bin"), { recursive: true });
+  await chmod(join(open.root, "bin"), 0o775);
+  const refused = await open.install();
+  expect(refused.code).toBe(1);
+  expect(refused.stderr).toContain(
+    `${open.root}/bin can be written by other users;`,
+  );
+  expect(refused.stderr).toContain(`chmod 700 ${open.root}/bin`);
+  expect(await readdir(join(open.root, "bin"))).toEqual([]);
+
+  const linked = await release();
+  const volume = join(linked.home, "volume");
+  await mkdir(volume, { mode: 0o700 });
+  await symlink(volume, linked.root);
+  const installed = await linked.install();
+  expect(installed.code).toBe(0);
+  expect((await readdir(join(volume, "bin"))).sort()).toEqual(["rig", "rigd"]);
+  expect((await stat(join(volume, "bin"))).mode & 0o777).toBe(0o700);
 });
 
 test("install never replaces a rig or rigd that a Rig Project's Target published and owns", async () => {

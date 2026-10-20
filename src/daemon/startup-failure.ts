@@ -1,4 +1,5 @@
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
+import { replacePrivateFile } from "../providers/private-files";
 import { join } from "node:path";
 import { z } from "zod";
 import { RigError, errorMessage } from "../domain/errors";
@@ -28,7 +29,7 @@ export async function writeStartupFailure(
     ...(error instanceof RigError ? { hint: error.hint } : {}),
     at: now(),
   };
-  await writeFile(path(root), JSON.stringify(failure), { mode: 0o600 }).catch(
+  await replacePrivateFile(root, path(root), JSON.stringify(failure)).catch(
     () => {},
   );
 }

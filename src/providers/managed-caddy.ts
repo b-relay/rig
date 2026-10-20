@@ -12,6 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { privateDirectory, replacePrivateFile } from "./private-files";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import {
   bareHostname,
@@ -192,8 +193,11 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       reason: error.message,
       at: now().toISOString(),
     };
-    await mkdir(paths.caddy, { recursive: true });
-    await writeFile(paths.rejectedSettings, JSON.stringify(record) + "\n");
+    await replacePrivateFile(
+      options.root,
+      paths.rejectedSettings,
+      JSON.stringify(record) + "\n",
+    );
   }
   async function token(settings: ProxySettings): Promise<string | undefined> {
     if (settings.tls.ca === "internal") return undefined;
@@ -344,8 +348,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const files = generationFiles(directory);
     const building = `${directory}.tmp`;
     const staged = generationFiles(building);
-    await mkdir(building, { recursive: true });
-    await mkdir(paths.data, { recursive: true, mode: 0o700 });
+    await privateDirectory(options.root, building);
+    await privateDirectory(options.root, paths.data);
     await writeFile(staged.routes, routes);
     const rejectedAs = async (
       reason: string | undefined,
@@ -556,7 +560,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
      * such as another root's that a link swapped in meanwhile points to. */
     file: string,
   ): Promise<void> {
-    await mkdir(dirname(paths.routes), { recursive: true });
+    await mkdir(dirname(paths.routes), { recursive: true, mode: 0o700 });
     const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${file}.${randomUUID()}.tmp`;
     if ((await realPath(paths.routes)) !== file)

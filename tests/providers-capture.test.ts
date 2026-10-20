@@ -1,11 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
 import { readExitRecord } from "../src/providers/exit-record";
 import { executionBaseline } from "../src/daemon/environment";
 const roots: string[] = [];
+/** Where rigd writes a request: in the capture directory of the Rig root `root`, the only place the wrapper takes one from. */
+async function requestIn(root: string): Promise<string> {
+  await mkdir(join(root, "capture"), { recursive: true, mode: 0o700 });
+  return join(root, "capture", "request.json");
+}
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
@@ -13,7 +18,7 @@ afterEach(async () => {
 test("the capture entrypoint preserves the real app exit code and stream identity", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-"));
   roots.push(root);
-  const requestPath = join(root, "request.json");
+  const requestPath = await requestIn(root);
   await writeFile(
     requestPath,
     JSON.stringify({
@@ -58,7 +63,7 @@ test("the capture wrapper rotates the Target log by the logs settings in the con
     join(configRoot, "config.yaml"),
     "logs:\n  max_bytes: 1048576\n  generations: 2\n",
   );
-  const requestPath = join(root, "request.json");
+  const requestPath = await requestIn(root);
   await writeFile(
     requestPath,
     JSON.stringify({
@@ -95,7 +100,7 @@ test("the capture wrapper rotates the Target log by the logs settings in the con
 test("the captured application sees the operator's account name from the execution baseline, and none of the wrapper's own environment", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-env-"));
   roots.push(root);
-  const requestPath = join(root, "request.json");
+  const requestPath = await requestIn(root);
   const daemon = {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: root,
@@ -142,7 +147,7 @@ test("the captured application sees the operator's account name from the executi
 test("capture runs a failing application once, exits with its code, and leaves its exit record and final observation", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-budget-"));
   roots.push(root);
-  const requestPath = join(root, "request.json");
+  const requestPath = await requestIn(root);
   await writeFile(
     requestPath,
     JSON.stringify({
@@ -170,7 +175,7 @@ test("capture runs a failing application once, exits with its code, and leaves i
     .split("\n")
     .map((line) => JSON.parse(line));
   expect(logs.filter((log) => log.line === "attempt")).toHaveLength(1);
-  expect(await readExitRecord(root, "budget")).toEqual({
+  expect(await readExitRecord(join(root, "capture"), "budget")).toEqual({
     key: "budget",
     incarnation: "start-1",
     exitCode: 9,
@@ -188,7 +193,7 @@ test("capture runs a failing application once, exits with its code, and leaves i
 test("an observation failure after startup stops the running component deliberately and never reports a start failure", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-capture-observe-"));
   roots.push(root);
-  const requestPath = join(root, "request.json");
+  const requestPath = await requestIn(root);
   const pidFile = join(root, "child.pid");
   await writeFile(
     requestPath,

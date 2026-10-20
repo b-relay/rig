@@ -1,15 +1,7 @@
 import { randomUUID } from "node:crypto";
-import {
-  appendFile,
-  link,
-  mkdir,
-  open,
-  readdir,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { link, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { appendInPrivateDirectory, privateDirectory } from "./private-files";
 import {
   DEFAULT_LOG_RETENTION,
   type LogRetention,
@@ -17,21 +9,26 @@ import {
 /** A rotation lock older than this was left by a writer that died mid-rotation and is reclaimed. */
 const STALE_ROTATION_MS = 30_000;
 
-/** Appends to a Target's `target.jsonl`, rotating a full file first (see `rotateLogFile`), and bringing back a log
- * directory that was removed underneath the running component. */
+/** Appends to a Target's `target.jsonl` in `logRoot`, rotating a full file first (see `rotateLogFile`), and bringing back a
+ * log directory that was removed underneath the running component. `logRoot` is a directory under the Rig root `root` that
+ * the caller has made with `privateDirectory`: the supervisor as the component starts, the Target effects before they
+ * record. */
 export async function appendTargetLog(
+  root: string,
   logRoot: string,
   text: string,
   retention: LogRetention = DEFAULT_LOG_RETENTION,
 ): Promise<void> {
   const file = join(logRoot, "target.jsonl");
   await rotateLogFile(file, retention);
+  // The directory was checked as the component started (and is checked again whenever it has to be made), so each line
+  // costs one open that refuses a link at the file.
   try {
-    await appendFile(file, text, { mode: 0o600 });
+    await appendInPrivateDirectory(file, text);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await mkdir(logRoot, { recursive: true, mode: 0o700 });
-    await appendFile(file, text, { mode: 0o600 });
+    await privateDirectory(root, logRoot);
+    await appendInPrivateDirectory(file, text);
   }
 }
 

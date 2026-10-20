@@ -28,6 +28,35 @@ failure whose hint points at a log that could not be written either. A root
 that does not exist yet is fine as long as its nearest existing ancestor is a
 writable directory.
 
+The Rig root is the user's alone. `rigd install` and `rigd` as it starts check
+the root and each directory it keeps there (`auth`, `daemon`, `runtime`,
+`capture`, `process-leases`, `logs`, `env`, `bin`, `caddy` and the rest) before
+writing anything: each must be a real directory, not a symbolic link, owned by
+the user, that no other user can write. One that fails is refused by path as
+`RIG_ROOT_UNSAFE`, with the fix in the hint (`chmod 700 <path>` once you have
+checked nothing in it was changed, `sudo chown -R <you> <path>`, or replacing a
+link with a real directory). A directory an earlier Rig left readable by
+others (`drwxr-xr-x`) is made `0700`; Rig makes every directory it creates
+`0700` and its records and logs `0600`, whatever the umask. Rig never writes
+through a link under its root: a record is written to a new file beside it and
+renamed into place, so a link planted at its path is replaced and whatever it
+led to is left alone, and a log is appended only when it is not a link. Two
+kinds of files there follow their own rules: a Service's data (its database
+files and data directories) is the application's, and the route file another
+Caddy imports is written through its link on purpose, at the real path Rig
+read. Monitor's SQLite database and its sidecar files are checked the same
+way before SQLite opens them, and the release install script checks the root,
+`bin` and `dashboard` before it stages anything. The root itself may be a
+link, for example to another volume. These checks are made by path: they keep
+another user, and links or directories planted at rest, from steering Rig's
+writes, but like the route file's pinning ([ADR
+0014](adr/0014-rig-owned-caddy.md)) they are not a boundary against a process
+running as you that swaps a checked directory while Rig works, since that
+process can edit Rig's files directly anyway. The
+capture wrapper (`rigd capture`) runs only a request that is a regular file the
+user owns and no one else can write, in a capture directory that is the user's
+alone.
+
 Every command answers `--help` and `-h`, and `rig help <command>` (for
 example `rig help deploy` or `rig deploy help`) prints
 that command's usage; `rig help nonsense` fails with `Unknown command 'nonsense'.` and exit

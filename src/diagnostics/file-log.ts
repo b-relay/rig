@@ -1,16 +1,13 @@
 import { boundedEvidence, failureCategories } from "../domain/errors";
 import { Database } from "bun:sqlite";
-import {
-  appendFile,
-  chmod,
-  mkdir,
-  open,
-  readdir,
-  rm,
-  link,
-  stat,
-} from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, rm, link } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  appendInPrivateDirectory,
+  preparePrivateStoreSync,
+  privateDirectory,
+} from "../providers/private-files";
 import type { DiagnosticEntry, DiagnosticLog } from "./types";
 
 export interface FileDiagnosticOptions {
@@ -96,8 +93,7 @@ export function createFileDiagnosticLog(
         return {};
       let release: (() => void) | undefined;
       try {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        await chmod(directory, 0o700);
+        await privateDirectory(options.root, directory);
         release = await acquireLock(lock);
         const timestamp = options.now().toISOString();
         await rotateDiagnostic(
@@ -110,7 +106,6 @@ export function createFileDiagnosticLog(
           path,
           JSON.stringify(diagnosticRecord(entry, options.source, timestamp)),
         );
-        await chmod(path, 0o600);
         await pruneDiagnostics(
           directory,
           options.source,
@@ -133,9 +128,14 @@ export function createFileDiagnosticLog(
 
 /** SQLite owns a kernel-released write lock; a killed writer leaves no stale lease to reclaim. */
 async function acquireLock(path: string): Promise<() => void> {
+  // SQLite opens the lock and its journal itself, following links: each is made or checked first, never through one.
+  preparePrivateStoreSync(path, [
+    `${path}-journal`,
+    `${path}-wal`,
+    `${path}-shm`,
+  ]);
   const database = new Database(path, { create: true });
   try {
-    await chmod(path, 0o600);
     database.exec("PRAGMA busy_timeout=0");
     for (let attempt = 0; attempt < 200; attempt++) {
       try {
@@ -162,7 +162,7 @@ async function acquireLock(path: string): Promise<() => void> {
 /** A record killed mid-write leaves a line without its newline; the next record starts on its own line rather than gluing onto it. */
 async function appendRecord(path: string, record: string): Promise<void> {
   const separator = (await endsWithNewline(path)) ? "" : "\n";
-  await appendFile(path, `${separator}${record}\n`, { mode: 0o600 });
+  await appendInPrivateDirectory(path, `${separator}${record}\n`);
 }
 async function endsWithNewline(path: string): Promise<boolean> {
   let file;
@@ -188,11 +188,18 @@ async function rotateDiagnostic(
   source: string,
   today: string,
 ): Promise<void> {
+  // Judged before anything is read or moved: a link or anything but a regular file is never rotated, and the record that
+  // follows refuses it too.
+  const identity = await lstat(path, { bigint: true }).catch((error) => {
+    if (hasCode(error, "ENOENT")) return undefined;
+    throw error;
+  });
+  if (identity === undefined) return;
+  if (!identity.isFile()) throw new Error("Diagnostic log is not a file.");
   const previousDay = await segmentDay(path);
   if (!previousDay || previousDay >= today) return;
-  const identity = await stat(path, { bigint: true });
   const canonical = join(directory, `${source}-${previousDay}.jsonl`);
-  const archived = await stat(canonical, { bigint: true }).catch((error) => {
+  const archived = await lstat(canonical, { bigint: true }).catch((error) => {
     if (hasCode(error, "ENOENT")) return undefined;
     throw error;
   });
@@ -204,11 +211,17 @@ async function rotateDiagnostic(
     await link(path, archive);
   } catch (error) {
     if (!hasCode(error, "EEXIST")) throw error;
-    const existing = await stat(archive, { bigint: true });
-    if (existing.ino !== identity.ino || existing.dev !== identity.dev)
-      throw new Error("Diagnostic archive identity conflict.");
   }
-  await chmod(archive, 0o600);
+  // The archive is made private through a descriptor proven to be the active file's own inode, never through a link.
+  const file = await open(archive, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = await file.stat({ bigint: true });
+    if (opened.ino !== identity.ino || opened.dev !== identity.dev)
+      throw new Error("Diagnostic archive identity conflict.");
+    await file.chmod(0o600);
+  } finally {
+    await file.close();
+  }
   // If a writer dies between link and unlink, the next writer recognizes the same inode and completes rotation.
   await rm(path);
 }

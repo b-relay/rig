@@ -1,6 +1,6 @@
-import { readFile, rename, rm, writeFile } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { basename, dirname, resolve } from "node:path";
 import { z } from "zod";
+import { readPrivateFile, replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 import type { ManagedProcess } from "./contracts";
 const captureRequestSchema = z.object({
@@ -30,32 +30,42 @@ function captureDocument(
     ...(configRoot ? { configRoot } : {}),
   };
 }
-/** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document, never a partial one. */
+/** The Rig root of the request at `requestPath`, for the capture wrapper, which is handed nothing but that path: rigd writes
+ * requests only in its root's `capture` directory, so a path anywhere else is refused (CAPTURE_REQUEST) rather than taken
+ * to name a root. */
+export function captureRequestRoot(requestPath: string): string {
+  const directory = dirname(resolve(requestPath));
+  if (basename(directory) !== "capture")
+    throw invalid(requestPath, "not in a capture directory");
+  return dirname(directory);
+}
+/** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document,
+ * never a partial one. `root` is the Rig root whose capture directory holds `requestPath`. */
 export async function writeCaptureRequest(
+  root: string,
   requestPath: string,
   request: ManagedProcess,
   configRoot?: string,
 ): Promise<void> {
-  const temporary = `${requestPath}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(
-      temporary,
-      JSON.stringify(captureDocument(request, configRoot)),
-      { mode: 0o600 },
-    );
-    await rename(temporary, requestPath);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  await replacePrivateFile(
+    root,
+    requestPath,
+    JSON.stringify(captureDocument(request, configRoot)),
+  );
 }
-/** Fails as CAPTURE_REQUEST naming the path when the document is absent, unreadable, or not a capture request. */
+/** The wrapper runs the command a request names as the user, so it reads only a request the user's rigd could have written:
+ * a regular file, not a link, that the user owns and no one else can write, in a capture directory that is the user's alone
+ * (RIG_FILE_UNTRUSTED or RIG_ROOT_UNSAFE otherwise). Fails as CAPTURE_REQUEST naming the path when the document is absent,
+ * unreadable, or not a capture request. */
 export async function readCaptureRequest(
+  root: string,
   requestPath: string,
 ): Promise<CaptureRequest> {
   let raw: string;
   try {
-    raw = await readFile(requestPath, "utf8");
+    raw = await readPrivateFile(root, requestPath);
   } catch (error) {
+    if (error instanceof RigError) throw error;
     throw invalid(requestPath, (error as NodeJS.ErrnoException).code ?? "read");
   }
   try {

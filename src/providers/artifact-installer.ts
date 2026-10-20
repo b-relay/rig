@@ -1,16 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import {
-  access,
-  chmod,
-  copyFile,
-  mkdir,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { dirname, resolve, extname } from "node:path";
+import { replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
 export interface InstallRequest {
@@ -36,6 +27,8 @@ export interface ArtifactInstaller {
 export function createArtifactInstaller(options: {
   readonly run: CommandRunner;
   readonly bunExecutable: string | undefined;
+  /** The Rig root the destinations lie under; absent, a destination's own directory is taken as one. */
+  readonly root?: string;
 }): ArtifactInstaller {
   const { run, bunExecutable } = options;
   return {
@@ -68,23 +61,18 @@ export function createArtifactInstaller(options: {
           "Check the build output and configured entrypoint.",
           { path: source },
         );
-      await mkdir(dirname(request.destination), { recursive: true });
-      const temporary = `${request.destination}.${randomUUID()}.tmp`;
-      try {
-        if (shimBun !== undefined) {
-          await writeFile(
-            temporary,
-            `#!/bin/sh\nexec ${shellQuote(shimBun)} ${shellQuote(source)} "$@"\n`,
-            { mode: 0o755 },
-          );
-        } else {
-          await copyFile(source, temporary);
-          await chmod(temporary, sourceStat.mode | 0o111);
-        }
-        await rename(temporary, request.destination);
-      } finally {
-        await rm(temporary, { force: true });
-      }
+      // Published in Rig's shared bin, under the Rig root.
+      await replacePrivateFile(
+        options.root ?? dirname(request.destination),
+        request.destination,
+        shimBun !== undefined
+          ? `#!/bin/sh\nexec ${shellQuote(shimBun)} ${shellQuote(source)} "$@"\n`
+          : await readFile(source),
+        {
+          mode:
+            shimBun !== undefined ? 0o755 : (sourceStat.mode | 0o111) & 0o777,
+        },
+      );
       return { path: request.destination };
     },
     shimRevision(entrypoint) {

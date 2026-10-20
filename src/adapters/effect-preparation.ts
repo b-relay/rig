@@ -12,7 +12,10 @@ import {
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
-import { atomicFile } from "./artifact-ownership";
+import {
+  privateDirectory,
+  replacePrivateFile,
+} from "../providers/private-files";
 const claimSchema = z
   .object({
     version: z.literal(1).describe("Preparation ownership format version."),
@@ -103,11 +106,9 @@ export function createEffectPreparation(
           "A saved Target effect preparation already exists.",
           "Run down for this Target to recover its preparation before retrying.",
         );
-      await mkdir(dirname(directory(targetId)), {
-        recursive: true,
-        mode: 0o700,
-      });
-      await atomicFile(
+      await privateDirectory(root, dirname(directory(targetId)));
+      await replacePrivateFile(
+        root,
         claimPath(targetId),
         JSON.stringify({
           version: 1,

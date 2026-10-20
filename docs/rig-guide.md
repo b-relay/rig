@@ -2172,7 +2172,10 @@ non-empty line the command printed, stderr first, cut to 160 characters.
 Status, Activity, the Target logs, a `HEALTH_FAILED` start error and the
 dashboard show only that line, with every value from the Service's env files
 (its listed `env_file`s and the operator env files, which the dashboard keeps
-behind Reveal) replaced by `[redacted]` before it is cut. A value shorter
+behind Reveal) replaced by `[redacted]` before it is cut. Rig keeps the last
+1 MiB of each stream; when a check printed more, the first line it kept
+starts partway through and is left out, so no part of a value cut there is
+shown. A value shorter
 than 4 characters is left, since it would match ordinary text, and Rig cannot
 recognise a value the command changes, such as an encoded one, so a check
 should still print a reason rather than a credential.
@@ -2691,8 +2694,8 @@ applied), a port, or one of the `rig.*` values Rig generates:
   still an explicit mapping you write, such as `PORT: ${port}`: Rig sets no
   variable the configuration does not name
   ([ADR 0005](adr/0005-services-use-platform-independent-inputs.md)), apart
-  from the `RIG_REF_*` variables that carry a shell command's references
-  (see below).
+  from the `_RIG_` variables that carry a shell command's references (see
+  below).
 
 - `${rig.target}`: the Target's name: `working`, `stable`, or the Preview's
   name. It is the only reference a `domain` may contain.
@@ -2738,17 +2741,23 @@ shell.
 
 Because `command`, a shell `test`, `build` and a backup `restore` run under
 `/bin/sh -c`, Rig never writes a referenced value into their text. Each
-reference becomes a quoted expansion of a variable, `"${RIG_REF_<hash>}"`
-(named by a hash of the value), and the value reaches the command in that
-variable through its environment. The shell expands a variable as data: the
+reference becomes a quoted expansion of a variable named for what it
+references, such as `"$_RIG_rig_workspace"` or `"$_RIG_environment_DB_URL"`
+(`${port}` in a Service is named by that Service's port, such as
+`_RIG_services_web_port`), and the value reaches the command in that variable
+through its environment. A name never depends on the value, so an unchanged
+command reads the same in every checkout and a deploy can keep its Service
+running. The shell expands a variable as data: the
 value is one word, and nothing in it, whether `$(...)`, a backquote, a
 quote, `$VAR`, a brace or a leading `~`, is read as shell syntax. So a
 repository under `~/Projects/My App` is still one argument. Inside the
-author's double quotes the variable is written as `${RIG_REF_<hash>}`, and
-inside single quotes the quote is closed around it, so the value lands where
-the author put the reference. Each invocation gets the variables of its own
-commands only (a Service's command, health check and build; a job's command
-and restore), after its env files, so no env file can change one. A string
+author's double quotes the variable is written as `${_RIG_...}`, and inside
+single quotes the quote is closed around it (`'"${_RIG_...}"'`), so the value
+lands where the author put the reference. Each invocation gets the variables
+of its own commands only (a Service's command, health check and build; a
+job's command and restore). Rig reserves the `_RIG_` prefix: an `environment`
+key, an env-file name or a name set in the dashboard that starts with it is
+refused, so no variable of yours is ever replaced by one. A string
 `test` that resolves to an HTTP URL is handed to the HTTP probe as text, and
 each argument of a `CMD` test is quoted whole. Values substituted into
 `environment`, `domain`, `env_file`, and `bin` are plain text.
@@ -2762,8 +2771,10 @@ is read, before anything runs:
   (`$${!name}`, `$${x:1}`), or `let`, `declare`, `typeset`, `local`, `read`,
   `readarray`, `mapfile`, `unset` or `printf -v`. Bash evaluates a value there
   as an expression or a name, and an array subscript in it runs commands, even
-  from a variable. The rule matches the text coarsely, so it may refuse a
-  command that only looks like one;
+  from a variable. The rule matches the command with line continuations
+  joined and every quote and backslash removed, as the shell reads `a\`,
+  newline, `[` as `a[` and `l""et` or `\let` as `let`. It is coarse, so it
+  may refuse a command that only looks like one;
 - in or after a heredoc (`<<EOF`, `<<'EOF'`), whose body Rig does not read;
 - inside `$'...'` quoting, and right after a backslash (write `$${NAME}` for
   a literal `${NAME}`).

@@ -15,6 +15,8 @@ import { runtimeWorld } from "./support/runtime-world";
  * output. The dashboard shows the same status and Activity replies. */
 
 const SECRET = "tok-health-output-0123456789";
+/** Printed before 1,048,566 blanks, its first 12 characters fall outside what the runner keeps: qwertyuiop is left. */
+const FLOOD = "flood-token-qwertyuiop";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -25,8 +27,11 @@ async function world() {
   const scratch = await mkdtemp(join(tmpdir(), "rig-health-redaction-"));
   roots.push(scratch);
   const failing = join(scratch, "failing");
+  const flooding = join(scratch, "flooding");
   const envFile = join(scratch, "web.env");
-  await writeFile(envFile, `API_TOKEN=${SECRET}\n`, { mode: 0o600 });
+  await writeFile(envFile, `API_TOKEN=${SECRET}\nFLOOD=${FLOOD}\n`, {
+    mode: 0o600,
+  });
   const config = parseProjectConfig({
     name: "demo",
     services: {
@@ -34,7 +39,8 @@ async function world() {
         command: "serve",
         env_file: envFile,
         healthcheck: {
-          test: `if [ -f '${failing}' ]; then printf 'auth failed for %s\\n' "$API_TOKEN" >&2; exit 1; fi`,
+          // Flooding prints the value and then more than the 1 MiB the runner keeps, so the cut falls inside the value.
+          test: `if [ -f '${failing}' ]; then printf 'auth failed for %s\\n' "$API_TOKEN" >&2; exit 1; fi; if [ -f '${flooding}' ]; then printf '%s' "$FLOOD"; printf '%1048566s' ''; exit 1; fi`,
           interval: "5s",
           retries: 1,
           start_period: "1s",
@@ -105,6 +111,7 @@ async function world() {
     runtime,
     root: w.root,
     fail: () => writeFile(failing, ""),
+    flood: () => writeFile(flooding, ""),
     /** One second of fake time per step: rigd's supervision pass and the health monitor's pass, each settled. */
     async advance(seconds: number) {
       for (let i = 0; i < seconds; i++) {
@@ -196,3 +203,19 @@ test("health output a rigd before redaction recorded in Activity is withheld fro
     "web is unhealthy: 1 health check in a row failed (output withheld: recorded before Rig redacted health output).",
   );
 });
+
+test("a failing health check whose output passes what the runner keeps shows no part of a value cut at the boundary", async () => {
+  const w = await world();
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  await w.flood();
+  await w.advance(6);
+  const status = JSON.stringify(
+    await w.runtime.command({ action: "status", project: "demo" }),
+  );
+  expect(status).toContain('"output":"exit code 1"');
+  const activity = JSON.stringify(
+    await w.runtime.command({ action: "activity", project: "demo" }),
+  );
+  expect(activity).toContain("1 health check in a row failed (exit code 1).");
+  expect(await everything(w.root)).not.toContain("qwertyuiop");
+}, 20_000);

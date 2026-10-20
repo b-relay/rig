@@ -1,6 +1,12 @@
 import type { PublicInput } from "../config/references";
 import { RigError } from "./errors";
 
+/** The prefix of the variables that carry references' values into shell commands. Rig reserves it: no `environment` key
+ * or env-file name may start with it, so no value of the author's or operator's is ever replaced by one. */
+export const REFERENCE_VARIABLE_PREFIX = "_RIG_";
+/** Why a name with REFERENCE_VARIABLE_PREFIX is refused, for every place that refuses one. */
+export const RESERVED_NAME_RULE = `names starting with ${REFERENCE_VARIABLE_PREFIX} are reserved for the variables that carry references into shell commands`;
+
 /** One env file's parsed contents, held only while an invocation is composed. */
 export interface LoadedEnvFile {
   path: string;

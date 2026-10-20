@@ -2,7 +2,11 @@ import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import { RigError } from "../domain/errors";
 import type { EnvFileRef } from "../config/types";
-import type { LoadedEnvFile } from "../domain/process-environment";
+import {
+  REFERENCE_VARIABLE_PREFIX,
+  RESERVED_NAME_RULE,
+  type LoadedEnvFile,
+} from "../domain/process-environment";
 import type { CommandRunner } from "../providers/contracts";
 
 /** Whether Git ignores a path inside a workspace; undefined when the workspace is verified not to be a Git checkout. A tracked file is never ignored.
@@ -135,6 +139,11 @@ export function parseEnvironmentFile(
       throw reject(
         "an unsupported assignment",
         "Use one KEY=value assignment per line; a bare KEY without = is not an assignment.",
+      );
+    if (match[1]!.startsWith(REFERENCE_VARIABLE_PREFIX))
+      throw reject(
+        `the reserved name ${match[1]}`,
+        `Rename it: ${RESERVED_NAME_RULE}.`,
       );
     const raw = match[2]!.trim();
     const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;

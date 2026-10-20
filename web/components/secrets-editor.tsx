@@ -34,7 +34,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
-const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** A name an env file may assign; names starting with _RIG_ are reserved for Rig. */
+const ENV_KEY = /^(?!_RIG_)[A-Za-z_][A-Za-z0-9_]*$/;
 const MASK = "••••••••••••";
 type Pending = { op: "set"; value: string } | { op: "remove" };
 async function call(input: unknown): Promise<Outcome<unknown>> {
@@ -431,7 +432,7 @@ export function SecretsEditor({
             disabled={!newKeyValid}
             title={
               adding.key && !ENV_KEY.test(adding.key)
-                ? "Letters, digits and underscores, not starting with a digit"
+                ? "Letters, digits and underscores, not starting with a digit or _RIG_"
                 : undefined
             }
           >

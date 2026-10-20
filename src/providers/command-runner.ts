@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
-/** Runs a bounded command and captures at most 1 MiB per stream. A command past its budget has its
+/** Runs a bounded command and captures the last 1 MiB of each stream, marking a stream it cut as truncated. A command past its budget has its
  * whole process group killed and resolves with what it printed, marked timedOut; one cancelled through
  * the signal rejects with COMMAND_CANCELLED. */
+/** How much of each stream the runner keeps, in characters. */
+const OUTPUT_LIMIT = 1_048_576;
 export const runCommand: CommandRunner = async ({
   command,
   cwd,
@@ -29,6 +31,12 @@ export const runCommand: CommandRunner = async ({
     let stdout = "",
       stderr = "",
       ended: "timed-out" | "cancelled" | undefined;
+    const truncated: { stdout?: true; stderr?: true } = {};
+    const kept = (stream: "stdout" | "stderr", text: string) => {
+      if (text.length <= OUTPUT_LIMIT) return text;
+      truncated[stream] = true;
+      return text.slice(-OUTPUT_LIMIT);
+    };
     const kill = (reason: "timed-out" | "cancelled") => {
       ended ??= reason;
       if (child.pid) {
@@ -48,12 +56,12 @@ export const runCommand: CommandRunner = async ({
     };
     child.stdout.on("data", (data) => {
       const chunk = data.toString();
-      stdout = (stdout + chunk).slice(-1_048_576);
+      stdout = kept("stdout", stdout + chunk);
       onOutput?.("stdout", chunk);
     });
     child.stderr.on("data", (data) => {
       const chunk = data.toString();
-      stderr = (stderr + chunk).slice(-1_048_576);
+      stderr = kept("stderr", stderr + chunk);
       onOutput?.("stderr", chunk);
     });
     child.on("error", (error) => {
@@ -69,6 +77,7 @@ export const runCommand: CommandRunner = async ({
     });
     child.on("close", (code) => {
       cleanup();
+      const cut = Object.keys(truncated).length ? { truncated } : {};
       if (ended === "cancelled")
         reject(
           new RigError(
@@ -79,8 +88,8 @@ export const runCommand: CommandRunner = async ({
           ),
         );
       else if (ended === "timed-out")
-        resolve({ exitCode: 1, stdout, stderr, timedOut: true });
-      else resolve({ exitCode: code ?? 1, stdout, stderr });
+        resolve({ exitCode: 1, stdout, stderr, timedOut: true, ...cut });
+      else resolve({ exitCode: code ?? 1, stdout, stderr, ...cut });
     });
   });
 };

@@ -105,7 +105,8 @@ function useDraft(): Draft {
   if (!draft) throw new Error("Config controls render inside the editor.");
   return draft;
 }
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** An environment name; names starting with _RIG_ are reserved for Rig. */
+const ENV_NAME = /^(?!_RIG_)[A-Za-z_][A-Za-z0-9_]*$/;
 const PROXY_PREFIX = /^\/[A-Za-z0-9._~/-]*$/;
 const SECTIONS = [
   ["project", "Project"],

@@ -1311,9 +1311,20 @@ test("a failed health command's output has every env-file value redacted before 
       ready: false,
       reason: "exit code 1: [redacted]",
     });
+  // Past the 1 MiB the runner keeps, the cut can fall inside a value; the partial line is left out, whole lines stay.
+  expect(
+    await probe("printf '%s' \"$API_TOKEN\"; printf '%1048566s' ''; exit 1"),
+  ).toEqual({ ready: false, reason: "exit code 1" });
+  expect(
+    await probe(
+      "printf '%s' \"$API_TOKEN\"; printf '%1048566s\\nlast words\\n' ''; exit 1",
+    ),
+  ).toEqual({ ready: false, reason: "exit code 1: last words" });
   const logged = await readFile(join(record.logRoot, "target.jsonl"), "utf8");
   expect(logged).toContain("[redacted]");
-  expect(logged).not.toMatch(/tok-0123|hunter22|of-key|padded-token/);
+  expect(logged).not.toMatch(
+    /tok-0123|6789abcdef|hunter22|of-key|padded-token/,
+  );
 });
 
 test("build output is recorded line by line as it arrives, with the time each line was seen", async () => {

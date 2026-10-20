@@ -92,7 +92,8 @@ export function shellPosition(prefix: string): ShellPosition {
 }
 
 /** Constructs where bash evaluates text as an arithmetic expression, or a value as a variable name, either of which runs the
- * commands of an array subscript inside it, even from a variable's value. Matched on the raw command, coarsely. */
+ * commands of an array subscript inside it, even from a variable's value. Matched coarsely on the command as the shell
+ * joins its words (see evaluatingConstruct). */
 const EVALUATING: readonly [RegExp, string][] = [
   [/\(\(|\$\[/, "arithmetic"],
   [/\[\[/, "[[ ... ]]"],
@@ -105,7 +106,11 @@ const EVALUATING: readonly [RegExp, string][] = [
   [/(?:^|[\s;&|(`{])printf\s+-v/, "a command that takes variable names"],
 ];
 
-/** What in `command` bash may evaluate as arithmetic or a variable name, or undefined when there is nothing such. */
+/** What in `command` bash may evaluate as arithmetic or a variable name, or undefined when there is nothing such. It is
+ * matched with line continuations joined and every quote and backslash removed, as the shell removes them before it
+ * recognizes `a[`, `((` or a command name such as l""et or \let; that may join what the shell keeps apart, which only
+ * refuses more. */
 export function evaluatingConstruct(command: string): string | undefined {
-  return EVALUATING.find(([pattern]) => pattern.test(command))?.[1];
+  const joined = command.replace(/\\\r?\n/g, "").replace(/['"\\]/g, "");
+  return EVALUATING.find(([pattern]) => pattern.test(joined))?.[1];
 }

@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
 import { parseEnvironmentFile } from "./env-file";
+import { RESERVED_NAME_RULE } from "../domain/process-environment";
 
 /** A name an env file may assign, as the env-file reader accepts it. */
-/** `__proto__` is refused too: the reader keeps values in a plain object, where that name assigns nothing. */
-export const ENV_KEY = /^(?!__proto__$)[A-Za-z_][A-Za-z0-9_]*$/;
+/** `__proto__` is refused too: the reader keeps values in a plain object, where that name assigns nothing; so is a name
+ * with the reserved `_RIG_` prefix (see REFERENCE_VARIABLE_PREFIX), which the reader refuses. */
+export const ENV_KEY = /^(?!__proto__$)(?!_RIG_)[A-Za-z_][A-Za-z0-9_]*$/;
 /** One change to an env file: set a name to a value, or remove every assignment of it. */
 export type EnvChange =
   { op: "set"; key: string; value: string } | { op: "remove"; key: string };
@@ -37,7 +39,7 @@ export function encodeEnvAssignment(key: string, value: string): string {
     throw new RigError(
       "ENV_KEY",
       `${JSON.stringify(key)} is not a name an env file can assign.`,
-      "Use letters, digits and underscores, starting with a letter or underscore, such as API_KEY.",
+      `Use letters, digits and underscores, starting with a letter or underscore, such as API_KEY; ${RESERVED_NAME_RULE}.`,
       { key },
     );
   const line =
@@ -77,7 +79,7 @@ export function editEnvText(
       throw new RigError(
         "ENV_KEY",
         `${JSON.stringify(change.key)} is not a name an env file can assign.`,
-        "Use letters, digits and underscores, starting with a letter or underscore, such as API_KEY.",
+        `Use letters, digits and underscores, starting with a letter or underscore, such as API_KEY; ${RESERVED_NAME_RULE}.`,
         { key: change.key },
       );
     const assigns = (line: string) =>

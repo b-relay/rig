@@ -22,8 +22,9 @@ function withComponentDefaults(component: PlanComponent): PlanComponent {
 }
 
 const SHELL_SAFE = /^[A-Za-z0-9_/.:@%+=,-]+$/;
+/** A reference's variable as Rig writes it: inside the author's single quotes, bare, or inside double quotes. */
 const VARIABLE =
-  /'"\$\{(RIG_REF_[0-9a-f]{12})\}"'|"\$\{(RIG_REF_[0-9a-f]{12})\}"|\$\{(RIG_REF_[0-9a-f]{12})\}/g;
+  /'"\$\{(_RIG_[A-Za-z0-9_]+)\}"'|"\$(_RIG_[A-Za-z0-9_]+)"|\$\{(_RIG_[A-Za-z0-9_]+)\}/g;
 /** `command` with each variable that carries a reference's value written as the value, quoted as a rigd before reference
  * variables wrote it into the text: inside the author's single quotes escaped for them, inside double quotes escaped for
  * them, and bare single-quoted unless it needs no quoting. Only for comparing and reading, never for running. */

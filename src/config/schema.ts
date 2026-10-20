@@ -5,6 +5,10 @@ import { parseTrustedClient } from "../domain/trusted-clients";
 import { proxyModeOf, proxySettingsSchema } from "./proxy-schema";
 import { referenceResolver } from "./references";
 import {
+  REFERENCE_VARIABLE_PREFIX,
+  RESERVED_NAME_RULE,
+} from "../domain/process-environment";
+import {
   roleHostname,
   roleServiceDomains,
   serviceDomainPort,
@@ -67,7 +71,7 @@ const referencesIn = (scope: ReferenceScope) =>
   `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, \${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : scope === "job" ? ", ${rig.data} (this job's own persistent directory)" : ""}. $\${VAR} writes a literal \${VAR}.`;
 /** Where a reference in a shell command is refused. */
 const SHELL_REFERENCES =
-  "A referenced value reaches the command through a RIG_REF_* variable as one word, never as shell code. A reference in a command with arithmetic, [[ ]], a subscript or let, declare, read and the like, in or after a heredoc, or in $'...' is refused: declare such a value in environment and read $NAME instead.";
+  "A referenced value reaches the command through a _RIG_ variable as one word, never as shell code. A reference in a command with arithmetic, [[ ]], a subscript or let, declare, read and the like, in or after a heredoc, or in $'...' is refused: declare such a value in environment and read $NAME instead.";
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
@@ -130,6 +134,10 @@ const envName = z
   .regex(
     /^[A-Za-z_][A-Za-z0-9_]*$/,
     "must be an environment variable name: letters, digits and '_', not starting with a digit",
+  )
+  .refine(
+    (name) => !name.startsWith(REFERENCE_VARIABLE_PREFIX),
+    `is not available: ${RESERVED_NAME_RULE}`,
   );
 /** Public inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
 const environmentMap = (scope: ReferenceScope) =>
@@ -160,7 +168,7 @@ const environmentMap = (scope: ReferenceScope) =>
     });
 const env = (scope: ReferenceScope) =>
   environmentMap(scope).describe(
-    "Public environment values passed to the process; never put secrets here. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
+    "Public environment values passed to the process; never put secrets here. Names may not start with _RIG_, which Rig reserves. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
   );
 const envFile = (scope: ReferenceScope) =>
   z

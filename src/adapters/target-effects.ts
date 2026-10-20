@@ -45,15 +45,22 @@ import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
 import type { TargetEffects } from "../runtime/lifecycle";
 /** A failed health command's last non-empty output line, stderr first, cut to fit one log line, since it is shown in status,
- * Activity and errors. Every env-file value is redacted in the output as printed, before a line is picked, trimmed or cut;
- * undefined when it printed nothing. */
+ * Activity and errors. Every env-file value is redacted in the output as printed, before a line is picked, trimmed or cut,
+ * and a line the runner kept only part of is left out; undefined when nothing whole is left. */
 function healthOutput(
   result: CommandResult,
   secrets: readonly string[],
 ): string | undefined {
+  // A stream the runner cut starts partway through a line, maybe partway through a value; that line is left out.
+  const whole = (stream: "stdout" | "stderr") => {
+    const text = result[stream];
+    if (!result.truncated?.[stream]) return text;
+    const start = text.indexOf("\n");
+    return start === -1 ? "" : text.slice(start + 1);
+  };
   const line =
-    lastOutputLine(redactValues(result.stderr, secrets)) ??
-    lastOutputLine(redactValues(result.stdout, secrets));
+    lastOutputLine(redactValues(whole("stderr"), secrets)) ??
+    lastOutputLine(redactValues(whole("stdout"), secrets));
   return line?.slice(0, 160);
 }
 /** The reference values the commands of one scope read, by variable name: a Service's command, health check and build, a
@@ -79,7 +86,7 @@ function referenceValuesOf(
       ? [component.backup.restore]
       : []),
   ];
-  const names = commands.join("\n").match(/RIG_REF_[0-9a-f]{12}/g) ?? [];
+  const names = commands.join("\n").match(/_RIG_[A-Za-z0-9_]+/g) ?? [];
   return Object.fromEntries(
     names.filter((name) => name in values).map((name) => [name, values[name]!]),
   );
@@ -218,7 +225,7 @@ export function createTargetEffects(
     for (const note of fresh) noted.add(`${target.id}:${note}`);
     if (fresh.length)
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
-    // The values its commands read through RIG_REF_* variables come last, so no env file can change one.
+    // The values its commands read through _RIG_ variables come last.
     return {
       env: { ...composed.env, ...referenceValuesOf(target.plan, component) },
       secrets: composed.secrets,

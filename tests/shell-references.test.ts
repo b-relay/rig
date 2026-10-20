@@ -70,10 +70,14 @@ test("a reference reaches the command as a quoted variable that carries its valu
     "printf '%s\\n' ${environment.VALUE} \"${rig.workspace}/x\" 'at ${rig.workspace}'",
   );
   expect(text).not.toContain("touch");
-  expect(text).toMatch(
-    /^printf '%s\\n' "\$\{RIG_REF_[0-9a-f]{12}\}" "\$\{RIG_REF_[0-9a-f]{12}\}\/x" 'at '"\$\{RIG_REF_[0-9a-f]{12}\}"''$/,
+  // Named for what each references; bare "$NAME", in double quotes ${NAME}, in single quotes '"${NAME}"'.
+  expect(text).toBe(
+    `printf '%s\\n' "$_RIG_environment_VALUE" "\${_RIG_rig_workspace}/x" 'at '"\${_RIG_rig_workspace}"''`,
   );
-  expect(Object.values(values).sort()).toEqual([HOSTILE, WORKSPACE].sort());
+  expect(values).toEqual({
+    _RIG_environment_VALUE: HOSTILE,
+    _RIG_rig_workspace: WORKSPACE,
+  });
 });
 
 test.each([
@@ -214,9 +218,45 @@ test.each([
     'f() { local -i n="$R"; }; f',
   ],
   ["read", "echo x | read ${environment.INDEX}", 'echo x | read "$R"'],
+  [
+    "a subscript joined across a line continuation",
+    "a\\\n[${environment.INDEX}]=1",
+    'a\\\n["$R"]=1',
+  ],
+  [
+    "arithmetic joined across a line continuation",
+    "(\\\n( ${environment.INDEX} ))",
+    "(\\\n( $R ))",
+  ],
+  [
+    "[[ ... ]] joined across a line continuation",
+    "[\\\n[ ${environment.NAME} -eq 0 ]]",
+    '[\\\n[ "$INDEX_NAME" -eq 0 ]]',
+  ],
+  [
+    "let spelled with empty quotes",
+    'l""et n=${environment.INDEX}',
+    'l""et n="$R"',
+  ],
+  ["let quoted whole", '"let" n=${environment.INDEX}', '"let" n="$R"'],
+  ["let after a backslash", "\\let n=${environment.INDEX}", '\\let n="$R"'],
 ])(
   "a reference in a command with %s is refused, since bash runs its value there",
   async (_, command, variableForm) => {
+    expect(() =>
+      parseProjectConfig({
+        name: "app",
+        environment,
+        build: command,
+        services: { web: { command: "serve" } },
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        hint: expect.stringContaining(
+          "Fix build: A reference sits in a command with",
+        ),
+      }),
+    );
     expect(() => resolve(command)).toThrow(
       expect.objectContaining({
         code: "unsafe_reference",

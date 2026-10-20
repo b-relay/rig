@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { ConfigError } from "./errors";
+import { REFERENCE_VARIABLE_PREFIX } from "../domain/process-environment";
 import {
   evaluatingConstruct,
   shellPosition,
@@ -33,16 +33,29 @@ export interface ReferenceResolver {
   /** Resolves `${...}` in the string declared at config path `at`; that path decides the Service scope. */
   text(value: string, at: string): ResolvedText;
   /** The same for text /bin/sh -c will run, where no value is written into the text: each reference becomes a quoted
-   * expansion of a variable named by `shellVariable`, such as "${RIG_REF_...}", whose value the shell never reads as code,
-   * and `values` gathers what the variables hold. Refused as `unsafe_reference` in a command with arithmetic, where bash
-   * evaluates a variable's value too, and where `shellPosition` refuses. */
+   * expansion of a variable named for what it references (see `shellVariable`), whose value the shell never reads as code,
+   * and `values` gathers what the variables hold. Bare it is written "$NAME", inside the author's double quotes ${NAME},
+   * and inside single quotes '"${NAME}"', so each form tells where the author put it. Refused as `unsafe_reference` in a
+   * command with arithmetic, where bash evaluates a variable's value too, and where `shellPosition` refuses. */
   shell(value: string, at: string): ResolvedText;
   /** The variables every `shell` text resolved so far reads, by name. */
   values(): Record<string, string>;
 }
-/** The variable that carries `value` into a command: named by the value, so a command's text changes only with its values. */
-export function shellVariable(value: string): string {
-  return `RIG_REF_${createHash("sha256").update(value).digest("hex").slice(0, 12)}`;
+/** The variable that carries the value of reference `key`, written in the field at config path `at`, into a command: named
+ * for what it references, never for its value, so a command reads the same in every checkout. A reference that depends on
+ * where it is written is named by its long form: `${port}` in a Service's field by that Service's port, `${rig.data}` by
+ * the Service's or job's directory. */
+export function shellVariable(key: string, at: string): string {
+  const owner = /^(services|jobs)\.([^.]+)\./.exec(at);
+  const identity =
+    key === "rig.data" && owner
+      ? `${owner[1]}.${owner[2]}.data`
+      : key === "port" && owner
+        ? `${owner[1]}.${owner[2]}.port`
+        : key.startsWith("ports.") && owner
+          ? `${owner[1]}.${owner[2]}.${key}`
+          : key;
+  return `${REFERENCE_VARIABLE_PREFIX}${identity.replace(/[^A-Za-z0-9]/g, "_")}`;
 }
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
@@ -271,7 +284,7 @@ export function referenceResolver(
     value: string,
     at: string,
     stack: readonly string[],
-    render: (result: string, offset: number) => string,
+    render: (result: string, offset: number, key: string) => string,
   ): ResolvedText => {
     const inputs = new Map<string, PublicInput>();
     const text = value.replace(
@@ -280,7 +293,7 @@ export function referenceResolver(
         if (key === undefined) return "${";
         const resolved = lookup(key.trim(), at, stack);
         for (const input of resolved.inputs) inputs.set(input.source, input);
-        return render(resolved.value, offset);
+        return render(resolved.value, offset, key.trim());
       },
     );
     return { value: text, inputs: [...inputs.values()] };
@@ -290,7 +303,7 @@ export function referenceResolver(
     text: (value, at) => substitute(value, at, [at], (result) => result),
     shell: (value, at) => {
       const evaluating = evaluatingConstruct(value);
-      return substitute(value, at, [at], (result, offset) => {
+      return substitute(value, at, [at], (result, offset, key) => {
         const position: ShellPosition = evaluating
           ? {
               kind: "refused",
@@ -305,13 +318,20 @@ export function referenceResolver(
             { path: at, place: position.place },
             position.hint,
           );
-        const name = shellVariable(result);
+        // Two references sanitized to one name would be told apart by a number; one name never carries two values.
+        let name = shellVariable(key, at);
+        for (
+          let n = 2;
+          Object.hasOwn(variables, name) && variables[name] !== result;
+          n++
+        )
+          name = `${shellVariable(key, at)}_${n}`;
         variables[name] = result;
         return position.quote === '"'
           ? `\${${name}}`
           : position.quote === "'"
             ? `'"\${${name}}"'`
-            : `"\${${name}}"`;
+            : `"$${name}"`;
       });
     },
     values: () => ({ ...variables }),

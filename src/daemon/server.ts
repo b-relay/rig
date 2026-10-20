@@ -13,6 +13,8 @@ export interface ControlPlaneOptions {
   env?(input: unknown): Promise<unknown>;
   /** Where rigd serves the dashboard, reported by /health; absent when it runs none. */
   dashboard?: string;
+  /** Why the dashboard it runs is not served now (see Dashboard.problem), reported by /health. */
+  dashboardProblem?: () => string | undefined;
 }
 /** One JSON request to an editor route: its result, or its refusal with the code, message and hint the
  * editor gave. A body that is not JSON is refused without echoing it. */
@@ -147,6 +149,9 @@ export function startControlPlane(options: ControlPlaneOptions) {
         running: true,
         version: RIG_BUILD,
         ...(options.dashboard ? { dashboard: options.dashboard } : {}),
+        ...((problem) => (problem ? { dashboardProblem: problem } : {}))(
+          options.dashboardProblem?.(),
+        ),
       });
     // Probes that only want the status line (HEAD) get it without a body.
     if (url.pathname === "/health" && request.method === "HEAD")

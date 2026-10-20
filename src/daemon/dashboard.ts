@@ -17,6 +17,8 @@ import type { ProxySettings } from "../config/proxy-schema";
 import type { LogRetention } from "../domain/log-retention";
 import { RIG_VERSION } from "../domain/version";
 import { rotateLogFile } from "../providers/target-log";
+import type { ListenerInspection } from "../providers/listener-inspection";
+import { takesUpstream } from "../domain/route-upstream";
 import type { NoticeBoard, NoticeChannel } from "./notices";
 import {
   processStartTime,
@@ -31,6 +33,9 @@ const FIRST_RESTART_MS = 1_000;
 const MAX_RESTART_MS = 60_000;
 /** How long a stop waits after SIGTERM before SIGKILL. */
 const STOP_GRACE_MS = 5_000;
+/** The first wait between looks at what a starting dashboard listens on; each look doubles it, up to MAX_CONFIRM_MS. */
+const FIRST_CONFIRM_MS = 100;
+const MAX_CONFIRM_MS = 2_000;
 
 export const DASHBOARD: NoticeChannel = {
   name: "dashboard",
@@ -218,6 +223,13 @@ export interface DashboardDependencies {
   /** The Host's Target log sizes, which the dashboard's log follows too. */
   retention(): Promise<LogRetention>;
   readonly notices: Pick<NoticeBoard, "note" | "clear">;
+  /** What the dashboard's process listens on: only once it holds 127.0.0.1:<port> itself is it served. */
+  readonly listeners: ListenerInspection;
+  /** Whether some program answers on `port` now, to tell a port another program holds from any other failed start. */
+  portTaken(port: number): Promise<boolean>;
+  /** Told, and awaited, when rigd confirms its own dashboard holds its address, and again when that ends, before a stop
+   * signals the process: Rig's Caddy routes the dashboard's domain to its port only in between. Never rejects. */
+  serving(listening: boolean): Promise<void>;
   /** Resolves after `ms`, or early once `signal` aborts. */
   wait(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
@@ -229,6 +241,9 @@ export interface Dashboard {
   readonly url: string;
   /** How it is served, with where it is published (see describeDashboard). */
   readonly serving: string;
+  /** Why it is not served now, as its notice says: its last run's failure, until a run is confirmed to hold its address;
+   * undefined while it serves or first starts. */
+  problem(): string | undefined;
   /** Starts it and keeps it running until `stop`. */
   start(): void;
   stop(): Promise<void>;
@@ -252,6 +267,35 @@ export async function openDashboard(
   const stopping = new AbortController();
   let current: Run | undefined;
   let running: Promise<void> | undefined;
+  let listening = false;
+  let problem: string | undefined;
+  const serve = async (now: boolean) => {
+    if (listening === now || (now && stopping.signal.aborted)) return;
+    listening = now;
+    await deps.serving(now);
+  };
+  /** Waits until `run`'s own process holds the dashboard's address, 127.0.0.1:<port>: true once it does, false once it
+   * ended or rigd stops it first. Something else answering there is never taken for it. */
+  const confirm = async (run: Run): Promise<boolean> => {
+    const pid = run.child.pid;
+    if (pid === undefined) return false;
+    let ended = false;
+    void run.ended.then(() => (ended = true));
+    for (let wait = FIRST_CONFIRM_MS; !ended && !stopping.signal.aborted;) {
+      const evidence = await deps.listeners.inspect(pid, stopping.signal);
+      if (
+        evidence.state === "observed" &&
+        evidence.listeners.some(
+          (listener) =>
+            listener.port === deps.port && takesUpstream(listener.address),
+        )
+      )
+        return !ended && !stopping.signal.aborted;
+      await Promise.race([run.ended, Bun.sleep(wait)]);
+      wait = Math.min(wait * 2, MAX_CONFIRM_MS);
+    }
+    return false;
+  };
   // Output is appended in order, one write at a time, rotating a full file first.
   let writing: Promise<void> = Promise.resolve();
   const log = (text: string) => {
@@ -333,13 +377,24 @@ export async function openDashboard(
         await terminate(run);
         how = `could not be recorded in ${record}, so it was stopped`;
       } else {
-        // Once it has run steadily, an earlier failure no longer stands.
-        const steady = setTimeout(
-          () => deps.notices.clear(DASHBOARD),
-          STEADY_MS,
-        );
+        let steady: ReturnType<typeof setTimeout> | undefined;
+        const confirmed = await confirm(run);
+        if (confirmed) {
+          problem = undefined;
+          await serve(true);
+          // Once it has served steadily, an earlier failure no longer stands.
+          steady = setTimeout(() => deps.notices.clear(DASHBOARD), STEADY_MS);
+        }
         how = await run.ended;
         clearTimeout(steady);
+        // Withheld as soon as it ended: any program may bind the port it freed.
+        await serve(false);
+        if (
+          !confirmed &&
+          !stopping.signal.aborted &&
+          (await deps.portTaken(deps.port))
+        )
+          how = `${how}: another program holds port ${deps.port}`;
       }
       current = undefined;
       if (stopping.signal.aborted) break;
@@ -349,6 +404,7 @@ export async function openDashboard(
         MAX_RESTART_MS,
       );
       const message = `The dashboard ${how}; rigd starts it again in ${Math.round(delay / 1000)} s.`;
+      problem = message;
       deps.notices.note(DASHBOARD, message);
       await log(`[rigd] ${message}\n`);
       await deps.wait(delay, stopping.signal);
@@ -358,11 +414,14 @@ export async function openDashboard(
   return {
     url: `http://127.0.0.1:${deps.port}`,
     serving: describeDashboard(deps.port, deps.published),
+    problem: () => (listening ? undefined : problem),
     start() {
       running ??= loop();
     },
     async stop() {
       stopping.abort();
+      // Withheld before the process is signalled, so the port it frees is never routed.
+      await serve(false);
       if (current) await terminate(current);
       await running;
       await writing;

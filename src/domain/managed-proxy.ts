@@ -135,16 +135,23 @@ export function bareHostname(address: string): string {
 /** One of the owner's own routes from `proxy.routes`: a hostname outside any Project and the loopback address it reaches. */
 export interface HostRoute {
   readonly hostname: string;
-  /** `127.0.0.1:<port>` or `localhost:<port>`. */
-  readonly upstream: string;
+  /** `127.0.0.1:<port>` or `localhost:<port>`; null while it is withheld, answered with Rig's not-running reply. */
+  readonly upstream: string | null;
 }
-/** `proxy.routes` as Rig serves it, sorted by hostname: a bare port means that port on 127.0.0.1. */
-export function hostRoutes(settings: ProxySettings): HostRoute[] {
+/** `proxy.routes` as Rig serves it, sorted by hostname: a bare port means that port on 127.0.0.1, and a hostname in
+ * `withheld` (the dashboard's, while rigd has not confirmed its own dashboard listens there) reaches no upstream. */
+export function hostRoutes(
+  settings: ProxySettings,
+  withheld: readonly string[] = [],
+): HostRoute[] {
   return Object.entries(settings.routes)
     .map(([hostname, upstream]) => ({
       hostname,
-      upstream:
-        typeof upstream === "number" ? `127.0.0.1:${upstream}` : upstream,
+      upstream: withheld.includes(hostname)
+        ? null
+        : typeof upstream === "number"
+          ? `127.0.0.1:${upstream}`
+          : upstream,
     }))
     .sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
@@ -157,6 +164,8 @@ export interface MainCaddyfileInput {
   readonly generation: string;
   /** Every hostname Rig's route file serves; with `proxy.routes`, what the wildcard certificates cover. */
   readonly hostnames: readonly string[];
+  /** Hostnames of `proxy.routes` answered with Rig's not-running reply instead of their upstream (see hostRoutes). */
+  readonly withheld?: readonly string[];
 }
 /** The main Caddyfile of one generation. Pure: the same input renders the same text. Every value from config or the Rig
  * root reaches it through `caddyValue`, checked against its field's shape and quoted, so no value can carry Caddyfile
@@ -183,7 +192,7 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
         "\t}",
       ]
     : ["\tlocal_certs", "\tskip_install_trust"];
-  const owned = hostRoutes(settings);
+  const owned = hostRoutes(settings, input.withheld);
   const parents =
     settings.tls.certificates === "wildcard"
       ? wildcardParents([
@@ -223,11 +232,14 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
       : []),
     "",
     `import ${caddyValue("path", files.routes)}`,
-    // Validated by the schema and again here: a lowercase hostname and a loopback address, nothing else.
+    // Validated by the schema and again here: a lowercase hostname and a loopback address, nothing else. A withheld one
+    // answers 503, which Rig's down page words (withDownPages).
     ...owned.flatMap((route) => [
       "",
       `${caddyValue("hostname", route.hostname)} {`,
-      `\treverse_proxy ${caddyValue("upstream", route.upstream)}`,
+      route.upstream === null
+        ? "\trespond 503"
+        : `\treverse_proxy ${caddyValue("upstream", route.upstream)}`,
       "}",
     ]),
     "",

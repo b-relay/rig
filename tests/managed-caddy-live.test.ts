@@ -18,6 +18,21 @@ import { installCaddyBinary } from "../src/providers/caddy-binary";
 import { createProcessCaddyJob } from "../src/providers/caddy-job";
 import { runCommand } from "../src/providers/command-runner";
 import { createManagedCaddy } from "../src/providers/managed-caddy";
+import { createArtifactInstaller } from "../src/providers/artifact-installer";
+import type { Supervisor } from "../src/providers/contracts";
+import { createListenerInspection } from "../src/providers/listener-inspection";
+import { probeLocalPort } from "../src/providers/port-probe";
+import { createTargetEffects } from "../src/adapters/target-effects";
+import { waitForLogPoll } from "../src/adapters/log-follow-scheduler";
+import { createTargetLifecycle } from "../src/runtime/lifecycle";
+import type { TargetRecord } from "../src/domain/runtime";
+import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
+import {
+  dashboardDirectory,
+  openDashboard,
+  withDashboardRoute,
+} from "../src/daemon/dashboard";
+import { localActivation } from "./support/activation-doubles";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -289,3 +304,251 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
   await job.remove();
   expect(await job.state()).toBe("stopped");
 }, 60_000);
+
+test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to another program that takes the port: across a down, the dashboard's start, a port in use and a restart", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const https = freePort();
+  const servicePort = freePort();
+  const dashboardPort = freePort();
+  const route = { domain: "dash.example.test", port: dashboardPort, https };
+  const settings = withDashboardRoute(
+    parseHostConfig({
+      proxy: {
+        caddy: source,
+        ports: { http: freePort(), https },
+        tls: { ca: "internal" },
+      },
+    }).proxy!,
+    route,
+  );
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  // As rigd composes it: the dashboard's domain is withheld until its own process is confirmed on its port.
+  let dashboardListening = false;
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    withheld: () => (dashboardListening ? [] : [route.domain]),
+    run: runCommand,
+    job,
+    admin,
+  });
+  /** A program that is not Rig's, listening on `port`; it keeps the path of every request it receives. */
+  const another = (port: number) => {
+    const received: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch: (request) => {
+        received.push(new URL(request.url).pathname);
+        return new Response("another program");
+      },
+    });
+    cleanups.push(async () => server.stop(true));
+    return { received, stop: () => server.stop(true) };
+  };
+
+  // A running, verified Target serving app.example.test from its Service.
+  let service: ReturnType<typeof Bun.serve> | undefined = Bun.serve({
+    hostname: "127.0.0.1",
+    port: servicePort,
+    fetch: () => new Response("service"),
+  });
+  cleanups.push(async () => service?.stop(true));
+  const target: TargetRecord = {
+    id: "target",
+    projectId: "project",
+    name: "stable",
+    kind: "stable",
+    desired: "running",
+    createdAt: "now",
+    updatedAt: "now",
+    logRoot: join(root, "logs"),
+    plan: {
+      project: "demo",
+      target: "stable",
+      workspacePath: root,
+      dataRoot: join(root, "data"),
+      deploymentName: "stable",
+      branchSlug: "main",
+      subdomain: "stable",
+      providers: { processSupervisor: "child" },
+      preparedComponents: [],
+      domain: "app.example.test",
+      proxy: { upstream: "web" },
+      components: [
+        {
+          name: "web",
+          kind: "managed",
+          command: "serve",
+          port: servicePort,
+          readyTimeout: 1,
+          env: {},
+          dependsOn: [],
+        },
+      ],
+    },
+  };
+  const supervisor: Supervisor = {
+    observe: async () =>
+      service ? { state: "running", pid: process.pid } : { state: "stopped" },
+    ensureRunning: async () => ({ outcome: "unchanged" }),
+    async stop() {
+      service?.stop(true);
+      service = undefined;
+      return { outcome: "stopped" };
+    },
+    shutdown: async () => {},
+    detach: async () => {},
+  };
+  const effects = createTargetEffects({
+    ...localActivation([servicePort]),
+    root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map([["child", supervisor]]),
+    run: runCommand,
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: caddy.router,
+    environment: { PATH: process.env.PATH! },
+  });
+  await caddy.republish();
+  await effects.route(target, { verified: new Set(["web"]) });
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("app.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await get("app.example.test", https)).toEqual({
+    status: 200,
+    body: "service",
+  });
+
+  // rig down: the hostname is withheld before the Service stops, so a program that takes its port receives nothing.
+  await createTargetLifecycle(effects).down(target);
+  const squatter = another(servicePort);
+  expect(await get("app.example.test", https, "/account")).toEqual({
+    status: 503,
+    body: "503 - app.example.test is currently down",
+  });
+  expect(squatter.received).toEqual([]);
+
+  // The dashboard's port is taken before the dashboard starts: its start fails, and its domain never reaches that program.
+  const directory = dashboardDirectory(root);
+  await mkdir(join(directory, "web"), { recursive: true });
+  await writeFile(
+    join(directory, "web", "server.js"),
+    `Bun.serve({ port: Number(process.env.PORT), hostname: process.env.HOSTNAME, fetch: () => new Response("dashboard") });`,
+  );
+  const notes: string[] = [];
+  const open = () =>
+    openDashboard({
+      root,
+      port: dashboardPort,
+      directory,
+      executable: process.execPath,
+      retention: async () => DEFAULT_LOG_RETENTION,
+      notices: {
+        note: (_channel, message) => void notes.push(message),
+        clear() {},
+      },
+      listeners: createListenerInspection(runCommand),
+      portTaken: async (port) =>
+        (await probeLocalPort(port, AbortSignal.timeout(3000))).ready,
+      serving: async (listening) => {
+        dashboardListening = listening;
+        await caddy.refresh();
+      },
+      wait: (_ms, signal) => waitForLogPoll(200, signal),
+      now: Date.now,
+    });
+  const noted = async () => {
+    for (
+      let deadline = Date.now() + 10_000;
+      !notes.length && Date.now() < deadline;
+    )
+      await Bun.sleep(100);
+  };
+  let holder = another(dashboardPort);
+  let dashboard = (await open())!;
+  dashboard.start();
+  await noted();
+  expect(notes[0]).toContain(`another program holds port ${dashboardPort}`);
+  expect(await get("dash.example.test", https)).toEqual({
+    status: 503,
+    body: "503 - dash.example.test is currently down",
+  });
+  expect(holder.received).toEqual([]);
+
+  // Once the port is free, the dashboard's own process takes it and is served.
+  holder.stop();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("dash.example.test", https)).body !== "dashboard" &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await get("dash.example.test", https)).toEqual({
+    status: 200,
+    body: "dashboard",
+  });
+
+  // rigd restarts: its dashboard is withheld before it stops, and a program that takes the freed port first is never
+  // reached, nor while the next dashboard cannot start.
+  await dashboard.stop();
+  holder = another(dashboardPort);
+  notes.length = 0;
+  dashboard = (await open())!;
+  dashboard.start();
+  await noted();
+  expect(await get("dash.example.test", https, "/settings")).toEqual({
+    status: 503,
+    body: "503 - dash.example.test is currently down",
+  });
+  expect(holder.received).toEqual([]);
+  await dashboard.stop();
+
+  // A dashboard that runs, but answers on ::1 while that program holds 127.0.0.1 at its port, is not the one Caddy would
+  // reach, so it is never served either.
+  await writeFile(
+    join(directory, "web", "server.js"),
+    `Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Response("dashboard") });`,
+  );
+  dashboard = (await open())!;
+  dashboard.start();
+  for (
+    let deadline = Date.now() + 10_000;
+    !(await fetch(`http://[::1]:${dashboardPort}`).then(
+      () => true,
+      () => false,
+    )) && Date.now() < deadline;
+  )
+    await Bun.sleep(100);
+  await Bun.sleep(1000);
+  expect(await get("dash.example.test", https, "/settings")).toEqual({
+    status: 503,
+    body: "503 - dash.example.test is currently down",
+  });
+  expect(holder.received).toEqual([]);
+  await dashboard.stop();
+}, 90_000);

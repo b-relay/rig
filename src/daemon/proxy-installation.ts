@@ -146,9 +146,16 @@ export function createProxyInstallation(
       const warnings: string[] = [];
       const job = await currentJob();
       const wasRunning = (await job.state()) === "running";
+      const dashboard = await configuredDashboardRoute(
+        options.root,
+        await readHostConfig(options.root),
+      );
       const caddy = createManagedCaddy({
         root: options.root,
         settings,
+        // Not rigd's publication, so nothing here confirms that rigd's own dashboard holds the port: its domain is withheld
+        // until a rigd confirms one does.
+        withheld: () => (dashboard ? [dashboard.domain] : []),
         run: options.run,
         job,
         admin,

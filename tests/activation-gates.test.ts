@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import type { RouteRequest, Router } from "../src/providers/caddy-router";
+import { parseOwnedSites, renderOwnedBlock } from "../src/providers/route-file";
 import type { ListenerEvidence } from "../src/providers/listener-inspection";
 import type {
   HealthCheck,
@@ -42,6 +43,8 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
   const starts: string[] = [];
   const stops: string[] = [];
   const unstoppable = new Set<string>();
+  /** Every upstream the Target's route named as each running Service was stopped. */
+  const routeAtStop: (string | null)[][] = [];
   const supervisor: Supervisor = {
     async observe(key) {
       return processes.get(key) ?? { state: "stopped" };
@@ -64,6 +67,12 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
         throw new Error("the process ignored the stop");
       const running = processes.get(key)?.state === "running";
       if (running) stops.push(key.split(":").at(-1)!);
+      if (running)
+        routeAtStop.push(
+          (published.get(key.split(":")[0]!)?.sites ?? []).flatMap((site) =>
+            site.routes.map((route) => route.upstream),
+          ),
+        );
       processes.delete(key);
       return { outcome: running ? "stopped" : "unchanged" };
     },
@@ -94,12 +103,17 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
           .map((route) => ({ hostname: site.hostname, prefix: route.prefix })),
       );
     },
+    // A checkpoint is the block as the route file holds it, as both real routers keep it.
     async checkpoint(key) {
-      return { key, value: JSON.stringify(published.get(key) ?? null) };
+      const route = published.get(key);
+      return { key, value: route ? renderOwnedBlock(route, []) : null };
     },
     async restore(saved) {
-      const value = JSON.parse(saved.value ?? "null") as RouteRequest | null;
-      if (value) published.set(saved.key, value);
+      if (saved.value)
+        published.set(saved.key, {
+          key: saved.key,
+          sites: parseOwnedSites(saved.value),
+        });
       else published.delete(saved.key);
     },
     async withdrawUnowned(owners) {
@@ -150,12 +164,14 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     clock,
     starts,
     stops,
+    routeAtStop,
     unstoppable,
     listening,
     hold,
     routerFailure,
     target,
     up: () => runtime.command({ action: "up", project: "demo" }),
+    down: () => runtime.command({ action: "down", project: "demo" }),
     command: runtime.command.bind(runtime),
     /** Every hostname the Target's route publishes, in order. */
     async hostnames() {
@@ -298,6 +314,69 @@ test("an explicit up withholds the path of a stopped Service under the Target's 
   await starting;
   expect(await f.reach("/api/users")).toBe(`127.0.0.1:${API}`);
   expect(f.starts).toEqual(["web", "api", "api"]);
+});
+
+test("rig down withholds every path before any Service stops, so a program that binds a freed port receives nothing; rig up opens them only once their Services are verified again", async () => {
+  const f = await fixture();
+  await f.up();
+  await f.down();
+  expect(f.stops.sort()).toEqual(["api", "web"]);
+  // Neither stop left a path that reaches its port.
+  expect(f.routeAtStop).toEqual([
+    [null, null],
+    [null, null],
+  ]);
+  expect(await f.reach("/")).toBeNull();
+  expect(await f.reach("/api/users")).toBeNull();
+
+  f.hold.add(API);
+  const starting = f.up();
+  expect(await f.held(API)).toBe(true);
+  // Running again, but not verified: nothing reaches the ports yet.
+  expect(await f.reach("/")).toBeNull();
+  expect(await f.reach("/api/users")).toBeNull();
+  f.release(API);
+  await starting;
+  expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
+  expect(await f.reach("/api/users")).toBe(`127.0.0.1:${API}`);
+});
+
+test("a failed start leaves the path of a Service that is not running withheld, even where the route before it still named that Service's port", async () => {
+  const f = await fixture();
+  await f.up();
+  // It ended on its own and no pass has seen it yet: its path still names its port.
+  await f.exit("api", 3);
+  expect(await f.reach("/api")).toBe(`127.0.0.1:${API}`);
+  f.listening.api = [`127.0.0.1:${API}`, `*:${ADMIN}`];
+  await expect(f.up()).rejects.toMatchObject({ code: "LISTENER_NONLOCAL" });
+  expect(await f.running("api")).toBe(false);
+  expect(await f.reach("/api/users")).toBeNull();
+  expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
+});
+
+test("a routed Service that listens only on ::1 is refused at activation, since Rig's proxy connects to 127.0.0.1 where any program may listen", async () => {
+  const f = await fixture();
+  // Something answers on the port (a program on 127.0.0.1, say), but the Service's own socket is on ::1.
+  f.listening.web = [`::1:${WEB}`];
+  await expect(f.up()).rejects.toMatchObject({
+    code: "HEALTH_FAILED",
+    details: {
+      component: "web",
+      lastCheck: `web listens on port ${WEB} only at ::1, but Rig's proxy connects to 127.0.0.1:${WEB}; bind it to 127.0.0.1`,
+    },
+  });
+  expect(await f.routed()).toBe(false);
+  expect(await f.running("web")).toBe(false);
+});
+
+test("a routed Service on 127.0.0.1, also as an IPv4-mapped address, is published; a port nothing routes may stay on ::1", async () => {
+  const f = await fixture();
+  f.listening.web = [`::ffff:127.0.0.1:${WEB}`, `::1:${WEB}`];
+  // api's admin port is declared but not routed.
+  f.listening.api = [`127.0.0.1:${API}`, `::1:${ADMIN}`];
+  await f.up();
+  expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
+  expect(await f.reach("/api")).toBe(`127.0.0.1:${API}`);
 });
 
 test.each([

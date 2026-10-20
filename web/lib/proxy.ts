@@ -26,7 +26,8 @@ export interface ProxyRoute {
   service?: string;
   /** `127.0.0.1:<port>`, when the port is known. */
   upstream?: string;
-  /** Caddy answers 503 here: Rig withdrew the path's upstream (it is stopped or being replaced). */
+  /** Caddy answers 503 here: Rig withdrew the path's upstream (it is stopped or being replaced, or it is the dashboard's
+   * and rigd has not confirmed the dashboard listens). */
   withheld?: boolean;
   /** The Target's state, so a route to a stopped Target reads as such. */
   state?: string;
@@ -99,7 +100,9 @@ export function managedProxyRoutes(
             url,
             prefix: "/",
             source: "custom",
-            upstream: site.upstream,
+            ...(site.upstream === null
+              ? { withheld: true }
+              : { upstream: site.upstream }),
             published: true,
           },
         ];

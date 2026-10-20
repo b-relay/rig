@@ -109,6 +109,9 @@ export interface ManagedCaddyOptions {
   readonly root: string;
   /** The `proxy` settings as Host config says now; read at every publication. */
   readonly settings: () => Promise<ProxySettings>;
+  /** Hostnames of `proxy.routes` to answer with Rig's not-running reply instead of their upstream, as they are now: the
+   * dashboard's, until rigd has confirmed its own dashboard holds the port. Read at every publication; none when absent. */
+  readonly withheld?: () => readonly string[];
   /** Runs Rig's Caddy binary for validate and reload. */
   readonly run: CommandRunner;
   readonly job: CaddyJob;
@@ -129,6 +132,9 @@ export interface ManagedCaddy {
    * with the reason and the error is thrown; Caddy keeps serving the last accepted ones, and a route file ahead of what it
    * serves is still published with them. */
   republish(): Promise<{ published: boolean }>;
+  /** Publishes the settings Caddy last accepted again with `withheld` as it is now, unless the current generation already
+   * serves exactly that or there is none yet; Host config is not read, so an edit to it still waits for `republish`. */
+  refresh(): Promise<void>;
   readonly paths: ProxyPaths;
 }
 export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
@@ -314,7 +320,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     // Only what Rig renders from its owned blocks is ever published, whatever a caller passed.
     routes = canonicalRouteFile(routes).text;
     const rigHosts = routeFileHostnames(routes);
-    const customRoutes = hostRoutes(settings);
+    const withheld = options.withheld?.() ?? [];
+    const customRoutes = hostRoutes(settings, withheld);
     // The invariant, at the one point every publication passes (apply, restore, a recovery stop, a republish, a reload): a
     // hostname has one owner, a Target's block or a proxy.routes entry. One name is one site to a client, whatever scheme or
     // port it is written with, and Caddy would merge two blocks for it, so they are compared bare.
@@ -386,6 +393,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         paths,
         generation: directory,
         hostnames: rigHosts,
+        withheld,
       }),
     );
     await writeFile(staged.metadata, JSON.stringify(metadata, null, 2) + "\n");
@@ -735,8 +743,27 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       ownedBlock((await readText(paths.routes)) ?? "", key),
     );
   }
+  /** Whether generation `directory` serves the owner's routes of `settings` withheld as `withheld` says now. */
+  async function servesWithheld(
+    directory: string,
+    settings: ProxySettings,
+  ): Promise<boolean> {
+    return Bun.deepEquals(
+      (await metadataOf(directory))?.customRoutes,
+      hostRoutes(settings, options.withheld?.() ?? []),
+    );
+  }
   return {
     paths,
+    refresh: () =>
+      queued(async () => {
+        const current = await currentGeneration();
+        const accepted = await acceptedSettings();
+        // Before the first generation there is nothing to refresh: the first publication renders `withheld` as it is.
+        if (!current || (await servesWithheld(current, accepted))) return;
+        await reconcile("settings");
+        await republishWith(accepted, "settings");
+      }),
     router: {
       apply: (route) => queued(() => change(route.key, route)),
       remove: (key) => queued(() => change(key)),
@@ -785,6 +812,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           current &&
           !canonicalRouteFile(before).dropped &&
           (await metadataOf(current))?.settings === settingsDigest(requested) &&
+          (await servesWithheld(current, requested)) &&
           (await readText(generationFiles(current).routes)) === before &&
           (await adaptedOf(current)) !== undefined
         ) {

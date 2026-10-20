@@ -32,6 +32,8 @@ export interface DaemonHostOptions {
   env?(input: unknown): Promise<unknown>;
   /** Where rigd serves the dashboard, reported by /health; absent when it runs none. */
   dashboard?: string;
+  /** Why the dashboard it runs is not served now (see Dashboard.problem), reported by /health. */
+  dashboardProblem?: () => string | undefined;
 }
 /** A lock directory without a holder record is stale once older than this. */
 const GUARD_STALE_MS = 60_000;
@@ -203,6 +205,9 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       ...(options.editor ? { editor: options.editor } : {}),
       ...(options.env ? { env: options.env } : {}),
       ...(options.dashboard ? { dashboard: options.dashboard } : {}),
+      ...(options.dashboardProblem
+        ? { dashboardProblem: options.dashboardProblem }
+        : {}),
     });
     await writeAtomically(
       join(directory, "address.json"),

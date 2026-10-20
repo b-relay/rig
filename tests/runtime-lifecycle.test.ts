@@ -106,6 +106,7 @@ test("readiness expires even when a health provider ignores cancellation, then r
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },
@@ -186,6 +187,7 @@ test("a start whose clean-up rigd's shutdown detached is left as a crash leaves 
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },
@@ -268,6 +270,7 @@ test("up preserves running components and rollback stops only newly started comp
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },
@@ -326,6 +329,7 @@ test("down uses recorded plan and reports no-op only when every process was stop
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },
@@ -380,6 +384,7 @@ test("down attempts every process even when one process stop fails", async () =>
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },
@@ -440,6 +445,76 @@ test("failed process shutdown reports STOP_INCOMPLETE and still stops the other 
   );
   expect([...f.running]).toEqual(["t1:web"]);
   expect(f.stops).toEqual(["t1:web", "t1:api"]);
+});
+
+/** `target` serving app.test: '/api' to api's port and '/' to web's. */
+function routed(): TargetRecord {
+  const record = structuredClone(target);
+  record.plan.domain = "app.test";
+  record.plan.proxy = {
+    upstream: "web",
+    routes: [
+      { prefix: "/api", service: "api", port: 4000 },
+      { prefix: "/", service: "web", port: 4001 },
+    ],
+  };
+  return record;
+}
+
+test("down withholds the paths routed to its Services before it stops any, so a program that binds a freed port is never reached", async () => {
+  const f = stopFixture(["t1:web", "t1:api"]);
+  expect(await f.lifecycle.down(routed())).toEqual({ outcome: "stopped" });
+  expect(f.withheld).toEqual([{ ports: [4000, 4001], afterStops: 0 }]);
+  expect(f.stops).toEqual(["t1:web", "t1:api"]);
+});
+
+test("a deploy's down of a plan without the Services it keeps leaves their paths published", async () => {
+  const f = stopFixture(["t1:web", "t1:api"]);
+  const previous = routed();
+  previous.plan.components = previous.plan.components.filter(
+    (component) => component.name !== "web",
+  );
+  await f.lifecycle.down(previous);
+  expect(f.withheld).toEqual([{ ports: [4000], afterStops: 0 }]);
+  expect([...f.running]).toEqual(["t1:web"]);
+});
+
+test("a down whose route cannot be withheld still stops every Service, then says the route may still reach the freed ports", async () => {
+  const f = stopFixture(["t1:web", "t1:api"]);
+  f.routeFailure.withhold = new Error("caddy is down");
+  await expect(f.lifecycle.down(routed())).rejects.toMatchObject({
+    code: "ROUTE_WITHHOLD",
+    message: expect.stringContaining(
+      "its hostnames may still reach the ports it freed",
+    ),
+  });
+  expect([...f.running]).toEqual([]);
+});
+
+test("stopping one Service withholds its paths first, and a stop whose paths cannot be withheld is not made", async () => {
+  const f = stopFixture(["t1:web", "t1:api"]);
+  await f.lifecycle.stop(routed(), "api");
+  expect(f.withheld).toEqual([{ ports: [4000], afterStops: 0 }]);
+  expect(f.stops).toEqual(["t1:api"]);
+
+  f.routeFailure.withhold = new Error("caddy is down");
+  await expect(f.lifecycle.stop(routed(), "web")).rejects.toThrow(
+    "caddy is down",
+  );
+  expect([...f.running]).toEqual(["t1:web"]);
+});
+
+test("restoring a stopped Target's effects withholds every path of the route that leaves published", async () => {
+  const f = stopFixture();
+  await f.lifecycle.restoreEffects(routed());
+  expect(f.withheld).toEqual([{ afterStops: 0 }]);
+});
+
+test("a Target that routes nothing asks nothing of the route when it stops", async () => {
+  const f = stopFixture(["t1:web", "t1:api"]);
+  await f.lifecycle.down(structuredClone(target));
+  await f.lifecycle.stop(structuredClone(target), "api");
+  expect(f.withheld).toEqual([]);
 });
 
 test("Targets without managed components have no shutdown work", async () => {
@@ -534,6 +609,7 @@ test("port contention after selection fails startup and preserves an already run
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },
@@ -649,6 +725,7 @@ test("up prepares the workspace, publishes Tools in plan order, and starts only 
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },

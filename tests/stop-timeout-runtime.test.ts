@@ -170,6 +170,7 @@ function world(
     },
     async route() {},
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },

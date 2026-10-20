@@ -38,6 +38,7 @@ import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
 import { parseOwnedSites } from "../providers/route-file";
+import { routeUpstream } from "../domain/route-upstream";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
@@ -763,8 +764,33 @@ export function createTargetEffects(
               prefix: route.prefix,
               upstream: withheld.has(route.service)
                 ? null
-                : `127.0.0.1:${route.port}`,
+                : routeUpstream(route.port),
             })),
+          })),
+        }),
+      );
+    },
+    async withhold(target, ports) {
+      const published = parseOwnedSites(
+        (await options.router.checkpoint(target.id)).value ?? "",
+      );
+      const reaching = (upstream: string | null) =>
+        upstream !== null &&
+        (!ports || ports.has(Number(/:(\d+)$/.exec(upstream)?.[1])));
+      if (
+        !published.some((site) =>
+          site.routes.some((path) => reaching(path.upstream)),
+        )
+      )
+        return;
+      await transactions.withRouteChange(target.id, () =>
+        options.router.apply({
+          key: target.id,
+          sites: published.map((site) => ({
+            hostname: site.hostname,
+            routes: site.routes.map((path) =>
+              reaching(path.upstream) ? { ...path, upstream: null } : path,
+            ),
           })),
         }),
       );
@@ -779,7 +805,7 @@ export function createTargetEffects(
           hostname: site.hostname,
           routes: site.routes.map((route) => ({
             prefix: route.prefix,
-            upstream: `127.0.0.1:${route.port}`,
+            upstream: routeUpstream(route.port),
           })),
         })),
       });

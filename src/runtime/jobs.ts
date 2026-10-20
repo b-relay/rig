@@ -17,6 +17,7 @@ import type { ProcessObservation } from "../providers/contracts";
 import {
   backupStorage,
   allocateBackup,
+  madeBackupDirectory,
   queueRemoval,
   recordBackupEnd,
   settleBackupFiles,
@@ -319,14 +320,14 @@ export async function startJobRun(
       : {}),
   };
   // A backup run's directory is allocated in the write that records the run, before it is made.
-  let made: JobRun["backup"];
+  let allocated: JobRun["backup"];
   await deps.store.update((state) => {
     if (storage && job.backup) {
-      made = {
+      allocated = {
         ...allocateBackup(state, target, job.name, startedAt, storage),
         keep: job.backup.keep,
       };
-      run.backup = made;
+      run.backup = allocated;
     }
     const record = ensureJobRecord(state, target.id, job.name);
     record.running = run;
@@ -335,11 +336,18 @@ export async function startJobRun(
   /** Whether this run made its directory, which is then its own to delete. */
   let created = false;
   try {
-    if (made) {
-      await storage!.create(made.path);
+    if (allocated) {
+      // Made exclusively, then recorded as made before the process starts: a rigd that stops in between leaves a
+      // directory it cannot show this run made, and so never deletes it.
+      await storage!.create(allocated.path);
       created = true;
+      run.backup = { ...allocated, made: true };
+      await deps.store.update((state) => {
+        const record = findJobRecord(state, target.id, job.name);
+        if (record?.running?.id === run.id) record.running.backup = run.backup;
+      });
     }
-    const directory = made?.path ?? request.restore?.path;
+    const directory = allocated?.path ?? request.restore?.path;
     await deps.lifecycle.startJob(
       target,
       request.restore ? { ...job, command: restoreCommand! } : job,
@@ -363,12 +371,12 @@ export async function startJobRun(
         delete record.running;
         record.last = failed;
         // A directory the run made goes; one it found there is not Rig's, and stays.
-        if (made && created) queueRemoval(state, target, made.path);
+        if (allocated && created) queueRemoval(state, target, allocated.path);
         if (run.trigger === "schedule")
           recordActivity(state, jobActivity(state, target, job.name, failed));
       })
       .catch(() => {});
-    if (made && created) await settleBackupFiles(target, undefined, deps);
+    if (allocated && created) await settleBackupFiles(target, undefined, deps);
     throw error;
   }
   return run;
@@ -503,12 +511,15 @@ export function describeRun(run: JobRun): string {
   const trigger = run.trigger === "manual" ? " (rig run)" : "";
   // A restore says which backup it read; a backup run that succeeded, which backup it kept.
   const subject = run.restore ? `restore from ${run.restore.id} ` : "";
+  // Said as the run's end decided it: a deletion is queued in that write and carried out after it, so it may still wait.
   const kept = run.backup?.lost
     ? "; it left no backup directory, so none was kept"
     : run.backup && run.outcome === "succeeded"
       ? `; kept backup ${run.backup.id}`
       : run.backup && run.outcome
-        ? "; its backup directory was deleted"
+        ? madeBackupDirectory(run)
+          ? "; its backup directory was queued for deletion"
+          : "; its backup directory was left in place, as Rig cannot tell that this run made it"
         : "";
   return `${subject}${outcomeText()}${kept}`;
   function outcomeText(): string {

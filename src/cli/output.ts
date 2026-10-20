@@ -107,7 +107,7 @@ export function renderResult(action: string, value: unknown): string {
     .join("");
   return `${retired}${subject} ${outcome}${upgrade}${revision}${kept}${path}\n${warnings}`;
 }
-/** `rig backup list`: one line per backup, newest first, `stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB
+/** `rig backup list`: one line per backup, each job's newest first, `stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB
  * schedule  run 1a2b3c4d`, then where they are. */
 function renderBackups(report: Record<string, unknown>): string {
   const backups = rows(report.backups);

@@ -538,6 +538,12 @@ const jobRun = z.object({
         .int()
         .positive()
         .describe("How many backups the job kept when the run started."),
+      made: z
+        .literal(true)
+        .optional()
+        .describe(
+          "The run made the directory: recorded once it did, before its process started. Only a directory its run made is deleted when the run fails; one a run never made, or found already there, is left in place.",
+        ),
       lost: z
         .literal(true)
         .optional()
@@ -547,7 +553,7 @@ const jobRun = z.object({
     })
     .optional()
     .describe(
-      "A backup job's run: the directory it writes ($RIG_BACKUP_DIR), recorded before it is made. Kept as a backup when the run succeeds, deleted otherwise.",
+      "A backup job's run: the directory it writes ($RIG_BACKUP_DIR), recorded before it is made. Kept as a backup when the run succeeds, deleted otherwise if the run made it.",
     ),
   restore: z
     .object({
@@ -759,7 +765,7 @@ export const runtimeStateSchema = z
             .describe("Whether the schedule or rig run started that run."),
           startedAt: text.describe("When its run started (ISO 8601)."),
           finishedAt: text.describe(
-            "When its run ended (ISO 8601); retention keeps the newest by it.",
+            "When its run ended (ISO 8601), for display: retention and latest order backups by the number in their id, never by time.",
           ),
           bytes: z
             .number()
@@ -788,7 +794,7 @@ export const runtimeStateSchema = z
       )
       .optional()
       .describe(
-        "The last backup number issued per backup directory (<project>/<target>/<job> by name), so a backup id (UTC second and number) is never issued twice; never reset, even when the backups, the Preview or the Project's registration go.",
+        "The last backup number issued per backup directory (<project>/<target>/<job> by name, names that differ only in case sharing one, as they share one directory on a case-insensitive disk), so a backup id (UTC second and number) is never issued twice and its number orders the backups; never reset, even when the backups, the Preview or the Project's registration go.",
       ),
     backupRemovals: z
       .array(

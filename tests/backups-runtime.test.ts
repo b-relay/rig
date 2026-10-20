@@ -1,10 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { createBackupStorage } from "../src/adapters/backup-storage";
 import { parseProjectConfig } from "../src/config";
-import type { ProjectConfig } from "../src/config/types";
-import type { BackupRecord, RuntimeState } from "../src/domain/runtime";
+import type { PlanJob, ProjectConfig } from "../src/config/types";
+import type {
+  BackupRecord,
+  RuntimeState,
+  StateStore,
+  TargetRecord,
+} from "../src/domain/runtime";
 import type {
   ProcessObservation,
   Supervisor,
@@ -14,7 +30,14 @@ import {
   allocateBackup,
   backupId,
   expiredBackups,
+  jobBackups,
 } from "../src/runtime/backups";
+import {
+  BACKUP_DIR_VARIABLE,
+  settleJobRun,
+  startJobRun,
+  type JobRunDependencies,
+} from "../src/runtime/jobs";
 import type { BackupStorage } from "../src/runtime/contracts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import { runtimeWorld } from "./support/runtime-world";
@@ -93,6 +116,10 @@ async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
   };
   let failRemovals = options.failRemovals ?? 0;
   let storage!: BackupStorage;
+  /** Stands in for making a run's directory when set: given the path and the real `create`. */
+  const hooks: {
+    create?: (path: string, create: BackupStorage["create"]) => Promise<void>;
+  } = {};
   const world = await runtimeWorld({
     name: "backups",
     config,
@@ -104,6 +131,10 @@ async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
       const real = createBackupStorage(root);
       storage = {
         ...real,
+        async create(path) {
+          if (hooks.create) return await hooks.create(path, real.create);
+          return await real.create(path);
+        },
         async remove(path) {
           if (failRemovals > 0) {
             failRemovals--;
@@ -176,6 +207,7 @@ async function fixture(options: { keep?: number; failRemovals?: number } = {}) {
     running,
     finish,
     backups,
+    hooks,
     storage: () => storage,
     /** A whole successful backup: a run that writes a file and exits 0, one second later than the last. */
     async backUp(content = "dump") {
@@ -215,6 +247,8 @@ test("each run of a backup job gets a fresh, empty 0700 directory as $RIG_BACKUP
       "backups/melody/working/db-backup/20261011T030000Z-1",
     ),
     keep: 2,
+    // Recorded once the directory was made, before the command started.
+    made: true,
   });
   expect(await readdir(run.backup!.path)).toEqual([]);
   expect(await mode(run.backup!.path)).toBe(0o700);
@@ -273,7 +307,7 @@ test("a successful run is kept and measured, its mode untouched; a failed, timed
       "succeeded in 2s (rig run); kept backup 20261011T030001Z-1",
     ),
     expect.stringContaining(
-      "failed in 2s: exit 1 (rig run); its backup directory was deleted",
+      "failed in 2s: exit 1 (rig run); its backup directory was queued for deletion",
     ),
     expect.stringContaining("stopped by Rig"),
   ]);
@@ -896,4 +930,357 @@ test("a backup run holds the checkout it started in while it runs, and its end r
   expect(await standing()).toBe("free");
   await f.runtime.releaseHeldCheckouts(f.target.id);
   expect((await store.read()).heldCheckouts ?? []).toEqual([]);
+});
+
+/** Starts a run of db-backup under a rigd of its own and abandons it while its directory is being made, as a rigd that
+ * dies there: `before` it is made, or `after` making it (or failing to, when something is already there) but before
+ * anything else is recorded. Resolves the run as recorded then. */
+async function abandonedRun(
+  f: Awaited<ReturnType<typeof fixture>>,
+  stage: "before" | "after",
+) {
+  let reached!: () => void;
+  const stopped = new Promise<void>((resolve) => (reached = resolve));
+  f.hooks.create = async (path, create) => {
+    if (stage === "after") await create(path).catch(() => {});
+    reached();
+    // The rigd is gone: nothing after this ever runs.
+    await new Promise(() => {});
+  };
+  void f.world
+    .open()
+    .command({
+      action: "run",
+      repoPath: f.world.repo,
+      target: "working",
+      job: "db-backup",
+    })
+    .catch(() => {});
+  await stopped;
+  delete f.hooks.create;
+  return (await f.running())!;
+}
+/** What the next rigd does with the abandoned run `run`: its scheduler finds no process and settles the run, then tidies. */
+async function recoverRun(
+  f: Awaited<ReturnType<typeof fixture>>,
+  run: { id: string },
+) {
+  const next = f.world.open();
+  await next.settleJob({
+    targetId: f.target.id,
+    job: "db-backup",
+    runId: run.id,
+  });
+  await next.tidyBackups();
+  const state = await f.world.store.read();
+  return {
+    last: state.jobs!.find((r) => r.job === "db-backup")!.last!,
+    removals: state.backupRemovals ?? [],
+    message: state.activity.at(-1)!.message,
+  };
+}
+
+test("a rigd that stops while a run makes its backup directory never deletes a directory the run did not make", async () => {
+  const f = await fixture();
+  const jobDirectory = join(f.world.root, "backups/melody/working/db-backup");
+  /** An operator's copy at the path the next run is given. */
+  const planted = async (sequence: number) => {
+    const at = new Date(f.world.clock.ms).toISOString();
+    const path = join(jobDirectory, backupId(at, sequence));
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, "operator-copy"), "precious");
+    return path;
+  };
+
+  // Stopped after the run was recorded, before its directory was made: what is at its path is someone else's.
+  const first = await planted(1);
+  const before = await abandonedRun(f, "before");
+  expect(before.backup!.path).toBe(first);
+  let recovered = await recoverRun(f, before);
+  expect(await Bun.file(join(first, "operator-copy")).text()).toBe("precious");
+  expect(recovered.removals).toEqual([]);
+  expect(recovered.last.outcome).toBe("unknown");
+  expect(recovered.message).toContain(
+    "its backup directory was left in place, as Rig cannot tell that this run made it",
+  );
+
+  // Stopped after making it failed (EEXIST), before that failure was recorded.
+  f.world.clock.ms += 1000;
+  const second = await planted(2);
+  const refused = await abandonedRun(f, "after");
+  expect(refused.backup!.path).toBe(second);
+  recovered = await recoverRun(f, refused);
+  expect(await Bun.file(join(second, "operator-copy")).text()).toBe("precious");
+  expect(recovered.removals).toEqual([]);
+
+  // Stopped right after making it, before recording that: Rig cannot show the run made it, so it stays (empty).
+  f.world.clock.ms += 1000;
+  const made = await abandonedRun(f, "after");
+  expect(await readdir(made.backup!.path)).toEqual([]);
+  recovered = await recoverRun(f, made);
+  expect(await exists(made.backup!.path)).toBe(true);
+  expect(recovered.removals).toEqual([]);
+
+  // A run recorded as having made its directory, whose end nothing recorded (the Mac restarted): its directory goes.
+  f.world.clock.ms += 1000;
+  await f.world.open().command({
+    action: "run",
+    repoPath: f.world.repo,
+    target: "working",
+    job: "db-backup",
+  });
+  const owned = (await f.running())!;
+  expect(owned.backup!.made).toBe(true);
+  await writeFile(join(owned.backup!.path, "melody.dump"), "half");
+  f.processes.set(`${f.target.id}:job:db-backup`, { state: "stopped" });
+  recovered = await recoverRun(f, owned);
+  expect(recovered.last.outcome).toBe("unknown");
+  expect(await exists(owned.backup!.path)).toBe(false);
+  expect(recovered.removals).toEqual([]);
+  expect(recovered.message).toContain(
+    "its backup directory was queued for deletion",
+  );
+  // Nothing was kept as a backup along the way, and the directories Rig cannot show it made are all still there.
+  expect(await f.backups()).toEqual([]);
+  expect((await readdir(jobDirectory)).sort()).toEqual(
+    [first, second, made.backup!.path].map((p) => basename(p)).sort(),
+  );
+});
+
+test("a run whose directory was already there fails to start, leaves it alone, and says so", async () => {
+  const f = await fixture();
+  const path = join(
+    f.world.root,
+    "backups/melody/working/db-backup",
+    backupId(new Date(f.world.clock.ms).toISOString(), 1),
+  );
+  await mkdir(path, { recursive: true });
+  await writeFile(join(path, "operator-copy"), "precious");
+  await expect(f.run()).rejects.toMatchObject({ code: "BACKUP_DIRECTORY" });
+  expect(await Bun.file(join(path, "operator-copy")).text()).toBe("precious");
+  const state = await f.world.store.read();
+  expect(state.backupRemovals).toBeUndefined();
+  const last = state.jobs!.find((r) => r.job === "db-backup")!.last!;
+  expect(last.outcome).toBe("start-failed");
+  const status = await f.runtime.status({
+    repoPath: f.world.repo,
+    target: "working",
+  });
+  expect(
+    status.targets[0]!.jobs!.find((job) => job.name === "db-backup")!.last!
+      .summary,
+  ).toContain("its backup directory was left in place");
+});
+
+test("latest and retention follow the order backups were made in, not the clock, across a clock set back and a rigd restart", async () => {
+  const f = await fixture({ keep: 2 });
+  const first = await f.backUp("first");
+  // The clock is corrected an hour back: the next backups carry earlier times than the first.
+  f.world.clock.ms -= 3_600_000;
+  const second = await f.backUp("second");
+  await f.restore("latest");
+  expect((await f.running())!.restore!.path).toBe(second);
+  await f.finish(0);
+  const third = await f.backUp("third");
+  // keep: 2 keeps the two made last, whatever their times say.
+  expect((await f.backups()).map((b) => b.path).sort()).toEqual(
+    [second, third].sort(),
+  );
+  expect(await exists(first)).toBe(false);
+  expect(await exists(second)).toBe(true);
+  // The clock goes forward past the first again; a new rigd over the same state still knows which is newest.
+  f.world.clock.ms += 7_200_000;
+  const next = f.world.open();
+  const listed = (await next.command({
+    action: "backups",
+    repoPath: f.world.repo,
+  })) as { backups: { path: string }[] };
+  expect(listed.backups.map((b) => b.path)).toEqual([third, second]);
+  const status = await next.status({
+    repoPath: f.world.repo,
+    target: "working",
+  });
+  expect(
+    status.targets[0]!.jobs!.find((job) => job.name === "db-backup")!.backup!
+      .latest!.id,
+  ).toBe(third.split("/").at(-1)!);
+  await next.command({
+    action: "restore",
+    repoPath: f.world.repo,
+    target: "working",
+    job: "db-backup",
+    backup: "latest",
+  });
+  expect((await f.running())!.restore!.path).toBe(third);
+});
+
+test("expiry orders backups by their number; an id without one (an early draft's) is older than every numbered one", () => {
+  const backup = (id: string, at: string): BackupRecord => ({
+    target: "t1",
+    project: "p1",
+    job: "dump",
+    id,
+    path: `/r/backups/demo/working/dump/${id}`,
+    run: id,
+    trigger: "manual",
+    startedAt: at,
+    finishedAt: at,
+  });
+  const first = backup("20261013T120000Z-1", "2026-10-13T12:00:00.000Z");
+  const second = backup("20261013T110000Z-2", "2026-10-13T11:00:00.000Z");
+  const third = backup("20261013T110100Z-3", "2026-10-13T11:01:00.000Z");
+  const draft = backup("20261013T130000Z", "2026-10-13T13:00:00.000Z");
+  expect(expiredBackups([first, second, third], 2, third.id)).toEqual([first]);
+  expect(expiredBackups([draft, first, second, third], 3, third.id)).toEqual([
+    draft,
+  ]);
+});
+
+test("a backup directory that cannot be deleted stays queued, and its run says it was queued for deletion, not deleted", async () => {
+  const f = await fixture({ failRemovals: 1 });
+  await f.run();
+  const path = (await f.running())!.backup!.path;
+  await writeFile(join(path, "partial.dump"), "half");
+  await f.finish(1);
+  expect(await exists(path)).toBe(true);
+  expect((await f.world.store.read()).backupRemovals).toEqual([
+    expect.objectContaining({ path }),
+  ]);
+  const status = await f.runtime.status({
+    repoPath: f.world.repo,
+    target: "working",
+  });
+  const said = [
+    (await f.world.store.read()).activity.at(-1)!.message,
+    status.targets[0]!.jobs!.find((job) => job.name === "db-backup")!.last!
+      .summary,
+  ];
+  for (const text of said) {
+    expect(text).toContain("its backup directory was queued for deletion");
+    expect(text).not.toContain("was deleted");
+  }
+  await f.runtime.tidyBackups();
+  expect(await exists(path)).toBe(false);
+});
+
+test("a backup an earlier Rig sealed read-only is deleted when it expires, without changing anything it links to", async () => {
+  const f = await fixture({ keep: 1 });
+  const sealed = await f.backUp("old");
+  // Outside the backup: a file hard-linked into it, and a directory a symlink in it points at, each with its own mode.
+  const linkedFile = join(f.world.root, "linked.txt");
+  await writeFile(linkedFile, "shared");
+  await chmod(linkedFile, 0o444);
+  const outside = join(f.world.root, "outside");
+  await mkdir(outside, { mode: 0o500 });
+  await mkdir(join(sealed, "nested", "deeper"), { recursive: true });
+  await writeFile(join(sealed, "nested", "deeper", "data"), "nested");
+  await link(linkedFile, join(sealed, "nested", "hard-link"));
+  await symlink(outside, join(sealed, "nested", "outside-link"));
+  // As the sealing writer left a backup: files without write bits, directories 0500, children first.
+  await chmod(join(sealed, "nested", "deeper", "data"), 0o444);
+  await chmod(join(sealed, "melody.dump"), 0o444);
+  for (const directory of ["nested/deeper", "nested", "."])
+    await chmod(join(sealed, directory), 0o500);
+  try {
+    await f.backUp("new");
+    expect(await exists(sealed)).toBe(false);
+    expect((await f.world.store.read()).backupRemovals).toBeUndefined();
+    expect(await Bun.file(linkedFile).text()).toBe("shared");
+    expect(await mode(linkedFile)).toBe(0o444);
+    expect(await mode(outside)).toBe(0o500);
+  } finally {
+    // So the temporary root can be removed whatever happened.
+    await Bun.$`chmod -R u+w ${f.world.root}`.nothrow().quiet();
+  }
+});
+
+test("Projects whose names differ only in case never get the same backup directory, even starting in the same second", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-backup-case-"));
+  roots.push(root);
+  const job: PlanJob = {
+    name: "dump",
+    command: 'echo data > "$RIG_BACKUP_DIR/data"',
+    env: {},
+    schedule: "0 0 1 1 *",
+    backup: { keep: 1 },
+  };
+  const target = (id: string, projectId: string) =>
+    ({
+      id,
+      projectId,
+      name: "working",
+      kind: "working",
+      plan: { workspacePath: join(root, id), jobs: [job] },
+    }) as unknown as TargetRecord;
+  const targets = [target("t1", "p1"), target("t2", "p2")];
+  let state = {
+    version: STATE_VERSION,
+    projects: [
+      { id: "p1", name: "auditcase" },
+      { id: "p2", name: "AUDITCASE" },
+    ],
+    targets,
+    activity: [],
+  } as unknown as RuntimeState;
+  // Writes one at a time, each to the state the one before left, as the state file's are.
+  let writes: Promise<void> = Promise.resolve();
+  const store: StateStore = {
+    async read() {
+      return structuredClone(state);
+    },
+    update(change) {
+      const next = writes.then(async () => {
+        const draft = structuredClone(state);
+        await change(draft);
+        state = draft;
+      });
+      writes = next.catch(() => {});
+      return next;
+    },
+  };
+  /** The directory each run was handed, by run id. */
+  const given = new Map<string, string>();
+  const deps: JobRunDependencies = {
+    store,
+    backups: createBackupStorage(root),
+    // Both start in the same second.
+    now: () => "2026-10-13T19:54:12.000Z",
+    lifecycle: {
+      async startJob(_target, _job, incarnation, env) {
+        const directory = env![BACKUP_DIR_VARIABLE]!;
+        given.set(incarnation, directory);
+        await writeFile(join(directory, "data"), incarnation);
+        return { outcome: "started" } as never;
+      },
+      async observeJob(t) {
+        const incarnation = t.id === "t1" ? "run-1" : "run-2";
+        return { state: "stopped", exitCode: 0, incarnation } as never;
+      },
+      async stopJob() {
+        return undefined as never;
+      },
+    },
+  };
+  const runs = await Promise.all(
+    targets.map((t, i) =>
+      startJobRun(t, job, { id: `run-${i + 1}`, trigger: "schedule" }, deps),
+    ),
+  );
+  expect(runs.map((run) => run.backup!.id)).toEqual([
+    "20261013T195412Z-1",
+    "20261013T195412Z-2",
+  ]);
+  for (const [i, t] of targets.entries())
+    expect(await settleJobRun(t, "dump", `run-${i + 1}`, deps)).toBe("settled");
+  // Each Project keeps its own backup, holding what its own run wrote.
+  for (const [i, t] of targets.entries()) {
+    const kept = jobBackups(state, t.id, "dump");
+    expect(kept.map((b) => b.path)).toEqual([given.get(`run-${i + 1}`)!]);
+    expect(await Bun.file(join(kept[0]!.path, "data")).text()).toBe(
+      `run-${i + 1}`,
+    );
+  }
+  expect(state.backupSequences).toEqual([
+    { project: "auditcase", target: "working", job: "dump", last: 2 },
+  ]);
 });

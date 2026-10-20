@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, rm, rmdir } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, rm, rmdir } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { RigError } from "../domain/errors";
 import { within } from "../domain/paths";
@@ -6,12 +6,16 @@ import type { BackupScope, BackupStorage } from "../runtime/contracts";
 
 /** A backup directory: its owner's alone, under the private backups root. */
 const BACKUP_DIRECTORY_MODE = 0o700;
+/** Read, write and search for the owner: what deleting a directory's entries needs. */
+const OWNER_ACCESS = 0o700;
 
 /** Backups on the Mac's disk, under `<root>/backups/<project>/<target>/<job>/<id>` (ADR 0017). Every path it is handed must
  * lie inside `<root>/backups`, and every directory between that root and the path must be a real directory, not a symlink:
  * otherwise a path is refused for creating, read as absent, and skipped for deleting, so nothing outside the root is ever
  * created, counted or deleted through it. The root itself may be a symlink. Nothing inside a backup is ever opened: sizes
- * come from lstat, and deleting never follows a symlink. Modes are never changed after a directory is made. */
+ * come from lstat, and deleting never follows a symlink. Modes change only when a backup cannot be deleted because its owner
+ * may not write in a directory of it: those of its own real directories are given back to the owner, and the deletion tried
+ * again. */
 export function createBackupStorage(root: string): BackupStorage {
   const base = resolve(root, "backups");
   const inside = (path: string): string => {
@@ -100,8 +104,15 @@ export function createBackupStorage(root: string): BackupStorage {
         try {
           // fs.rm never follows a symlink: a symlink here, or anywhere below, is removed as the link itself.
           await rm(absolute, { recursive: true, force: true });
-        } catch (error) {
-          throw failure("BACKUP_REMOVE", "delete", absolute, error);
+        } catch {
+          // Most likely a directory the owner may not write in (sealed 0500 by an earlier Rig, or made so by the job),
+          // which fails as EACCES or, from deeper down, ENOTEMPTY: opened, then deleted again.
+          try {
+            await reopenDirectories(absolute);
+            await rm(absolute, { recursive: true, force: true });
+          } catch (again) {
+            throw failure("BACKUP_REMOVE", "delete", absolute, again);
+          }
         }
       await pruneEmptyParents(dirname(absolute), base);
       return "removed";
@@ -141,6 +152,23 @@ async function sizeOf(path: string): Promise<number> {
   }
   return bytes;
 }
+/** Gives the owner back read, write and search on `path` and every directory below it that is a real directory the current
+ * user owns, so its entries can be deleted. Nothing is followed: an entry is changed only once lstat shows it is such a
+ * directory, never a symlink or a file (a file's mode may be shared through a hard link with one outside the backup). */
+async function reopenDirectories(path: string): Promise<void> {
+  let info;
+  try {
+    info = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!info.isDirectory() || info.uid !== process.getuid?.()) return;
+  if ((info.mode & OWNER_ACCESS) !== OWNER_ACCESS)
+    await chmod(path, (info.mode & 0o777) | OWNER_ACCESS);
+  for (const name of await readdir(path))
+    await reopenDirectories(join(path, name));
+}
 /** A filesystem failure on a backup as a tagged error naming what Rig was doing. */
 function failure(
   code: string,
@@ -153,7 +181,7 @@ function failure(
   return new RigError(
     code,
     `Rig could not ${doing} the backup ${path}${cause ? ` (${cause})` : ""}.`,
-    "Check the disk and the permissions under RIG_ROOT/backups (a directory the job made unwritable inside its backup keeps it from being deleted until you make it writable), then retry.",
+    "Check the disk and the permissions under RIG_ROOT/backups (Rig opens a backup's own directories before it deletes them, but not one another user owns), then retry.",
     { path, ...(cause ? { code: cause } : {}) },
   );
 }

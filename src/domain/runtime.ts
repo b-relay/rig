@@ -239,6 +239,9 @@ export interface JobRun {
     id: string;
     path: string;
     keep: number;
+    /** The run made the directory, recorded once it did and before its process started: only then is the directory Rig's
+     * to delete. A run that stopped before, or found something already there, leaves what is there alone. */
+    made?: true;
     /** The run exited 0 but left no directory there (it deleted or replaced it), so it kept no backup. */
     lost?: true;
   };

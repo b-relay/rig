@@ -367,3 +367,30 @@ test("a filtered read since a time still walks past late-written older records o
     "current",
   ]);
 });
+
+test("a filtered read since a time passes over an empty line and records too short to hold a time", async () => {
+  const root = await tempRoot("since-short");
+  const record = target(root);
+  await mkdir(record.logRoot, { recursive: true });
+  const at = (timestamp: string, component: string, text: string) =>
+    JSON.stringify({ timestamp, component, stream: "stdout", line: text }) +
+    "\n";
+  await writeFile(
+    join(record.logRoot, "target.jsonl"),
+    at("2026-10-01T12:00:01.000Z", "web", "first") +
+      '{"timestamp":"2026-10\n\n{}\nx\n{"timestamp"\n' +
+      at("2026-10-01T12:00:02.000Z", "worker", "busy") +
+      at("2026-10-01T12:00:03.000Z", "web", "second"),
+  );
+  const since = "2026-10-01T12:00:00.000Z";
+  for (const filter of [
+    { since, services: ["web"] },
+    { since, stream: "stdout" as const },
+    { since, services: ["web"], stream: "stdout" as const },
+  ])
+    expect(
+      (await readTargetLogs(record, undefined, 50, filter)).entries
+        .filter((entry) => entry.component === "web")
+        .map((entry) => entry.line),
+    ).toEqual(["first", "second"]);
+});

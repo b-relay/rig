@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   matchesLogFilter,
-  precedesLogWindow,
+  precedesSince,
   type LogFilter,
 } from "../domain/log-filter";
 import type { TargetLogEntry } from "../providers/contracts";
@@ -78,9 +78,10 @@ export async function readFamilyTail(
    * such record does not end the walk, a window's worth of them in a row does. Whether an older generation can hold a line
    * inside the window is decided by when it was last written instead (see `writtenBefore`). */
   let bytesPastSince = 0;
+  const precedes = precedesSince(stopBefore.since);
   /** Counts a record of `size` bytes timed `timestamp` toward the walk past `since`; whether that walk is over. */
   const walkedPastSince = (size: number, timestamp: string) => {
-    if (!precedesLogWindow({ timestamp }, stopBefore)) bytesPastSince = 0;
+    if (!precedes(timestamp)) bytesPastSince = 0;
     else bytesPastSince += size + 1;
     return bytesPastSince > LOG_WINDOW_BYTES;
   };
@@ -167,7 +168,7 @@ export async function readFamilyTail(
           done = true;
           break;
         }
-        if (precedesLogWindow(parsed, stopBefore)) continue;
+        if (precedes(parsed.timestamp)) continue;
         keep(parsed);
         if (kept.length >= limit) {
           done = true;

@@ -91,7 +91,11 @@ const TIME_PREFIX = Buffer.from('{"timestamp":"');
 /** The time of a record of `target.jsonl` read from its bytes without parsing it: Rig writes `timestamp` first (see
  * `appendTargetLogEntries`). Undefined for a line that does not start that way, or whose time holds an escape. */
 export function recordTime(bytes: Buffer): string | undefined {
-  if (TIME_PREFIX.compare(bytes, 0, TIME_PREFIX.length) !== 0) return undefined;
+  if (
+    bytes.length < TIME_PREFIX.length ||
+    TIME_PREFIX.compare(bytes, 0, TIME_PREFIX.length) !== 0
+  )
+    return undefined;
   const close = bytes.indexOf(34, TIME_PREFIX.length);
   if (close === -1) return undefined;
   const time = bytes.toString("latin1", TIME_PREFIX.length, close);

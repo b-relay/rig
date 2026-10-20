@@ -98,6 +98,32 @@ test("times Rig writes and other forms of the same instants precede since alike"
   ).toBe(false);
 });
 
+test("a time in Rig's form that names no real instant is unknown, and one that rolls over is placed where it rolls to", () => {
+  const since = "2026-09-28T03:00:00.000Z";
+  for (const timestamp of [
+    "2026-00-10T00:00:00.000Z",
+    "2026-13-10T00:00:00.000Z",
+    "2026-09-00T00:00:00.000Z",
+    "2026-09-27T23:60:00.000Z",
+    "2026-09-27T23:59:60.000Z",
+  ])
+    expect([
+      timestamp,
+      precedesLogWindow(entry({ timestamp }), { since }),
+    ]).toEqual([timestamp, false]);
+  // February 30th is read as March 2nd, and 24:00 as the next midnight, after these bounds.
+  expect(
+    precedesLogWindow(entry({ timestamp: "2026-02-30T00:00:00.000Z" }), {
+      since: "2026-03-01T00:00:00.000Z",
+    }),
+  ).toBe(false);
+  expect(
+    precedesLogWindow(entry({ timestamp: "2026-09-27T24:00:00.000Z" }), {
+      since: "2026-09-27T23:59:59.999Z",
+    }),
+  ).toBe(false);
+});
+
 const now = new Date("2026-09-28T12:00:00.000Z");
 
 test("durations count back from now and ISO times keep their instant", () => {

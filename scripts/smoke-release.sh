@@ -37,13 +37,21 @@ check_stamp() {
 		fail "$1 --version printed \"$(cat "$work/stdout")\", not exactly $stamp."
 }
 
-# Uninstalls what the install script installed, then removes the throwaway root.
+# Uninstalls what the install script installed, then removes the throwaway root. The smoke test fails when uninstall
+# does, keeping the root so it can be uninstalled by hand; an earlier failure keeps its own status.
 finish() {
+	status=$?
+	trap - EXIT
 	if [ -n "${root:-}" ] && [ -x "$root/bin/rigd" ]; then
-		HOME="$home" RIG_ROOT="$root" "$root/bin/rigd" uninstall >/dev/null 2>&1 ||
-			printf 'smoke test: rigd uninstall failed in %s\n' "$root" >&2
+		if ! HOME="$home" RIG_ROOT="$root" "$root/bin/rigd" uninstall >"$work/uninstall.log" 2>&1; then
+			printf 'smoke test: rigd uninstall failed, so %s is kept; uninstall it with: HOME=%s RIG_ROOT=%s %s/bin/rigd uninstall\n%s\n' \
+				"$work" "$home" "$root" "$root" "$(cat "$work/uninstall.log")" >&2
+			[ "$status" -ne 0 ] || status=1
+			exit "$status"
+		fi
 	fi
 	rm -rf "$work"
+	exit "$status"
 }
 
 case "$(uname -m)" in

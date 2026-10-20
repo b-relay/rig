@@ -65,10 +65,13 @@ jobs:
         with:
           name: release-${{ github.ref_name }}
           path: dist
-      # `published` when a run before this one already published the tag: nothing more is done, and nothing is replaced.
+      # The commit CI built; the tag must still name it when anything is read as published or published.
+      - run: echo "COMMIT=$(git rev-parse HEAD)" >>"$GITHUB_ENV"
+      # `published` when a run before this one already published the tag completely, its files matching its SHA256SUMS
+      # and that carrying this workflow's provenance for the commit: nothing more is done, and nothing is replaced.
       - id: state
         run: |
-          state="$(bun scripts/publish-release.ts status "$TAG" dist)"
+          state="$(bun scripts/publish-release.ts status "$TAG" "$COMMIT" dist)"
           echo "state=$state" >>"$GITHUB_OUTPUT"
           [ "$state" = publish ] || echo "::notice::$TAG is already published; it was left as it is."
       - if: steps.state.outputs.state == 'publish'
@@ -79,4 +82,4 @@ jobs:
             dist/install
             dist/SHA256SUMS
       - if: steps.state.outputs.state == 'publish'
-        run: bun scripts/publish-release.ts publish "$TAG" dist
+        run: bun scripts/publish-release.ts publish "$TAG" "$COMMIT" dist

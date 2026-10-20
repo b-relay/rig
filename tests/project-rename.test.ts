@@ -437,7 +437,9 @@ test("an interrupted repair of rig.yaml's name back to the registered one is fin
     env: "none",
     config: "edited",
   });
-  expect(pendingRenameAdvice("before", { to: "before" })).toBe(
+  expect(
+    pendingRenameAdvice({ name: "before", repoPath: "/r" }, { to: "before" }),
+  ).toBe(
     "Run rig rename before --project before to finish writing name: before to rig.yaml.",
   );
   await w.rename("before");
@@ -446,6 +448,62 @@ test("an interrupted repair of rig.yaml's name back to the registered one is fin
   expect(project.name).toBe("before");
   expect(project.renaming).toBeUndefined();
   expect(project.formerNames).toBeUndefined();
+});
+
+test("a withdrawn copy is deleted only once its withdrawal is flushed, by undo and by finish, also when an earlier attempt left it", async () => {
+  const root = await temporaryRoot();
+  await envFile(root, "alpha/all.env", "A=1\n");
+  const aside = join(root, "env", ".removing-beta");
+  let failing = false;
+  const flushes: string[] = [];
+  const env = createOperatorEnvFiles(root, async () => {
+    const present = await lstat(aside).then(
+      () => "with",
+      () => "without",
+    );
+    flushes.push(`${failing ? "failed" : "flushed"} ${present}`);
+    if (failing) throw new Error("EIO");
+  });
+  const move = { from: "alpha", to: "beta", how: "copy" } as const;
+  await env.carry(move);
+  failing = true;
+  // The withdrawal is made, and its flush fails: nothing is deleted.
+  await expect(env.undo(move)).rejects.toThrow("EIO");
+  await absent(root, "beta");
+  expect(await read(root, ".removing-beta/all.env")).toBe("A=1\n");
+  // Retried while flushing still fails, neither undo nor finish begins deleting the copy left aside.
+  await expect(env.undo(move)).rejects.toThrow("EIO");
+  await expect(env.carry(move)).rejects.toThrow();
+  expect(await read(root, ".removing-beta/all.env")).toBe("A=1\n");
+  failing = false;
+  flushes.length = 0;
+  await env.carry(move);
+  // Flushed while the withdrawn copy was still there, before it was deleted, then the new copy published.
+  expect(flushes).toEqual(["flushed with", "flushed without"]);
+  await absent(root, ".removing-beta");
+  expect(await read(root, "beta/all.env")).toBe("A=1\n");
+  failing = true;
+  await expect(env.undo(move)).rejects.toThrow("EIO");
+  failing = false;
+  flushes.length = 0;
+  await env.undo(move);
+  expect(flushes).toEqual(["flushed with"]);
+  await absent(root, ".removing-beta");
+  await absent(root, "beta");
+});
+
+test("the advice for an unfinished rename of a name too long to select names the command that works from the repository", () => {
+  expect(
+    pendingRenameAdvice(
+      { name: "a".repeat(129), repoPath: "/work/long" },
+      { to: "short" },
+    ),
+  ).toBe("Run rig rename short in /work/long to finish the rename.");
+  expect(
+    pendingRenameAdvice({ name: "before", repoPath: "/r" }, { to: "after" }),
+  ).toBe(
+    "Run rig rename after --project before to finish the rename, or rig rename before --project before to undo it.",
+  );
 });
 
 test("a renamed plan reads its convention env files under the new name and keeps a listed one as written", () => {

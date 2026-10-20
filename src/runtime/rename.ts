@@ -75,7 +75,7 @@ export async function renameProject(
     throw new RigError(
       "RENAME_PENDING",
       `Project '${project.name}' has an unfinished rename to '${pending.to}', so it cannot be renamed '${newName}' yet.`,
-      `${pendingRenameAdvice(project.name, pending)} Then rename it again.`,
+      `${pendingRenameAdvice(project, pending)} Then rename it again.`,
       { to: pending.to },
     );
   // Renaming to its own name undoes the pending rename, unless that rename was the repair of rig.yaml back to that name.
@@ -182,11 +182,16 @@ async function undoRename(
   };
 }
 /** The commands that finish an unfinished rename, and undo it when it is a rename: one that only repairs rig.yaml back to
- * the registered name is finished by the same command, and has nothing to undo. */
+ * the registered name is finished by the same command, and has nothing to undo. A registered name no selector carries
+ * (one over 128 characters, from before the limit) is left out: the rename is finished from the repository, and cannot
+ * be undone to that name. */
 export function pendingRenameAdvice(
-  name: string,
+  project: Pick<ProjectRecord, "name" | "repoPath">,
   pending: Pick<PendingRename, "to">,
 ): string {
+  const { name } = project;
+  if (nameProblem(name))
+    return `Run rig rename ${pending.to} in ${project.repoPath} to finish the rename.`;
   return pending.to === name
     ? `Run rig rename ${name} --project ${name} to finish writing name: ${name} to rig.yaml.`
     : `Run rig rename ${pending.to} --project ${name} to finish the rename, or rig rename ${name} --project ${name} to undo it.`;
@@ -225,7 +230,7 @@ async function putBack(
     throw new RigError(
       "RENAME_ROLLBACK",
       `Project '${project.name}' was not renamed '${pending.to}', and its rig.yaml or env files could not all be put back.`,
-      pendingRenameAdvice(project.name, pending),
+      pendingRenameAdvice(project, pending),
       { from: project.name, to: pending.to },
       error === undefined
         ? failureCauses(recovery)

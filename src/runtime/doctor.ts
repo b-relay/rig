@@ -348,7 +348,7 @@ export async function doctor(
           ? `Writing name: ${project.name} back to rig.yaml (from '${project.renaming.config}') did not finish.`
           : `A rename of '${project.name}' to '${project.renaming.to}' did not finish: its rig.yaml or operator env files may have the new name already.`,
       reason: "rename-unfinished",
-      hint: pendingRenameAdvice(project.name, project.renaming),
+      hint: pendingRenameAdvice(project, project.renaming),
     });
   for (const target of targets) {
     const named = previewNameCheck(target, targets);

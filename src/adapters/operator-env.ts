@@ -12,13 +12,24 @@ import type { OperatorEnvFiles } from "../runtime/contracts";
 
 /** The operator env directories under `<root>/env`, one per Project name, as a rename carries them to the new name. Every
  * step can be run again after a crash: a move already made, or a copy already published, is recognised as done. */
-export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
+export function createOperatorEnvFiles(
+  root: string,
+  /** Flushes a directory's entries to disk; a test makes it fail. */
+  flush: (directory: string) => Promise<void> = syncDirectory,
+): OperatorEnvFiles {
   const envRoot = join(root, "env");
   const directory = (name: string) => join(envRoot, name);
   /** Where a copy is made before it is published under `to` by one rename; no Project name starts with a dot. */
   const staging = (to: string) => join(envRoot, `.renaming-${nameKey(to)}`);
   /** Where a published copy is withdrawn to, by one rename, before it is deleted. */
   const withdrawn = (to: string) => join(envRoot, `.removing-${nameKey(to)}`);
+  /** Deletes a withdrawn copy, this attempt's or one an earlier attempt left, once its withdrawal is on disk: deleted
+   * before, a crash could bring back the published name over a copy with files missing. */
+  const discardWithdrawn = async (to: string) => {
+    if (!(await entry(withdrawn(to)))) return;
+    await flush(envRoot);
+    await rm(withdrawn(to), { recursive: true, force: true });
+  };
   /** ENV_SPLIT: the rename moved the env files to `to`, and a new directory was made under `from` since. Either way, the
    * other directory would be left with files nothing reads, so Rig refuses to choose. */
   const split = (from: string, to: string) =>
@@ -75,11 +86,11 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
           // rename's published copy.
           if (await entry(directory(to))) return;
           // What an earlier attempt left aside: a copy cut short, or one an undo withdrew and did not finish deleting.
-          await rm(withdrawn(to), { recursive: true, force: true });
+          await discardWithdrawn(to);
           await rm(staging(to), { recursive: true, force: true });
           await copyTree(root, directory(from), staging(to));
           await rename(staging(to), directory(to));
-          await syncDirectory(envRoot);
+          await flush(envRoot);
           return;
         }
         const source = await entry(directory(from));
@@ -89,7 +100,7 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
         const moved = await entry(directory(to));
         if (moved && !sameEntry(moved, source)) throw split(from, to);
         await rename(directory(from), directory(to));
-        await syncDirectory(envRoot);
+        await flush(envRoot);
       } catch (error) {
         throw failed(from, to, error);
       }
@@ -99,18 +110,17 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
         await rm(staging(to), { recursive: true, force: true });
         // Withdrawn whole first, so the copy is either published complete or gone, however far its deletion gets.
         if (await entry(directory(to))) {
-          await rm(withdrawn(to), { recursive: true, force: true });
+          await discardWithdrawn(to);
           await rename(directory(to), withdrawn(to));
-          await syncDirectory(envRoot);
         }
-        await rm(withdrawn(to), { recursive: true, force: true });
+        await discardWithdrawn(to);
       } else if (how === "move") {
         const moved = await entry(directory(to));
         if (!moved) return; // Never moved, or moved back by an earlier attempt.
         const original = await entry(directory(from));
         if (original && !sameEntry(original, moved)) throw split(from, to);
         await rename(directory(to), directory(from));
-        await syncDirectory(envRoot);
+        await flush(envRoot);
       }
     },
   };

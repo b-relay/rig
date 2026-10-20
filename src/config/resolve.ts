@@ -165,30 +165,35 @@ export function resolveTargetPlan(
     data: (service) => join(input.dataRoot, service),
     port: (service, port) => ports[`services.${service}.ports.${port}`]!,
   });
-  /** A healthcheck's test with references resolved, as the one string the plan records; undefined without a test. A URL is
-   * data for the HTTP probe; a shell command is quoted for /bin/sh; a `CMD` program and its arguments are resolved one by
-   * one and quoted into a command that runs them unchanged. */
+  /** A healthcheck's test with references resolved, as the one string the plan records, and `checked`, the test with its
+   * values written in, for the binding rule; undefined without a test. A URL is data for the HTTP probe; a shell command
+   * reads its values from variables; a `CMD` program and its arguments are resolved one by one and quoted into a command
+   * that runs them unchanged. */
   const resolveTest = (
     settings: HealthcheckSettings,
     at: string,
-  ): ResolvedText | undefined => {
+  ): (ResolvedText & { checked: string }) | undefined => {
     const test = healthcheckTest(settings);
     if (test === undefined) return undefined;
     if (test.kind === "exec") {
       const argv = test.argv.map((arg, index) =>
         references.text(arg, `${at}.${index + 1}`),
       );
+      const value = execCommand(argv.map((arg) => arg.value));
       return {
-        value: execCommand(argv.map((arg) => arg.value)),
+        value,
         inputs: argv.flatMap((arg) => arg.inputs),
+        checked: value,
       };
     }
-    if (test.kind === "url")
-      return { value: references.text(test.url, at).value, inputs: [] };
+    if (test.kind === "url") {
+      const value = references.text(test.url, at).value;
+      return { value, inputs: [], checked: value };
+    }
     // A plain string that only reads as a URL once its references are resolved is the URL check too, as `ready` was.
     const text = references.text(test.command, `${at}${test.at}`);
     if (test.at === "" && isHealthUrl(text.value))
-      return { value: text.value, inputs: [] };
+      return { value: text.value, inputs: [], checked: text.value };
     const command = references.shell(test.command, `${at}${test.at}`);
     // A shell command must never read as the URL check a plain string can be.
     if (isHealthUrl(command.value))
@@ -198,7 +203,7 @@ export function resolveTargetPlan(
         { path: `${at}${test.at}` },
         "Write an HTTP check as a plain string, such as test: http://127.0.0.1:${port}/health.",
       );
-    return command;
+    return { ...command, checked: text.value };
   };
   /** Listed files, then the operator's optional all.env and role file for this scope. */
   const envFiles = (
@@ -232,7 +237,11 @@ export function resolveTargetPlan(
       const at = `services.${name}`;
       const workingDir = planWorkingDir(service.working_dir);
       const run = references.shell(service.command, `${at}.command`);
-      if (!localhostCommand(run.value))
+      if (
+        !localhostCommand(
+          references.text(service.command, `${at}.command`).value,
+        )
+      )
         throw new ConfigError(
           "Resolved command binds outside localhost.",
           "invalid_binding",
@@ -242,7 +251,7 @@ export function resolveTargetPlan(
         ? service.healthcheck
         : undefined;
       const ready = check && resolveTest(check, `${at}.healthcheck.test`);
-      if (ready !== undefined && !localhostHealth(ready.value))
+      if (ready !== undefined && !localhostHealth(ready.checked))
         throw new ConfigError(
           "Resolved healthcheck addresses a host outside localhost.",
           "invalid_binding",
@@ -344,7 +353,9 @@ export function resolveTargetPlan(
     .map(([name, job]): PlanJob => {
       const at = `jobs.${name}`;
       const run = references.shell(job.command, `${at}.command`);
-      if (!localhostCommand(run.value))
+      if (
+        !localhostCommand(references.text(job.command, `${at}.command`).value)
+      )
         throw new ConfigError(
           "Resolved command binds outside localhost.",
           "invalid_binding",
@@ -356,7 +367,12 @@ export function resolveTargetPlan(
         job.backup?.restore === undefined
           ? undefined
           : references.shell(job.backup.restore, `${at}.backup.restore`);
-      if (restore && !localhostCommand(restore.value))
+      if (
+        restore &&
+        !localhostCommand(
+          references.text(job.backup!.restore!, `${at}.backup.restore`).value,
+        )
+      )
         throw new ConfigError(
           "Resolved restore command binds outside localhost.",
           "invalid_binding",
@@ -445,6 +461,9 @@ export function resolveTargetPlan(
         }
       : {}),
     ...(serviceDomains.length ? { serviceDomains } : {}),
+    ...(Object.keys(references.values()).length
+      ? { referenceValues: references.values() }
+      : {}),
   };
 }
 

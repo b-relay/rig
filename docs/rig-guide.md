@@ -1338,9 +1338,11 @@ malformed record rather than resolved against the daemon's working directory,
 and a command that sends a relative path is refused as an invalid request
 (`rig` resolves paths against your directory before sending).
 
-The state file carries a format version (currently 5). This `rigd` also reads
-version 4, the format before fixed Target names, and saves it as version 5 on its
-next write. A file written by a newer `rigd`, or by one older than version 4, is
+The state file carries a format version (currently 9). This `rigd` also reads
+versions 4 to 8 and saves them as version 9 on its next write; version 4, the
+format before fixed Target names, is read with the names fixed, and a failed
+health check's output that a version before 9 recorded in Activity, before
+Rig redacted it, is withheld. A file written by a newer `rigd`, or by one older than version 4, is
 refused as `STATE_VERSION`, naming both versions, rather than loaded with fields
 dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
@@ -2165,6 +2167,19 @@ again when a check passes (`web is healthy again: its health check passed.`).
 `rig status` and the dashboard show the cached result without running
 anything, and `rig doctor` reports an unhealthy Service. Rig sends no alerts.
 
+A failed command check's output is the exit code or timeout and the last
+non-empty line the command printed, stderr first, cut to 160 characters.
+Status, Activity, the Target logs, a `HEALTH_FAILED` start error and the
+dashboard show only that line, with every value from the Service's env files
+(its listed `env_file`s and the operator env files, which the dashboard keeps
+behind Reveal) replaced by `[redacted]` before it is cut. Rig keeps the last
+1 MiB of each stream; when a check printed more, the first line it kept
+starts partway through and is left out, so no part of a value cut there is
+shown. A value shorter
+than 4 characters is left, since it would match ordinary text, and Rig cannot
+recognise a value the command changes, such as an encoded one, so a check
+should still print a reason rather than a credential.
+
 With `on_failure: restart`, an unhealthy Service is stopped through the
 normal stop path, within its `stop_timeout` and under its Target's lock or
 queue like any command, and started again with a fresh environment and the
@@ -2678,7 +2693,9 @@ applied), a port, or one of the `rig.*` values Rig generates:
   they are refused there (`invalid_context`); use the long forms. Each is
   still an explicit mapping you write, such as `PORT: ${port}`: Rig sets no
   variable the configuration does not name
-  ([ADR 0005](adr/0005-services-use-platform-independent-inputs.md)).
+  ([ADR 0005](adr/0005-services-use-platform-independent-inputs.md)), apart
+  from the `_RIG_` variables that carry a shell command's references (see
+  below).
 
 - `${rig.target}`: the Target's name: `working`, `stable`, or the Preview's
   name. It is the only reference a `domain` may contain.
@@ -2711,8 +2728,10 @@ names the field that holds the reference, such as `services.web.command`:
 - `invalid_context`: `${rig.data}` outside a Service or job, `${port}` or
   `${ports.<port>}` outside a Service, or a shared or Tool `build` that reaches
   a Service's `environment` or data (`${services.<service>.data}`), directly
-  or through another value. Those builds run with Project inputs only. A reference inside a
-  backquoted command is refused the same way; write `$(...)` instead.
+  or through another value. Those builds run with Project inputs only.
+- `unsafe_reference`: a reference in a shell command sits where bash could
+  read its value as code (see below). The message names the place and what to
+  write instead.
 
 Because the base config is checked by itself, a value that only a role patch
 defines cannot be referenced from the base; give it a base value and let the
@@ -2720,17 +2739,61 @@ patch replace it. Env file contents are never referenceable. Write `$${VAR}`
 for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
 shell.
 
-Because `command`, a shell `test`, and `build` run under `/bin/sh -c`, Rig
-substitutes every value as literal data, never as shell code. A bare
-reference is single-quoted when its value is empty or contains a space or
-other shell-special character, so a repository or `RIG_ROOT` under a path
-like `~/Projects/My App` still resolves to one argument. Inside the author's
-own double or single quotes the value is escaped for that quote (a `$(...)`
-inside them starts a command of its own and is quoted as such), so a `$`, a
-backquote, or a quote character in the value stays part of the argument. A
-string `test` that resolves to an HTTP URL is handed to the HTTP probe
-unquoted, and each argument of a `CMD` test is quoted whole. Values substituted into `environment`, `domain`, `env_file`, and
-`bin` are never quoted.
+Because `command`, a shell `test`, `build` and a backup `restore` run under
+`/bin/sh -c`, Rig never writes a referenced value into their text. Each
+reference becomes a quoted expansion of a variable named for what it
+references, such as `"$_RIG_rig_workspace"` or `"$_RIG_environment_TOKEN"`
+(`${port}` in a Service is named by that Service's port, such as
+`_RIG_services_web_port`), and the value reaches the command in that variable
+through its environment. A path with anything but letters and digits between
+its dots, such as `environment.DB_URL` or a Service named `web-api`, is named
+the same way and ends in `__` and a short hash of the whole path, so no two
+paths share a name. A name never depends on the value, so an unchanged
+command reads the same in every checkout and a deploy can keep its Service
+running. The shell expands a variable as data: the
+value is one word, and nothing in it, whether `$(...)`, a backquote, a
+quote, `$VAR`, a brace or a leading `~`, is read as shell syntax. So a
+repository under `~/Projects/My App` is still one argument. Inside the
+author's double quotes the variable is written as `${_RIG_...}`, and inside
+single quotes the quote is closed around it (`'"${_RIG_...}"'`), so the value
+lands where the author put the reference. Each invocation gets the variables
+of its own commands only (a Service's command, health check and build; a
+job's command and restore). Rig reserves the `_RIG_` prefix: an `environment`
+key, an env-file name or a name set in the dashboard that starts with it is
+refused, so no variable of yours is ever replaced by one. A string
+`test` that resolves to an HTTP URL is handed to the HTTP probe as text, and
+each argument of a `CMD` test is quoted whole. Values substituted into
+`environment`, `domain`, `env_file`, and `bin` are plain text.
+
+A reference in a shell command is refused (`unsafe_reference`) when the config
+is read, before anything runs:
+
+- anywhere in a command that holds arithmetic or a construct that takes a
+  variable name: `((`, `$[`, `[[`, an array subscript (`[` right after a name,
+  such as `a[...]` or `${a[...]}`), an indirect or substring expansion
+  (`$${!name}`, `$${x:1}`), or `let`, `declare`, `typeset`, `local`, `read`,
+  `readarray`, `mapfile`, `unset` or `printf -v`. Bash evaluates a value there
+  as an expression or a name, and an array subscript in it runs commands, even
+  from a variable. The rule matches the command with line continuations
+  joined and every quote and backslash removed, as the shell reads `a\`,
+  newline, `[` as `a[` and `l""et` or `\let` as `let`. It is coarse, so it
+  may refuse a command that only looks like one;
+- in or after a heredoc (`<<EOF`, `<<'EOF'`), whose body Rig does not read;
+- inside `$'...'` quoting, and right after a backslash (write `$${NAME}` for
+  a literal `${NAME}`).
+
+Pass such a value through the environment yourself: declare it, such as
+`environment: { WORKSPACE: "${rig.workspace}" }`, and write `"$WORKSPACE"`
+in the command or `$WORKSPACE` in a heredoc. Keep a value you do not control
+out of arithmetic, where bash evaluates a variable too. A command that runs
+its own arguments as code, such as `eval`, `sh -c` or `trap`, still runs a
+value given to it.
+
+A plan recorded by a Rig from before these variables holds its values in the
+command text and keeps running so; `rig doctor` compares it with today's plan
+as that Rig would have written it, so an upgrade alone is no drift. The next
+deploy records the new form, which restarts the Services whose commands
+reference a value.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while

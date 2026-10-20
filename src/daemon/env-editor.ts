@@ -34,7 +34,7 @@ const key = z
   .string()
   .regex(ENV_KEY)
   .max(256)
-  .describe("A name the file assigns.");
+  .describe("A name the file assigns; names starting with _RIG_ are reserved.");
 const changeSchema = z.discriminatedUnion("op", [
   z.strictObject({
     op: z.literal("set").describe("Assign a value, replacing any earlier one."),

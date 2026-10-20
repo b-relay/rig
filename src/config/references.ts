@@ -1,4 +1,11 @@
+import { createHash } from "node:crypto";
 import { ConfigError } from "./errors";
+import { REFERENCE_VARIABLE_PREFIX } from "../domain/process-environment";
+import {
+  evaluatingConstruct,
+  shellPosition,
+  type ShellPosition,
+} from "./shell-position";
 
 /** A public env leaf a resolved string was built from, directly or through other leaves. */
 export interface PublicInput {
@@ -26,9 +33,35 @@ export interface GeneratedValues {
 export interface ReferenceResolver {
   /** Resolves `${...}` in the string declared at config path `at`; that path decides the Service scope. */
   text(value: string, at: string): ResolvedText;
-  /** The same for text /bin/sh -c will run. Every substituted value reaches the command as literal data: bare, it is single-quoted when it is empty or would
-   * split or expand; inside the author's double or single quotes it is escaped for that quote, so it never closes the quote or runs as shell code. */
+  /** The same for text /bin/sh -c will run, where no value is written into the text: each reference becomes a quoted
+   * expansion of a variable named for what it references (see `shellVariable`), whose value the shell never reads as code,
+   * and `values` gathers what the variables hold. Bare it is written "$NAME", inside the author's double quotes ${NAME},
+   * and inside single quotes '"${NAME}"', so each form tells where the author put it. Refused as `unsafe_reference` in a
+   * command with arithmetic, where bash evaluates a variable's value too, and where `shellPosition` refuses. */
   shell(value: string, at: string): ResolvedText;
+  /** The variables every `shell` text resolved so far reads, by name. */
+  values(): Record<string, string>;
+}
+/** The variable that carries the value of reference `key`, written in the field at config path `at`, into a command: named
+ * for what it references, never for its value, so a command reads the same in every checkout. A reference that depends on
+ * where it is written is named by its long form: `${port}` in a Service's field by that Service's port, `${rig.data}` by
+ * the Service's or job's directory. The name is a function of that path alone: a path of letters and digits between single
+ * dots is written with each dot as `_`; any other path, which that could not tell apart (an `_` or a `-` in a name, say),
+ * is written so and ends in `__` and a hash of the whole path, which no plain path's name contains. */
+export function shellVariable(key: string, at: string): string {
+  const owner = /^(services|jobs)\.([^.]+)\./.exec(at);
+  const identity =
+    key === "rig.data" && owner
+      ? `${owner[1]}.${owner[2]}.data`
+      : key === "port" && owner
+        ? `${owner[1]}.${owner[2]}.port`
+        : key.startsWith("ports.") && owner
+          ? `${owner[1]}.${owner[2]}.${key}`
+          : key;
+  const name = `${REFERENCE_VARIABLE_PREFIX}${identity.replace(/[^A-Za-z0-9]/g, "_")}`;
+  return /^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/.test(identity)
+    ? name
+    : `${name}__${createHash("sha256").update(identity).digest("hex").slice(0, 12)}`;
 }
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
@@ -37,16 +70,8 @@ const HINT =
 /** A path through a Project's or Service's `env`, which is `environment` now (ADR 0011). */
 const RENAMED_ENV = /^((?:services\.[^.]+\.)?)env\.(.+)$/;
 const PROJECT_BUILD = /^(?:build|tools\.[^.]+\.build)$/;
-const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]+$/;
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-/** A value as literal shell data at a position that is bare, inside double quotes, or inside single quotes. */
-function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
-  if (quote === '"') return value.replace(/[\\"$`]/g, "\\$&");
-  const closed = value.replaceAll("'", "'\\''");
-  if (quote === "'") return closed;
-  return shellSafe.test(value) ? value : `'${closed}'`;
-}
 
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
  * `$${` escapes to a literal `${`. Inside a Service's own settings `${port}` is its only port and `${ports.<port>}` a named one;
@@ -265,7 +290,7 @@ export function referenceResolver(
     value: string,
     at: string,
     stack: readonly string[],
-    render: (result: string, offset: number) => string,
+    render: (result: string, offset: number, key: string) => string,
   ): ResolvedText => {
     const inputs = new Map<string, PublicInput>();
     const text = value.replace(
@@ -274,57 +299,48 @@ export function referenceResolver(
         if (key === undefined) return "${";
         const resolved = lookup(key.trim(), at, stack);
         for (const input of resolved.inputs) inputs.set(input.source, input);
-        return render(resolved.value, offset);
+        return render(resolved.value, offset, key.trim());
       },
     );
     return { value: text, inputs: [...inputs.values()] };
   };
+  const variables: Record<string, string> = {};
   return {
     text: (value, at) => substitute(value, at, [at], (result) => result),
-    shell: (value, at) =>
-      substitute(value, at, [at], (result, offset) => {
-        const quote = openShellQuote(value.slice(0, offset));
-        if (quote === "`")
+    shell: (value, at) => {
+      const evaluating = evaluatingConstruct(value);
+      return substitute(value, at, [at], (result, offset, key) => {
+        const position: ShellPosition = evaluating
+          ? {
+              kind: "refused",
+              place: `in a command with ${evaluating}`,
+              hint: 'Read it from environment, such as NAME: ${...}, as "$NAME", and keep it out of arithmetic.',
+            }
+          : shellPosition(value.slice(0, offset));
+        if (position.kind === "refused")
           throw new ConfigError(
-            `A reference in ${at} sits inside a backquoted command, where Rig cannot keep its value literal.`,
-            "invalid_context",
-            { path: at },
-            "Write the command substitution as $(...) instead of backquotes.",
+            `A reference in ${at} sits ${position.place}, where Rig cannot keep its value literal.`,
+            "unsafe_reference",
+            { path: at, place: position.place },
+            position.hint,
           );
-        return shellLiteral(result, quote);
-      }),
+        const name = shellVariable(key, at);
+        // One path has one value in a plan; only two paths whose hashes met could disagree, and that is not run.
+        if (Object.hasOwn(variables, name) && variables[name] !== result)
+          throw new ConfigError(
+            `The reference '\${${key}}' in ${at} would share the variable ${name} with another reference that holds a different value.`,
+            "reference_collision",
+            { key, path: at },
+            "Rename the Service, job or environment name this reference reaches.",
+          );
+        variables[name] = result;
+        return position.quote === '"'
+          ? `\${${name}}`
+          : position.quote === "'"
+            ? `'"\${${name}}"'`
+            : `"$${name}"`;
+      });
+    },
+    values: () => ({ ...variables }),
   };
-}
-/** The quoting in force at the end of a prefix of shell text: the open quote of the innermost command, where `$(...)` and `(...)` each start
- * a command of their own with no quote open. "`" means the position is inside a backquoted command, whose escaping rules differ. */
-function openShellQuote(prefix: string): "'" | '"' | "`" | undefined {
-  // One entry per nested command, innermost last; each holds that command's open quote.
-  const commands: ("'" | '"' | undefined)[] = [undefined];
-  let backquoted = false;
-  for (let i = 0; i < prefix.length; i++) {
-    const char = prefix[i];
-    const quote = commands.at(-1);
-    if (quote === "'") {
-      if (char === "'") commands[commands.length - 1] = undefined;
-    } else if (char === "\\") i++;
-    else if (
-      char === "#" &&
-      quote === undefined &&
-      (i === 0 || /[\s;&|()]/.test(prefix[i - 1]!))
-    ) {
-      // A comment runs to the end of its line; a quote character in it opens nothing.
-      const end = prefix.indexOf("\n", i);
-      i = end === -1 ? prefix.length : end;
-    } else if (char === "`") backquoted = !backquoted;
-    else if (char === "$" && prefix[i + 1] === "(") {
-      commands.push(undefined);
-      i++;
-    } else if (quote === '"') {
-      if (char === '"') commands[commands.length - 1] = undefined;
-    } else if (char === "'" || char === '"')
-      commands[commands.length - 1] = char;
-    else if (char === "(") commands.push(undefined);
-    else if (char === ")" && commands.length > 1) commands.pop();
-  }
-  return backquoted ? "`" : commands.at(-1);
 }

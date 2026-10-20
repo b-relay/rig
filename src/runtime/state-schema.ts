@@ -230,6 +230,12 @@ export const targetPlanSchema = z.object({
     .optional(),
   installTimeout: z.number().positive().optional(),
   envFiles,
+  referenceValues: z
+    .record(z.string().regex(/^_RIG_[A-Za-z0-9_]+$/), z.string())
+    .optional()
+    .describe(
+      "The values the plan's shell commands read through _RIG_ variables, by variable name; absent on plans recorded before them, whose commands hold their values.",
+    ),
 });
 const preparation = z
   .object({
@@ -662,13 +668,17 @@ const operation = z.object({
  * Version 6 added scheduled jobs to plans (`plan.jobs`): an older rigd would keep them but never run them. Version 7 added
  * backups (`backup` on a plan's job and on a run, ADR 0017): an older rigd would run a backup job without its directory.
  * Version 8 (ADR 0016) added where each Service's process runs (`source`), the Services a deploy kept, `watch`, and held
- * checkouts: an older rigd would drop them and release a checkout a kept process still runs in. */
-export const STATE_VERSION = 8;
+ * checkouts: an older rigd would drop them and release a checkout a kept process still runs in. Version 9 keeps health
+ * output only with env-file values redacted: an older rigd would record a failed check's output as printed, and Activity
+ * from before it is read with that output withheld (see state-store). */
+export const STATE_VERSION = 9;
 /** The older state versions this rigd still reads. Version 4 named the working and stable Targets local and live, or what
  * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs,
- * version 6 is version 7 without backups, and version 7 is version 8 before ADR 0016; they are read so. The next write
- * saves STATE_VERSION. */
-export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7];
+ * version 6 is version 7 without backups, version 7 is version 8 before ADR 0016, and version 8 is version 9 with health
+ * output unredacted; they are read so. The next write saves STATE_VERSION. */
+export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7, 8];
+/** The first version whose Activity holds health output only redacted. */
+export const REDACTED_HEALTH_STATE_VERSION = 9;
 /** The version whose Target names are normalized as they are read. */
 export const UNFIXED_NAMES_STATE_VERSION = 4;
 const deployment = z.object({

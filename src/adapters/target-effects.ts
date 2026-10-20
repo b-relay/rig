@@ -17,6 +17,7 @@ import type {
   InstalledComponent,
   ManagedComponent,
   PlanJob,
+  TargetPlan,
   PlanComponent,
 } from "../config/types";
 import { isHealthUrl } from "../config/schema";
@@ -43,12 +44,52 @@ import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
 import type { TargetEffects } from "../runtime/lifecycle";
-/** The last non-empty output line, trimmed to fit one log line, or undefined. */
-function lastLine(output: string): string | undefined {
-  const lines = output.split("\n").filter((line) => line.trim() !== "");
-  return lines.length
-    ? lines[lines.length - 1]!.trim().slice(0, 160)
-    : undefined;
+/** A failed health command's last non-empty output line, stderr first, cut to fit one log line, since it is shown in status,
+ * Activity and errors. Every env-file value is redacted in the output as printed, before a line is picked, trimmed or cut,
+ * and a line the runner kept only part of is left out; undefined when nothing whole is left. */
+function healthOutput(
+  result: CommandResult,
+  secrets: readonly string[],
+): string | undefined {
+  // A stream the runner cut starts partway through a line, maybe partway through a value; that line is left out.
+  const whole = (stream: "stdout" | "stderr") => {
+    const text = result[stream];
+    if (!result.truncated?.[stream]) return text;
+    const start = text.indexOf("\n");
+    return start === -1 ? "" : text.slice(start + 1);
+  };
+  const line =
+    lastOutputLine(redactValues(whole("stderr"), secrets)) ??
+    lastOutputLine(redactValues(whole("stdout"), secrets));
+  return line?.slice(0, 160);
+}
+/** The reference values the commands of one scope read, by variable name: a Service's command, health check and build, a
+ * job's command and restore, a Tool's build, or without a Component the shared build. Only these, so one Service's
+ * environment changes only with its own values. */
+function referenceValuesOf(
+  plan: TargetPlan,
+  component?: ManagedComponent | InstalledComponent | PlanJob,
+): Record<string, string> {
+  const values = plan.referenceValues ?? {};
+  const units = (plan.builds ?? []).filter((unit) =>
+    component === undefined
+      ? unit.component === undefined
+      : "kind" in component && unit.component === component.name,
+  );
+  const commands = [
+    ...units.map((unit) => unit.command),
+    ...(component && "command" in component ? [component.command] : []),
+    ...(component && "health" in component && component.health !== undefined
+      ? [component.health]
+      : []),
+    ...(component && "backup" in component && component.backup?.restore
+      ? [component.backup.restore]
+      : []),
+  ];
+  const names = commands.join("\n").match(/_RIG_[A-Za-z0-9_]+/g) ?? [];
+  return Object.fromEntries(
+    names.filter((name) => name in values).map((name) => [name, values[name]!]),
+  );
 }
 /** A probe transport failure named by its error code when it has one, else its message. */
 function failureReason(error: unknown): string {
@@ -63,7 +104,9 @@ import {
   RigError,
   failureCauses,
   failureReason as describedFailure,
+  lastOutputLine,
 } from "../domain/errors";
+import { redactValues } from "../domain/redaction";
 import {
   createArtifactOwnership,
   type OrphanedArtifact,
@@ -146,14 +189,15 @@ export function createTargetEffects(
   };
   const ignored = gitIgnoreCheck(options.run, options.environment);
   const noted = new Set<string>();
-  /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, then its env files.
-   * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment. */
-  const environment = async (
+  /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, its env files, then the plan's reference values.
+   * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment and
+   * `secrets`, the list of them to redact. */
+  const invocationEnvironment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent | PlanJob,
     /** Inputs of a Project-scope command, which no Component carries. */
     projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
-  ): Promise<Record<string, string>> => {
+  ): Promise<{ env: Record<string, string>; secrets: string[] }> => {
     const scope = component ?? target.plan;
     const loaded = await loadEnvironmentFiles(
       scope.envFiles ?? [],
@@ -181,8 +225,16 @@ export function createTargetEffects(
     for (const note of fresh) noted.add(`${target.id}:${note}`);
     if (fresh.length)
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
-    return composed.env;
+    // The values its commands read through _RIG_ variables come last.
+    return {
+      env: { ...composed.env, ...referenceValuesOf(target.plan, component) },
+      secrets: composed.secrets,
+    };
   };
+  const environment = async (
+    ...args: Parameters<typeof invocationEnvironment>
+  ): Promise<Record<string, string>> =>
+    (await invocationEnvironment(...args)).env;
   /** Runs a shell command in the Target workspace, or in `cwd` inside it, within a budget in seconds and records its output,
    * including what a killed command printed before its budget ran out, under the Component name. */
   /** The directory a Component's build or shell check runs in. A working_dir must be a directory inside the workspace,
@@ -375,15 +427,16 @@ export function createTargetEffects(
           signal.removeEventListener("abort", forward);
         }
       }
+      const { env, secrets } = await invocationEnvironment(target, component);
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
         cwd: await runDirectory(target, component),
-        env: await environment(target, component),
+        env,
         signal,
         timeoutMs,
       });
       if (result.exitCode === 0) return { ready: true };
-      const detail = lastLine(result.stderr) ?? lastLine(result.stdout);
+      const detail = healthOutput(result, secrets);
       return {
         ready: false,
         reason: `${result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,

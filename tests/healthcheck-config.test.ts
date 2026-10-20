@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { withValuesWritten } from "../src/config/plan-defaults";
 import {
   parseProjectConfig,
   resolveTargetPlan as resolvePlanWithHost,
@@ -18,14 +19,19 @@ function planned(
   config: unknown,
   target: "working" | "stable" | "preview" = "working",
 ): ManagedComponent {
-  const plan = resolvePlanWithHost(
-    {
-      config: config as ProjectConfig,
-      target,
-      ...roots,
-      ...(target === "preview" ? { assignedPorts: { "web.http": 4100 } } : {}),
-    },
-    host,
+  // Commands written with their values as they read (see withValuesWritten).
+  const plan = withValuesWritten(
+    resolvePlanWithHost(
+      {
+        config: config as ProjectConfig,
+        target,
+        ...roots,
+        ...(target === "preview"
+          ? { assignedPorts: { "web.http": 4100 } }
+          : {}),
+      },
+      host,
+    ),
   );
   return plan.components.find(
     (component): component is ManagedComponent =>

@@ -389,6 +389,74 @@ test("state version 6, written before backups, is read as it is and saved as the
   }
 });
 
+test("health output Activity recorded before version 9 is read withheld, since it may hold an env-file value; other records and version 9's are read as written", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-state-health-output-"));
+  try {
+    await mkdir(join(root, "runtime"));
+    const path = join(root, "runtime", "state.json");
+    const record = (id: string, action: string, message: string) => ({
+      id,
+      projectId: "p",
+      action,
+      outcome: "failed",
+      occurredAt: "2026-10-01T00:00:00.000Z",
+      message,
+    });
+    const activity = [
+      record(
+        "a",
+        "health",
+        "web is unhealthy: 3 health checks in a row failed (exit code 1: token tok-legacy-secret). Rig restarts it.",
+      ),
+      record(
+        "b",
+        "health-restart",
+        "web was to be restarted because it is unhealthy: 1 health check in a row failed (last output: exit code 1: tok-legacy-secret), but it could not be stopped (STOP_FAILED). Rig checks it while it runs.",
+      ),
+      record(
+        "c",
+        "health",
+        "web failed 2 health checks in a row (tok-legacy-secret). Rig restarts it.",
+      ),
+      record("d", "health", "web is healthy again: its health check passed."),
+      record("e", "up", "HEALTH_FAILED"),
+    ];
+    await writeFile(
+      path,
+      JSON.stringify({ version: 8, ...inventory, activity }),
+    );
+    const store = new FileStateStore(root);
+    const withheld =
+      "(output withheld: recorded before Rig redacted health output).";
+    expect((await store.read()).activity.map((entry) => entry.message)).toEqual(
+      [
+        `web is unhealthy: 3 health checks in a row failed ${withheld}`,
+        `web was to be restarted because it is unhealthy: 1 health check in a row failed ${withheld}`,
+        `web failed 2 health checks in a row ${withheld}`,
+        "web is healthy again: its health check passed.",
+        "HEALTH_FAILED",
+      ],
+    );
+    // The next write saves it so; version 9 output is Rig's redacted output and is read as written.
+    await store.update(() => {});
+    const written = await readFile(path, "utf8");
+    expect(written).not.toContain("tok-legacy-secret");
+    expect(JSON.parse(written).version).toBe(STATE_VERSION);
+    const current = record(
+      "f",
+      "health",
+      "web is unhealthy: 1 health check in a row failed (exit code 1: [redacted]). Rig restarts it.",
+    );
+    await writeFile(
+      path,
+      JSON.stringify({ version: 9, ...inventory, activity: [current] }),
+    );
+    expect((await store.read()).activity[0]!.message).toBe(current.message);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a state file written by a newer or an older rigd is refused unread with both versions named", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-state-version-"));
   try {

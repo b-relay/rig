@@ -101,6 +101,8 @@ export interface CommandResult {
   readonly stderr: string;
   /** The command was killed at its budget: exitCode is 1 and the streams hold what it produced before then. */
   readonly timedOut?: true;
+  /** The streams that printed more than the runner keeps, so their text starts partway through what was printed. */
+  readonly truncated?: { readonly stdout?: true; readonly stderr?: true };
 }
 export type CommandRunner = (request: CommandRequest) => Promise<CommandResult>;
 export interface TargetLogEntry {

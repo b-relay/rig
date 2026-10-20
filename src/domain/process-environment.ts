@@ -1,6 +1,12 @@
 import type { PublicInput } from "../config/references";
 import { RigError } from "./errors";
 
+/** The prefix of the variables that carry references' values into shell commands. Rig reserves it: no `environment` key
+ * or env-file name may start with it, so no value of the author's or operator's is ever replaced by one. */
+export const REFERENCE_VARIABLE_PREFIX = "_RIG_";
+/** Why a name with REFERENCE_VARIABLE_PREFIX is refused, for every place that refuses one. */
+export const RESERVED_NAME_RULE = `names starting with ${REFERENCE_VARIABLE_PREFIX} are reserved for the variables that carry references into shell commands`;
+
 /** One env file's parsed contents, held only while an invocation is composed. */
 export interface LoadedEnvFile {
   path: string;
@@ -14,6 +20,8 @@ export interface EnvOverride {
 export interface ComposedEnvironment {
   env: Record<string, string>;
   overrides: EnvOverride[];
+  /** Every value an env file supplies, which output Rig keeps or shows beyond the Target logs must not carry. */
+  secrets: string[];
 }
 /** Composes one invocation's process environment: the controlled baseline, then public env, then each file in order.
  * A public env leaf the invocation's commands were built from (`guarded`) may not get a different final value from a file,
@@ -61,5 +69,6 @@ export function composeEnvironment(input: {
       ...input.files.map((file) => file.values),
     ),
     overrides,
+    secrets: input.files.flatMap((file) => Object.values(file.values)),
   };
 }

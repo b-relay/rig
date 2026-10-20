@@ -20,6 +20,11 @@ import type { CommandRunner } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import { RigError } from "../src/domain/errors";
 import { noRoutes } from "./support/router-doubles";
+import { writtenCommand } from "../src/config/plan-defaults";
+import {
+  environmentText,
+  serviceDefinition,
+} from "../src/domain/service-definition";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -160,7 +165,9 @@ test("an equal file value is no conflict, and the resolved invocation runs an or
   const { adapter, record, api, plan, workspace } = await selected(
     `DB_NAME=app\nAPI_TOKEN="${SECRET}"\n`,
   );
-  expect(api.command).toBe("./serve.sh --db db://app/main");
+  expect(writtenCommand(api.command, plan.referenceValues)).toBe(
+    "./serve.sh --db db://app/main",
+  );
   const env = await adapter.environment(record, api);
   const result = await runCommand({
     command: ["/bin/sh", "-c", api.command],
@@ -254,6 +261,94 @@ async function layered(target: "working" | "stable" = "working") {
   await write(join(s.workspace, "env", "worker.env"), "WORKER_ONLY=1\n");
   return s;
 }
+
+const REFERENCING = {
+  name: "app",
+  environment: { ONE: "first value" },
+  build: "make -C ${rig.workspace}",
+  services: {
+    api: {
+      command: "./serve --root ${rig.workspace} --one ${environment.ONE}",
+      ports: { http: "auto" },
+    },
+    worker: {
+      command: "ls ${rig.workspace}",
+      ports: { http: "auto" },
+    },
+  },
+};
+/** The reference variables of an environment, as an environment digest reads them (the checkout normalized). */
+const referenceText = (env: Record<string, string>, checkout: string) =>
+  environmentText(
+    Object.fromEntries(
+      Object.entries(env).filter(([name]) => name.startsWith("_RIG_")),
+    ),
+    checkout,
+  );
+
+test("each invocation carries the variables of its own commands' references only", async () => {
+  const { adapter, record, api, plan } = await selected("", REFERENCING);
+  const worker = plan.components.find(
+    (c) => c.name === "worker",
+  ) as ManagedComponent;
+  const apiEnv = await adapter.environment(record, api);
+  const workerEnv = await adapter.environment(record, worker);
+  expect(apiEnv._RIG_environment_ONE).toBe("first value");
+  expect(apiEnv._RIG_rig_workspace).toBe(plan.workspacePath);
+  expect(workerEnv).not.toHaveProperty("_RIG_environment_ONE");
+  expect(workerEnv._RIG_rig_workspace).toBe(plan.workspacePath);
+});
+
+test("an env file that assigns a reserved _RIG_ name is refused by path and line, never by value", async () => {
+  const { adapter, record, api } = await selected(
+    `DB_NAME=app\n_RIG_environment_ONE=${SECRET}\n`,
+    REFERENCING,
+  );
+  const failure = (await adapter
+    .environment(record, api)
+    .catch((error: unknown) => error)) as RigError;
+  expect(failure).toMatchObject({
+    code: "ENV_FILE",
+    message: expect.stringContaining(
+      "the reserved name _RIG_environment_ONE on line 2",
+    ),
+  });
+  expect(
+    JSON.stringify([failure.message, failure.hint, failure.details]),
+  ).not.toContain(SECRET);
+});
+
+test("an unchanged Service resolved for two checkouts has the same definition and the same reference variables, so a deploy can keep it", async () => {
+  const { adapter, record, api, plan, root, home } = await selected(
+    "",
+    REFERENCING,
+  );
+  // The next deploy's checkout: the same config and Rig root, another workspace.
+  const workspace = join(root, "..", "second checkout");
+  await mkdir(workspace);
+  const next = resolveTargetPlan(
+    {
+      config: REFERENCING as never,
+      target: "working",
+      workspacePath: workspace,
+      dataRoot: join(root, "data"),
+      assignedPorts: { api: 4100, worker: 4101 },
+    },
+    { operatorHome: home, envRoot: join(root, "env") },
+  );
+  const nextApi = next.components.find(
+    (c) => c.name === "api",
+  ) as ManagedComponent;
+  expect(serviceDefinition(next, nextApi)).toBe(serviceDefinition(plan, api));
+  expect(
+    referenceText(
+      await adapter.environment({ ...record, plan: next }, nextApi),
+      workspace,
+    ),
+  ).toBe(
+    referenceText(await adapter.environment(record, api), plan.workspacePath),
+  );
+});
 
 test("each invocation composes its own scope, lowest to highest: Project env, Service env, Project files, Project operator files, Service files, Service operator files", async () => {
   const { adapter, record, api, plan, root, home } = await layered();
@@ -376,7 +471,7 @@ test("a substituted value reaches the child as one literal argument whether the 
     EMPTY: "",
     SPACED: "a b",
   };
-  const { api, workspace } = await selected("", {
+  const { api, workspace, plan } = await selected("", {
     name: "app",
     environment: values,
     services: {
@@ -389,7 +484,11 @@ test("a substituted value reaches the child as one literal argument whether the 
   const result = await runCommand({
     command: ["/bin/sh", "-c", api.command],
     cwd: workspace,
-    env: { PATH: process.env.PATH!, HOME: "/shell/home" },
+    env: {
+      PATH: process.env.PATH!,
+      HOME: "/shell/home",
+      ...plan.referenceValues,
+    },
     timeoutMs: 5000,
   });
   const commented = await selected("", {
@@ -406,7 +505,7 @@ test("a substituted value reaches the child as one literal argument whether the 
   const afterComment = await runCommand({
     command: ["/bin/sh", "-c", commented.api.command],
     cwd: commented.workspace,
-    env: { PATH: process.env.PATH! },
+    env: { PATH: process.env.PATH!, ...commented.plan.referenceValues },
     timeoutMs: 5000,
   });
   expect(afterComment.stdout).toBe(`<${values.CODE}><a#a b>`);

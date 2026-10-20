@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { withValuesWritten } from "../src/config/plan-defaults";
 import {
   configJsonSchemas,
   parseProjectConfig,
@@ -23,22 +24,25 @@ const melody = (jobs: Record<string, unknown>): unknown => ({
   jobs,
   targets: { working: true, stable: true, preview: true },
 });
+/** Commands written with their values as they read (see withValuesWritten). */
 function plan(config: unknown, target: TargetRole = "stable") {
-  return resolveTargetPlan(
-    {
-      config: parseProjectConfig(config) as ProjectConfig,
-      target,
-      workspacePath: "/srv/melody",
-      dataRoot: "/rig/data",
-      ...(target === "preview" ? { deploymentName: "feat-x-1a2b3c4d" } : {}),
-      assignedPorts: {
-        "api.http": 4100,
-        "postgres.pg": 5500,
-        "typesense.api": 8200,
-        "typesense.peer": 8201,
+  return withValuesWritten(
+    resolveTargetPlan(
+      {
+        config: parseProjectConfig(config) as ProjectConfig,
+        target,
+        workspacePath: "/srv/melody",
+        dataRoot: "/rig/data",
+        ...(target === "preview" ? { deploymentName: "feat-x-1a2b3c4d" } : {}),
+        assignedPorts: {
+          "api.http": 4100,
+          "postgres.pg": 5500,
+          "typesense.api": 8200,
+          "typesense.peer": 8201,
+        },
       },
-    },
-    HOST,
+      HOST,
+    ),
   );
 }
 /** The hint a refused config gives, or undefined when it is accepted. */

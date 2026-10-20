@@ -29,7 +29,10 @@ import {
   targetOn,
   TARGET_ROLES,
 } from "../src/config/index.js";
-import { referenceResolver } from "../src/config/references";
+import { referenceResolver, shellVariable } from "../src/config/references";
+import { withValuesWritten } from "../src/config/plan-defaults";
+import { serviceDefinition } from "../src/domain/service-definition";
+import type { ManagedComponent, TargetPlan } from "../src/config/types";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 /** The operator's optional convention files for one scope, in precedence order. */
 const conventionFiles = (role: string, ...scope: string[]) =>
@@ -37,8 +40,10 @@ const conventionFiles = (role: string, ...scope: string[]) =>
     path: ["/rig/env", ...scope, `${file}.env`].join("/"),
     required: false,
   }));
+/** A plan with its commands written with their values (see withValuesWritten); tests of how values reach a shell use the plan as
+ * resolved. */
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
-  resolvePlanWithHost(input, RESOLVE_HOST);
+  withValuesWritten(resolvePlanWithHost(input, RESOLVE_HOST));
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -2743,7 +2748,7 @@ test("complete accepted plans are independent of process cwd with portable paths
   );
   const plan = resolveTargetPlan(input);
   expect(plans[0]).toEqual(plans[1]);
-  expect(plans[0]).toEqual(JSON.parse(JSON.stringify(plan)));
+  expect(withValuesWritten(plans[0])).toEqual(JSON.parse(JSON.stringify(plan)));
   expect(plan.components.map((component) => component.name)).toEqual([
     "db",
     "web",
@@ -2836,7 +2841,7 @@ test("Target resolution validates the actual substituted bind values of command 
   );
 });
 
-test("paths substituted into command, healthcheck and build commands are shell-quoted unless the author already quoted them", () => {
+test("values referenced in command, healthcheck and build commands reach the shell through variables, one word each, as the author quoted them", () => {
   const config = parseProjectConfig({
     name: "spaced",
     services: {
@@ -2861,39 +2866,66 @@ test("paths substituted into command, healthcheck and build commands are shell-q
       },
     },
   });
-  const plan = resolveTargetPlan({
-    config,
-    target: "working",
-    workspacePath: "/repos/my app",
-    dataRoot: "/state/it's data",
-  });
+  const plan = resolvePlanWithHost(
+    {
+      config,
+      target: "working",
+      workspacePath: "/repos/my app",
+      dataRoot: "/state/it's data",
+    },
+    RESOLVE_HOST,
+  );
+  // Each variable is named for what it references, never for the value: bare "$NAME", in double quotes ${NAME}.
   const web = plan.components.find((component) => component.name === "web")!;
   expect(web).toMatchObject({
-    command: `node '/repos/my app'/server.js --db '/state/it'\\''s data/web'/db.sqlite --port 4000`,
-    health: "test -f '/repos/my app'/ready",
+    command:
+      'node "$_RIG_rig_workspace"/server.js --db "$_RIG_services_web_data"/db.sqlite --port "$_RIG_services_web_ports_http"',
+    health: 'test -f "$_RIG_rig_workspace"/ready',
     // Environment values are data, not shell text.
     env: { DB: "/state/it's data/web/db.sqlite" },
   });
   expect(
     plan.components.find((component) => component.name === "api"),
   ).toMatchObject({
-    command: `node '/repos/my app/api.js' --log "/state/it's data/api/log" --port 4001`,
+    command:
+      'node \'\'"${_RIG_rig_workspace}"\'/api.js\' --log "${_RIG_services_api_data}/log" --port "$_RIG_services_api_ports_http"',
     health: "http://127.0.0.1:4001/",
   });
   expect(plan.builds?.find((unit) => unit.id === "tool:tool")).toMatchObject({
-    command: "bun build '/repos/my app'/src/tool.ts",
+    command: 'bun build "$_RIG_rig_workspace"/src/tool.ts',
   });
-  const printed = Bun.spawnSync([
-    "/bin/sh",
-    "-c",
-    `printf '%s\\n' ${web.kind === "managed" ? web.command.replace(/^node /, "") : ""}`,
-  ]).stdout.toString();
-  expect(printed.split("\n").filter(Boolean)).toEqual([
+  expect(plan.referenceValues).toEqual({
+    _RIG_rig_workspace: "/repos/my app",
+    _RIG_services_web_data: "/state/it's data/web",
+    _RIG_services_web_ports_http: "4000",
+    _RIG_services_api_data: "/state/it's data/api",
+    _RIG_services_api_ports_http: "4001",
+  });
+  expect(shellVariable("port", "services.web.command")).toBe(
+    "_RIG_services_web_port",
+  );
+  const printed = (command: string) =>
+    Bun.spawnSync(
+      ["/bin/sh", "-c", `printf '%s\\n' ${command.replace(/^node /, "")}`],
+      { env: { ...plan.referenceValues } },
+    )
+      .stdout.toString()
+      .split("\n")
+      .filter(Boolean);
+  expect(printed(web.kind === "managed" ? web.command : "")).toEqual([
     "/repos/my app/server.js",
     "--db",
     "/state/it's data/web/db.sqlite",
     "--port",
     "4000",
+  ]);
+  const api = plan.components.find((component) => component.name === "api")!;
+  expect(printed(api.kind === "managed" ? api.command : "")).toEqual([
+    "/repos/my app/api.js",
+    "--log",
+    "/state/it's data/api/log",
+    "--port",
+    "4001",
   ]);
 });
 
@@ -3008,7 +3040,7 @@ test("env_file paths resolve against the operator home or the workspace, and the
     );
 });
 
-test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a backquoted reference is refused", () => {
+test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a reference beside arithmetic is refused when the config is read", () => {
   const issues = (extra: Record<string, unknown>) => {
     try {
       parseProjectConfig({
@@ -3053,19 +3085,135 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
       environment: { OK: "${services.db.environment.NAME}" },
     }),
   ).toBe("accepted");
-  const config = parseProjectConfig({
-    name: "app",
-    services: { web: { ...web().web, command: "echo `echo ${rig.target}`" } },
-  });
-  expect(() =>
-    resolveTargetPlan({
-      config,
-      target: "working",
-      workspacePath: "/work",
-      dataRoot: "/data",
-      assignedPorts: { web: 3000 },
+  // Where a reference sits in a command is checked when the config is read, not at the first deploy.
+  expect(
+    issues({
+      services: {
+        web: {
+          ...web().web,
+          command: "echo $(( ${rig.target} ))",
+        },
+      },
     }),
-  ).toThrow(expect.objectContaining({ code: "invalid_context" }));
+  ).toBe(
+    'Fix services.web.command: A reference sits in a command with arithmetic. Read it from environment, such as NAME: ${...}, as "$NAME", and keep it out of arithmetic.',
+  );
+});
+
+test("a plan written with its values reads exactly as a Rig before reference variables recorded it, double-quoted references included, so an upgrade alone is no drift", () => {
+  const plan = withValuesWritten(
+    resolvePlanWithHost(
+      {
+        config: parseProjectConfig({
+          name: "legacy",
+          environment: { VALUE: "a b", NUM: "42", QUOTE: `it's "q" $x` },
+          build: 'make "${environment.VALUE}" "${environment.NUM}"',
+          services: {
+            web: {
+              command:
+                'echo "${environment.VALUE}" "${port}" "${environment.QUOTE}" ${environment.VALUE} \'${environment.QUOTE}\' "x ${environment.NUM} y"',
+              ports: { http: 4000 },
+              build: 'make "${environment.VALUE}"',
+              healthcheck: { test: 'test -n "${environment.VALUE}" "${port}"' },
+            },
+          },
+          jobs: {
+            dump: {
+              command:
+                'dump "${environment.VALUE}" "${services.web.ports.http}"',
+              schedule: "0 3 * * *",
+              backup: {
+                keep: 3,
+                restore: 'restore "${environment.VALUE}" "${environment.NUM}"',
+              },
+            },
+          },
+        }),
+        target: "working",
+        workspacePath: "/work",
+        dataRoot: "/data",
+      },
+      RESOLVE_HOST,
+    ),
+  );
+  // What the Rig before reference variables recorded for this config, as it wrote values into the text.
+  expect(plan.components[0]).toMatchObject({
+    command: `echo "a b" "4000" "it's \\"q\\" \\$x" 'a b' 'it'\\''s "q" $x' "x 42 y"`,
+    health: 'test -n "a b" "4000"',
+  });
+  expect(plan.builds!.map((unit) => unit.command)).toEqual([
+    'make "a b" "42"',
+    'make "a b"',
+  ]);
+  expect(plan.jobs![0]).toMatchObject({
+    command: 'dump "a b" "4000"',
+    backup: { restore: 'restore "a b" "42"' },
+  });
+});
+
+test("a reference's variable is named by its whole path alone: paths that differ only in _ or - get different names, whatever their values, so an unaffected Service keeps its definition", () => {
+  // a reads web-environment's command, b reads web's environment value named command; the two paths read alike.
+  const plan = (command: string) =>
+    resolvePlanWithHost(
+      {
+        config: parseProjectConfig({
+          name: "app",
+          services: {
+            a: { command: "run ${services.web-environment.command}" },
+            b: { command: "run ${services.web.environment.command}" },
+            web: { command: "serve", environment: { command: "same" } },
+            "web-environment": { command },
+          },
+        }),
+        target: "working",
+        workspacePath: "/work",
+        dataRoot: "/data",
+      },
+      RESOLVE_HOST,
+    );
+  const equal = plan("same");
+  const diverged = plan("different");
+  const managed = (p: TargetPlan, name: string) =>
+    p.components.find(
+      (c): c is ManagedComponent => c.kind === "managed" && c.name === name,
+    )!;
+  const plain = "_RIG_services_web_environment_command";
+  expect(managed(equal, "b").command).toBe(`run "$${plain}"`);
+  expect(managed(equal, "a").command).toMatch(
+    /^run "\$_RIG_services_web_environment_command__[0-9a-f]{12}"$/,
+  );
+  // Equal or not, the values never decide a name: b reads the same text and value in both plans.
+  for (const p of [equal, diverged])
+    expect(managed(p, "b").command).toBe(`run "$${plain}"`);
+  expect(managed(diverged, "a").command).toBe(managed(equal, "a").command);
+  expect(serviceDefinition(diverged, managed(diverged, "b"))).toBe(
+    serviceDefinition(equal, managed(equal, "b")),
+  );
+  expect(diverged.referenceValues![plain]).toBe("same");
+  expect(Object.values(diverged.referenceValues!).sort()).toEqual([
+    "different",
+    "same",
+  ]);
+});
+
+test("an environment name starting with _RIG_ is refused, since Rig reserves the prefix for reference variables", () => {
+  for (const extra of [
+    { environment: { _RIG_rig_workspace: "x" } },
+    { services: { web: { command: "serve", environment: { _RIG_X: "x" } } } },
+  ])
+    expect(() =>
+      parseProjectConfig({
+        name: "app",
+        services: { web: { command: "serve" } },
+        ...extra,
+      }),
+    ).toThrow(
+      expect.objectContaining({
+        hint: expect.stringContaining(
+          "names starting with _RIG_ are reserved for the variables that carry references into shell commands",
+        ),
+      }),
+    );
 });
 
 test("YAML editing replaces or removes an uncommented mapping or sequence in place", async () => {

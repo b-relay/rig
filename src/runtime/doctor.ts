@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
-import { rigCommand } from "../domain/rig-command";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { OrphanedTool, RuntimeDependencies } from "./contracts";
 import { join } from "node:path";
@@ -16,6 +15,7 @@ import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
 import { routeOwnerToken } from "../domain/proxy-publication";
 import { transitionInProgress } from "./project-status";
+import { rigCommand } from "../domain/rig-command";
 import {
   identityDriftHint,
   movedProject,

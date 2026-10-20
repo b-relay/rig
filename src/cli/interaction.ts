@@ -100,11 +100,16 @@ export async function prepareInteractiveRequest(
           "PRODUCTION_CONFIRMATION",
           `The current Branch differs from Production '${terminalText(info.productionBranch)}'.`,
           `Pass the Production Branch explicitly: ${terminalText(
-            rigCommand("deploy", {
-              project: request.project,
-              target: { kind: "stable", name: "stable" },
-              branch: info.productionBranch,
-            }),
+            rigCommand(
+              "deploy",
+              {
+                project: request.project,
+                target: { kind: "stable", name: "stable" },
+                branch: info.productionBranch,
+              },
+              ...(request.force ? ["--force"] : []),
+              ...(request.noUp ? ["--no-up"] : []),
+            ),
           )}.`,
         );
       if (

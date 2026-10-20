@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ProjectStatusReport } from "../src/domain/project-status";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import { runRigCli } from "../src/cli/rig";
+import { shellArgs } from "./support/shell-args";
 
 /** Drives the CLI grammar with an injected client; no daemon, filesystem or terminal. */
 function harness(
@@ -287,68 +288,129 @@ test("rig run sends the job for the stable Target unless another is named, and a
   }
 });
 
-test("a usage hint that corrects a Preview selection retypes the command with its job, backup and Project, and the retyped command runs", async () => {
-  const cases: [string[], string][] = [
+test("a usage hint that corrects a Preview selection retypes the command with its job, backup, Project and every flag, and the retyped command does the same", async () => {
+  const preview = { target: "preview", deployment: "login" };
+  const cases: [string[], string, Record<string, unknown>][] = [
     [
-      ["backup", "list", "--deployment", "login"],
-      "rig backup list preview --deployment login",
+      ["backup", "list", "--deployment", "login", "--json"],
+      "rig backup list preview --deployment login --json",
+      { action: "backups", ...preview },
     ],
     [
       ["backup", "list", "db-backup", "--deployment", "login"],
       "rig backup list db-backup preview --deployment login",
+      { action: "backups", ...preview, job: "db-backup" },
     ],
     [
-      ["backup", "restore", "db-backup", "latest", "--deployment", "login"],
-      "rig backup restore db-backup latest preview --deployment login",
+      // --yes is kept: without it the retry is refused again where there is no terminal to confirm at.
+      [
+        "backup",
+        "restore",
+        "db-backup",
+        "latest",
+        "--deployment",
+        "login",
+        "--project",
+        "shop",
+        "--yes",
+      ],
+      "rig backup restore db-backup latest preview --deployment login --project shop --yes",
+      {
+        action: "restore",
+        ...preview,
+        project: "shop",
+        job: "db-backup",
+        backup: "latest",
+      },
     ],
     [
       ["run", "db-backup", "--deployment", "login", "--project", "shop"],
       "rig run db-backup preview --deployment login --project shop",
+      { action: "run", ...preview, project: "shop", job: "db-backup" },
     ],
     [
-      ["down", "--deployment", "login", "--destroy"],
-      "rig down preview --deployment login --destroy",
+      ["down", "--deployment", "login", "--destroy", "--kill"],
+      "rig down preview --deployment login --destroy --kill",
+      { action: "destroy", ...preview, kill: true },
     ],
     [
-      ["logs", "--deployment", "login", "--service", "web"],
-      "rig logs preview --deployment login --service web",
+      [
+        "logs",
+        "--deployment",
+        "login",
+        "--service",
+        "web",
+        "--stream",
+        "stderr",
+        "--lines",
+        "5",
+        "--since",
+        "2026-10-01T00:00:00Z",
+      ],
+      "rig logs preview --deployment login --service web --stream stderr --lines 5 --since 2026-10-01T00:00:00Z",
+      {
+        action: "logs",
+        ...preview,
+        lines: 5,
+        logFilter: {
+          services: ["web"],
+          stream: "stderr",
+          since: "2026-10-01T00:00:00.000Z",
+        },
+      },
     ],
     [
       ["deploy", "stable", "feature/x", "--deployment", "login", "--no-up"],
       "rig deploy preview feature/x --deployment login --no-up",
+      { action: "deploy", ...preview, branch: "feature/x", noUp: true },
     ],
   ];
-  for (const [args, retyped] of cases) {
+  for (const [args, retyped, request] of cases) {
     const h = harness();
     expect(await runRigCli(args, h.deps)).toBe(1);
     expect(h.requests).toEqual([]);
-    expect(h.err()).toContain(`Use ${retyped}.`);
-    const again = harness((request) =>
-      request.action === "logs"
+    // A read given --json reports the refusal as its JSON document on stdout.
+    expect(h.err() + h.out()).toContain(`Use ${retyped}.`);
+    const again = harness((sent) =>
+      sent.action === "logs"
         ? { project: "shop", target: "login", entries: [], cursor: "c" }
-        : request.action === "backups"
+        : sent.action === "backups"
           ? { project: "shop", backups: [] }
-          : request.action === "deployment-context"
+          : sent.action === "restore"
             ? {
+                operationId: "op-1",
                 project: "shop",
-                repoPath: "/workspace",
-                productionBranch: "main",
-                currentBranch: "feature/x",
-                selected: "preview",
+                target: "login",
+                outcome: "started",
+                job: sent.job,
+                backup: sent.backup,
               }
-            : { outcome: "started" },
+            : // The restore's end, which rig waits for.
+              sent.action === "activity"
+              ? {
+                  operations: [
+                    {
+                      id: "op-1",
+                      action: "restore",
+                      outcome: "succeeded",
+                      occurredAt: "2026-10-11T09:00:05.000Z",
+                    },
+                  ],
+                }
+              : sent.action === "deployment-context"
+                ? {
+                    project: "shop",
+                    repoPath: "/workspace",
+                    productionBranch: "main",
+                    currentBranch: "feature/x",
+                    selected: "preview",
+                  }
+                : { outcome: "started" },
     );
-    await runRigCli(retyped.split(" ").slice(1), again.deps);
+    expect(await runRigCli(shellArgs(retyped), again.deps)).toBe(0);
     expect(
-      again.requests.find((request) => request.action !== "deployment-context"),
-    ).toMatchObject({
-      target: "preview",
-      deployment: "login",
-      ...(args.includes("--project") ? { project: "shop" } : {}),
-      ...(args[0] === "run" || args[1] === "restore"
-        ? { job: "db-backup" }
-        : {}),
-    });
+      again.requests.find((sent) => sent.action === request.action),
+    ).toEqual(expect.objectContaining(request));
   }
   // A selection the grammar cannot read points at the help of the command typed, which exists.
   const h = harness();
@@ -356,6 +418,33 @@ test("a usage hint that corrects a Preview selection retypes the command with it
     await runRigCli(["backup", "list", "db-backup", "preview"], h.deps),
   ).toBe(1);
   expect(h.err()).toContain("Run rig backup list --help.");
+});
+
+test("rig backup list takes a job named like a Target before its Target, so a job named preview is listed in any Target", async () => {
+  const cases: [string[], Record<string, unknown>][] = [
+    [["preview", "stable"], { target: "stable", job: "preview" }],
+    [["preview", "working"], { target: "working", job: "preview" }],
+    [
+      ["preview", "preview", "--deployment", "demo"],
+      { target: "preview", deployment: "demo", job: "preview" },
+    ],
+    [
+      ["preview", "preview", "feature/x"],
+      { target: "preview", branch: "feature/x", job: "preview" },
+    ],
+    [["stable", "stable"], { target: "stable", job: "stable" }],
+    // A Target alone, and a Preview by its Branch, read as before.
+    [["preview", "feature/x"], { target: "preview", branch: "feature/x" }],
+    [["stable"], { target: "stable" }],
+  ];
+  for (const [args, request] of cases) {
+    const h = harness(() => ({ project: "shop", backups: [] }));
+    expect(await runRigCli(["backup", "list", ...args], h.deps)).toBe(0);
+    expect(h.requests).toEqual([
+      expect.objectContaining({ action: "backups", ...request }),
+    ]);
+    if (!("job" in request)) expect(h.requests[0]!.job).toBeUndefined();
+  }
 });
 
 test("rig backup and rig dns without a subcommand print their help, and rig help backup restore shows that command's", async () => {

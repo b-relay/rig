@@ -2571,7 +2571,10 @@ tab has **Back up now**.
 **Listing them.** `rig backup list [job] [target]` shows every Target's
 backups, one job's (`rig backup list db-backup`), one job's in one Target
 (`rig backup list db-backup stable`), or one Target's (`rig backup list
-stable`), by Target and job, each job's newest first:
+stable`), by Target and job, each job's newest first. A job named like a
+Target is given with its Target: `rig backup list preview stable` lists the
+job `preview` in stable, and after `preview` the words `working` and `stable`
+always name that Target, never a Branch.
 
 ```
 stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a

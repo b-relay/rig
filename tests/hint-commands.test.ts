@@ -11,6 +11,7 @@ import {
   type RigCommandPath,
 } from "../src/domain/rig-command";
 import { generatedPreviewName } from "../src/domain/target-selector";
+import { shellArgs } from "./support/shell-args";
 
 /** Every command a hint, a help text or the documentation tells the user to run must be one the CLI's grammar accepts.
  * Parsing runs the real grammar with every effect stubbed: whatever reaches rigd, the terminal or the DNS read counts as
@@ -40,27 +41,6 @@ async function refusal(args: readonly string[]): Promise<string | undefined> {
     if (error instanceof RigError && error.code !== "USAGE") return undefined;
     return error instanceof Error ? error.message : String(error);
   }
-}
-/** The words a POSIX shell makes of `line`: blanks split, single or double quotes group, and '\'' is a quote. */
-function shellWords(line: string): string[] {
-  const words: string[] = [];
-  let word: string | undefined;
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index]!;
-    if (char === "'" || char === '"') {
-      const end = line.indexOf(char, index + 1);
-      word = (word ?? "") + line.slice(index + 1, end);
-      index = end;
-    } else if (char === "\\" && line[index + 1] === "'") {
-      word = (word ?? "") + "'";
-      index++;
-    } else if (/\s/.test(char)) {
-      if (word !== undefined) words.push(word);
-      word = undefined;
-    } else word = (word ?? "") + char;
-  }
-  if (word !== undefined) words.push(word);
-  return words;
 }
 /** A documented placeholder, filled with a value of its kind. */
 const PLACEHOLDERS: Record<string, string> = {
@@ -263,10 +243,13 @@ test("every complete rig command the documents and help texts show parses with t
       refused.push(`${where}: ${command} (an unknown placeholder)`);
       continue;
     }
-    const words = shellWords(line).slice(1);
-    // A redirection or pipe is the shell's, not rig's.
-    const end = words.findIndex((word) => /^[<>|]/.test(word));
-    const args = end === -1 ? words : words.slice(0, end);
+    let args: string[];
+    try {
+      args = shellArgs(line);
+    } catch (error) {
+      refused.push(`${where}: ${command} (${String(error)})`);
+      continue;
+    }
     if (named(args)) continue;
     const why = await refusal(args);
     checked++;
@@ -274,17 +257,25 @@ test("every complete rig command the documents and help texts show parses with t
   }
   expect(refused).toEqual([]);
   expect(checked).toBeGreaterThan(50);
-});
+}, 60_000);
 
-test("every hint rigd and rig render with rigCommand parses, selecting the Target, job and Project it names", async () => {
+test("every hint rigd and rig render with rigCommand, pasted into a shell, selects the Target, job and Project it names", async () => {
+  // Branches and Project names the shell would read: an apostrophe, a space, $ expansions, a leading =.
+  const branches = [
+    "feature/login",
+    "feat/(draft) it's",
+    "feat/$((1+1))",
+    "fix/$HOME",
+    "=ls",
+  ];
   const targets: CommandSelection["target"][] = [
     { kind: "working", name: "working" },
     { kind: "stable", name: "stable" },
-    {
-      kind: "preview",
-      name: generatedPreviewName("feat/(draft) it's"),
-      branch: "feat/(draft) it's",
-    },
+    ...branches.map((branch) => ({
+      kind: "preview" as const,
+      name: generatedPreviewName(branch),
+      branch,
+    })),
     { kind: "preview", name: "demo", branch: "feature/login" },
     { kind: "preview", name: "demo" },
   ];
@@ -298,45 +289,71 @@ test("every hint rigd and rig render with rigCommand parses, selecting the Targe
     "backup list",
     "backup restore",
   ];
-  for (const path of paths)
-    for (const target of targets) {
-      if (path === "deploy" && target!.kind === "working") continue;
-      const selection = {
-        target: { ...target!, plan: { project: "my shop" } },
-        ...(path === "run" || path.startsWith("backup")
-          ? { job: "nightly-db" }
-          : {}),
-        ...(path === "backup restore" ? { backup: "latest" } : {}),
-        ...(path === "logs" ? { service: "web" } : {}),
-      };
-      const line = rigCommand(path, selection);
-      const requests: unknown[] = [];
-      await createRigCommand(
-        "/workspace",
-        { write() {}, error() {} },
-        async (request) => {
-          requests.push(request);
-        },
-      )
-        .parseAsync(shellWords(line).slice(1), { from: "user" })
-        .catch((error: unknown) => {
-          if (!isHelp(error)) throw new Error(`${line}: ${String(error)}`);
-        });
-      expect(requests).toEqual([
+  // Job names that are also Target words, which the grammar must not take for a Target.
+  const jobs = ["nightly-db", "preview", "stable", "working"];
+  const takesJob = (path: RigCommandPath) =>
+    path === "run" || path.startsWith("backup");
+  const cases = paths.flatMap((path) =>
+    targets.flatMap((target) =>
+      (takesJob(path) ? jobs : [undefined]).flatMap((job) =>
+        ["my shop", "it's $x"].map((project) => ({
+          path,
+          target: target!,
+          job,
+          project,
+        })),
+      ),
+    ),
+  );
+  for (const { path, target, job, project } of cases) {
+    if (path === "deploy" && target.kind === "working") continue;
+    const line = rigCommand(path, {
+      target: { ...target, plan: { project } },
+      ...(job !== undefined ? { job } : {}),
+      ...(path === "backup restore" ? { backup: "latest" } : {}),
+      ...(path === "logs" ? { service: "web" } : {}),
+    });
+    const requests: unknown[] = [];
+    await createRigCommand(
+      "/workspace",
+      { write() {}, error() {} },
+      async (request) => {
+        requests.push(request);
+      },
+    )
+      .parseAsync(shellArgs(line), { from: "user" })
+      .catch((error: unknown) => {
+        throw new Error(`${line}: ${String(error)}`);
+      });
+    expect({ line, requests }).toEqual({
+      line,
+      requests: [
         expect.objectContaining({
-          project: "my shop",
-          target: target!.kind,
-          ...(target!.kind === "preview"
-            ? target!.branch !== undefined &&
-              generatedPreviewName(target!.branch) === target!.name
-              ? { branch: target!.branch }
-              : { deployment: target!.name }
+          project,
+          target: target.kind,
+          ...(target.kind === "preview"
+            ? target.branch !== undefined &&
+              generatedPreviewName(target.branch) === target.name
+              ? { branch: target.branch }
+              : { deployment: target.name }
             : {}),
-          ...(path === "run" || path === "backup restore"
-            ? { job: "nightly-db" }
-            : {}),
+          ...(job !== undefined ? { job } : {}),
           ...(path === "backup restore" ? { backup: "latest" } : {}),
         }),
-      ]);
-    }
+      ],
+    });
+  }
+}, 60_000);
+
+test("a line the shell refuses, such as one with an unmatched quote, is refused at once", () => {
+  expect(() => shellArgs("rig up preview 'feature")).toThrow(
+    "the shell refused",
+  );
+  expect(shellArgs("rig up preview 'it'\\''s' --project \"a b\"")).toEqual([
+    "up",
+    "preview",
+    "it's",
+    "--project",
+    "a b",
+  ]);
 });

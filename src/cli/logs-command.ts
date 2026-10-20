@@ -4,6 +4,7 @@ import { RigError } from "../domain/errors";
 import type { ExecuteCommand } from "./commands";
 import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
+import { shellWord } from "../domain/target-selector";
 import { LONG_LINE_CHARS } from "./output";
 
 interface LogsOptions {
@@ -18,6 +19,8 @@ interface LogsOptions {
   json?: boolean;
   full?: boolean;
 }
+/** How many entries rig logs reads unless --lines says otherwise. */
+const LINES = 50;
 /** The most --service names one request carries, as the control plane allows. */
 const MAX_SERVICES = 64;
 const TIME_HELP = `
@@ -52,11 +55,12 @@ export function addLogsCommand(
     execute: ExecuteCommand;
     /** The clock `--since 1h` and `--until 1h` count back from. */
     now: () => Date;
-    /** The grammar's one check of a Target selection; a hint that retypes the command keeps the --service names. */
+    /** The grammar's one check of a Target selection; a hint that retypes the command keeps `flags`. */
     targetRequest(
       target: string | undefined,
       branch: string | undefined,
-      options: { project?: string; deployment?: string; service?: string[] },
+      options: { project?: string; deployment?: string },
+      flags: string[],
     ): RuntimeCommand;
     /** The grammar's argument parsers, shared with every command. */
     nonEmpty(value: string): string;
@@ -88,7 +92,7 @@ export function addLogsCommand(
       "--lines <count>",
       "Number of recent entries, counted after filtering",
       positiveInteger,
-      50,
+      LINES,
     )
     .option(
       "--service <name>",
@@ -136,7 +140,7 @@ export function addLogsCommand(
         const logFilter = logsFilter(options, now());
         await execute(
           {
-            ...targetRequest(target, branch, options),
+            ...targetRequest(target, branch, options, typedFlags(options)),
             lines: options.lines,
             ...(logFilter ? { logFilter } : {}),
           },
@@ -150,6 +154,21 @@ export function addLogsCommand(
     );
 }
 
+/** The flags as the user gave them, shell-quoted, for a hint that retypes the command. */
+function typedFlags(options: LogsOptions): string[] {
+  const valued = (flag: string, value: string | number | undefined) =>
+    value === undefined ? [] : [flag, shellWord(String(value))];
+  return [
+    ...(options.service ?? []).flatMap((name) => valued("--service", name)),
+    ...valued("--stream", options.stream),
+    ...valued("--lines", options.lines === LINES ? undefined : options.lines),
+    ...valued("--since", options.since),
+    ...valued("--until", options.until),
+    ...(options.follow ? ["--follow"] : []),
+    ...(options.full ? ["--full"] : []),
+    ...(options.json ? ["--json"] : []),
+  ];
+}
 /** The filter the flags ask for, or undefined when none narrows the read, so an unfiltered request is unchanged. */
 function logsFilter(
   options: LogsOptions,

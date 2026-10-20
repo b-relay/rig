@@ -4,6 +4,7 @@ import type { RuntimeCommand } from "../src/daemon/protocol";
 import { runRigCli } from "../src/cli/rig";
 import { formatBytes } from "../src/domain/bytes";
 import { generatedPreviewName } from "../src/domain/target-selector";
+import { shellArgs } from "./support/shell-args";
 
 /** `rig backup list` and `rig backup restore` (ADR 0017) with an injected client: no daemon, filesystem or terminal. */
 
@@ -320,7 +321,7 @@ test("restore guidance names the Project and Target the restore was given, as co
       `Pass --yes to restore without asking: ${retry}.`,
     );
     const retried = harness({ interactive: false, ended: "failed", target });
-    expect(await runRigCli(retry.split(" ").slice(1), retried.deps)).toBe(1);
+    expect(await runRigCli(shellArgs(retry), retried.deps)).toBe(1);
     const sent = retried.requests.find((r) => r.action === "restore");
     const first = headless.requests.find((r) => r.action === "backups");
     expect(sent).toMatchObject({

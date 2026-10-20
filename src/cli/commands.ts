@@ -12,7 +12,7 @@ import { reported } from "./failure";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { rigCommand, type RigCommandPath } from "../domain/rig-command";
-import { generatedPreviewName, shellWord } from "../domain/target-selector";
+import { generatedPreviewName } from "../domain/target-selector";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";
@@ -92,13 +92,10 @@ export function createRigCommand(
   addLogsCommand(command, {
     execute,
     now,
-    targetRequest: (target, branch, options) =>
+    targetRequest: (target, branch, options, flags) =>
       targetRequest("logs", target, branch, cwd, options, {
         path: "logs",
-        flags: (options.service ?? []).flatMap((name) => [
-          "--service",
-          shellWord(name),
-        ]),
+        flags,
       }),
     nonEmpty,
     positiveInteger,
@@ -575,7 +572,7 @@ function addBackupCommands(
   backup
     .command("list")
     .description(
-      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable).",
+      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable). A job named like a Target is given with its Target: rig backup list preview stable lists the job preview in stable.",
     )
     .argument("[job]", "Backup job name under jobs in rig.yaml")
     .argument(
@@ -601,12 +598,18 @@ function addBackupCommands(
         options: ScopeOptions,
       ) => {
         // A Target's name alone lists that Target's backups (rig backup list stable, rig backup list preview <branch>); a
-        // job named like a Target is listed with its Target too: rig backup list stable stable.
+        // job named like a Target is listed with its Target too: rig backup list stable stable, and a job named preview
+        // as rig backup list preview stable or rig backup list preview preview --deployment <name>. So after preview, a
+        // Target's word is that Target, never a Branch.
+        const targets = ["working", "stable", PREVIEW_SELECTOR];
         const targetFirst =
           first !== undefined &&
-          ["working", "stable", PREVIEW_SELECTOR].includes(first) &&
-          (second === undefined || first === PREVIEW_SELECTOR) &&
-          third === undefined;
+          targets.includes(first) &&
+          third === undefined &&
+          (second === undefined ||
+            (first === PREVIEW_SELECTOR &&
+              !["working", "stable"].includes(second) &&
+              !(second === PREVIEW_SELECTOR && options.deployment)));
         const [job, target, branch] = targetFirst
           ? [undefined, first, second]
           : [first, second, third];
@@ -622,6 +625,7 @@ function addBackupCommands(
             : targetRequest("backups", target, branch, cwd, options, {
                 path: "backup list",
                 ...(job !== undefined ? { job } : {}),
+                ...(options.json ? { flags: ["--json"] } : {}),
               });
         await execute(
           { ...request, ...(job !== undefined ? { job } : {}) },
@@ -677,7 +681,12 @@ function addBackupCommands(
           branch,
           cwd,
           options,
-          { path: "backup restore", job, backup: id },
+          {
+            path: "backup restore",
+            job,
+            backup: id,
+            ...(options.yes ? { flags: ["--yes"] } : {}),
+          },
         );
         await execute(
           { ...request, job, backup: id },

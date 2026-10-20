@@ -238,7 +238,25 @@ export function createLaunchAgentCaddyJob(options: {
     log: options.paths.jobLog,
     keepAlive: "always",
   });
-  const observe = () => observeLaunchd(launchctl, `${domain}/${label}`);
+  const target = `${domain}/${label}`;
+  const observe = () => observeLaunchd(launchctl, target);
+  /** Boots the job out and waits until launchd confirms it gone (print exits 113), as everywhere else: a bootout's reply
+   * comes while the old process may still be draining, and its label stays loaded until it has. A refused or unfinished
+   * bootout fails closed, leaving the job's plist for the next attempt. */
+  async function bootOut(): Promise<void> {
+    const absent = async () =>
+      (await launchctl(["print", target]).catch(() => undefined))?.code ===
+      LAUNCHCTL_NOT_FOUND;
+    if (await absent()) return;
+    await launchctl(["bootout", target]).catch(() => undefined);
+    if (!(await until(absent, Math.min(deadlineMs, 20_000))))
+      throw new RigError(
+        "LAUNCHD",
+        `Rig's Caddy job ${label} is still loaded, or launchd could not say, after it was asked to stop.`,
+        `Run launchctl bootout ${target}, confirm launchctl print ${target} says it could not find the service, then retry.`,
+        { label, state: (await observe()).state },
+      );
+  }
   return {
     description: plistPath,
     matches: async () =>
@@ -263,9 +281,11 @@ export function createLaunchAgentCaddyJob(options: {
       const loaded = (await observe()).state === "running";
       const changed = existing !== plist || !loaded;
       if (changed) {
+        // The label is free only once the old job has drained; until then the old plist stays, so a stop that fails leaves
+        // the next install a difference to act on.
+        await bootOut();
         await mkdir(dirname(plistPath), { recursive: true });
         await writeFile(plistPath, plist, { mode: 0o644 });
-        await launchctl(["bootout", `${domain}/${label}`]).catch(() => {});
         const result = await launchctl(["bootstrap", domain, plistPath]);
         if (result.code !== 0)
           throw new RigError(
@@ -279,23 +299,10 @@ export function createLaunchAgentCaddyJob(options: {
         throw startFailure(options.paths, deadlineMs);
       return { changed };
     },
-    /** Removed only once launchd confirms the job is gone (print exits 113), as everywhere else: a refused or unfinished
-     * bootout leaves a Caddy serving stale routes, so it fails closed and keeps the plist for the next attempt. */
+    /** Removed only once launchd confirms the job is gone: a refused or unfinished bootout leaves a Caddy serving stale
+     * routes, so it fails closed and keeps the plist for the next attempt. */
     async remove() {
-      const target = `${domain}/${label}`;
-      const absent = async () =>
-        (await launchctl(["print", target]).catch(() => undefined))?.code ===
-        LAUNCHCTL_NOT_FOUND;
-      if (!(await absent())) {
-        await launchctl(["bootout", target]).catch(() => undefined);
-        if (!(await until(absent, Math.min(deadlineMs, 20_000))))
-          throw new RigError(
-            "LAUNCHD",
-            `Rig's Caddy job ${label} is still loaded, or launchd could not say, after it was asked to stop.`,
-            `Run launchctl bootout ${target}, confirm launchctl print ${target} says it could not find the service, then retry.`,
-            { label, state: (await observe()).state },
-          );
-      }
+      await bootOut();
       await rm(plistPath, { force: true });
     },
   };

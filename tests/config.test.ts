@@ -3061,7 +3061,7 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
       },
     }),
   ).toBe(
-    "Fix services.web.command: A reference sits inside backquotes. Write the command substitution as $(...) instead of backquotes.",
+    "Fix services.web.command: A reference sits in or after backquotes. Write the command substitution as $(...) instead of backquotes.",
   );
 });
 

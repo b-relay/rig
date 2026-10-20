@@ -290,34 +290,14 @@ export function referenceResolver(
   };
 }
 /** `value` as literal data at `position` in the command at config path `at`, or ConfigError `unsafe_reference` where Rig
- * cannot keep it literal, its context naming the `place`. Arithmetic takes only a whole number and `[[ ... ]]` only a word
- * that needs no quoting, since bash evaluates a word there as an expression whose array subscripts run commands. */
+ * cannot keep it literal, its context naming the `place`. */
 function shellInsert(value: string, position: ShellPosition, at: string) {
-  const refuse = (place: string, hint: string) =>
-    new ConfigError(
-      `A reference in ${at} sits ${place}, where Rig cannot keep its value literal.`,
+  if (position.kind === "refused")
+    throw new ConfigError(
+      `A reference in ${at} sits ${position.place}, where Rig cannot keep its value literal.`,
       "unsafe_reference",
-      { path: at, place },
-      hint,
+      { path: at, place: position.place },
+      position.hint,
     );
-  switch (position.kind) {
-    case "refused":
-      throw refuse(position.place, position.hint);
-    case "arithmetic":
-      if (!/^[+-]?\d+$/.test(value))
-        throw refuse(
-          "in arithmetic but is not a whole number",
-          "Use only whole numbers, such as a port, in arithmetic.",
-        );
-      return value;
-    case "test":
-      if (!shellSafe.test(value))
-        throw refuse(
-          "in [[ ... ]] but needs quoting",
-          "Use [ ... ] or test, which compare it as text.",
-        );
-      return value;
-    case "word":
-      return shellLiteral(value, position.quote);
-  }
+  return shellLiteral(value, position.quote);
 }

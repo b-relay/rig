@@ -8,18 +8,18 @@ import { referenceResolver } from "../src/config/references";
 /** Text that runs a command, expands a variable or closes a quote if the shell ever reads it as code. Each command it could
  * run leaves a file behind in the directory the command runs in. */
 const HOSTILE = "$(touch ran-dollar) `touch ran-backquote` $HOME ' \" \\ ;x";
+/** An array subscript, whose command runs when bash evaluates the text as arithmetic. */
+const INDEX = "b[$(touch ran-index)]";
 const WORKSPACE = "/repos/ws$(touch ran-workspace)";
+const environment = { VALUE: HOSTILE, INDEX, NAME: "INDEX", PORT: "4000" };
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-const resolver = () =>
+const shell = (command: string) =>
   referenceResolver(
-    {
-      environment: { VALUE: HOSTILE },
-      services: { web: { command: "serve", ports: { http: 4000 } } },
-    },
+    { environment, services: { web: { command: "serve" } } },
     {
       target: "working",
       workspace: WORKSPACE,
@@ -28,20 +28,18 @@ const resolver = () =>
       data: () => "/data",
       port: () => 4000,
     },
-  );
-const shell = (command: string, at = "build") =>
-  resolver().shell(command, at).value;
-/** What /bin/sh prints for `command` in an empty directory, and the files it left there. */
+  ).shell(command, "build").value;
+/** What /bin/sh prints for `command` in an empty directory, with the variables a Service with `environment` gets, and the
+ * files it left there. */
 async function run(command: string) {
   const directory = await mkdtemp(join(tmpdir(), "rig-shell-ref-"));
   roots.push(directory);
   const result = Bun.spawnSync(["/bin/sh", "-c", command], {
     cwd: directory,
-    env: { PATH: process.env.PATH!, HOME: "/home/expanded" },
+    env: { PATH: process.env.PATH!, HOME: "/home/expanded", ...environment },
   });
   return {
     stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
     files: await readdir(directory),
   };
 }
@@ -59,24 +57,24 @@ test.each([
   ],
   ["a here-string", 'cat <<< ${environment.VALUE}; cat <<<"${rig.workspace}"'],
   [
-    "the line after an unquoted heredoc",
-    "cat <<EOF\n$HOME\nEOF\nprintf '%s\\n' ${environment.VALUE} ${rig.workspace}",
-  ],
-  [
-    "the line after a quoted, tab-stripped heredoc in a command substitution",
-    "x=$(cat <<-'EOF'\n\tEOF in the body ends nothing\n\tEOF\n); printf '%s\\n' ${environment.VALUE} \"${rig.workspace}\"",
-  ],
-  [
-    "the line after two heredocs on one line",
-    "cat <<A; cat <<\"B\"\nA\nB\nprintf '%s\\n' ${environment.VALUE} ${rig.workspace}",
-  ],
-  [
-    "a line continued after a word",
+    "a line continued after a blank",
     "printf '%s\\n' ${environment.VALUE} \\\n  ${rig.workspace}",
   ],
   [
     "the line after a comment holding quotes",
-    "# it's \"quoted\" `here`\nprintf '%s\\n' ${environment.VALUE} ${rig.workspace}",
+    "# it's \"quoted\" `here` <<EOF $((\nprintf '%s\\n' ${environment.VALUE} ${rig.workspace}",
+  ],
+  [
+    "a [ ... ] test and a simple ${...} expansion",
+    "[ -n \"$${HOME:-none}\" ] && [ ${rig.workspace} != x ] && printf '%s\\n' ${environment.VALUE} ${rig.workspace}",
+  ],
+  [
+    "an array element and a for list",
+    "a=(${environment.VALUE}); printf '%s\\n' \"$${a}\"; for w in ${rig.workspace}; do printf '%s\\n' \"$w\"; done",
+  ],
+  [
+    "if, a subshell and a word that only reads case",
+    "if (true) then printf '%s\\n' \"$(printf '%s' ${environment.VALUE})\"; fi; printf '%s\\n' \"$(printf case)${rig.workspace}\" | sed 's/^case//'",
   ],
 ])("a reference in %s reaches /bin/sh as literal data", async (_, command) => {
   const ran = await run(shell(command));
@@ -87,33 +85,68 @@ test.each([
   ]);
 });
 
-test("a port in arithmetic or [[ ... ]] stays a number, and an escaped character before a reference is still the author's", async () => {
-  const command = shell(
-    "echo $(( ${port} + 1 )); (( ${port} > 1 )) && [[ ${port} -eq 4000 ]] && echo yes; echo \\$x${port}",
-    "services.web.command",
-  );
-  expect(command).toBe(
-    "echo $(( 4000 + 1 )); (( 4000 > 1 )) && [[ 4000 -eq 4000 ]] && echo yes; echo \\$x4000",
-  );
-  const ran = await run(command);
-  expect(ran.stdout).toBe("4001\nyes\n$x4000\n");
+test("an ordinary argument that reads case is no case statement", async () => {
+  const command = shell('printf "%s" "$(printf "%s" case ${rig.workspace})"');
+  expect((await run(command)).stdout).toBe(`case${WORKSPACE}`);
 });
 
+/** Places where a quoted value still runs as code under /bin/sh, as the earlier quoting inserted it there; Rig refuses each. */
+const RUNS_QUOTED: [string, string, string][] = [
+  [
+    "a heredoc formed across a line continuation",
+    "cat <\\\n<EOF\n${environment.VALUE}\nEOF",
+    "cat <\\\n<EOF\n'$(touch ran-dollar)'\nEOF",
+  ],
+  [
+    "arithmetic formed across a line continuation",
+    "echo $\\\n(( ${environment.INDEX} ))",
+    `echo $\\\n(( '${INDEX}' ))`,
+  ],
+  ["an array subscript", "a[${environment.INDEX}]=1", `a['${INDEX}']=1`],
+  [
+    "a substring offset",
+    'x=hello; echo "$${x: ${environment.INDEX}}"',
+    `x=hello; echo "\${x: b[\\$(touch ran-index)]}"`,
+  ],
+  [
+    "a variable name compared in [[ ... ]]",
+    "[[ ${environment.NAME} -eq 0 ]]",
+    "[[ INDEX -eq 0 ]]",
+  ],
+  [
+    "$[...] arithmetic",
+    "echo $[ ${environment.INDEX} ]",
+    `echo $[ '${INDEX}' ]`,
+  ],
+  [
+    "a for (( ... )) loop",
+    "for (( i = ${environment.INDEX}; i < 0; i++ )); do :; done",
+    `for (( i = '${INDEX}'; i < 0; i++ )); do :; done`,
+  ],
+  [
+    "a command substitution inside a subscript",
+    "a[$(printf '%s' ${environment.INDEX})]=1",
+    `a[$(printf '%s' '${INDEX}')]=1`,
+  ],
+  [
+    "an unquoted heredoc",
+    "cat <<EOF\n${environment.VALUE}\nEOF",
+    "cat <<EOF\n'$(touch ran-dollar)'\nEOF",
+  ],
+];
+test.each(RUNS_QUOTED)(
+  "a reference in %s is refused, since a quoted value runs there",
+  async (_, command, quoted) => {
+    expect(() => shell(command)).toThrow(
+      expect.objectContaining({ code: "unsafe_reference" }),
+    );
+    expect((await run(quoted)).files.length).toBeGreaterThan(0);
+  },
+);
+
 test.each([
-  ["an unquoted heredoc body", "cat <<EOF\n${environment.VALUE}\nEOF"],
   ["a quoted heredoc body", "cat <<'EOF'\nkeep ${rig.workspace}\nEOF"],
-  ["a tab-stripped heredoc body", "cat <<-EOF\n\t${rig.workspace}\n\tEOF"],
-  ["a heredoc's delimiter", "cat <<${environment.VALUE}\nbody\n"],
-  ["the rest of a heredoc's line", "cat <<EOF; echo ${rig.workspace}\nEOF"],
-  ["a second heredoc's body", "cat <<A <<B\nA\n${environment.VALUE}\nB"],
-  [
-    "a heredoc body after a line that only resembles its delimiter",
-    "cat <<EOF\nEOF \n\tEOF\n${environment.VALUE}\nEOF",
-  ],
-  [
-    "a heredoc body after a backslash joined its delimiter to the line before",
-    "cat <<EOF\nline\\\nEOF\n${environment.VALUE}\nEOF",
-  ],
+  ["the line after a heredoc", "cat <<EOF\nbody\nEOF\necho ${rig.workspace}"],
   [
     "a heredoc in a command substitution",
     'x="$(cat <<EOF\n${rig.workspace}\nEOF\n)"',
@@ -121,8 +154,16 @@ test.each([
   ["$'...' quoting", "echo $'it\\'s ${environment.VALUE}'"],
   ["a comment", "echo ok # ${environment.VALUE}"],
   [
-    "a comment after a word continued onto its line",
+    "a comment after a line continued after a blank",
     "echo ok \\\n# ${environment.VALUE}",
+  ],
+  [
+    "a word continued onto the next line",
+    "printf '%s\\n' x\\\n#${environment.VALUE}",
+  ],
+  [
+    "double quotes continued onto the next line",
+    'echo "a\\\n${rig.workspace}"',
   ],
   ["the position after a backslash", "echo \\${environment.VALUE}"],
   [
@@ -130,16 +171,21 @@ test.each([
     'echo "\\${rig.workspace}"',
   ],
   ["backquotes", "echo `echo ${environment.VALUE}`"],
+  ["the command after backquotes", "echo `date`; echo ${environment.VALUE}"],
+  ["a case statement", "case a in a) echo ${environment.VALUE};; esac"],
   [
     "a case statement inside a command substitution",
     "x=\"$(case a in a) echo '${environment.VALUE}';; esac)\"",
   ],
-  [
-    "arithmetic, for a value that is not a number",
-    "echo $(( ${environment.VALUE} ))",
-  ],
+  ["arithmetic, even for a number", "echo $(( ${environment.PORT} + 1 ))"],
   ["an arithmetic command", "(( ${rig.workspace} ))"],
-  ["[[ ... ]], for a value that needs quoting", "[[ ${rig.workspace} -eq 1 ]]"],
+  ["the command after [[ ... ]]", "[[ -n x ]] && echo ${environment.VALUE}"],
+  ["a ${...} expansion", 'echo "$${HOME:-${environment.VALUE}}"'],
+  [
+    "the command after a ${...} expansion with a pattern",
+    'echo "$${HOME#/}" ${rig.workspace}',
+  ],
+  ["a pattern in a word", "ls file[${environment.VALUE}]"],
 ])("a reference in %s is refused, naming the field", (_, command) => {
   expect(() => shell(command)).toThrow(
     expect.objectContaining({
@@ -150,13 +196,6 @@ test.each([
       hint: expect.any(String),
     }),
   );
-});
-
-test("a word continued onto the next line keeps a # there as part of it, so the reference after it is not in a comment", async () => {
-  const command = shell("printf '%s\\n' x\\\n#${environment.VALUE}");
-  const ran = await run(command);
-  expect(ran.files).toEqual([]);
-  expect(ran.stdout).toBe(`x#${HOSTILE}\n`);
 });
 
 test("a build that writes a heredoc from references is refused when the config is parsed, with the environment as the way to pass them", () => {
@@ -170,7 +209,7 @@ test("a build that writes a heredoc from references is refused when the config i
     }),
   ).toThrow(
     expect.objectContaining({
-      hint: 'Fix build: A reference sits in a heredoc. Declare it in environment, such as NAME: ${...}, and write "$NAME" instead.',
+      hint: 'Fix build: A reference sits in or after a heredoc (<<). Declare it in environment, such as NAME: ${...}, and write "$NAME" instead.',
     }),
   );
   // The way the hint names: the value reaches the heredoc as a variable, which the shell expands as data.

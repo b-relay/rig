@@ -1338,9 +1338,11 @@ malformed record rather than resolved against the daemon's working directory,
 and a command that sends a relative path is refused as an invalid request
 (`rig` resolves paths against your directory before sending).
 
-The state file carries a format version (currently 5). This `rigd` also reads
-version 4, the format before fixed Target names, and saves it as version 5 on its
-next write. A file written by a newer `rigd`, or by one older than version 4, is
+The state file carries a format version (currently 9). This `rigd` also reads
+versions 4 to 8 and saves them as version 9 on its next write; version 4, the
+format before fixed Target names, is read with the names fixed, and a failed
+health check's output that a version before 9 recorded in Activity, before
+Rig redacted it, is withheld. A file written by a newer `rigd`, or by one older than version 4, is
 refused as `STATE_VERSION`, naming both versions, rather than loaded with fields
 dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
@@ -2744,30 +2746,35 @@ string `test` that resolves to an HTTP URL is handed to the HTTP probe
 unquoted, and each argument of a `CMD` test is quoted whole. Values substituted into `environment`, `domain`, `env_file`, and
 `bin` are never quoted.
 
-Some places in a command have no quoting that keeps a value literal, so a
-reference there is refused (`unsafe_reference`) when the config is read,
-before anything runs:
+Rig accepts a reference only where it reads the command completely: a word
+of a simple command, bare or inside the author's `'...'` or `"..."`,
+including inside `$(...)` and `(...)`. It reads quotes, `$(...)`, `(...)`,
+`;`, `&`, `|`, redirections, a here-string (`<<< ${...}`), comments, simple
+expansions such as `$NAME`, `$${NAME}` and `$${NAME:-default}`, `[ ... ]`
+tests, `if`, `for` and `while`, and a line continued with a backslash after a
+blank. Anywhere else a reference is refused (`unsafe_reference`) when the
+config is read, before anything runs, because no quoting keeps a value
+literal there or Rig cannot be sure what the shell will read:
 
-- a heredoc (`<<EOF`, `<<'EOF'`, `<<-EOF`): its delimiter, the rest of its
-  line, and its body up to the delimiter line. In an unquoted heredoc the
-  shell would expand `$(...)`, backquotes and `$VAR` in the value, and in a
-  quoted one Rig's quotes would become part of the text. Pass the value
-  through the environment instead: declare it, such as
-  `environment: { WORKSPACE: "${rig.workspace}" }`, and write `$WORKSPACE`
-  in the heredoc; the shell expands a variable's value as data, never as
-  code. A here-string (`<<< ${...}`) is an ordinary word and is quoted.
-- `$'...'` quoting, a backquoted command (write `$(...)`), a comment, and
-  the position right after a backslash (write `$${NAME}` for a literal
-  `${NAME}`).
-- anything after shell syntax Rig cannot follow with certainty: a `case`
-  statement inside `$(...)` or `(...)`, or a heredoc whose line ends inside
-  parentheses its `<<` is not in.
-- arithmetic (`$((...))` or `((...))`) takes only a value that is a whole
-  number, such as `${port}`, and `[[ ... ]]` only a value that needs no
-  quoting: bash evaluates a word there as an arithmetic expression, which
-  can run commands. Use `[ ... ]` or `test` to compare other values. These
-  two depend on the value, so a workspace path with a space is refused there
-  when the Target is planned.
+- in or after a heredoc (`<<EOF`, `<<'EOF'`): in an unquoted one the shell
+  would expand `$(...)`, backquotes and `$VAR` in the value, and in a quoted
+  one Rig's quotes would become part of the text;
+- in or after arithmetic (`$((...))`, `((...))`, `$[...]`, `for ((...))`)
+  and `[[ ... ]]`, where bash evaluates a word as an expression whose array
+  subscripts run commands, even a word that only names a variable;
+- in an array subscript or pattern (`a[...]`, `file[...]`), or inside a
+  `$${...}` expansion, such as a substring offset; and after a `$${...}`
+  expansion other than a simple one;
+- in or after a `case` statement, `$'...'` quoting or backquotes (write
+  `$(...)`);
+- in a comment, right after a backslash (write `$${NAME}` for a literal
+  `${NAME}`), and after a line continued inside a word or quotes, where the
+  shell joins the lines into one token.
+
+Pass such a value through the environment instead: declare it, such as
+`environment: { WORKSPACE: "${rig.workspace}" }`, and write `"$WORKSPACE"`
+in the command or `$WORKSPACE` in a heredoc; the shell expands a variable's
+value as data, never as code (outside arithmetic).
 
 Rig makes each value one literal word; a command that runs its own
 arguments as code, such as `eval`, `sh -c` or `let`, still does so.

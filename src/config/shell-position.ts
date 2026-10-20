@@ -1,61 +1,55 @@
-/** Where a reference sits in text /bin/sh -c will run, as far as Rig must know to insert a value there as literal data. A
- * `word` is part of an ordinary shell word, bare or inside the author's quote; `arithmetic` is inside `$((...))` or
- * `((...))` and `test` inside `[[ ... ]]`, where bash may evaluate a word as an arithmetic expression; `refused` is a place
- * Rig cannot keep a value literal, with what it is and what to write instead. */
+/** Where a reference sits in text /bin/sh -c will run, as far as Rig must know to insert a value there as literal data:
+ * part of an ordinary word of a simple command, bare or inside the author's quote, or `refused` with what the place is and
+ * what to write instead. */
 export type ShellPosition =
   | { kind: "word"; quote: "'" | '"' | undefined }
-  | { kind: "arithmetic" }
-  | { kind: "test" }
   | { kind: "refused"; place: string; hint: string };
 
 const VIA_ENVIRONMENT =
   'Declare it in environment, such as NAME: ${...}, and write "$NAME" instead.';
-/** Each place no quoting keeps a value literal, short enough to sit in a config issue with its remedy. */
-const REFUSED = {
-  heredoc: { place: "in a heredoc", hint: VIA_ENVIRONMENT },
-  ansi: {
-    place: "inside $'...'",
-    hint: "Put it inside '...' or \"...\" instead.",
-  },
-  comment: {
-    place: "in a comment",
-    hint: "Remove it from the comment, or write $${...} for literal text.",
-  },
-  escape: {
-    place: "after a backslash",
-    hint: "Remove the backslash; $${NAME} writes a literal ${NAME}.",
-  },
-  backquote: {
-    place: "inside backquotes",
-    hint: "Write the command substitution as $(...) instead of backquotes.",
-  },
-} as const;
+const refused = (place: string, hint = VIA_ENVIRONMENT): ShellPosition => ({
+  kind: "refused",
+  place,
+  hint,
+});
 type Frame = {
-  /** A command of its own; `$((`/`((` arithmetic; a parenthesis inside arithmetic. */
-  kind: "command" | "arithmetic" | "group";
-  quote: "'" | '"' | "$'" | undefined;
-  /** Inside `[[ ... ]]`. */
-  test: boolean;
+  /** A `(...)` subshell, after which a command may follow, or a `$(...)` substitution, which is part of a word. */
+  kind: "subshell" | "substitution";
+  quote: "'" | '"' | undefined;
+  /** An unquoted `[` is open in the current word: an array subscript, which bash evaluates as arithmetic, or a pattern. */
+  subscript: boolean;
 };
-type Heredoc = { delimiter: string; strip: boolean; expands: boolean };
 const BLANK = /[ \t]/;
 const SEPARATOR = /[\s;&|()<>]/;
+/** Reserved words after which the next word starts a command again. */
+const LEADING_KEYWORDS = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "do",
+  "while",
+  "until",
+  "!",
+  "{",
+  "time",
+]);
+/** `${...}` Rig reads whole: a name, `#name`, a positional or special parameter, optionally with a default, assignment,
+ * alternative or error word made of plain characters. */
+const SIMPLE_EXPANSION =
+  /^(?:#?[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?$!-])(?::?[-=+?][^'"`$\\{}[\]]*)?$/;
 
 /** The position at the end of `prefix`, raw config text in which `${...}` is a reference already resolved to one literal word
- * part and `$${` a shell `${`. Nested `$(...)` and `(...)` each start a command with no quote open. Anything Rig cannot follow
- * with certainty, such as a `case` inside `$(...)` or a heredoc it cannot find the end of, refuses every later reference. */
+ * part and `$${` a shell `${`. Rig reads only what it models completely: words, quotes, `$(...)` and `(...)` commands,
+ * simple `${...}` expansions, redirections, comments, and a line continued after a blank. Anything else before the
+ * position, such as a heredoc, arithmetic, `[[`, `case`, `$'...'` or backquotes, refuses it, and so does a position inside
+ * a comment, a `[...]` subscript or a `${...}` expansion, or right after a backslash. */
 export function shellPosition(prefix: string): ShellPosition {
-  const frames: Frame[] = [{ kind: "command", quote: undefined, test: false }];
-  const heredocs: Heredoc[] = [];
-  let backquoted = false;
+  const frames: Frame[] = [
+    { kind: "subshell", quote: undefined, subscript: false },
+  ];
   let wordStart = true;
-  /** How many frames were open where the pending heredocs started. */
-  let depth = 1;
-  const lost = (what: string): ShellPosition => ({
-    kind: "refused",
-    place: `after ${what}`,
-    hint: VIA_ENVIRONMENT,
-  });
+  let commandStart = true;
   const at = (i: number, text: string) => prefix.startsWith(text, i);
   const ends = (i: number) => i >= prefix.length || SEPARATOR.test(prefix[i]!);
   for (let i = 0; i < prefix.length; i++) {
@@ -65,42 +59,61 @@ export function shellPosition(prefix: string): ShellPosition {
       if (char === "'") frame.quote = undefined;
       continue;
     }
-    if (frame.quote === "$'") {
-      if (char === "\\") i++;
-      else if (char === "'") frame.quote = undefined;
-      continue;
-    }
     if (char === "\\") {
       if (i + 1 === prefix.length)
-        return { kind: "refused", ...REFUSED.escape };
-      // An escaped newline joins two lines and is no part of a word.
-      if (prefix[i + 1] !== "\n") wordStart = false;
+        return refused(
+          "after a backslash",
+          "Remove the backslash; $${NAME} writes a literal ${NAME}.",
+        );
+      if (prefix[i + 1] === "\n") {
+        // A continuation is a blank only between words; anywhere else it joins text the shell then reads as one token.
+        if (
+          frame.quote !== undefined ||
+          !(i === 0 || /\s/.test(prefix[i - 1]!))
+        )
+          return refused(
+            "after a line continued inside a word or quotes",
+            "Put a blank before a backslash that continues a line, and keep quoted text on one line.",
+          );
+        i++;
+        continue;
+      }
+      wordStart = false;
+      commandStart = false;
       i++;
       continue;
     }
-    if (char === "`") {
-      backquoted = !backquoted;
-      wordStart = false;
-      continue;
-    }
+    if (char === "`")
+      return refused(
+        "in or after backquotes",
+        "Write the command substitution as $(...) instead of backquotes.",
+      );
     if (char === "$") {
       wordStart = false;
-      if (at(i, "$${")) i += 1;
-      else if (at(i, "${")) {
+      commandStart = false;
+      if (at(i, "$${")) {
+        const close = prefix.indexOf("}", i);
+        if (close === -1) return refused("in a ${...} expansion");
+        if (!SIMPLE_EXPANSION.test(prefix.slice(i + 3, close)))
+          return refused("in or after a ${...} expansion Rig cannot read");
+        i = close;
+      } else if (at(i, "${")) {
         // A reference resolved before this one: one literal word part.
         const close = prefix.indexOf("}", i);
         i = close === -1 ? prefix.length : close;
-      } else if (at(i, "$((")) {
-        frames.push({ kind: "arithmetic", quote: undefined, test: false });
-        i += 2;
-      } else if (at(i, "$(")) {
-        frames.push({ kind: "command", quote: undefined, test: false });
+      } else if (at(i, "$((") || at(i, "$["))
+        return refused("in or after arithmetic");
+      else if (at(i, "$(")) {
+        frames.push({
+          kind: "substitution",
+          quote: undefined,
+          subscript: false,
+        });
         wordStart = true;
-        i += 1;
-      } else if (at(i, "$'") && frame.quote === undefined) {
-        frame.quote = "$'";
-        i += 1;
-      }
+        commandStart = true;
+        i++;
+      } else if (at(i, "$'") && frame.quote === undefined)
+        return refused("in or after $'...'");
       continue;
     }
     if (frame.quote === '"') {
@@ -110,147 +123,69 @@ export function shellPosition(prefix: string): ShellPosition {
     if (char === "'" || char === '"') {
       frame.quote = char;
       wordStart = false;
+      commandStart = false;
       continue;
     }
-    if (frame.kind !== "command") {
-      if (char === "(")
-        frames.push({ kind: "group", quote: undefined, test: false });
-      else if (char === ")") {
-        if (frame.kind === "arithmetic" && prefix[i + 1] === ")") i++;
-        if (frames.length > 1) frames.pop();
-      }
-      continue;
-    }
-    if (char === "\n") {
+    if (char === "\n" || char === ";" || char === "&" || char === "|") {
       wordStart = true;
-      if (!heredocs.length) continue;
-      if (depth !== frames.length || backquoted)
-        return lost("a heredoc Rig cannot follow");
-      const end = heredocBodiesEnd(prefix, i + 1, heredocs.splice(0));
-      if (end === undefined) return { kind: "refused", ...REFUSED.heredoc };
-      i = end;
+      commandStart = true;
+      frame.subscript = false;
       continue;
     }
-    if (BLANK.test(char) || /[;&|]/.test(char)) {
+    if (BLANK.test(char)) {
       wordStart = true;
+      frame.subscript = false;
       continue;
     }
     if (char === "#" && wordStart) {
       const end = prefix.indexOf("\n", i);
-      if (end === -1) return { kind: "refused", ...REFUSED.comment };
-      // The newline that ends the comment may start a heredoc's body.
+      if (end === -1)
+        return refused(
+          "in a comment",
+          "Remove it from the comment, or write $${...} for literal text.",
+        );
       i = end - 1;
-      continue;
-    }
-    if (char === "<" && at(i, "<<") && !at(i, "<<<")) {
-      const operator = heredocOperator(prefix, i);
-      if (operator === "unfinished")
-        return { kind: "refused", ...REFUSED.heredoc };
-      if (operator === undefined) return lost("a heredoc with no delimiter");
-      if (heredocs.length && depth !== frames.length)
-        return lost("a heredoc Rig cannot follow");
-      depth = frames.length;
-      heredocs.push(operator.heredoc);
-      i = operator.end - 1;
-      wordStart = true;
       continue;
     }
     if (char === "<" || char === ">") {
       if (at(i, "<<<")) i += 2;
+      else if (at(i, "<<")) return refused("in or after a heredoc (<<)");
       wordStart = true;
+      frame.subscript = false;
       continue;
     }
     if (char === "(") {
-      if (wordStart && at(i, "((")) {
-        frames.push({ kind: "arithmetic", quote: undefined, test: false });
-        i++;
-      } else
-        frames.push({ kind: "command", quote: undefined, test: frame.test });
+      if (at(i, "((")) return refused("in or after arithmetic");
+      frames.push({ kind: "subshell", quote: undefined, subscript: false });
       wordStart = true;
+      commandStart = true;
       continue;
     }
     if (char === ")") {
-      if (frames.length > 1) frames.pop();
+      if (frames.length === 1) return refused("after an unmatched )");
+      // After a subshell a keyword may follow, as in `if (...) then`; after a substitution the word goes on.
+      commandStart = frames.pop()!.kind === "subshell";
       wordStart = false;
       continue;
     }
+    if (char === "[" && at(i, "[[") && ends(i + 2))
+      return refused("in or after [[ ... ]]");
     if (wordStart) {
-      // A `case` pattern's `)` would end a `$(...)` or `(...)` early in Rig's reading.
-      if (at(i, "case") && ends(i + 4) && frames.length > 1)
-        return lost("a case inside $(...) or (...)");
-      if (at(i, "[[") && ends(i + 2)) frame.test = true;
-      if (at(i, "]]") && ends(i + 2)) frame.test = false;
+      const word = /^[^\s;&|()<>'"\\`$]*/.exec(prefix.slice(i))![0];
+      if (commandStart && word === "case" && ends(i + 4))
+        return refused("in or after a case statement");
+      // A keyword or an assignment leaves the next word a command; `{` is taken as one wherever it stands alone.
+      commandStart = commandStart
+        ? (LEADING_KEYWORDS.has(word) && ends(i + word.length)) ||
+          /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(word)
+        : word === "{" && ends(i + 1);
     }
+    if (char === "[") frame.subscript = true;
+    else if (char === "]") frame.subscript = false;
     wordStart = false;
   }
-  if (backquoted) return { kind: "refused", ...REFUSED.backquote };
-  if (heredocs.length) return { kind: "refused", ...REFUSED.heredoc };
-  const frame = frames.at(-1)!;
-  if (frame.quote === "$'") return { kind: "refused", ...REFUSED.ansi };
-  if (frame.kind !== "command") return { kind: "arithmetic" };
-  if (frame.test) return { kind: "test" };
-  return { kind: "word", quote: frame.quote };
-}
-
-/** The heredoc a `<<` or `<<-` at `start` opens and the index after its delimiter word; "unfinished" when `prefix` ends
- * inside the operator or its word, or a reference makes part of the word; undefined when the word is missing. Quote removal gives the delimiter; any quoting in it
- * makes the body literal. */
-function heredocOperator(
-  prefix: string,
-  start: number,
-): { heredoc: Heredoc; end: number } | "unfinished" | undefined {
-  let i = start + 2;
-  const strip = prefix[i] === "-";
-  if (strip) i++;
-  while (i < prefix.length && BLANK.test(prefix[i]!)) i++;
-  let delimiter = "";
-  let quoted = false;
-  while (i < prefix.length && !SEPARATOR.test(prefix[i]!)) {
-    const char = prefix[i]!;
-    if (char === "'" || char === '"') {
-      const close = prefix.indexOf(char, i + 1);
-      if (close === -1) return "unfinished";
-      delimiter += prefix.slice(i + 1, close);
-      quoted = true;
-      i = close + 1;
-    } else if (char === "\\") {
-      if (i + 1 === prefix.length) return "unfinished";
-      delimiter += prefix[i + 1];
-      quoted = true;
-      i += 2;
-    } else if (char === "$" && prefix[i + 1] === "{") return "unfinished";
-    else {
-      delimiter += char;
-      i++;
-    }
-  }
-  if (i === prefix.length) return "unfinished";
-  if (delimiter === "") return undefined;
-  return { heredoc: { delimiter, strip, expands: !quoted }, end: i };
-}
-
-/** The index of the newline that ends the last of `heredocs`, whose bodies start at `start` one after another; undefined
- * when `prefix` ends inside one. In an expanding body a line ending in a backslash joins the next, and Rig never takes a
- * joined line as the delimiter, so it never ends a body before the shell does. */
-function heredocBodiesEnd(
-  prefix: string,
-  start: number,
-  heredocs: readonly Heredoc[],
-): number | undefined {
-  let line = start;
-  for (const heredoc of heredocs) {
-    let joined = false;
-    for (;;) {
-      const end = prefix.indexOf("\n", line);
-      if (end === -1) return undefined;
-      const text = prefix.slice(line, end);
-      const ended =
-        !joined &&
-        (heredoc.strip ? text.replace(/^\t+/, "") : text) === heredoc.delimiter;
-      joined = heredoc.expands && text.endsWith("\\");
-      line = end + 1;
-      if (ended) break;
-    }
-  }
-  return line - 1;
+  // A subscript's value reaches arithmetic, even through the output of a command inside it.
+  if (frames.some((frame) => frame.subscript))
+    return refused("in a [...] subscript or pattern");
+  return { kind: "word", quote: frames.at(-1)!.quote };
 }

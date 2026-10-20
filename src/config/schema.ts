@@ -67,7 +67,7 @@ const referencesIn = (scope: ReferenceScope) =>
   `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, \${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : scope === "job" ? ", ${rig.data} (this job's own persistent directory)" : ""}. $\${VAR} writes a literal \${VAR}.`;
 /** Where a reference in a shell command is refused. */
 const SHELL_REFERENCES =
-  "A reference in a heredoc, a comment, $'...', backquotes or after a backslash is refused; declare such a value in environment and read $NAME instead.";
+  "A reference is accepted only in a plain word of a simple command, bare or quoted; in or after a heredoc, arithmetic, [[ ]], case, $'...', backquotes, a subscript or a comment it is refused: declare such a value in environment and read $NAME instead.";
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),

@@ -436,21 +436,23 @@ export async function composeDaemon(
     async start() {
       // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
-      void (managed ? managed.caddy.republish() : external!.republish()).catch(
-        (error: unknown) =>
-          diagnostic.record({
-            event: "proxy.republish",
-            level: "error",
-            ...(error instanceof RigError ? { code: error.code } : {}),
-            ...(error instanceof RigError &&
-            typeof error.details?.evidence === "string"
-              ? { evidence: error.details.evidence }
-              : {}),
-          }),
+      const republished = (
+        managed ? managed.caddy.republish() : external!.republish()
+      ).catch((error: unknown) =>
+        diagnostic.record({
+          event: "proxy.republish",
+          level: "error",
+          ...(error instanceof RigError ? { code: error.code } : {}),
+          ...(error instanceof RigError &&
+          typeof error.details?.evidence === "string"
+            ? { evidence: error.details.evidence }
+            : {}),
+        }),
       );
-      // One an earlier rigd left running is stopped whether or not this rigd serves one, after the republish above, which
-      // withholds the dashboard's domain until this rigd's own dashboard holds the port. This one only reads rigd, so it
-      // is served while the first pass still runs.
+      // One an earlier rigd left running is stopped whether or not this rigd serves one, once the republish has withheld the
+      // dashboard's domain until this rigd's own dashboard holds the port: the port it frees is never routed. This one only
+      // reads rigd, so it is served while the first pass still runs.
+      await republished;
       await stopLeftOverDashboard(root);
       dashboard?.start();
       await runtime.reconcile();

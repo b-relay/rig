@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
 import { gatedCommand, releaseGate } from "./start-gate";
@@ -40,7 +41,9 @@ export const runCommand: CommandRunner = async ({
     const kept = (stream: "stdout" | "stderr", text: string) => {
       if (text.length <= OUTPUT_LIMIT) return text;
       truncated[stream] = true;
-      return text.slice(-OUTPUT_LIMIT);
+      // Never starts at the second half of a surrogate pair.
+      const start = text.length - OUTPUT_LIMIT;
+      return text.slice(isLowSurrogate(text, start) ? start + 1 : start);
     };
     const kill = (reason: "timed-out" | "cancelled" | "unrecorded") => {
       ended ??= reason;
@@ -70,16 +73,23 @@ export const runCommand: CommandRunner = async ({
             child.stdin?.destroy();
           });
       });
-    child.stdout!.on("data", (data) => {
-      const chunk = data.toString();
-      stdout = kept("stdout", stdout + chunk);
-      onOutput?.("stdout", chunk);
-    });
-    child.stderr!.on("data", (data) => {
-      const chunk = data.toString();
-      stderr = kept("stderr", stderr + chunk);
-      onOutput?.("stderr", chunk);
-    });
+    // Each stream has its own decoder, so a character split between two chunks reaches the result and onOutput whole.
+    const decoders = {
+      stdout: new StringDecoder("utf8"),
+      stderr: new StringDecoder("utf8"),
+    };
+    const receive = (stream: "stdout" | "stderr", chunk: string) => {
+      if (!chunk) return;
+      if (stream === "stdout") stdout = kept("stdout", stdout + chunk);
+      else stderr = kept("stderr", stderr + chunk);
+      onOutput?.(stream, chunk);
+    };
+    child.stdout!.on("data", (data: Buffer) =>
+      receive("stdout", decoders.stdout.write(data)),
+    );
+    child.stderr!.on("data", (data: Buffer) =>
+      receive("stderr", decoders.stderr.write(data)),
+    );
     child.on("error", (error) => {
       cleanup();
       reject(
@@ -93,6 +103,9 @@ export const runCommand: CommandRunner = async ({
     });
     child.on("close", (code) => {
       cleanup();
+      // Bytes of a character the stream ended in the middle of.
+      receive("stdout", decoders.stdout.end());
+      receive("stderr", decoders.stderr.end());
       const cut = Object.keys(truncated).length ? { truncated } : {};
       if (ended === "unrecorded") reject(unrecorded);
       else if (ended === "cancelled")
@@ -110,3 +123,7 @@ export const runCommand: CommandRunner = async ({
     });
   });
 };
+function isLowSurrogate(text: string, at: number): boolean {
+  const unit = text.charCodeAt(at);
+  return unit >= 0xdc00 && unit <= 0xdfff;
+}

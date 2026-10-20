@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
   matchesLogFilter,
-  precedesLogWindow,
+  precedesSince,
   type LogFilter,
 } from "../domain/log-filter";
 import type { TargetLogEntry } from "../providers/contracts";
@@ -12,7 +12,7 @@ import {
   LOG_WINDOW_BYTES,
   openLog,
 } from "./log-files";
-import { parseLogRecord, unreadableEntry } from "./log-records";
+import { parseLogRecord, recordMarkers, unreadableEntry } from "./log-records";
 import { familyEvidence, type LogSource } from "./log-sources";
 
 /** Where a follow resumes in one file: its identity and the byte offset just past the last line already read. */
@@ -78,7 +78,26 @@ export async function readFamilyTail(
    * such record does not end the walk, a window's worth of them in a row does. Whether an older generation can hold a line
    * inside the window is decided by when it was last written instead (see `writtenBefore`). */
   let bytesPastSince = 0;
+  const precedes = precedesSince(stopBefore.since);
+  /** Counts a record of `size` bytes timed `timestamp` toward the walk past `since`; whether that walk is over. */
+  const walkedPastSince = (size: number, timestamp: string) => {
+    if (!precedes(timestamp)) bytesPastSince = 0;
+    else bytesPastSince += size + 1;
+    return bytesPastSince > LOG_WINDOW_BYTES;
+  };
   let done = false;
+  // A narrow filter passes over other components' records unparsed, so a quiet Service among noisy ones reads quickly.
+  // Such a record is never kept, but with a since bound its time counts toward the walk past it as if it were read.
+  const markers = recordMarkers(family.family, filter);
+  const passing = markers && {
+    markers,
+    ...(stopBefore.since === undefined
+      ? {}
+      : {
+          pass: (size: number, timestamp: string) =>
+            (done = walkedPastSince(size, timestamp)),
+        }),
+  };
   /** Whether a rotated generation has been reached yet: the first is the one rotated last. */
   let rotatedReached = false;
   for (const member of [...family.members].reverse()) {
@@ -112,7 +131,12 @@ export async function readFamilyTail(
         ...(midRecord ? { midRecord } : {}),
       };
       if (done) continue;
-      for await (const line of linesBackward(log.handle, end, midRecord)) {
+      for await (const line of linesBackward(
+        log.handle,
+        end,
+        midRecord,
+        passing,
+      )) {
         const parsed =
           line.text === undefined
             ? "unreadable"
@@ -140,14 +164,11 @@ export async function readFamilyTail(
           continue;
         }
         settle(parsed.timestamp);
-        if (precedesLogWindow(parsed, stopBefore)) {
-          if ((bytesPastSince += line.size + 1) > LOG_WINDOW_BYTES) {
-            done = true;
-            break;
-          }
-          continue;
+        if (walkedPastSince(line.size, parsed.timestamp)) {
+          done = true;
+          break;
         }
-        bytesPastSince = 0;
+        if (precedes(parsed.timestamp)) continue;
         keep(parsed);
         if (kept.length >= limit) {
           done = true;

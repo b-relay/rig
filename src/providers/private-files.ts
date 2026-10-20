@@ -150,14 +150,38 @@ export async function appendInPrivateDirectory(
   }
 }
 
+/** Appends whole lines (`text` ends in a newline) to `path` as `appendInPrivateDirectory` does, in one write call (taken
+ * up again only where the system cut it short), so lines other processes append to the same file meanwhile come before or
+ * after them, never inside. A file that does not end in a newline (a write cut short by a crash) is given one first, so the
+ * cut line ends there and the first of these lines is not glued onto it. */
+export async function appendLinesInPrivateDirectory(
+  path: string,
+  text: string,
+): Promise<void> {
+  const file = await openInPrivateDirectory(path, "append-lines");
+  try {
+    const { size } = await file.stat();
+    const last = Buffer.alloc(1);
+    const cut =
+      size > 0 &&
+      (await file.read(last, 0, 1, size - 1)).bytesRead === 1 &&
+      last[0] !== 10;
+    const bytes = Buffer.from(cut ? `\n${text}` : text);
+    for (let written = 0; written < bytes.length;)
+      written += (await file.write(bytes, written)).bytesWritten;
+  } finally {
+    await file.close();
+  }
+}
+
 async function openInPrivateDirectory(
   path: string,
-  how: "append" | "create",
+  how: "append" | "append-lines" | "create",
 ): Promise<FileHandle> {
   if (how === "create") return await openNew(path, 0o600);
   const file = await open(
     path,
-    constants.O_WRONLY |
+    (how === "append-lines" ? constants.O_RDWR : constants.O_WRONLY) |
       constants.O_APPEND |
       constants.O_CREAT |
       constants.O_NOFOLLOW,

@@ -272,6 +272,55 @@ test("host route directives and the configured reload command are preserved", as
   );
   expect(commands[1]).toEqual(["/bin/sh", "-c", "custom-reload"]);
 });
+test("a router given its settings as a function reads them as each change begins: the route file, its directives and the reload command", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-caddy-settings-"));
+  roots.push(root);
+  const commands: string[][] = [];
+  let name = "first";
+  const router = createCaddyRouter({
+    settings: async () => ({
+      caddyfile: join(root, `${name}.caddy`),
+      extraConfig: [`header X-Probe ${name}`],
+      reloadCommand: ["/bin/sh", "-c", `reload-${name}`],
+    }),
+    run: async (request) => {
+      commands.push([...request.command]);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+  });
+  const route = {
+    key: "host",
+    sites: [
+      {
+        hostname: "app.example.test",
+        routes: [{ prefix: "/", upstream: "localhost:3000" }],
+      },
+    ],
+  };
+  await router.apply(route);
+  expect(await readFile(join(root, "first.caddy"), "utf8")).toContain(
+    "header X-Probe first",
+  );
+  name = "second";
+  await router.apply(route);
+  expect(await readFile(join(root, "second.caddy"), "utf8")).toContain(
+    "header X-Probe second",
+  );
+  expect(commands.at(-1)).toEqual(["/bin/sh", "-c", "reload-second"]);
+  // Startup's republish renders the blocks with the directives as they are now.
+  name = "third";
+  await writeFile(
+    join(root, "third.caddy"),
+    await readFile(join(root, "second.caddy"), "utf8"),
+  );
+  await router.republish();
+  expect(await readFile(join(root, "third.caddy"), "utf8")).toContain(
+    "header X-Probe third",
+  );
+  expect(await router.checkpoint("host")).toMatchObject({
+    value: expect.stringContaining("header X-Probe third"),
+  });
+});
 test("a route checkpoint restores its exact owned block and refuses to overwrite a later edit", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-caddy-checkpoint-"));
   roots.push(root);

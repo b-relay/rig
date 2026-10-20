@@ -1,15 +1,20 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { removeFileDurably } from "../providers/private-files";
 import { readHostConfig } from "../config";
 import type { ProxyMode, ProxySettings } from "../config/proxy-schema";
 import { inspectProxyToken } from "../adapters/proxy-token";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import {
   bareHostname,
+  hostRoutes,
   proxyPaths,
   redactSecrets,
+  settingsDigest,
+  type HostRoute,
   type ProxyPaths,
 } from "../domain/managed-proxy";
+import { currentGeneration } from "../adapters/proxy-generation";
 import { assertSingleOwners } from "../providers/route-file";
 import { configuredDashboardRoute } from "./dashboard";
 import {
@@ -39,7 +44,7 @@ export interface ProxyInstallation {
   /** How Host config says routes are published. */
   mode(): Promise<ProxyMode>;
   /** Whether Rig's Caddy is installed as Host config asks: the binary proxy.caddy names, the job defined as this Rig defines
-   * it and answering, and a current generation. */
+   * it and answering, and a current generation accepted with the proxy section and the dashboard's domain it names. */
   inSync(): Promise<boolean>;
   /** Installs Rig's Caddy and has it serve the current routes and proxy.routes; resolves to warnings. `publish` replaces
    * publishing here, for a system rigd that keeps running and publishes itself (proxy-apply); `defineJob: false` stops
@@ -51,11 +56,12 @@ export interface ProxyInstallation {
   /** The plist of Rig's Caddy as a system job (`daemon.start: boot`). */
   systemJob(): { label: string; plist: string };
   /** Refuses, before anything stops, what install would refuse from Host config alone: a missing proxy section, both
-   * sections written, the token, and a proxy.caddy that is not Caddy 2.10 or later with the DNS module. */
+   * sections written, a proxy.routes hostname or dashboard.domain a Target serves, the token, and a proxy.caddy that is not
+   * Caddy 2.10 or later with the DNS module. */
   preflight(): Promise<void>;
-  /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined. Certificates,
-   * generations and the token stay. */
-  remove(): Promise<void>;
+  /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined, and resolves to whether
+   * one was. Certificates, generations and the token stay; a restart Rig owed Caddy (ProxyPaths.restore) is owed no more. */
+  remove(): Promise<boolean>;
 }
 export interface ProxyInstallationOptions {
   readonly root: string;
@@ -116,6 +122,32 @@ export function createProxyInstallation(
       );
     return host.proxy;
   }
+  /** Whether the current generation was accepted with `wanted` and serves the dashboard's domain as Host config names it
+   * (or none): a publication that failed, such as a new HTTPS port Caddy could not bind, leaves an older one current, and
+   * the next install publishes again. */
+  async function publishedAsAsked(wanted: ProxySettings): Promise<boolean> {
+    const generation = await currentGeneration(options.root);
+    if (
+      !generation?.proxy ||
+      settingsDigest(generation.proxy) !== settingsDigest(wanted)
+    )
+      return false;
+    const dashboard = await configuredDashboardRoute(
+      options.root,
+      await readHostConfig(options.root),
+    );
+    const hostnames = (routes: readonly HostRoute[]) =>
+      routes.map((route) => route.hostname).sort();
+    return Bun.deepEquals(
+      hostnames(generation.customRoutes),
+      hostnames(
+        hostRoutes(
+          wanted,
+          dashboard && { domain: dashboard.domain, port: null },
+        ),
+      ),
+    );
+  }
   return {
     mode: async () => (await readHostConfig(options.root)).proxyMode,
     async inSync() {
@@ -133,7 +165,8 @@ export function createProxyInstallation(
         (await job.matches()) &&
         !(await binaryPending(paths)) &&
         (await job.state()) === "running" &&
-        (await admin.reachable())
+        (await admin.reachable()) &&
+        (await publishedAsAsked(wanted))
       );
     },
     async install(how = {}) {
@@ -220,13 +253,17 @@ export function createProxyInstallation(
     },
     async preflight() {
       const wanted = await settings();
-      // A dashboard.domain a Target already serves is refused while the running rigd still serves the dashboard as before,
-      // rather than by Caddy after the restart, when the new dashboard would expect a hostname Caddy kept from it.
+      // A proxy.routes hostname or a dashboard.domain a Target already serves is refused while the running rigd still serves
+      // as before, rather than by Caddy after the restart, when the new dashboard would expect a hostname Caddy kept from it.
       const route = await configuredDashboardRoute(
         options.root,
         await readHostConfig(options.root),
       );
       const routes = await readFile(paths.routes, "utf8").catch(() => "");
+      assertSingleOwners(routes, bareHostname, {
+        sites: Object.keys(wanted.routes),
+        owner: "proxy.routes in Host config",
+      });
       if (route)
         assertSingleOwners(routes, bareHostname, {
           sites: [route.domain],
@@ -249,8 +286,8 @@ export function createProxyInstallation(
     },
     // The job rigd install can remove itself: the process, or the LaunchAgent, which stays behind when a switch to boot was
     // never completed. A system job needs root; rigd install and uninstall print its line.
-    remove: () =>
-      createCaddyJob({
+    async remove() {
+      const job = createCaddyJob({
         root: options.root,
         paths,
         mode: options.mode === "process" ? "process" : "launchd",
@@ -259,7 +296,16 @@ export function createProxyInstallation(
         userName: options.userName,
         admin,
         ...(options.launchctl ? { launchctl: options.launchctl } : {}),
-      }).remove(),
+      });
+      // Its definition (the process record or the plist) or a job launchd still has.
+      const defined =
+        (await stat(job.description).catch(() => undefined)) !== undefined ||
+        (await job.state()) !== "stopped";
+      await job.remove();
+      // Stopped on purpose: no rigd starts it again for a restart Rig did not see through.
+      await removeFileDurably(paths.restore);
+      return defined;
+    },
     systemJob: () =>
       caddySystemPlist({
         root: options.root,

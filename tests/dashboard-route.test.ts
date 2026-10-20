@@ -5,6 +5,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -544,6 +545,127 @@ test("a generation that routes the dashboard to a port rigd no longer confirms i
   expect(loaded).not.toContain(`127.0.0.1:${port}`);
   expect(w.servedHost(DOMAIN)).toBe("withheld");
 }, 30_000);
+
+/** A Caddy serving the dashboard's route to `port`, whose CA-change restart stops it and then fails once (`after` is how
+ * its job then stands: a process stopped, launchd backing off). `next` is what rigd confirms once `change` says so. */
+async function failedRestartWorld(
+  port: number,
+  after: "stopped" | "unknown",
+  change: (restarts: number, reachable: boolean) => boolean,
+  next: PublishedDashboard,
+) {
+  let dashboard: PublishedDashboard = { domain: DOMAIN, port };
+  const control = { restarts: 0, reachable: true };
+  const confirm = () => {
+    if (change(control.restarts, control.reachable)) dashboard = next;
+    return dashboard;
+  };
+  const w = await managedCaddyWorld({ tls: { ca: "internal" } }, TOKEN, {
+    current: () => dashboard,
+    confirmed: async () => confirm(),
+  });
+  roots.push(w.root);
+  await w.caddy.router.apply(app);
+  expect(w.servedHost(DOMAIN)).toBe(`127.0.0.1:${port}`);
+  // What Caddy loads, from here on, for the dashboard's domain; the double's state is mirrored for `change`.
+  const loaded: (string | undefined)[] = [];
+  w.control.onLoad = async (config) => {
+    loaded.push(hostAnswer(config, DOMAIN));
+  };
+  w.control.beforeConfig = async () => {
+    Object.assign(control, {
+      restarts: w.control.restarts,
+      reachable: w.control.reachable,
+    });
+    confirm();
+  };
+  w.control.failingRestarts = 1;
+  w.control.afterFailedRestart = after;
+  w.setSettings({ tls: { ca: "https://127.0.0.1:65534/acme" } });
+  return { w, loaded };
+}
+
+test("a rollback that starts Caddy again never loads a dashboard route rigd stopped confirming while it asked what Caddy runs", async () => {
+  for (const after of ["stopped", "unknown"] as const) {
+    const port = freePort();
+    // The dashboard ends just as the rollback finds Caddy not answering.
+    const { w, loaded } = await failedRestartWorld(
+      port,
+      after,
+      (restarts, reachable) => restarts === 1 && !reachable,
+      { domain: DOMAIN, port: null },
+    );
+    await expect(w.caddy.republish()).rejects.toMatchObject({
+      code: "PROXY_START",
+      message: expect.stringContaining(
+        "the previous configuration was restored",
+      ),
+    });
+    expect(loaded).not.toContain(`127.0.0.1:${port}`);
+    expect(w.servedHost(DOMAIN)).toBe("withheld");
+    expect(w.control.state).toBe("running");
+  }
+});
+
+test("a dashboard that ends while Rig records the restart it is about to make is never routed by that restart", async () => {
+  const port = freePort();
+  let dashboard: PublishedDashboard = { domain: DOMAIN, port };
+  const w = await managedCaddyWorld(
+    { tls: { ca: "internal" } },
+    TOKEN,
+    () => dashboard,
+  );
+  roots.push(w.root);
+  await w.caddy.router.apply(app);
+  expect(w.servedHost(DOMAIN)).toBe(`127.0.0.1:${port}`);
+  const loaded: (string | undefined)[] = [];
+  w.control.onLoad = async (config) => {
+    loaded.push(hostAnswer(config, DOMAIN));
+  };
+  // Once activation has asked Caddy what it runs (and checked the route), the next read of the clock is the restart's
+  // record being written: the dashboard ends then.
+  let checked = false;
+  w.control.beforeConfig = async () => {
+    checked = true;
+  };
+  w.control.beforeNow = () => {
+    if (checked) dashboard = { domain: DOMAIN, port: null };
+  };
+  w.setSettings({ tls: { ca: "https://127.0.0.1:65534/acme" } });
+  await w.caddy.republish();
+  expect(loaded).not.toContain(`127.0.0.1:${port}`);
+  expect(w.servedHost(DOMAIN)).toBe("withheld");
+  expect(
+    await stat(join(w.root, "caddy", "restore.json")).catch(() => undefined),
+  ).toBeUndefined();
+});
+
+test("a rollback whose dashboard route changed is published again as rigd confirms it, and Caddy is started on that", async () => {
+  for (const after of ["stopped", "unknown"] as const)
+    for (const next of ["exit", "port"] as const) {
+      const port = freePort();
+      const moved = freePort();
+      // The dashboard exits, or is found on another port, before the rollback reconciles.
+      const { w, loaded } = await failedRestartWorld(
+        port,
+        after,
+        (restarts) => restarts === 1,
+        { domain: DOMAIN, port: next === "exit" ? null : moved },
+      );
+      await expect(w.caddy.republish()).rejects.toMatchObject({
+        code: "PROXY_START",
+        message: expect.stringContaining(
+          "the previous configuration was restored",
+        ),
+      });
+      expect(w.control.restarts).toBe(2);
+      expect(w.control.state).toBe("running");
+      expect(loaded).not.toContain(`127.0.0.1:${port}`);
+      expect(w.servedHost(DOMAIN)).toBe(
+        next === "exit" ? "withheld" : `127.0.0.1:${moved}`,
+      );
+    }
+});
 
 /** A dashboard an earlier rigd left running on `port`, with its record, as a rigd that was killed leaves it. */
 async function leftOver(root: string, port: number) {

@@ -121,6 +121,9 @@ run them again once `rig doctor` shows Caddy answering. A `rigd` whose
 dashboard was stopped for a stop that then did not happen serves no dashboard;
 `rigd status` says so, and `rigd install` starts it again. After `rigd` crashes or is killed, its next start restarts Rig's Caddy before
 it trusts what Caddy serves, so every route is down for a moment then. A
+restart of Caddy that `rigd`'s stop cut short is made again by the next
+`rigd`, even when it left Caddy stopped; a Caddy you stopped yourself stays
+stopped. A
 dashboard an earlier `rigd` left running (one that was killed) is
 stopped once Caddy is confirmed to withhold its hostname; after an upgrade from
 a Rig that did not record which route was the dashboard's, that waits until
@@ -129,7 +132,7 @@ Caddy accepts Host config (`rig proxy reload`). A Target or
 domain a Target already serves before it restarts anything). The route follows
 the dashboard `rigd` started with, so an edit to the domain, port or trusted
 clients applies when
-`rigd install` restarts `rigd` (`rig proxy reload` leaves the route as it was);
+`rigd install` restarts `rigd`, once Caddy accepts it (`rig proxy reload` leaves the route as it was);
 until then `rig doctor`'s `dashboard` check names the difference. With Caddy's
 HTTPS port other than 443 (`proxy.ports.https`), the dashboard is addressed as
 `https://rig.example.com:<port>`; while it is published, `rig proxy reload`
@@ -331,7 +334,23 @@ LaunchAgent beside rigd, and with `RIG_ROOT` set a detached process. A rigd
 restart or upgrade never stops it. Replacing the file `proxy.caddy` names
 changes nothing until the next `rigd install`. A new copy that does not start
 within 30 seconds is replaced by the previous one again (`PROXY_BINARY_START`).
-`rigd uninstall` stops the job and keeps the certificates and your files.
+`rigd install` also publishes the proxy section and the dashboard's domain
+whenever the configuration Caddy serves was accepted with other ones, so after
+an install whose publication failed (a new HTTPS port another program held, for
+example), running it again finishes the change rather than reporting
+`unchanged`. The dashboard always admits the domain and HTTPS port Caddy
+accepted for it: as `rigd` starts, it first asks Caddy for Host config's, so
+until Caddy takes them both stay on the address Caddy still serves; `rigd
+status` and `rig doctor`'s `dashboard` check name the difference. The
+dashboard starts only once `rigd` has confirmed what Caddy serves: after an
+unclean stop whose Caddy restart fails, it waits, and `rigd status` says so,
+until a later attempt succeeds.
+A `proxy.routes` hostname a Target already serves is refused before `rigd` is
+restarted. A new definition of the LaunchAgent is loaded only once launchd has
+let the old job go. `rigd uninstall` stops the job and keeps the certificates
+and your files; when stopping it fails, the installation record stays, and
+running `rigd uninstall` again finishes it, as it also removes a Caddy job left
+without any rigd installed.
 
 Caddy listens on ports 80 and 443 on every interface. macOS allows a process
 that is not root to bind ports below 1024 only that way. Ports from 1024 up
@@ -346,7 +365,10 @@ Every change is published as a new configuration generation under
 `<RIG_ROOT>/caddy/generations`: Caddy validates it, Rig switches one link to
 it, and Caddy reloads, or restarts when which CA issues which names changed, because a
 reload keeps the issuer it already has. A change Caddy rejects switches nothing, and
-the rejected generation is kept beside the others. If Caddy's admin socket does
+the rejected generation is kept beside the others. When a restart stops Caddy and
+its new process does not start, Rig switches back and starts Caddy again on the
+previous generation; if that fails too, the error says so, and `rig doctor`
+reports Caddy stopped. A Caddy that was stopped before a change stays stopped. If Caddy's admin socket does
 not answer while its job may still be running, the change fails with
 `PROXY_UNREACHABLE` rather than assume an old route stopped serving.
 
@@ -591,8 +613,14 @@ providers:
       command: caddy reload --config /usr/local/etc/Caddyfile
 ```
 
-A changed `extra_config` reaches a route the next time that Target starts or
-deploys. `providers.caddy.reload.mode` is `manual` by
+Rig reads `providers.caddy` as each route change begins, so an edit needs no
+`rigd install`: a changed `extra_config` reaches a route the next time that
+Target starts or deploys (and every route when `rigd` next starts), and a
+changed reload mode or command, Host Caddyfile or route file applies from the
+next change on. Rig writes only to the route file `providers.caddy.caddyfile`
+names now, so to move it, move the file with its blocks and point the Host
+Caddyfile's import at it before you change the setting.
+`providers.caddy.reload.mode` is `manual` by
 default: Rig writes the route file and leaves every reload to you. With
 `mode: command` and a `reload.command`, Rig runs that command after each route
 change. The route file and

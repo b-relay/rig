@@ -1294,7 +1294,9 @@ export const hostConfigSchema = z.strictObject({
             .describe("Reload behavior."),
         })
         .prefault({})
-        .describe("Caddy provider settings."),
+        .describe(
+          "Caddy provider settings, read as each route change begins, so an edit applies from the next change without rigd install.",
+        ),
     })
     .prefault({})
     .describe(

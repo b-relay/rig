@@ -21,6 +21,7 @@ import {
   type PublishedDashboard,
 } from "../../src/domain/managed-proxy";
 import { routeFileHostnames } from "../../src/providers/route-file";
+import { RigError } from "../../src/domain/errors";
 import type { CommandRunner } from "../../src/providers/contracts";
 
 export const TOKEN = "Syn_thetic-Token-0123456789abcdefABCDEF";
@@ -137,6 +138,17 @@ export async function managedCaddyWorld(
     reachable: true,
     state: "running" as CaddyJobState,
     restarts: 0,
+    /** How many restarts to come stop Caddy and then fail, as a new process that exits at once does; the one after starts
+     * it again. */
+    failingRestarts: 0,
+    /** Runs each time the router reads the clock, before it gets the time (as it records a restart it is about to make,
+     * among other things). */
+    beforeNow: undefined as undefined | (() => void),
+    /** Runs as each restart begins, with its signal; throwing fails the restart there, before Caddy starts again. */
+    beforeRestart: undefined as
+      undefined | ((signal?: AbortSignal) => Promise<void>),
+    /** How the job stands after such a restart: `stopped` for a process, `unknown` or `running` for launchd backing off. */
+    afterFailedRestart: "stopped" as CaddyJobState,
     /** Set to make a reload succeed without Caddy loading anything. */
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
@@ -168,60 +180,81 @@ export async function managedCaddyWorld(
     return { exitCode: 0, stdout: "", stderr: "" };
   };
   let id = 0;
-  const caddy = createManagedCaddy({
-    root,
-    settings: async () => {
-      await control.beforeSettings?.();
-      return settings;
-    },
-    run,
-    job: {
-      state: async () => control.state,
-      restart: async () => {
-        control.restarts++;
-        control.loaded = JSON.parse(
-          await readFile(
-            join(root, "caddy", "current", "adapted.json"),
-            "utf8",
-          ),
-        );
-        await control.onLoad?.(control.loaded);
+  /** A ManagedCaddy over this root, Caddy and job: the one a rigd makes as it starts. */
+  const open = () =>
+    createManagedCaddy({
+      root,
+      settings: async () => {
+        await control.beforeSettings?.();
+        return settings;
       },
-    },
-    admin: {
-      reachable: async () => control.reachable,
-      config: async () => {
-        await control.beforeConfig?.();
-        return control.reachable ? control.loaded : undefined;
-      },
-      // Recorded among the commands as `admin load`, so a load reads as one step of a publication.
-      load: async (config, signal) => {
-        commands.push(["admin", "load"]);
-        await control.beforeLoad?.(signal);
-        if (failures.reload) return failures.reload;
-        if (!control.ignoreReload) {
-          control.loaded = config;
+      run,
+      job: {
+        state: async () => control.state,
+        restart: async (signal) => {
+          control.restarts++;
+          await control.beforeRestart?.(signal);
+          if (control.failingRestarts > 0) {
+            control.failingRestarts--;
+            control.state = control.afterFailedRestart;
+            control.reachable = false;
+            throw new RigError(
+              "PROXY_START",
+              "Rig's Caddy did not answer on its socket within 1 seconds.",
+              "Read the end of Caddy's log.",
+            );
+          }
+          control.state = "running";
+          control.reachable = true;
+          control.loaded = JSON.parse(
+            await readFile(
+              join(root, "caddy", "current", "adapted.json"),
+              "utf8",
+            ),
+          );
           await control.onLoad?.(control.loaded);
-          await control.afterLoad?.(signal);
-        }
-        return undefined;
+        },
       },
-    },
-    ...(dashboard
-      ? {
-          dashboard:
-            typeof dashboard === "function"
-              ? { current: dashboard, confirmed: async () => dashboard() }
-              : dashboard,
-        }
-      : {}),
-    generationId: () => `g${String(++id).padStart(3, "0")}`,
-    reachableWaitMs: 300,
-    now: () => new Date("2026-10-10T00:00:00.000Z"),
-  });
+      admin: {
+        reachable: async () => control.reachable,
+        config: async () => {
+          await control.beforeConfig?.();
+          return control.reachable ? control.loaded : undefined;
+        },
+        // Recorded among the commands as `admin load`, so a load reads as one step of a publication.
+        load: async (config, signal) => {
+          commands.push(["admin", "load"]);
+          await control.beforeLoad?.(signal);
+          if (failures.reload) return failures.reload;
+          if (!control.ignoreReload) {
+            control.loaded = config;
+            await control.onLoad?.(control.loaded);
+            await control.afterLoad?.(signal);
+          }
+          return undefined;
+        },
+      },
+      ...(dashboard
+        ? {
+            dashboard:
+              typeof dashboard === "function"
+                ? { current: dashboard, confirmed: async () => dashboard() }
+                : dashboard,
+          }
+        : {}),
+      generationId: () => `g${String(++id).padStart(3, "0")}`,
+      reachableWaitMs: 300,
+      now: () => {
+        control.beforeNow?.();
+        return new Date("2026-10-10T00:00:00.000Z");
+      },
+    });
+  const caddy = open();
   return {
     root,
     caddy,
+    /** The ManagedCaddy of the next rigd, over the same root and Caddy. */
+    reopen: open,
     commands,
     failures,
     control,

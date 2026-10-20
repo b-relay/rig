@@ -1,5 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { proxyPaths } from "../src/domain/managed-proxy";
@@ -34,6 +41,22 @@ const jobs = (launchctl: LaunchctlCommand) => [
     launchctl,
   }),
 ];
+
+test("a restart waiting for a new Caddy that never answers ends as soon as its signal aborts, not at its deadline", async () => {
+  // launchd keeps reporting the same process, and the admin socket does not answer: the restart would wait 30 s.
+  for (const job of jobs(
+    printing(0, "\tstate = running\n\tpid = 4242\n", ""),
+  )) {
+    const cancel = new AbortController();
+    setTimeout(() => cancel.abort(), 100);
+    const started = Date.now();
+    await expect(job.restart(cancel.signal)).rejects.toMatchObject({
+      code: "PROXY_START",
+      message: expect.stringContaining("cancelled"),
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }
+});
 
 test("only launchctl's exit 113 confirms a job stopped; its words on any other exit leave the state unknown", async () => {
   for (const job of jobs(
@@ -113,6 +136,104 @@ test("removing the login job deletes its plist only once launchd confirms it gon
     await taken.job.remove();
     expect(await stat(taken.file).catch(() => undefined)).toBeUndefined();
     expect(taken.calls).toContain("bootout");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+/** launchd as it treats one login job: a bootout answers at once while the old process drains for `drainMs`, its label
+ * staying loaded until then, and a bootstrap of a label still loaded fails with 5. `drainMs` undefined never drains. */
+function drainingLaunchd(drainMs: number | undefined) {
+  const calls: string[] = [];
+  let loaded = true;
+  let drained: number | undefined;
+  const launchctl: LaunchctlCommand = async (args) => {
+    calls.push(args[0]!);
+    if (drained !== undefined && Date.now() >= drained) loaded = false;
+    if (args[0] === "print")
+      return loaded
+        ? {
+            code: 0,
+            stdout: `\tstate = ${drained === undefined ? "running" : "SIGTERMed"}\n\tpid = 4242\n`,
+            stderr: "",
+          }
+        : { code: 113, stdout: "", stderr: "Could not find service" };
+    if (args[0] === "bootout") {
+      drained = Date.now() + (drainMs ?? Number.POSITIVE_INFINITY);
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    if (loaded)
+      return {
+        code: 5,
+        stdout: "",
+        stderr: "Bootstrap failed: 5: Input/output error",
+      };
+    loaded = true;
+    drained = undefined;
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  return { launchctl, calls };
+}
+const answering = {
+  reachable: async () => true,
+  config: async () => ({}),
+  load: async () => undefined,
+  stop: async () => true,
+};
+
+test("replacing the login job's definition bootstraps it only once launchd has let the old job's label go", async () => {
+  const home = await mkdtemp(join(tmpdir(), "rig-launchd-replace-"));
+  try {
+    const launchd = drainingLaunchd(300);
+    const job = createLaunchAgentCaddyJob({
+      root,
+      paths,
+      userHome: home,
+      uid: 502,
+      admin: answering,
+      deadlineMs: 2_000,
+      launchctl: launchd.launchctl,
+    });
+    await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
+    await writeFile(job.description, "<!-- an older definition -->");
+    expect(await job.install()).toEqual({ changed: true });
+    expect(await job.matches()).toBe(true);
+    // Bootstrapped once, after launchd said the old label was gone (print's 113), never while it drained.
+    expect(launchd.calls.filter((call) => call === "bootstrap")).toHaveLength(
+      1,
+    );
+    expect(launchd.calls.at(-1)).toBe("bootstrap");
+    expect(launchd.calls.indexOf("bootout")).toBeLessThan(
+      launchd.calls.lastIndexOf("print"),
+    );
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a login job that does not let its label go is not replaced: the install fails and the old definition stays for the next one", async () => {
+  const home = await mkdtemp(join(tmpdir(), "rig-launchd-replace-"));
+  try {
+    const launchd = drainingLaunchd(undefined);
+    const job = createLaunchAgentCaddyJob({
+      root,
+      paths,
+      userHome: home,
+      uid: 502,
+      admin: answering,
+      deadlineMs: 300,
+      launchctl: launchd.launchctl,
+    });
+    await mkdir(join(home, "Library", "LaunchAgents"), { recursive: true });
+    await writeFile(job.description, "<!-- an older definition -->");
+    await expect(job.install()).rejects.toMatchObject({
+      code: "LAUNCHD",
+      message: expect.stringContaining("is still loaded"),
+    });
+    expect(launchd.calls).not.toContain("bootstrap");
+    expect(await readFile(job.description, "utf8")).toBe(
+      "<!-- an older definition -->",
+    );
   } finally {
     await rm(home, { recursive: true, force: true });
   }

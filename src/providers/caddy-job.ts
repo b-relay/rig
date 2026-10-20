@@ -76,17 +76,27 @@ function caddyEnvironment(home: string): Record<string, string> {
   return { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
 }
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** Waits until `ready` holds or the deadline passes. */
+/** Waits until `ready` holds or the deadline passes, or `signal` aborts. */
 async function until(
   ready: () => Promise<boolean>,
   deadlineMs: number,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     if (await ready()) return true;
-    if (Date.now() >= deadline) return false;
+    if (Date.now() >= deadline || signal?.aborted) return false;
     await pause(200);
   }
+}
+/** A restart whose wait for the new process was cut short by its signal: Caddy may still be starting. */
+function restartCancelled(paths: ProxyPaths): RigError {
+  return new RigError(
+    "PROXY_START",
+    "The restart of Rig's Caddy was cancelled before it answered.",
+    `Rig's Caddy may still be starting; rig doctor shows whether it answers on ${paths.socket}.`,
+    { socket: paths.socket },
+  );
 }
 function startFailure(paths: ProxyPaths, deadlineMs: number): RigError {
   return new RigError(
@@ -174,17 +184,22 @@ export function createSystemCaddyJob(options: {
     matches,
     state: async () => (await observe()).state,
     pid: async () => (await observe()).pid,
-    async restart() {
+    async restart(signal) {
       const before = await observe();
       await options.admin.stop();
-      const restarted = await until(async () => {
-        const now = await observe();
-        return (
-          now.state === "running" &&
-          now.pid !== before.pid &&
-          (await options.admin.reachable())
-        );
-      }, deadlineMs);
+      const restarted = await until(
+        async () => {
+          const now = await observe();
+          return (
+            now.state === "running" &&
+            now.pid !== before.pid &&
+            (await options.admin.reachable())
+          );
+        },
+        deadlineMs,
+        signal,
+      );
+      if (!restarted && signal?.aborted) throw restartCancelled(options.paths);
       if (!restarted) throw startFailure(options.paths, deadlineMs);
     },
     async install() {
@@ -238,24 +253,47 @@ export function createLaunchAgentCaddyJob(options: {
     log: options.paths.jobLog,
     keepAlive: "always",
   });
-  const observe = () => observeLaunchd(launchctl, `${domain}/${label}`);
+  const target = `${domain}/${label}`;
+  const observe = () => observeLaunchd(launchctl, target);
+  /** Boots the job out and waits until launchd confirms it gone (print exits 113), as everywhere else: a bootout's reply
+   * comes while the old process may still be draining, and its label stays loaded until it has. A refused or unfinished
+   * bootout fails closed, leaving the job's plist for the next attempt. */
+  async function bootOut(): Promise<void> {
+    const absent = async () =>
+      (await launchctl(["print", target]).catch(() => undefined))?.code ===
+      LAUNCHCTL_NOT_FOUND;
+    if (await absent()) return;
+    await launchctl(["bootout", target]).catch(() => undefined);
+    if (!(await until(absent, Math.min(deadlineMs, 20_000))))
+      throw new RigError(
+        "LAUNCHD",
+        `Rig's Caddy job ${label} is still loaded, or launchd could not say, after it was asked to stop.`,
+        `Run launchctl bootout ${target}, confirm launchctl print ${target} says it could not find the service, then retry.`,
+        { label, state: (await observe()).state },
+      );
+  }
   return {
     description: plistPath,
     matches: async () =>
       (await readFile(plistPath, "utf8").catch(() => undefined)) === plist,
     state: async () => (await observe()).state,
     pid: async () => (await observe()).pid,
-    async restart() {
+    async restart(signal) {
       const before = await observe();
       await options.admin.stop();
-      const restarted = await until(async () => {
-        const now = await observe();
-        return (
-          now.state === "running" &&
-          now.pid !== before.pid &&
-          (await options.admin.reachable())
-        );
-      }, deadlineMs);
+      const restarted = await until(
+        async () => {
+          const now = await observe();
+          return (
+            now.state === "running" &&
+            now.pid !== before.pid &&
+            (await options.admin.reachable())
+          );
+        },
+        deadlineMs,
+        signal,
+      );
+      if (!restarted && signal?.aborted) throw restartCancelled(options.paths);
       if (!restarted) throw startFailure(options.paths, deadlineMs);
     },
     async install() {
@@ -263,9 +301,11 @@ export function createLaunchAgentCaddyJob(options: {
       const loaded = (await observe()).state === "running";
       const changed = existing !== plist || !loaded;
       if (changed) {
+        // The label is free only once the old job has drained; until then the old plist stays, so a stop that fails leaves
+        // the next install a difference to act on.
+        await bootOut();
         await mkdir(dirname(plistPath), { recursive: true });
         await writeFile(plistPath, plist, { mode: 0o644 });
-        await launchctl(["bootout", `${domain}/${label}`]).catch(() => {});
         const result = await launchctl(["bootstrap", domain, plistPath]);
         if (result.code !== 0)
           throw new RigError(
@@ -279,23 +319,10 @@ export function createLaunchAgentCaddyJob(options: {
         throw startFailure(options.paths, deadlineMs);
       return { changed };
     },
-    /** Removed only once launchd confirms the job is gone (print exits 113), as everywhere else: a refused or unfinished
-     * bootout leaves a Caddy serving stale routes, so it fails closed and keeps the plist for the next attempt. */
+    /** Removed only once launchd confirms the job is gone: a refused or unfinished bootout leaves a Caddy serving stale
+     * routes, so it fails closed and keeps the plist for the next attempt. */
     async remove() {
-      const target = `${domain}/${label}`;
-      const absent = async () =>
-        (await launchctl(["print", target]).catch(() => undefined))?.code ===
-        LAUNCHCTL_NOT_FOUND;
-      if (!(await absent())) {
-        await launchctl(["bootout", target]).catch(() => undefined);
-        if (!(await until(absent, Math.min(deadlineMs, 20_000))))
-          throw new RigError(
-            "LAUNCHD",
-            `Rig's Caddy job ${label} is still loaded, or launchd could not say, after it was asked to stop.`,
-            `Run launchctl bootout ${target}, confirm launchctl print ${target} says it could not find the service, then retry.`,
-            { label, state: (await observe()).state },
-          );
-      }
+      await bootOut();
       await rm(plistPath, { force: true });
     },
   };
@@ -331,7 +358,7 @@ export function createProcessCaddyJob(options: {
         ? "unknown"
         : "stopped";
   }
-  async function start(): Promise<void> {
+  async function start(signal?: AbortSignal): Promise<void> {
     const log = await openPrivateFile(options.root, paths.jobLog, "append");
     try {
       const [executable, ...args] = caddyCommand(paths);
@@ -355,21 +382,33 @@ export function createProcessCaddyJob(options: {
     } finally {
       await log.close();
     }
-    if (!(await until(() => options.admin.reachable(), deadlineMs)))
-      throw startFailure(paths, deadlineMs);
+    if (!(await until(() => options.admin.reachable(), deadlineMs, signal)))
+      throw signal?.aborted
+        ? restartCancelled(paths)
+        : startFailure(paths, deadlineMs);
   }
-  async function stop(): Promise<void> {
+  /** Stops the recorded process. A `signal` that aborts ends the waits for it to exit: the restart is cancelled, and the
+   * record stays while the process may still run, so whoever reads it next finds it. */
+  async function stop(signal?: AbortSignal): Promise<void> {
     const recorded = await record();
     await options.admin.stop();
     if (recorded && (await recordedProcess(recorded)) === "running") {
       const gone = await until(
         async () => !processExists(recorded.pid),
         10_000,
+        signal,
       );
+      if (!gone && signal?.aborted) throw restartCancelled(paths);
       if (!gone) {
         process.kill(recorded.pid, "SIGKILL");
         // The record goes only once the process is confirmed gone; otherwise it may still serve stale routes.
-        if (!(await until(async () => !processExists(recorded.pid), 5_000)))
+        const killed = await until(
+          async () => !processExists(recorded.pid),
+          5_000,
+          signal,
+        );
+        if (!killed && signal?.aborted) throw restartCancelled(paths);
+        if (!killed)
           throw new RigError(
             "PROXY_STOP",
             `Rig's Caddy (pid ${recorded.pid}) did not exit.`,
@@ -386,16 +425,18 @@ export function createProcessCaddyJob(options: {
     state,
     pid: async () =>
       (await state()) === "running" ? (await record())?.pid : undefined,
-    async restart() {
-      await stop();
-      await start();
+    async restart(signal) {
+      await stop(signal);
+      // Never a new process once the restart is cancelled.
+      if (signal?.aborted) throw restartCancelled(paths);
+      await start(signal);
     },
     async install() {
       if ((await state()) === "running") return { changed: false };
       await start();
       return { changed: true };
     },
-    remove: stop,
+    remove: () => stop(),
   };
 }
 /** The Caddy job that sits beside rigd: a detached process, a LaunchAgent, or a system job, as rigd itself runs. */

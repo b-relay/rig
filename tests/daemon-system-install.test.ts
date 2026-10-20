@@ -6,6 +6,7 @@ import { DaemonAdmin } from "../src/daemon/admin";
 import { readInstallationRecord } from "../src/daemon/installation";
 import { processExists } from "../src/daemon/host";
 import { writeStartupFailure } from "../src/daemon/startup-failure";
+import { caddyJobLabel } from "../src/providers/caddy-job";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -234,6 +235,19 @@ test("uninstall of a system job prints the removal and keeps rigd serving; once 
   w.launchd.loaded = false;
   expect(await w.admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
   expect(await readInstallationRecord(w.root)).toBeUndefined();
+});
+
+test("uninstall with no daemon record left still finds a system Caddy job and prints its removal, then reports unchanged once it is gone", async () => {
+  const w = await world();
+  const label = caddyJobLabel(w.root);
+  const orphan = join(w.places.daemons, `${label}.plist`);
+  await writeFile(orphan, "<plist/>");
+  expect(await readInstallationRecord(w.root)).toBeUndefined();
+  const refused = await w.admin.uninstall().catch((caught) => caught);
+  expect(refused).toMatchObject({ code: "DAEMON_SYSTEM_UNINSTALL" });
+  expect(refused.details.commands[0]).toContain(`bootout system/${label}`);
+  await rm(orphan);
+  expect(await w.admin.uninstall()).toMatchObject({ outcome: "unchanged" });
 });
 
 test("a system rigd is not restarted while Rig's Caddy cannot confirm it withholds the dashboard's domain; once it can, it is", async () => {

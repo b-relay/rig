@@ -3,6 +3,7 @@ import type { ProjectStatusReport } from "../src/domain/project-status";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import { runRigCli } from "../src/cli/rig";
 import { formatBytes } from "../src/domain/bytes";
+import { generatedPreviewName } from "../src/domain/target-selector";
 
 /** `rig backup list` and `rig backup restore` (ADR 0017) with an injected client: no daemon, filesystem or terminal. */
 
@@ -41,8 +42,11 @@ function harness(
     /** The outcome of the restore run's end in Activity; absent, it never ends. */
     ended?: string;
     interactive?: boolean;
+    /** The name of the Target rigd answers for; stable when absent. */
+    target?: string;
   } = {},
 ) {
+  const target = options.target ?? "stable";
   const requests: RuntimeCommand[] = [];
   const questions: string[] = [];
   let out = "";
@@ -58,12 +62,16 @@ function harness(
       },
       async command(request: RuntimeCommand) {
         requests.push(request);
-        if (request.action === "backups") return BACKUPS;
+        if (request.action === "backups")
+          return {
+            ...BACKUPS,
+            backups: BACKUPS.backups.map((backup) => ({ ...backup, target })),
+          };
         if (request.action === "restore")
           return {
             operationId: "op-1",
             project: "melody",
-            target: "stable",
+            target,
             action: "restore",
             outcome: "started",
             job: request.job,
@@ -280,6 +288,54 @@ test("rig backup restore is cancelled when the answer is no, refused without a t
   ).toBe(1);
   expect(bad.requests).toEqual([]);
   expect(bad.err()).toContain("is not a backup id");
+});
+
+test("restore guidance names the Project and Target the restore was given, as commands that select them again", async () => {
+  const selections = [
+    { words: ["working"], target: "working", selector: "working" },
+    { words: ["stable"], target: "stable", selector: "stable" },
+    {
+      words: ["preview", "--deployment", "review"],
+      target: "review",
+      selector: "preview --deployment review",
+    },
+    {
+      words: ["preview", "feature/x"],
+      target: generatedPreviewName("feature/x"),
+      selector: "preview feature/x",
+    },
+  ];
+  for (const { words, target, selector } of selections) {
+    const scope = [...words, "--project", "melody"];
+    // Without a terminal: the retry is the whole command, the resolved backup and --yes included.
+    const headless = harness({ interactive: false, target });
+    expect(
+      await runRigCli(
+        ["backup", "restore", "db-backup", "latest", ...scope],
+        headless.deps,
+      ),
+    ).toBe(1);
+    const retry = `rig backup restore db-backup 20261011T030000Z-17 ${selector} --project melody --yes`;
+    expect(headless.err()).toContain(
+      `Pass --yes to restore without asking: ${retry}.`,
+    );
+    const retried = harness({ interactive: false, ended: "failed", target });
+    expect(await runRigCli(retry.split(" ").slice(1), retried.deps)).toBe(1);
+    const sent = retried.requests.find((r) => r.action === "restore");
+    const first = headless.requests.find((r) => r.action === "backups");
+    expect(sent).toMatchObject({
+      project: "melody",
+      target: first!.target,
+      job: "db-backup",
+      backup: "20261011T030000Z-17",
+      ...(first!.branch ? { branch: first!.branch } : {}),
+      ...(first!.deployment ? { deployment: first!.deployment } : {}),
+    });
+    // Where its output is, during the restore and after it failed, in the same scope.
+    const logs = `rig logs ${selector} --service db-backup --project melody`;
+    expect(retried.err()).toContain(`its output is in ${logs}.`);
+    expect(retried.err()).toContain(`Its output is in ${logs}.`);
+  }
 });
 
 test("a Ctrl-C while a restore runs stops the wait, not the restore", async () => {

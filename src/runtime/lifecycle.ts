@@ -5,7 +5,8 @@ import type {
   PlanJob,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import { deploySelector, targetSelector } from "../domain/target-selector";
+import { targetSelector } from "../domain/target-selector";
+import { rigCommand } from "../domain/rig-command";
 import type {
   HealthCheck,
   ProcessObservation,
@@ -549,7 +550,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "RETIRE_ROLLBACK",
             "Target retirement failed and its saved effects could not be restored.",
-            "Run down for this Target and inspect its effect checkpoint.",
+            `Run ${rigCommand("down", { target })} and inspect its effect checkpoint.`,
             {},
             failureCauses(error, recovery),
           );
@@ -730,7 +731,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "START_ROLLBACK_FAILED",
             "Startup failed and process or executable rollback could not be verified.",
-            `Run rig doctor and rig down ${targetSelector(target)} before retrying.`,
+            `Run rig doctor and ${rigCommand("down", { target })} before retrying.`,
             { cause: error, rollbackErrors },
           );
         throw error;
@@ -764,7 +765,7 @@ export function createTargetLifecycle(
         throw new RigError(
           "SERVICE_DEPENDENCY",
           `${service} depends on ${missing}, which is not running.`,
-          `Run rig up ${targetSelector(target)} to start both.`,
+          `Run ${rigCommand("up", { target })} to start both.`,
           { service, dependency: missing },
         );
       const process = (name: string) => ({
@@ -846,7 +847,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "START_ROLLBACK_FAILED",
             "The Service could not be started again and its new process could not be verified stopped.",
-            `Run rig doctor and rig down ${targetSelector(target)} before retrying.`,
+            `Run rig doctor and ${rigCommand("down", { target })} before retrying.`,
             {},
             failureCauses(error, failure),
           );
@@ -856,7 +857,7 @@ export function createTargetLifecycle(
           throw new RigError(
             "START_UNVERIFIED",
             `${service} was asked to start, but how that start ended could not be established.`,
-            `Inspect Target logs, then run rig up ${targetSelector(target)} to start it again.`,
+            `Inspect Target logs, then run ${rigCommand("up", { target })} to start it again.`,
             { service },
             failureCauses(error),
           );
@@ -885,7 +886,7 @@ export function createTargetLifecycle(
         throw new RigError(
           "ENV_DIGEST",
           "This rigd cannot take a digest of a Service's environment.",
-          "Run rig restart for the Target to start every Service again.",
+          `Run ${rigCommand("restart", { target })} to start every Service again.`,
           service === undefined ? {} : { service },
         );
       return await effects.digestEnvironment(
@@ -932,7 +933,7 @@ export function createTargetLifecycle(
         throw new RigError(
           "JOB_RUNNING",
           `A process of ${job.name} is already running on ${target.name}, so no new run was started.`,
-          `Wait for it to end, or stop it with rig down ${targetSelector(target)}.`,
+          `Wait for it to end, or stop it with ${rigCommand("down", { target })}.`,
           { job: job.name },
         );
     },
@@ -1173,11 +1174,11 @@ function unitLabel(unit: Pick<BuildUnit, "component">): string {
 }
 /** Only a forced deployment gives an incomplete or uncertain preparation a fresh scope. */
 function forceHint(
-  target: Pick<TargetRecord, "kind" | "name" | "branch">,
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "plan">,
 ): string {
   if (target.kind === "working")
-    return "Run rig restart working to build it again.";
-  return `Run rig deploy ${deploySelector(target)} --force to build a fresh Deployment; rig never reruns a build whose outcome it does not know.`;
+    return `Run ${rigCommand("restart", { target })} to build it again.`;
+  return `Run ${rigCommand("deploy", { target }, "--force")} to build a fresh Deployment; rig never reruns a build whose outcome it does not know.`;
 }
 /** The outcomes recorded for the Target's current workspace; another workspace's outcomes prove nothing here. */
 function recordedUnits(

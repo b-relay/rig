@@ -4,6 +4,7 @@ import {
   type ProjectStatusReport,
 } from "../domain/project-status";
 import { formatBytes } from "../domain/bytes";
+import { shellWord } from "../domain/target-selector";
 import { killingText } from "./stop-display";
 import { terminalText } from "./terminal-text";
 /** Human presenters consume the same domain report returned by structured commands. */
@@ -145,7 +146,7 @@ function renderProjects(report: Record<string, unknown>): string {
           (project) =>
             `${word(project.name)}  ${Number(project.targetCount ?? 0)} Targets  ${word(project.repoPath)}${
               project.missing === true
-                ? `  (directory missing: rig repoint or rig forget ${word(project.name)})`
+                ? `  (directory missing: rig repoint <path> --project ${shellWord(word(project.name))}, or rig forget ${shellWord(word(project.name))})`
                 : ""
             }`,
         )
@@ -515,7 +516,7 @@ export function readNotice(action: string, value: unknown): string | undefined {
   }
   if (action === "logs" && report.more === true) {
     const shown = rows(report.entries).length;
-    return `showing the latest ${shown} ${shown === 1 ? "entry" : "entries"}; older ones match too, --lines or --since to see them`;
+    return `showing the latest ${shown} ${shown === 1 ? "entry" : "entries"}; older ones match too; a larger --lines, or --until an earlier time, reaches them`;
   }
   return undefined;
 }

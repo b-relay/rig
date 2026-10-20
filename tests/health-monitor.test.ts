@@ -755,7 +755,7 @@ test("a process nothing identifies keeps being checked and reported, is never re
   await f.runUntil(20 * SECOND);
   expect(f.restarts).toEqual([]);
   expect(f.activity()).toEqual([
-    "web is unhealthy: 1 health check in a row failed (HTTP 503). Rig cannot restart it for its health, since a rigd too old to record which process it is started it; run rig restart stable once.",
+    "web is unhealthy: 1 health check in a row failed (HTTP 503). Rig cannot restart it for its health, since a rigd too old to record which process it is started it; run rig restart stable --project demo once.",
   ]);
   f.answer = () => true;
   await f.runUntil(30 * SECOND);

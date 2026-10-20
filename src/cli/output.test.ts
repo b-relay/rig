@@ -62,7 +62,7 @@ test("list marks a registered directory that no longer exists", () => {
       ],
     }),
   ).toBe(
-    "demo  0 Targets  /gone  (directory missing: rig repoint or rig forget demo)\napp  2 Targets  /here\n",
+    "demo  0 Targets  /gone  (directory missing: rig repoint <path> --project demo, or rig forget demo)\napp  2 Targets  /here\n",
   );
 });
 

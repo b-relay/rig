@@ -5,7 +5,9 @@ import {
   startFailureMonitor,
   DIAGNOSTIC_SINK,
   FAILURE_MONITOR,
+  HEALTH_MONITOR,
   JOB_SCHEDULER,
+  USAGE_SAMPLER,
   workReport,
 } from "../src/daemon/notices";
 
@@ -202,4 +204,24 @@ test("work reported failed keeps its channel's notice until that same work succe
   ]);
   report.succeeded("t1:backfill");
   expect(board.list()).toEqual([]);
+});
+
+test("each background notice says what to read, from any directory, and what to do next", () => {
+  // Host-wide evidence: a bare rig activity reads only the Project of the directory it runs in.
+  for (const channel of [FAILURE_MONITOR, HEALTH_MONITOR, JOB_SCHEDULER]) {
+    expect(channel.hint).toContain("rig activity --all");
+    expect(channel.hint).toContain("runtime/state.json under the Rig root");
+    expect(channel.hint).toContain("report the message as a Rig issue");
+    expect(channel.hint).not.toMatch(/rig activity(?! --all)/);
+  }
+  expect(FAILURE_MONITOR.hint).toContain("rigd status");
+  for (const channel of [
+    DIAGNOSTIC_SINK,
+    FAILURE_MONITOR,
+    HEALTH_MONITOR,
+    JOB_SCHEDULER,
+    USAGE_SAMPLER,
+  ])
+    // A check is asked for by its whole command.
+    expect(channel.hint).not.toMatch(/(?<!rig )doctor again/);
 });

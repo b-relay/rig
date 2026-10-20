@@ -17,7 +17,7 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { ComponentReport } from "../domain/project-status";
-import { targetSelector } from "../domain/target-selector";
+import { rigCommand } from "../domain/rig-command";
 import type { ProcessObservation } from "../providers/contracts";
 import { boundedObservations } from "./bounded-observations";
 import { plannedRoutes } from "./ports";
@@ -739,7 +739,7 @@ async function superviseService(
       await saveRun(target, service, { ...run, exhausted: true }, deps, {
         action: "restart",
         outcome: "failed",
-        message: `${service} ${exhaustedText(budget)} and stays stopped. Run rig restart ${targetSelector(target)} once the cause is fixed.`,
+        message: `${service} ${exhaustedText(budget)} and stays stopped. Run ${rigCommand("restart", { target })} once the cause is fixed.`,
       });
       return undefined;
     }
@@ -948,8 +948,7 @@ export function stoppedStanding(
         : {}),
     };
   const outcome = run?.outcome ?? observedOutcome(run, observation, "");
-  const selector = targetSelector(target);
-  const again = `Run rig up ${selector} to start it again.`;
+  const again = `Run ${rigCommand("up", { target })} to start it again.`;
   if (outcome.kind === "unknown" && outcome.hostRestart)
     return {
       state: "stopped",
@@ -993,7 +992,7 @@ export function stoppedStanding(
       : run?.exhausted
         ? `${ended} after ${RESTART_LIMIT} automatic restarts within ${BUDGETS["known-exit"].window}, so it stays stopped. ${again}`
         : outcome.kind === "start-failed"
-          ? `${ended}. ${recoveredByDownFirst(outcome.errorCode) ? `Run rig down ${selector}, then rig up ${selector} to start it again.` : again}`
+          ? `${ended}. ${recoveredByDownFirst(outcome.errorCode) ? `Run ${rigCommand("down", { target })}, then ${rigCommand("up", { target })} to start it again.` : again}`
           : `${ended} and its restart policy is ${policy}, so it stays stopped. ${again}`,
   };
 }

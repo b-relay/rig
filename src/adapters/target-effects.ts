@@ -111,6 +111,7 @@ import {
   lastOutputLine,
 } from "../domain/errors";
 import { redactValues } from "../domain/redaction";
+import { rigCommand } from "../domain/rig-command";
 import {
   createArtifactOwnership,
   type OrphanedArtifact,
@@ -149,7 +150,7 @@ export interface TargetAdapterOptions {
   projectRepository?: (projectId: string) => Promise<string | undefined>;
 }
 export { installedPath };
-/** Budget in seconds when the Project config declares none. */
+/** Budget in seconds for dependency installation; rig.yaml has no setting for it. */
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
@@ -189,7 +190,7 @@ export function createTargetEffects(
       throw new RigError(
         "PROVIDER_MISSING",
         `Process supervisor '${target.plan.providers.processSupervisor}' is unavailable.`,
-        `This rigd supervises with ${[...options.supervisors.keys()].join(", ")}. Deploy the Target again (rig up working for the working Target) so it is planned with rigd.`,
+        `This rigd supervises with ${[...options.supervisors.keys()].join(", ")}. Plan the Target again with this rigd: ${target.kind === "working" ? rigCommand("restart", { target }) : rigCommand("deploy", { target }, "--force")}.`,
       );
     return provider;
   };
@@ -306,7 +307,7 @@ export function createTargetEffects(
       throw new RigError(
         "PREPARATION_LEFTOVER",
         `A process the ${componentName} command of ${target.name} left running could not be stopped.`,
-        "Run rig down for this Target to stop it, then retry.",
+        `Run ${rigCommand("down", { target })} to stop it, then retry.`,
         { component: componentName },
         failureCauses(error),
       );
@@ -743,14 +744,14 @@ export function createTargetEffects(
           throw new RigError(
             "DEPENDENCIES_TIMEOUT",
             `Project dependency installation (${command.join(" ")}) did not finish within ${timeoutSeconds} s and was killed.`,
-            "Inspect Target setup logs for its output so far; set installTimeout in the Project config if it needs longer.",
+            `Its output so far is in ${rigCommand("logs", { target, service: "setup" })}. The budget is a fixed ten minutes that rig.yaml does not change: make the installation finish sooner (a warm package cache, or fewer dependencies), then deploy again.`,
             { command: command.join(" "), timeoutSeconds },
           );
         if (result.exitCode)
           throw new RigError(
             "DEPENDENCIES_FAILED",
             "Project dependency installation failed.",
-            "Inspect Target setup logs and retry deployment.",
+            `Inspect its output (${rigCommand("logs", { target, service: "setup" })}), fix the cause, then deploy again.`,
           );
       }
       await writeFile(marker, "prepared\n", { mode: 0o600 });

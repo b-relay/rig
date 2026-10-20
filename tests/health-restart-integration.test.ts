@@ -833,7 +833,7 @@ for (const checked of [true, false])
     ).rejects.toMatchObject({
       code: "HOST_STATE_PENDING",
       message: expect.stringContaining("rigd is still starting"),
-      hint: "Retry rig up in a moment. If this keeps happening, rigd cannot read its state under RIG_ROOT/runtime: rig doctor and the rigd diagnostic log show why.",
+      hint: "Run the command again in a moment. If this keeps happening, rigd cannot read its state under RIG_ROOT/runtime: rig doctor and the rigd diagnostic log show why.",
     });
     // A stop still runs.
     await w.runtime.command({

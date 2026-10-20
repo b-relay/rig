@@ -58,7 +58,11 @@ test("preview commands reject a Branch positional combined with --deployment ins
     expect(h.err()).toContain(
       "Pass a Preview Branch or --deployment, not both.",
     );
-    expect(h.err()).toContain(`rig ${action} preview --deployment <name>`);
+    // Both selections, each as a command that works, keeping the --destroy the user typed.
+    const destroy = action === "down" ? " --destroy" : "";
+    expect(h.err()).toContain(
+      `Use rig ${action} preview feature-a${destroy} or rig ${action} preview --deployment feature-b-1a2b3c4d${destroy}.`,
+    );
   }
 });
 
@@ -281,4 +285,115 @@ test("rig run sends the job for the stable Target unless another is named, and a
     expect(await runRigCli(["run", flag], h.deps)).toBe(0);
     expect(h.out()).toContain("Run a scheduled job now");
   }
+});
+
+test("a usage hint that corrects a Preview selection retypes the command with its job, backup and Project, and the retyped command runs", async () => {
+  const cases: [string[], string][] = [
+    [
+      ["backup", "list", "--deployment", "login"],
+      "rig backup list preview --deployment login",
+    ],
+    [
+      ["backup", "list", "db-backup", "--deployment", "login"],
+      "rig backup list db-backup preview --deployment login",
+    ],
+    [
+      ["backup", "restore", "db-backup", "latest", "--deployment", "login"],
+      "rig backup restore db-backup latest preview --deployment login",
+    ],
+    [
+      ["run", "db-backup", "--deployment", "login", "--project", "shop"],
+      "rig run db-backup preview --deployment login --project shop",
+    ],
+    [
+      ["down", "--deployment", "login", "--destroy"],
+      "rig down preview --deployment login --destroy",
+    ],
+    [
+      ["logs", "--deployment", "login", "--service", "web"],
+      "rig logs preview --deployment login --service web",
+    ],
+    [
+      ["deploy", "stable", "feature/x", "--deployment", "login", "--no-up"],
+      "rig deploy preview feature/x --deployment login --no-up",
+    ],
+  ];
+  for (const [args, retyped] of cases) {
+    const h = harness();
+    expect(await runRigCli(args, h.deps)).toBe(1);
+    expect(h.requests).toEqual([]);
+    expect(h.err()).toContain(`Use ${retyped}.`);
+    const again = harness((request) =>
+      request.action === "logs"
+        ? { project: "shop", target: "login", entries: [], cursor: "c" }
+        : request.action === "backups"
+          ? { project: "shop", backups: [] }
+          : request.action === "deployment-context"
+            ? {
+                project: "shop",
+                repoPath: "/workspace",
+                productionBranch: "main",
+                currentBranch: "feature/x",
+                selected: "preview",
+              }
+            : { outcome: "started" },
+    );
+    await runRigCli(retyped.split(" ").slice(1), again.deps);
+    expect(
+      again.requests.find((request) => request.action !== "deployment-context"),
+    ).toMatchObject({
+      target: "preview",
+      deployment: "login",
+      ...(args.includes("--project") ? { project: "shop" } : {}),
+      ...(args[0] === "run" || args[1] === "restore"
+        ? { job: "db-backup" }
+        : {}),
+    });
+  }
+  // A selection the grammar cannot read points at the help of the command typed, which exists.
+  const h = harness();
+  expect(
+    await runRigCli(["backup", "list", "db-backup", "preview"], h.deps),
+  ).toBe(1);
+  expect(h.err()).toContain("Run rig backup list --help.");
+});
+
+test("rig backup and rig dns without a subcommand print their help, and rig help backup restore shows that command's", async () => {
+  for (const group of ["backup", "dns"]) {
+    const h = harness();
+    expect(await runRigCli([group], h.deps)).toBe(0);
+    expect(h.out()).toContain(`Usage: rig ${group} [options] [command]`);
+    expect(h.requests).toEqual([]);
+  }
+  const help = harness();
+  expect(await runRigCli(["help", "backup", "restore"], help.deps)).toBe(0);
+  expect(help.out()).toContain("Usage: rig backup restore");
+  // The help command's own example names a path it can show.
+  const own = harness();
+  expect(await runRigCli(["help", "help"], own.deps)).toBe(0);
+  expect(own.out()).toContain("for example backup restore");
+});
+
+test("help says what a Preview positional selects and which port proxy verify checks", async () => {
+  for (const args of [
+    ["up", "--help"],
+    ["down", "--help"],
+    ["restart", "--help"],
+    ["logs", "--help"],
+    ["run", "--help"],
+    ["backup", "list", "--help"],
+    ["backup", "restore", "--help"],
+  ]) {
+    const h = harness();
+    expect(await runRigCli(args, h.deps)).toBe(0);
+    expect(h.out()).not.toContain("Preview Branch or name");
+    expect(h.out()).toContain("--deployment <name>");
+  }
+  const logs = harness();
+  expect(await runRigCli(["logs", "--help"], logs.deps)).toBe(0);
+  expect(logs.out()).toContain("rig logs preview --deployment demo");
+  const verify = harness();
+  expect(await runRigCli(["proxy", "verify", "--help"], verify.deps)).toBe(0);
+  expect(verify.out()).toContain("the one Caddy last accepted");
+  expect(verify.out()).not.toContain("(default: proxy.ports.https)");
 });

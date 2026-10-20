@@ -1,7 +1,7 @@
 import { recordActivity } from "../domain/activity";
 import { diagnosticErrorCode, recoveredByDownFirst } from "../domain/errors";
 import { isStopDetached } from "../domain/stop-budget";
-import { targetSelector } from "../domain/target-selector";
+import { rigCommand } from "../domain/rig-command";
 import {
   hostRestartBetween,
   hostRestartText,
@@ -386,8 +386,8 @@ export async function recordFailedAfterHostRestart(
       occurredAt: deps.now(),
       message: `${target.name} could not be started again after ${after} (${errorCode}). ${
         recoveredByDownFirst(errorCode)
-          ? `Run rig down ${targetSelector(target)}, then rig up ${targetSelector(target)}.`
-          : `Run rig up ${targetSelector(target)} once the cause is fixed.`
+          ? `Run ${rigCommand("down", { target })}, then ${rigCommand("up", { target })}.`
+          : `Run ${rigCommand("up", { target })} once the cause is fixed.`
       }`,
     });
   });

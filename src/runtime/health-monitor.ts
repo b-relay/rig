@@ -1,5 +1,6 @@
 import type { ManagedComponent } from "../config/types";
 import { recordActivity } from "../domain/activity";
+import { rigCommand } from "../domain/rig-command";
 import { placed, type Clock } from "../domain/clock";
 import { diagnosticErrorCode, failureReason } from "../domain/errors";
 import {
@@ -828,7 +829,7 @@ export function createHealthMonitor(
           policy.onFailure !== "restart"
             ? "Its healthcheck's on_failure is report, so Rig only reports it."
             : outcome.state.incarnation === undefined
-              ? `Rig cannot restart it for its health, since a rigd too old to record which process it is started it; run rig restart ${target.name} once.`
+              ? `Rig cannot restart it for its health, since a rigd too old to record which process it is started it; run ${rigCommand("restart", { target })} once.`
               : "Rig restarts it."
         }`,
       });

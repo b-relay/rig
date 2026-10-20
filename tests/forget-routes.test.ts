@@ -548,6 +548,28 @@ for (const mode of modes) {
   });
 }
 
+test("managed: a ROUTE_CONFLICT between recorded Targets names the command that stops each one, in its Project", async () => {
+  const w = await rigWorld("managed");
+  await w.deployedThenStopped();
+  // The working Target's block claims the stable Target's hostname, as a hand edit could make it.
+  await writeFile(
+    w.routeFile,
+    (await w.routes()).replaceAll("dev.ledger.test", "ledger.test"),
+  );
+  const refusal = (await w.runtime
+    .command({
+      action: "deploy",
+      project: "ledger",
+      target: "stable",
+      force: true,
+    })
+    .catch((error: unknown) => error)) as RigError;
+  expect(refusal).toMatchObject({ code: "ROUTE_CONFLICT" });
+  // Neither a removed command nor a bare rig down, which would mean the working Target of this directory's Project.
+  expect(refusal.hint).toContain("rig down working --project ledger");
+  expect(refusal.hint).not.toContain("rig destroy");
+});
+
 test("forget of a Project whose Targets have no route never asks the proxy", async () => {
   const w = await rigWorld("managed");
   w.deps.documents.read = async (path) => ({

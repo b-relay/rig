@@ -215,7 +215,7 @@ test("status and doctor read a Service's cached health and run no check for it",
     doctor.checks.find((check) => check.name === "working/web"),
   ).toMatchObject({
     ok: false,
-    hint: "Its health check failed; inspect the Target logs (rig logs working) and the Service's healthcheck in rig.yaml.",
+    hint: "Its health check failed; inspect the Target logs (rig logs working --service web --project demo) and the Service's healthcheck in rig.yaml.",
   });
   expect(checks).toEqual([]);
 });

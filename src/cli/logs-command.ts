@@ -31,8 +31,11 @@ Examples:
   rig logs stable --stream stderr --follow
   rig logs stable --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
   rig logs --since 1d --json --full > logs.jsonl
+  rig logs preview feature/login --service web
+  rig logs preview --deployment demo
 
-When older entries match than --lines lets through, stderr says so.
+When older entries match than --lines lets through, stderr says so; a larger
+--lines, or --until an earlier time, reaches them.
 `;
 
 /** `rig logs`: the grammar checks every flag, resolves durations against `now`, and sends one request; rigd checks the
@@ -49,11 +52,11 @@ export function addLogsCommand(
     execute: ExecuteCommand;
     /** The clock `--since 1h` and `--until 1h` count back from. */
     now: () => Date;
-    /** The grammar's one check of a Target selection. */
+    /** The grammar's one check of a Target selection; a hint that retypes the command keeps the --service names. */
     targetRequest(
       target: string | undefined,
       branch: string | undefined,
-      options: { project?: string; deployment?: string },
+      options: { project?: string; deployment?: string; service?: string[] },
     ): RuntimeCommand;
     /** The grammar's argument parsers, shared with every command. */
     nonEmpty(value: string): string;
@@ -67,9 +70,16 @@ export function addLogsCommand(
       "[target]",
       "working (the default), stable, or preview with a Branch",
     )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .argument(
+      "[branch]",
+      "Preview Branch (a Preview deployed with its own name: --deployment <name>)",
+      nonEmpty,
+    )
     .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
+    .option(
+      "--deployment <name>",
+      "A Preview by the name it was deployed with (rig deploy preview --deployment <name>), in place of its Branch",
+    )
     .option(
       "--follow",
       "Keep printing new lines until interrupted, after the matching history; every filter but --until applies",

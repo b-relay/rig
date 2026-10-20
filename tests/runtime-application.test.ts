@@ -351,7 +351,7 @@ test("a plain deploy of the same Commit is refused while a build's outcome is un
   ).rejects.toMatchObject({
     code: "BUILD_UNKNOWN",
     details: { unit: "shared" },
-    hint: expect.stringContaining("rig deploy stable --force"),
+    hint: expect.stringContaining("rig deploy stable --project demo --force"),
   });
   expect(state.targets[0]!.plan.workspacePath).toBe(workspace);
   expect(
@@ -479,7 +479,7 @@ test("a Preview deploy stays deployed when retiring the oldest Preview fails, an
   expect(await preview("feature/b")).toMatchObject({
     outcome: "deployed",
     warnings: [
-      "Preview feature/a was not removed: web did not stop. Stop it by hand. Run rig down preview feature/a --destroy to finish; the Project is over its Preview limit until then.",
+      "Preview feature/a was not removed: web did not stop. Stop it by hand. Run rig down preview feature/a --project demo --destroy to finish; the Project is over its Preview limit until then.",
     ],
   });
   expect(state.targets.find((t) => t.branch === "feature/b")).toMatchObject({
@@ -549,7 +549,7 @@ test("replacing the oldest Preview destroys its owned storage after verified shu
   expect(await preview("feature/c")).toMatchObject({
     outcome: "deployed",
     warnings: [
-      "Preview feature/b was not removed: EBUSY: data root in use. Run rig down preview feature/b --destroy to finish; the Project is over its Preview limit until then.",
+      "Preview feature/b was not removed: EBUSY: data root in use. Run rig down preview feature/b --project demo --destroy to finish; the Project is over its Preview limit until then.",
     ],
   });
   expect(calls).toEqual([
@@ -1151,7 +1151,7 @@ test("doctor reports drift, not an invalid config, when a valid config adds a Se
     message:
       "Current configuration adds Services the recorded Target policy does not have (worker).",
     reason: "config-drift",
-    hint: "Run rig restart working (or rig down working, then rig up working) to apply the current configuration.",
+    hint: "Run rig restart working --project demo to apply the current configuration.",
   });
 });
 
@@ -1196,7 +1196,7 @@ test("doctor checks a deployed Target against its deployed revision's config, no
     message:
       "The deployed revision's configuration differs from the recorded Target policy.",
     reason: "config-drift",
-    hint: "Run rig deploy stable --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
+    hint: "Run rig deploy stable --project demo --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.",
   });
   expect(
     await runtime.command({
@@ -1270,13 +1270,13 @@ test("doctor says a deployed revision whose rig.yaml predates the Compose names 
         message:
           "The deployed revision's configuration predates the Compose key names of ADR 0011 and 0012 (run is now command, env is now environment, ready is now healthcheck.test, ready_timeout is now healthcheck.start_period), so its policy was not compared. The Target still runs its recorded plan.",
         reason: "config-predates-rename",
-        hint: "Commit rig.yaml with the new names, then run rig deploy stable; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.",
+        hint: "Commit rig.yaml with the new names, then run rig deploy stable --project demo; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.",
       },
       expect.objectContaining({
         ok: false,
         reason: "config-predates-rename",
         hint: expect.stringContaining(
-          "then run rig deploy preview feature/old;",
+          "then run rig deploy preview feature/old --project demo;",
         ),
       }),
     ]),
@@ -1415,7 +1415,7 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     message:
       "Project config could not be read. EACCES: permission denied, open '/tmp/developer/rig.yaml'",
     reason: "config-unreadable",
-    hint: "Inspect the Project directory and file permissions, then run doctor again.",
+    hint: "Inspect the Project directory and file permissions, then run rig doctor --project demo again.",
   });
   expect(report.checks.find((c) => c.name === "working/config")).toEqual({
     name: "working/config",
@@ -1423,7 +1423,7 @@ test("doctor tells an unreadable Project config from an invalid or foreign one, 
     message:
       "Current configuration could not be read. EACCES: permission denied, open '/tmp/developer/rig.yaml'",
     reason: "config-unreadable",
-    hint: "Inspect the Project directory and file permissions, then run doctor again.",
+    hint: "Inspect the Project directory and file permissions, then run rig doctor --project demo again.",
   });
   independent(report);
   repoFailure = new ConfigError(
@@ -1639,9 +1639,9 @@ test("doctor carries each failing component's observation reason and exit code a
     name: "working/web",
     ok: false,
     message:
-      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up working to start it again.",
+      "Component is failed. The process exited with code 137 after 5 automatic restarts within 60 s, so it stays stopped. Run rig up working --project demo to start it again.",
     reason: "failed",
-    hint: "Inspect the Target logs (rig logs working) for why it exited.",
+    hint: "Inspect the Target logs (rig logs working --service web --project demo) for why it exited.",
   });
   deps.observations.process = async () => ({
     state: "unknown",
@@ -1651,7 +1651,7 @@ test("doctor carries each failing component's observation reason and exit code a
     ok: false,
     message: "Component is unknown. Process ownership could not be verified.",
     reason: "unknown",
-    hint: "Inspect daemon state (rig activity, rigd status) before acting on this component.",
+    hint: "Inspect daemon state (rig activity --project demo, rigd status) before acting on this component.",
   });
   deps.observations.process = async () => ({
     state: "unknown",
@@ -1660,7 +1660,7 @@ test("doctor carries each failing component's observation reason and exit code a
   expect(await check()).toMatchObject({
     message:
       "Component is unknown. Observation did not complete before the status deadline.",
-    hint: "Run doctor again; the observation did not finish within the status budget.",
+    hint: "Run rig doctor --project demo again; the observation did not finish within the status budget.",
   });
 });
 
@@ -2156,7 +2156,7 @@ test.each(["pending", "blocked", "committing"] as const)(
     await expect(runtime.command(deploy)).rejects.toMatchObject({
       code: "DEPLOY_RECOVERY",
       message: "The previous deployment has an unresolved transition.",
-      hint: "Run down for this Target to finish stopping both plans before deploying again.",
+      hint: "Run rig down stable --project demo to finish stopping both plans before deploying again.",
     });
     expect(state.targets).toEqual(before);
     expect(state.activity.slice(activityCount)).toEqual([
@@ -2807,7 +2807,7 @@ test("wrapped failure writes a correlated private diagnostic and safe public res
     });
     const body = await response.text();
     expect(body).toContain("DEPLOY_ROLLBACK_BLOCKED");
-    expect(body).toContain("Run down for this Target");
+    expect(body).toContain("Run rig down stable --project demo");
     expect(body).not.toContain("secret");
     const text = await readFile(
       join(root, ".rig/logs/rigd/rigd.jsonl"),
@@ -3414,7 +3414,7 @@ test("status and doctor name a Preview whose destruction is pending instead of c
       state: "stopped",
     });
     expect(status.warnings).toEqual([
-      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run rig down preview --deployment review --destroy to finish cleanup.`,
+      `${f.target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run rig down preview --deployment review --project demo --destroy to finish cleanup.`,
     ]);
     const report = (await f.runtime.command({
       action: "doctor",
@@ -3660,7 +3660,7 @@ test("deploy --no-up says the Target is stopped and names the rig up command", a
   expect(await runtime.command({ ...deploy, noUp: true })).toMatchObject({
     outcome: "deployed",
     warnings: [
-      "stable is deployed but stopped. Run rig up stable to start it.",
+      "stable is deployed but stopped. Run rig up stable --project demo to start it.",
     ],
   });
   await runtime.command({ action: "up", project: "demo", target: "stable" });
@@ -3670,7 +3670,7 @@ test("deploy --no-up says the Target is stopped and names the rig up command", a
   ).toMatchObject({
     outcome: "deployed",
     warnings: [
-      "stable was running and is now stopped on the new deployment. Run rig up stable to start it.",
+      "stable was running and is now stopped on the new deployment. Run rig up stable --project demo to start it.",
     ],
   });
   expect(state.targets[0]?.desired).toBe("stopped");
@@ -4139,7 +4139,7 @@ test("doctor reports a Stable Target deployed from a Branch that is no longer Pr
     message:
       "stable was deployed from 'main', but Production is now 'release'.",
     reason: "production-branch-drift",
-    hint: "Run rig deploy stable to deploy 'release', or set production_branch back to 'main'.",
+    hint: "Run rig deploy stable --project demo to deploy 'release', or set production_branch back to 'main'.",
   });
 });
 
@@ -4287,7 +4287,7 @@ test("forget refuses running Targets and retained Previews, list marks a missing
   ).rejects.toMatchObject({
     code: "PROJECT_TARGETS",
     message: "Project 'demo' still has 1 Preview: feature.",
-    hint: "Run rig down preview <branch> --destroy for each Preview, then rig forget demo.",
+    hint: "Destroy it with rig down preview feature --project demo --destroy, then run rig forget demo.",
   });
   state.targets = state.targets.filter((t) => t.kind !== "preview");
   const originalRead = deps.documents.read.bind(deps.documents);
@@ -4557,7 +4557,7 @@ test("a working Target started when a rig.yaml without targets still turned it o
     message:
       "The working Target is off in rig.yaml, but working is recorded running: it keeps running, and up, restart and deploy refuse it.",
     reason: "target-off",
-    hint: "Add `working: true` under targets in rig.yaml to keep it, or run rig down working to stop it.",
+    hint: "Add `working: true` under targets in rig.yaml to keep it, or run rig down working --project demo to stop it.",
   });
   for (const action of ["up", "restart"] as const)
     await expect(

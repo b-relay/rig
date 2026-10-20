@@ -246,7 +246,7 @@ test("a failed build leaves the running previous Deployment untouched, keeps the
   await expect(f.lifecycle.up(f.candidate)).rejects.toMatchObject({
     code: "PREPARATION_INCOMPLETE",
     details: { unit: "service:web" },
-    hint: expect.stringContaining("rig deploy stable --force"),
+    hint: expect.stringContaining("rig deploy stable --project demo --force"),
   });
 });
 
@@ -291,7 +291,7 @@ test("a build whose success could not be recorded is unknown: nothing reruns it,
   await expect(f.lifecycle.up(recorded)).rejects.toMatchObject({
     code: "BUILD_UNKNOWN",
     details: { unit: "service:api" },
-    hint: expect.stringContaining("rig deploy stable --force"),
+    hint: expect.stringContaining("rig deploy stable --project demo --force"),
   });
   expect(await f.ran()).toEqual(["shared", "service:api"]);
   // A forced deployment of the same Commit is planned into a new workspace, which owes nothing to the old record.

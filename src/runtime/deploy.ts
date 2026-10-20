@@ -1,6 +1,7 @@
 import { activationJournal, intendStopped } from "./supervision";
 import type { ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
+import { rigCommand, type RecordedTarget } from "../domain/rig-command";
 import { boundedObservations } from "./bounded-observations";
 import { within } from "../domain/paths";
 import { holdCheckout } from "./jobs";
@@ -20,13 +21,13 @@ import { uncertainAttempt } from "./lifecycle";
 import { prepareTarget } from "./preparation";
 /** Unresolved recovery must be rejected before accepting any deployment outcome. */
 export function assertDeploymentRecovered(
-  previous: Pick<TargetRecord, "recovery"> | undefined,
+  previous: (Pick<TargetRecord, "recovery"> & RecordedTarget) | undefined,
 ): void {
   if (previous?.recovery)
     throw new RigError(
       "DEPLOY_RECOVERY",
       "The previous deployment has an unresolved transition.",
-      "Run down for this Target to finish stopping both plans before deploying again.",
+      `Run ${rigCommand("down", { target: previous })} to finish stopping both plans before deploying again.`,
     );
 }
 /** What a deploy asks of its activation. */
@@ -199,7 +200,7 @@ async function activate(
       throw new RigError(
         "DEPLOY_COMMIT_PENDING",
         "The deployment was activated, but its commit finalization is incomplete.",
-        "Run down for this Target to finish the recorded commit without restoring the previous build.",
+        `Run ${rigCommand("down", { target: candidate })} to finish the recorded commit without restoring the previous build.`,
         {},
         failureCauses(error),
       );
@@ -245,7 +246,7 @@ async function activate(
       throw new RigError(
         "DEPLOY_ROLLBACK_BLOCKED",
         "Deployment failed and process cleanup could not be verified, or saved effects could not be restored.",
-        "Run down for this Target and inspect its logs before retrying.",
+        `Run ${rigCommand("down", { target: candidate })} and inspect its logs before retrying.`,
         {},
         failureCauses(error, recoveryError),
       );
@@ -273,7 +274,7 @@ async function activate(
         throw new RigError(
           "DEPLOY_RESTORE_FAILED",
           "The deployment failed and its previous plan could not be restored.",
-          "Run down for this Target and inspect its logs before retrying.",
+          `Run ${rigCommand("down", { target: candidate })} and inspect its logs before retrying.`,
           {},
           failureCauses(error, recoveryError),
         );

@@ -329,7 +329,7 @@ test("rig run refuses a stopped Target, whose next rigd would stop the run again
     }),
   ).rejects.toMatchObject({
     code: "JOB_UNAVAILABLE",
-    hint: "Run rig up working first.",
+    hint: "Run rig up working --project melody first.",
   });
   expect(f.processes.get(f.key)).toBeUndefined();
 });

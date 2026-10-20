@@ -640,7 +640,7 @@ export function createEffectTransactions(options: {
         throw new RigError(
           "EFFECTS_RECOVERY",
           "This Target has an unfinished effect transaction.",
-          "Run down for this Target to restore its saved effects before retrying.",
+          "Run rig down for this Target to restore its saved effects before retrying.",
         );
       const destinations = new Map<string, string>();
       for (const artifact of artifacts) {

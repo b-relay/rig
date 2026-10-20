@@ -1,7 +1,7 @@
 import type { PlanJob } from "../config/types";
 import { recordActivity } from "../domain/activity";
 import { RigError, diagnosticErrorCode } from "../domain/errors";
-import { targetSelector } from "../domain/target-selector";
+import { rigCommand } from "../domain/rig-command";
 import type {
   BackupRecord,
   HeldCheckout,
@@ -329,7 +329,7 @@ export async function stopJobRuns(
           new RigError(
             "JOB_STOP_UNVERIFIED",
             `${record.job} on ${target.name} could not be confirmed stopped: its process ${settled === "running" ? "is still running" : "could not be inspected or does not name its run"}.`,
-            `Run rig doctor, inspect the process, then retry rig down ${targetSelector(target)}.`,
+            `Run rig doctor, inspect the process, then retry ${rigCommand("down", { target })}.`,
             { job: record.job, run: record.running!.id, state: settled },
           ),
         );
@@ -368,7 +368,7 @@ export async function startJobRun(
   const startedAt = deps.now();
   const restoreCommand = job.backup?.restore;
   if (request.restore && restoreCommand === undefined)
-    throw noRestore(job.name);
+    throw noRestore(target, job.name);
   const storage =
     job.backup && !request.restore ? backupStorage(deps) : undefined;
   const run: JobRun = {
@@ -471,16 +471,23 @@ export async function settlePreviousRun(
       recorded.trigger === "restore"
         ? `A restore of ${job} is still running on ${target.name} (started ${recorded.startedAt}).`
         : `${job} is still running on ${target.name} (started ${recorded.startedAt}).`,
-      `Wait for it to finish (rig status shows it), or stop it with rig down. Runs of one job, restores included, never overlap.`,
+      `Wait for it to finish (${rigCommand("status", { project: target.plan.project })} shows it), or stop it with ${rigCommand("down", { target })}, which stops the Target's Services too. Runs of one job, restores included, never overlap.`,
       { job, run: recorded.id, startedAt: recorded.startedAt },
     );
 }
-/** The refusal of a restore for a job without a `restore` command. */
-export function noRestore(job: string): RigError {
+/** The refusal of a restore for a job without a `restore` command on `target`. */
+export function noRestore(
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "plan">,
+  job: string,
+): RigError {
   return new RigError(
     "BACKUP_NO_RESTORE",
     `${job} has no restore command, so Rig cannot restore its backups.`,
-    `Add jobs.${job}.backup.restore to rig.yaml (the command that puts $RIG_BACKUP_DIR back, such as pg_restore --clean ...), then plan the Target again: rig restart working, or deploy.`,
+    `Add jobs.${job}.backup.restore to rig.yaml (the command that puts $RIG_BACKUP_DIR back, such as pg_restore --clean ...), then plan the Target again: ${
+      target.kind === "working"
+        ? rigCommand("restart", { target })
+        : `commit it and run ${rigCommand("deploy", { target })}`
+    }.`,
     { job },
   );
 }

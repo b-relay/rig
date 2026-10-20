@@ -841,7 +841,9 @@ test("one owner per hostname, at the write point: every publication path refuses
   const duplicate = await w.routes();
   const refused = {
     code: "ROUTE_CONFLICT",
-    hint: expect.stringContaining("rig down or rig destroy"),
+    hint: expect.stringContaining(
+      "stop the Target that should not serve it with rig down",
+    ),
   };
   // Every path that would publish the file refuses it, before writing anything.
   const paths: [string, () => Promise<unknown>][] = [

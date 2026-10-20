@@ -160,7 +160,7 @@ export function movedProject(
   return new RigError(
     "PROJECT_MOVED",
     `Project '${project.name}' is registered at ${project.repoPath}, which no longer exists.`,
-    `Run rig repoint <new path> --project ${project.name}, or rig repoint . from the moved repository.`,
+    `Run rig repoint <new path> --project ${shellWord(project.name)}, or rig repoint . from the moved repository.`,
     { registeredPath: project.repoPath },
   );
 }
@@ -255,8 +255,8 @@ function assertRegistrationAvailable(
       "PROJECT_CONFLICT",
       `Project '${existing.name}' is already registered at ${existing.repoPath}.`,
       existing.name === identity.name
-        ? `Run rig repoint ${shellWord(identity.repoPath)} --project ${existing.name} to move it here, or ${anotherName(identity)}.`
-        : `Run rig rename ${identity.name} --project ${existing.name} to rename the registered Project, or restore its config name.`,
+        ? `Run rig repoint ${shellWord(identity.repoPath)} --project ${shellWord(existing.name)} to move it here, or ${anotherName(identity)}.`
+        : `Run rig rename ${shellWord(identity.name)} --project ${shellWord(existing.name)} to rename the registered Project, or restore its config name.`,
       { registeredName: existing.name, registeredPath: existing.repoPath },
     );
   return existing;
@@ -302,5 +302,5 @@ export function identityDriftHint(
   registeredName: string,
   configName: string,
 ): string {
-  return `Run rig rename ${configName} --project ${registeredName} to adopt the config name, or restore name: ${registeredName} in the config.`;
+  return `Run rig rename ${shellWord(configName)} --project ${shellWord(registeredName)} to adopt the config name, or restore name: ${registeredName} in the config.`;
 }

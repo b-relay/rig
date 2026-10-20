@@ -544,11 +544,13 @@ test("a Stable Target whose start after a reboot finds an unfinished effect tran
   const failed = entries.find((entry) => entry.action === "up")!;
   expect(failed).toMatchObject({ outcome: "failed", target: "stable" });
   expect(failed.message).toContain("EFFECTS_RECOVERY");
-  expect(failed.message).toContain("Run rig down stable, then rig up stable");
+  expect(failed.message).toContain(
+    "Run rig down stable --project demo, then rig up stable --project demo",
+  );
   const status = await f.status("stable");
   for (const service of ["api", "db", "worker"])
     expect(String(status[service]!.reason)).toContain(
-      "Run rig down stable, then rig up stable to start it again.",
+      "Run rig down stable --project demo, then rig up stable --project demo to start it again.",
     );
   await f.command({ action: "down", project: "demo", target: "stable" });
   await f.command({ action: "up", project: "demo", target: "stable" });

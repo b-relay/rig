@@ -901,7 +901,9 @@ test("the external router's deploy check refuses a prospective route file with t
     );
     await expect(router.check!(site("a", "a.test"))).rejects.toMatchObject({
       code: "ROUTE_CONFLICT",
-      hint: expect.stringContaining("rig down or rig destroy"),
+      hint: expect.stringContaining(
+        "stop the Target that should not serve it with rig down",
+      ),
     });
     // Removing one owner is the way out.
     await router.remove("c");

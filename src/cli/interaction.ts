@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { terminalText } from "./terminal-text";
 import { RigError, cancelled } from "../domain/errors";
-import { shellWord } from "../domain/target-selector";
+import { rigCommand, selectedTarget } from "../domain/rig-command";
 import { backupsResultSchema, type RuntimeCommand } from "../daemon/protocol";
 import { formatBytes } from "../domain/bytes";
 import type { CliDependencies } from "./types";
@@ -99,7 +99,13 @@ export async function prepareInteractiveRequest(
         throw new RigError(
           "PRODUCTION_CONFIRMATION",
           `The current Branch differs from Production '${terminalText(info.productionBranch)}'.`,
-          `Pass the Production Branch explicitly: rig deploy stable ${shellWord(terminalText(info.productionBranch))}.`,
+          `Pass the Production Branch explicitly: ${terminalText(
+            rigCommand("deploy", {
+              project: request.project,
+              target: { kind: "stable", name: "stable" },
+              branch: info.productionBranch,
+            }),
+          )}.`,
         );
       if (
         !(await interaction.confirm(
@@ -165,7 +171,13 @@ async function confirmRestore(
             .slice(0, 5)
             .map((backup) => terminalText(backup.id))
             .join(", ")}.`
-        : `A successful run of the job makes one: rig run ${terminalText(request.job ?? "")}.`,
+        : `A successful run of the job makes one: ${terminalText(
+            rigCommand("run", {
+              project: request.project,
+              job: request.job ?? "",
+              target: selectedTarget(request),
+            }),
+          )}.`,
     );
   }
   const resolved = { ...request, backup: chosen.id };
@@ -177,7 +189,18 @@ async function confirmRestore(
     throw new RigError(
       "RESTORE_CONFIRMATION",
       "A restore replaces data, so it needs confirmation, and there is no terminal to ask on.",
-      `Pass --yes to restore without asking: rig backup restore ${shellWord(terminalText(chosen.job))} ${terminalText(chosen.id)} --yes (with the Target, when it is not stable).`,
+      `Pass --yes to restore without asking: ${terminalText(
+        rigCommand(
+          "backup restore",
+          {
+            project: request.project,
+            job: chosen.job,
+            backup: chosen.id,
+            target: selectedTarget(request, chosen.target),
+          },
+          "--yes",
+        ),
+      )}.`,
     );
   if (!(await deps.interaction.confirm(question))) throw cancelled();
   return resolved;

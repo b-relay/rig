@@ -13,7 +13,13 @@ import {
   readAt,
   type OpenLog,
 } from "./log-files";
-import { parseLogRecord, unreadableEntry } from "./log-records";
+import {
+  holdsMarkers,
+  parseLogRecord,
+  recordMarkers,
+  unreadableEntry,
+  type RecordMarkers,
+} from "./log-records";
 import {
   familyRotates,
   logFamilies,
@@ -183,7 +189,14 @@ async function readFollowing(
       // since: then it is read from its start.
       if (!positions[name] && source.generation > 0 && !unseen.has(name))
         continue;
-      windows.push(await readWindow(log, source, positions[name]));
+      windows.push(
+        await readWindow(
+          log,
+          source,
+          positions[name],
+          recordMarkers(source.family, filter),
+        ),
+      );
     }
     const entries = nextEntries(windows, lines, filter);
     return {
@@ -388,12 +401,14 @@ function rebind(
   return rebound;
 }
 /** The complete lines of an open file after `previous` (from the start for a file the cursor has not seen), at most the
- * window. Bytes after the last newline are left for the next read, including split UTF-8. Fails LOG_CURSOR when the
- * file is not the one the cursor read or is shorter than the position. */
+ * window. Bytes after the last newline are left for the next read, including split UTF-8. A line without `markers` (see
+ * `recordMarkers`) is passed over unparsed. Fails LOG_CURSOR when the file is not the one the cursor read or is shorter
+ * than the position. */
 async function readWindow(
   log: OpenLog,
   source: LogSource,
   previous: LogPosition | undefined,
+  markers: RecordMarkers | undefined,
 ): Promise<SourceWindow> {
   const { handle: file, identity, size } = log;
   if (previous && (previous.identity !== identity || previous.offset > size))
@@ -439,8 +454,14 @@ async function readWindow(
     newline !== -1;
     newline = bytes.indexOf(10, begin)
   ) {
+    const line = bytes.subarray(begin, newline);
+    if (markers && !holdsMarkers(line, markers)) {
+      rows.push({ end: start + newline + 1 });
+      begin = newline + 1;
+      continue;
+    }
     record(
-      bytes.subarray(begin, newline).toString("utf8").replace(/\r$/, ""),
+      line.toString("utf8").replace(/\r$/, ""),
       newline - begin,
       start + newline + 1,
     );

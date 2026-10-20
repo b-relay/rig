@@ -12,7 +12,6 @@ import {
   replacePrivateFile,
 } from "./private-files";
 import { join } from "node:path";
-import { StringDecoder } from "node:string_decoder";
 import { RigError, failureReason } from "../domain/errors";
 import type {
   ManagedProcess,
@@ -53,29 +52,14 @@ import {
 } from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
-import { appendTargetLog } from "./target-log";
+import { appendTargetLogEntries } from "./target-log";
+import { outputLines } from "../domain/output-records";
 import type { LogRetention } from "../domain/log-retention";
 import { findsExecutable, gatedCommand, releaseGate } from "./start-gate";
 import { failStart, ownStopsDetach } from "./start-cleanup";
 import { assertContainedDirectory } from "./contained-directory";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
-/** Appends one log line through the shared writer, which rotates a full log and recreates a removed directory. */
-function recordLine(
-  root: string,
-  logRoot: string,
-  entry: TargetLogEntry,
-  retention: LogRetention | undefined,
-): Promise<void> {
-  return appendTargetLog(
-    root,
-    logRoot,
-    JSON.stringify(entry) + "\n",
-    retention,
-  );
-}
-/** Longest run of output characters recorded as one log record. */
-const MAX_RECORD_CHARS = 64 * 1024;
 interface OwnedProcess {
   pid: number;
   identity?: string;
@@ -698,26 +682,24 @@ function captureOutput(
     const pipe = owned.child![stream]!;
     owned.drains.push(
       new Promise((resolve) => {
-        const decoder = new StringDecoder("utf8");
-        let pending = "";
-        // A newline-free run is recorded in bounded pieces: after JSON escaping
-        // (up to 6 characters per control byte) each stays far below the 4 MiB
-        // window the log reader can take in one read.
-        const emit = (text: string) => {
-          if (text.length <= MAX_RECORD_CHARS) return record(text);
-          for (let at = 0; at < text.length; at += MAX_RECORD_CHARS)
-            record(text.slice(at, at + MAX_RECORD_CHARS));
-        };
-        const record = (line: string) => {
-          const entry: TargetLogEntry = {
-            timestamp: now().toISOString(),
+        const lines = outputLines();
+        const record = (complete: string[]) => {
+          if (!complete.length) return;
+          const timestamp = now().toISOString();
+          const entries = complete.map((line): TargetLogEntry => ({
+            timestamp,
             component: request.componentName,
             stream,
             line,
-          };
+          }));
           owned.writes = owned.writes
             .then(async () =>
-              recordLine(root, request.logRoot, entry, await retention?.()),
+              appendTargetLogEntries(
+                root,
+                request.logRoot,
+                entries,
+                await retention?.(),
+              ),
             )
             .then(
               () => {
@@ -728,21 +710,9 @@ function captureOutput(
               },
             );
         };
-        pipe.on("data", (chunk: Buffer) => {
-          pending += decoder.write(chunk);
-          let newline: number;
-          while ((newline = pending.indexOf("\n")) !== -1) {
-            emit(pending.slice(0, newline).replace(/\r$/, ""));
-            pending = pending.slice(newline + 1);
-          }
-          if (pending.length > MAX_RECORD_CHARS) {
-            emit(pending);
-            pending = "";
-          }
-        });
+        pipe.on("data", (chunk: Buffer) => record(lines.push(chunk)));
         pipe.once("end", () => {
-          pending += decoder.end();
-          if (pending) emit(pending);
+          record(lines.end());
           resolve();
         });
         pipe.once("error", () => resolve());

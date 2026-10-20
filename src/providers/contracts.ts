@@ -105,7 +105,8 @@ export interface CommandRequest {
   readonly env?: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
-  /** Receives each chunk of output as the command produces it; the result still carries the bounded whole. */
+  /** Receives each chunk of output as the command produces it, decoded as UTF-8 with a character that arrived split
+   * between chunks given whole in the later one; the result still carries the bounded whole. */
   readonly onOutput?: (stream: "stdout" | "stderr", chunk: string) => void;
   /** Told the pid of the command's process group once it is spawned and before the command runs: the command waits at a
    * gate until this resolves, so the group can be recorded first, and ends without running when it rejects, which the

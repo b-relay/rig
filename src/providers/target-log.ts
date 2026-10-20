@@ -1,18 +1,47 @@
 import { randomUUID } from "node:crypto";
 import { link, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { appendInPrivateDirectory, privateDirectory } from "./private-files";
+import {
+  appendLinesInPrivateDirectory,
+  privateDirectory,
+} from "./private-files";
+import type { TargetLogEntry } from "./contracts";
 import {
   DEFAULT_LOG_RETENTION,
   type LogRetention,
 } from "../domain/log-retention";
+import { recordPieces } from "../domain/output-records";
 /** A rotation lock older than this was left by a writer that died mid-rotation and is reclaimed. */
 const STALE_ROTATION_MS = 30_000;
 
-/** Appends to a Target's `target.jsonl` in `logRoot`, rotating a full file first (see `rotateLogFile`), and bringing back a
- * log directory that was removed underneath the running component. `logRoot` is a directory under the Rig root `root` that
- * the caller has made with `privateDirectory`: the supervisor as the component starts, the Target effects before they
- * record. */
+/** Records `entries` in a Target's log, in order and in one write: each as one JSONL record, or a line longer than
+ * MAX_RECORD_LINE_BYTES as consecutive records of its pieces (see `recordPieces`), so every record can be read back. Rotates
+ * and recreates the log as `appendTargetLog` does. Every writer of Target output records through this. */
+export async function appendTargetLogEntries(
+  root: string,
+  logRoot: string,
+  entries: readonly TargetLogEntry[],
+  retention: LogRetention = DEFAULT_LOG_RETENTION,
+): Promise<void> {
+  if (!entries.length) return;
+  const records = entries.flatMap((entry) =>
+    recordPieces(entry.line).map((line) =>
+      // Written without spaces, as readers that look for a component or stream in the bytes expect (see `recordMarkers`).
+      JSON.stringify({
+        timestamp: entry.timestamp,
+        component: entry.component,
+        stream: entry.stream,
+        line,
+      }),
+    ),
+  );
+  await appendTargetLog(root, logRoot, records.join("\n") + "\n", retention);
+}
+
+/** Appends whole JSONL lines to a Target's `target.jsonl` in `logRoot`, after ending a record a crash cut short (see
+ * `appendLinesInPrivateDirectory`), rotating a full file first (see `rotateLogFile`), and bringing back a log directory
+ * that was removed underneath the running component. `logRoot` is a directory under the Rig root `root` that the caller
+ * has made with `privateDirectory`: the supervisor as the component starts, the Target effects before they record. */
 export async function appendTargetLog(
   root: string,
   logRoot: string,
@@ -21,14 +50,14 @@ export async function appendTargetLog(
 ): Promise<void> {
   const file = join(logRoot, "target.jsonl");
   await rotateLogFile(file, retention);
-  // The directory was checked as the component started (and is checked again whenever it has to be made), so each line
+  // The directory was checked as the component started (and is checked again whenever it has to be made), so each write
   // costs one open that refuses a link at the file.
   try {
-    await appendInPrivateDirectory(file, text);
+    await appendLinesInPrivateDirectory(file, text);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     await privateDirectory(root, logRoot);
-    await appendInPrivateDirectory(file, text);
+    await appendLinesInPrivateDirectory(file, text);
   }
 }
 

@@ -12,7 +12,7 @@ import {
   LOG_WINDOW_BYTES,
   openLog,
 } from "./log-files";
-import { parseLogRecord, unreadableEntry } from "./log-records";
+import { parseLogRecord, recordMarkers, unreadableEntry } from "./log-records";
 import { familyEvidence, type LogSource } from "./log-sources";
 
 /** Where a follow resumes in one file: its identity and the byte offset just past the last line already read. */
@@ -66,6 +66,9 @@ export async function readFamilyTail(
   };
   // Lines launchd wrote have no time, so an unreadable one among them has none to take either: it is kept at once.
   const timeless = familyEvidence(family.family) !== undefined;
+  // A narrow filter passes over other components' records unparsed, so a quiet Service among noisy ones reads quickly;
+  // the walk past `since` then measures only the records it reads, which can only make it go further.
+  const markers = recordMarkers(family.family, filter);
   // An unreadable record names no component or stream, so a --service or --stream read never keeps one.
   const unreadableKept = !filter.services && !filter.stream;
   // Without a time bound every unreadable record is kept, so a full page of them ends the walk once the time they take
@@ -112,7 +115,12 @@ export async function readFamilyTail(
         ...(midRecord ? { midRecord } : {}),
       };
       if (done) continue;
-      for await (const line of linesBackward(log.handle, end, midRecord)) {
+      for await (const line of linesBackward(
+        log.handle,
+        end,
+        midRecord,
+        markers,
+      )) {
         const parsed =
           line.text === undefined
             ? "unreadable"

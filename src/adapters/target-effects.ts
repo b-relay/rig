@@ -119,7 +119,8 @@ import {
 import { rememberedDigests, type FileDigest } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { createEnvironmentDigest } from "./environment-digest";
-import { appendTargetLog } from "../providers/target-log";
+import { appendTargetLogEntries } from "../providers/target-log";
+import { outputLines } from "../domain/output-records";
 import {
   privateDirectory,
   removeFileDurably,
@@ -315,28 +316,25 @@ export function createTargetEffects(
       await recordOutput(result, target, componentName);
     return result;
   };
-  /** Records complete lines as a running command produces them, each at the time it was seen;
+  /** Records output lines as a running command produces them (see `outputLines`), each at the time it was seen;
    * finish flushes a trailing partial line and says whether anything was streamed. */
   const liveRecorder = (target: TargetRecord, componentName: string) => {
-    const pending = { stdout: "", stderr: "" };
+    const lines = { stdout: outputLines(), stderr: outputLines() };
     let streamed = false;
     let writes: Promise<void> = Promise.resolve();
+    const record = (stream: "stdout" | "stderr", complete: string[]) => {
+      if (complete.length)
+        writes = writes.then(() =>
+          recordLines(target, componentName, stream, complete),
+        );
+    };
     const receive = (stream: "stdout" | "stderr", chunk: string) => {
       streamed = true;
-      const text = pending[stream] + chunk;
-      const lines = text.split("\n");
-      pending[stream] = lines.pop() ?? "";
-      if (lines.length)
-        writes = writes.then(() =>
-          recordLines(target, componentName, stream, lines),
-        );
+      record(stream, lines[stream].push(chunk));
     };
     const finish = async () => {
       for (const stream of ["stdout", "stderr"] as const)
-        if (pending[stream])
-          writes = writes.then(() =>
-            recordLines(target, componentName, stream, [pending[stream]]),
-          );
+        record(stream, lines[stream].end());
       await writes;
       return streamed;
     };
@@ -347,17 +345,13 @@ export function createTargetEffects(
     target: TargetRecord,
     componentName: string,
   ) => {
-    for (const stream of ["stdout", "stderr"] as const)
-      await recordLines(
-        target,
-        componentName,
-        stream,
-        result[stream]
-          .split("\n")
-          .filter(
-            (line, index, lines) => index < lines.length - 1 || line !== "",
-          ),
-      );
+    for (const stream of ["stdout", "stderr"] as const) {
+      const lines = outputLines();
+      await recordLines(target, componentName, stream, [
+        ...lines.push(result[stream]),
+        ...lines.end(),
+      ]);
+    }
   };
   const recordLines = async (
     target: TargetRecord,
@@ -367,19 +361,15 @@ export function createTargetEffects(
   ) => {
     if (!lines.length) return;
     await privateDirectory(options.root, target.logRoot);
-    await appendTargetLog(
+    await appendTargetLogEntries(
       options.root,
       target.logRoot,
-      lines
-        .map((line) =>
-          JSON.stringify({
-            timestamp: options.recordingTime(),
-            component: componentName,
-            stream,
-            line,
-          }),
-        )
-        .join("\n") + "\n",
+      lines.map((line) => ({
+        timestamp: options.recordingTime(),
+        component: componentName,
+        stream,
+        line,
+      })),
       await options.logRetention?.(),
     );
   };

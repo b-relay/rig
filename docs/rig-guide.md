@@ -1300,8 +1300,16 @@ place as an unknown-stream line "Rig skipped an unreadable log record (N
 bytes)." and reading or following continues past it; Rig never edits the
 retained file. A recent read reports a newest run it only walked partway as
 "(more than N bytes)": an old launchd file whose output never ends a line is read
-a window back, not whole. Rig's own writers record a newline-free run in pieces of at most
-64 Ki characters, so their records never exceed that window.
+a window back, not whole. Rig records the output of Services, Jobs, builds and
+setup alike, so none of it is lost or changed on the way: a character split
+between two pieces of output stays whole, and a line longer than 64 KiB (as
+UTF-8), with or without its newline, is recorded as several consecutive
+records of the same Service and stream, cut between characters, which together
+hold the whole line. So every record Rig writes fits the reader's window and
+shows under `--service` and `--stream`. A record a crash cut short is ended
+before the next one is written, so it never swallows that record.
+`--service` and `--stream` pass over other Services' records without parsing
+them, so reading a quiet Service beside a noisy one stays quick.
 A Target log directory removed while a component runs is recreated by the
 next line of output. While output cannot be recorded at all (the path is not a
 directory, or is not writable), `rig status` prints the reason under the still

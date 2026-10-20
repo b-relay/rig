@@ -1,5 +1,6 @@
 import { open, type FileHandle } from "node:fs/promises";
 import { RigError } from "../domain/errors";
+import { holdsMarkers, type RecordMarkers } from "./log-records";
 
 /** The most bytes the reader holds for one record, and reads from one file per follow poll. A longer run is reported as
  * one unreadable record without being held. Rig's own writers keep records far below it. */
@@ -86,12 +87,15 @@ export async function completeEnd(
 /** The complete lines of `file` that end at or before `end` (0, an offset just past a newline, or the end of an
  * over-long unterminated run; see `completeEnd`), newest first, read back from `end` a chunk at a time so only the lines
  * the caller consumes are read. A line longer than the window is yielded without text, as soon as it has grown past the
- * window, and never held whole; a caller that stops there never reads the rest of it. */
+ * window, and never held whole; a caller that stops there never reads the rest of it. With `markers`, a line within the
+ * window that does not hold them is passed over without being decoded or yielded, and so is every complete line of a
+ * chunk that holds none of them. */
 export async function* linesBackward(
   file: FileHandle,
   end: number,
   /** `end` is the end of an unterminated over-long run (`completeEnd`'s `midRecord`), not just past a newline. */
   unterminated = false,
+  markers?: RecordMarkers,
 ): AsyncGenerator<BackwardLine> {
   let position = end;
   /** Bytes from `position` up to the newest line not yet yielded, whose start is still unread; ends with its newline
@@ -114,12 +118,23 @@ export async function* linesBackward(
       bytes = bytes.subarray(0, newline + 1);
     } else if (pending.length) bytes = Buffer.concat([bytes, pending]);
     let stop = bytes.length;
+    // `bytes` ends in a newline; the line before its first newline began in an earlier chunk and stays pending.
+    if (markers && !holdsMarkers(bytes, markers)) {
+      const first = bytes.indexOf(10);
+      if (first !== -1) stop = first + 1;
+    }
     for (
       let newline = lastNewline(bytes, stop - 2);
       newline !== -1;
       newline = lastNewline(bytes, stop - 2)
     ) {
-      yield line(bytes.subarray(newline + 1, stop - 1));
+      const text = bytes.subarray(newline + 1, stop - 1);
+      if (
+        !markers ||
+        text.length > LOG_WINDOW_BYTES ||
+        holdsMarkers(text, markers)
+      )
+        yield line(text);
       stop = newline + 1;
     }
     pending = bytes.subarray(0, stop);

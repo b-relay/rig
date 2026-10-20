@@ -535,7 +535,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       // dashboard route rigd no longer confirms.
       const restored = previous
         ? await reconcile(kind, ran).then(
-            () => true,
+            // However reconciling went, a Caddy that ran before must run again.
+            async () => !ran || (await options.job.state()) !== "stopped",
             () => false,
           )
         : true;

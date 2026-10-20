@@ -12,6 +12,7 @@ import {
 } from "../src/domain/rig-command";
 import { generatedPreviewName } from "../src/domain/target-selector";
 import { pendingRenameAdvice } from "../src/runtime/rename";
+import { previewReplacement } from "../src/runtime/doctor";
 import { shellArgs } from "./support/shell-args";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 
@@ -398,4 +399,34 @@ test("the advice for an unfinished rename names rename commands the grammar acce
   ]);
   for (const command of commands)
     expect(await refusal(shellArgs(command))).toBeUndefined();
+});
+
+test("doctor's replacement of a legacy Preview deploys and destroys in the Preview's own Project", async () => {
+  const target = {
+    kind: "preview" as const,
+    name: "all",
+    branch: "feat/(draft) it's",
+    plan: { project: "my shop" },
+  } as Parameters<typeof previewReplacement>[0];
+  const requests: RuntimeCommand[] = [];
+  for (const line of previewReplacement(target))
+    await createRigCommand(
+      "/workspace",
+      { write() {}, error() {} },
+      async (request) => {
+        requests.push(request);
+      },
+    ).parseAsync(shellArgs(line.replace("<new name>", "renamed")), {
+      from: "user",
+    });
+  expect(requests).toMatchObject([
+    {
+      action: "deploy",
+      target: "preview",
+      branch: "feat/(draft) it's",
+      deployment: "renamed",
+      project: "my shop",
+    },
+    { target: "preview", deployment: "all", project: "my shop" },
+  ]);
 });

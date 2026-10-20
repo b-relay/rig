@@ -256,27 +256,38 @@ async function projectNamesCheck(
   } catch {
     return undefined;
   }
-  const groups = new Map<string, string[]>();
+  const groups = new Map<string, ProjectRecord[]>();
   for (const project of projects)
     groups.set(nameKey(project.name), [
       ...(groups.get(nameKey(project.name)) ?? []),
-      project.name,
+      project,
     ]);
-  const shared = [...groups.values()].filter((names) => names.length > 1);
+  const shared = [...groups.values()].filter((group) => group.length > 1);
+  const selectable = (project: ProjectRecord) =>
+    project.name.length <= MAX_NAME_LENGTH;
+  /** How to rename `project`: by --project, or from its repository when its name is too long to select. */
+  const renameOne = (project: ProjectRecord) =>
+    selectable(project)
+      ? `run rig rename <new name> --project ${shellWord(project.name)}`
+      : `in ${project.repoPath}, change name in rig.yaml to at most ${MAX_NAME_LENGTH} characters, then run rig rename <that name> there`;
   const long = projects.filter(
     (project) => project.name.length > MAX_NAME_LENGTH,
   );
   if (!shared.length && !long.length) return undefined;
-  const quoted = (names: readonly string[]) =>
-    names.map((name) => `'${name}'`).join(" and ");
   const shorten = (project: ProjectRecord) => `${project.name.slice(0, 40)}...`;
+  const quoted = (group: readonly ProjectRecord[]) =>
+    group
+      .map((project) =>
+        selectable(project) ? `'${project.name}'` : `'${shorten(project)}'`,
+      )
+      .join(" and ");
   return {
     name: "project-names",
     ok: false,
     message: [
       ...shared.map(
-        (names) =>
-          `Projects ${quoted(names)} have names that differ only in case, which a Mac's disk does not tell apart: they share the operator env files under ${join(deps.root, "env", names[0]!)} and their Tools' paths.`,
+        (group) =>
+          `Projects ${quoted(group)} have names that differ only in case, which a Mac's disk does not tell apart: they share the operator env files under ${join(deps.root, "env", group[0]!.name)} and their Tools' paths.`,
       ),
       ...long.map(
         (project) =>
@@ -286,8 +297,8 @@ async function projectNamesCheck(
     reason: "project-name",
     hint: [
       ...shared.map(
-        (names) =>
-          `Rename all but one of ${quoted(names)}: run rig rename <new name> --project ${shellWord(names[names.length - 1]!)}. The renamed Project keeps a copy of the env files; remove from each copy what belongs to the other Project.`,
+        (group) =>
+          `Rename all but one of ${quoted(group)}: ${renameOne(group.findLast(selectable) ?? group[group.length - 1]!)}. The renamed Project keeps a copy of the env files; remove from each copy what belongs to the other Project.`,
       ),
       ...long.map(
         (project) =>
@@ -323,8 +334,20 @@ function previewNameCheck(
     ok: false,
     message: `Preview '${target.name}' was deployed before Rig refused such names, and ${why}`,
     reason: "preview-name",
-    hint: `It keeps working. To replace it, run rig deploy preview ${target.branch ? `${shellWord(target.branch)} ` : "<branch> "}--deployment <new name>, then ${rigCommand("down", { target }, "--destroy")}, which deletes its data.`,
+    hint: `It keeps working. To replace it, run ${previewReplacement(target).join(", then ")}, which deletes its data.`,
   };
+}
+/** The commands that replace a recorded Preview by one under `<new name>`: a deploy of its Branch under that name, then
+ * the destroy of the old one, each with the Preview's own Project, since doctor's advice is read from anywhere. */
+export function previewReplacement(
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "plan">,
+): [deploy: string, destroy: string] {
+  return [
+    rigCommand("deploy", {
+      target: { ...target, name: "<new name>" },
+    }),
+    rigCommand("down", { target }, "--destroy"),
+  ];
 }
 export async function doctor(
   project: ProjectRecord,

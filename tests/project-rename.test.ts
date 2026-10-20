@@ -28,6 +28,7 @@ import { ABSENT_REVISION } from "../src/adapters/env-file-edit";
 import { prepareRegistration } from "../src/runtime/projects";
 import { STATE_VERSION } from "../src/runtime/state-schema";
 import { FileStateStore } from "../src/runtime/state-store";
+import { syncDirectory } from "../src/providers/private-files";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -140,7 +141,7 @@ test.if(caseInsensitive)(
 );
 
 /** Where a rename stops when rigd dies: the step it never returns from. */
-type Crash = "config" | "env" | "save";
+type Crash = "config" | "env" | "flush" | "save";
 /** Project `before` (and `others`) registered in a real state file, with `before`'s env file, renamed by `rename`, each
  * call a new rigd over the same root and rig.yaml. `crash` makes that call stop for good at a step, as a dead rigd does;
  * `failSave` fails its final save, `commitSave` after the write committed; `unreadable` fails the state read after that. */
@@ -172,9 +173,15 @@ async function world(others: string[] = [], configName = "before") {
       crash?: Crash;
       failSave?: "before" | "after";
       unreadable?: boolean;
+      /** Every flush of the env directory fails. */
+      failFlush?: boolean;
     } = {},
   ) => {
-    const env = createOperatorEnvFiles(root);
+    const env = createOperatorEnvFiles(root, async (directory) => {
+      if (options.crash === "flush") return never();
+      if (options.failFlush) throw new Error("EIO");
+      await syncDirectory(directory);
+    });
     let writes = 0,
       failed = false;
     return {
@@ -487,7 +494,8 @@ test("a withdrawn copy is deleted only once its withdrawal is flushed, by undo a
   failing = false;
   flushes.length = 0;
   await env.undo(move);
-  expect(flushes).toEqual(["flushed with"]);
+  // Flushed before the withdrawn copy is deleted, then once more as the undo reports done.
+  expect(flushes).toEqual(["flushed with", "flushed without"]);
   await absent(root, ".removing-beta");
   await absent(root, "beta");
 });
@@ -505,6 +513,45 @@ test("the advice for an unfinished rename of a name too long to select names the
     "Run rig rename after --project before to finish the rename, or rig rename before --project before to undo it.",
   );
 });
+
+test("a rename's env step is reported done only once its directory is flushed, also when an earlier attempt already made the change", async () => {
+  // Undo of a move: it moves back, its flush fails; run again, the move is already undone, and its flush fails again.
+  const undo = await world();
+  await undo.rename("after", { crash: "save" });
+  for (let attempt = 0; attempt < 2; attempt++)
+    await expect(
+      undo.rename("before", { failFlush: true }),
+    ).rejects.toMatchObject({ code: "RENAME_ROLLBACK" });
+  expect((await undo.registered()).renaming?.to).toBe("after");
+  await undo.rename("before");
+  await expectNotRenamed(undo);
+  // A move rigd died in before its flush: run again, the files are already moved, and the flush must still succeed.
+  const move = await world();
+  await move.rename("after", { crash: "flush" });
+  expect(await read(move.root, "after/all.env")).toBe("A=1\n");
+  await expect(move.rename("after", { failFlush: true })).rejects.toMatchObject(
+    { code: "RENAME_ROLLBACK" },
+  );
+  expect((await move.registered()).renaming?.to).toBe("after");
+  await move.rename("after");
+  await expectRenamed(move);
+});
+
+test.if(caseInsensitive)(
+  "a published copy rigd died in before its flush is reported done only once a later attempt flushes it",
+  async () => {
+    const w = await world(["BEFORE"]);
+    await w.rename("after", { crash: "flush" });
+    expect(await read(w.root, "after/all.env")).toBe("A=1\n");
+    await expect(w.rename("after", { failFlush: true })).rejects.toMatchObject({
+      code: "RENAME_ROLLBACK",
+    });
+    expect((await w.registered()).renaming?.to).toBe("after");
+    await w.rename("after");
+    expect((await w.registered()).name).toBe("after");
+    expect(await read(w.root, "after/all.env")).toBe("A=1\n");
+  },
+);
 
 test("a renamed plan reads its convention env files under the new name and keeps a listed one as written", () => {
   const config = parseProjectConfig({

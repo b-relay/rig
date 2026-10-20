@@ -5128,7 +5128,7 @@ test("names registered before the name rule keep working, and doctor reports eac
   ).toMatchObject({
     ok: false,
     hint: expect.stringContaining(
-      "rig deploy preview feature --deployment <new name>, then rig down preview --deployment all --project demo --destroy",
+      "rig deploy preview feature --deployment <new name> --project demo, then rig down preview --deployment all --project demo --destroy",
     ),
   });
   expect(report.checks.find((check) => check.name === "DEV/name")?.ok).toBe(
@@ -5161,4 +5161,32 @@ test("doctor reports an unfinished rename with the commands that finish and undo
     ok: false,
     hint: "Run rig rename after --project demo to finish the rename, or rig rename demo --project demo to undo it.",
   });
+});
+
+test("doctor tells how to separate two Projects whose names differ only in case and are both too long to select", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  for (const [id, name] of [
+    ["lower", "a".repeat(129)],
+    ["upper", "A".repeat(129)],
+  ] as const)
+    state.projects.push({
+      ...state.projects[0]!,
+      id,
+      name,
+      repoPath: `/tmp/${id}`,
+      configPath: `/tmp/${id}/rig.yaml`,
+    });
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as { checks: { name: string; hint?: string }[] };
+  const hint = report.checks.find(
+    (check) => check.name === "project-names",
+  )!.hint!;
+  // --project selects at most 128 characters: each is renamed from its repository.
+  expect(hint).not.toContain("--project");
+  expect(hint).toContain(
+    "Rename all but one of 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...' and 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...': in /tmp/upper, change name in rig.yaml to at most 128 characters, then run rig rename <that name> there.",
+  );
 });

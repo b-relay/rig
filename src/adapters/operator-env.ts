@@ -8,7 +8,7 @@ import {
   replacePrivateFile,
   syncDirectory,
 } from "../providers/private-files";
-import type { OperatorEnvFiles } from "../runtime/contracts";
+import type { EnvCarry, OperatorEnvFiles } from "../runtime/contracts";
 
 /** The operator env directories under `<root>/env`, one per Project name, as a rename carries them to the new name. Every
  * step can be run again after a crash: a move already made, or a copy already published, is recognised as done. */
@@ -64,6 +64,63 @@ export function createOperatorEnvFiles(
           `Check that ${envRoot} is writable by this user, then run the rename again.`,
           { path: directory(from) },
         );
+  /** The one way a carry or undo reports done, whether it changed anything now or an earlier attempt did: once the env
+   * directory's entries are flushed. A rename a crash cut short before its flush is found done by the next attempt, and
+   * is on disk only after this. */
+  const settled = async (how: EnvCarry) => {
+    if (how !== "none" && (await entry(envRoot))) await flush(envRoot);
+  };
+  /** Carries the directory, or finds it carried: changes nothing on disk that a later flush does not cover. */
+  const carryStep = async ({
+    from,
+    to,
+    how,
+  }: Parameters<OperatorEnvFiles["carry"]>[0]) => {
+    if (how === "none") {
+      if (from !== to) await assertFree(from, to);
+      return;
+    }
+    if (how === "copy") {
+      // The destination was free when the rename began, and its name is reserved since: one there now is this rename's
+      // published copy.
+      if (await entry(directory(to))) return;
+      // What an earlier attempt left aside: a copy cut short, or one an undo withdrew and did not finish deleting.
+      await discardWithdrawn(to);
+      await rm(staging(to), { recursive: true, force: true });
+      await copyTree(root, directory(from), staging(to));
+      await rename(staging(to), directory(to));
+      return;
+    }
+    const source = await entry(directory(from));
+    if (!source) return; // Moved by an earlier attempt, or there was nothing to move.
+    // The destination was free when the rename began, and its name is reserved since: one there now holds the files an
+    // earlier attempt moved, and the source is a directory made after it.
+    const moved = await entry(directory(to));
+    if (moved && !sameEntry(moved, source)) throw split(from, to);
+    await rename(directory(from), directory(to));
+  };
+  /** Puts the directory back, or finds it put back. */
+  const undoStep = async ({
+    from,
+    to,
+    how,
+  }: Parameters<OperatorEnvFiles["undo"]>[0]) => {
+    if (how === "copy") {
+      await rm(staging(to), { recursive: true, force: true });
+      // Withdrawn whole first, so the copy is either published complete or gone, however far its deletion gets.
+      if (await entry(directory(to))) {
+        await discardWithdrawn(to);
+        await rename(directory(to), withdrawn(to));
+      }
+      await discardWithdrawn(to);
+    } else if (how === "move") {
+      const moved = await entry(directory(to));
+      if (!moved) return; // Never moved, or moved back by an earlier attempt.
+      const original = await entry(directory(from));
+      if (original && !sameEntry(original, moved)) throw split(from, to);
+      await rename(directory(to), directory(from));
+    }
+  };
   return {
     async plan({ from, to, sharedWith }) {
       if (from === to) return "none";
@@ -75,53 +132,17 @@ export function createOperatorEnvFiles(
       }
       return "move";
     },
-    async carry({ from, to, how }) {
-      if (how === "none") {
-        if (from !== to) await assertFree(from, to);
-        return;
-      }
+    async carry(input) {
       try {
-        if (how === "copy") {
-          // The destination was free when the rename began, and its name is reserved since: one there now is this
-          // rename's published copy.
-          if (await entry(directory(to))) return;
-          // What an earlier attempt left aside: a copy cut short, or one an undo withdrew and did not finish deleting.
-          await discardWithdrawn(to);
-          await rm(staging(to), { recursive: true, force: true });
-          await copyTree(root, directory(from), staging(to));
-          await rename(staging(to), directory(to));
-          await flush(envRoot);
-          return;
-        }
-        const source = await entry(directory(from));
-        if (!source) return; // Moved by an earlier attempt, or there was nothing to move.
-        // The destination was free when the rename began, and its name is reserved since: one there now holds the files
-        // an earlier attempt moved, and the source is a directory made after it.
-        const moved = await entry(directory(to));
-        if (moved && !sameEntry(moved, source)) throw split(from, to);
-        await rename(directory(from), directory(to));
-        await flush(envRoot);
+        await carryStep(input);
+        await settled(input.how);
       } catch (error) {
-        throw failed(from, to, error);
+        throw failed(input.from, input.to, error);
       }
     },
-    async undo({ from, to, how }) {
-      if (how === "copy") {
-        await rm(staging(to), { recursive: true, force: true });
-        // Withdrawn whole first, so the copy is either published complete or gone, however far its deletion gets.
-        if (await entry(directory(to))) {
-          await discardWithdrawn(to);
-          await rename(directory(to), withdrawn(to));
-        }
-        await discardWithdrawn(to);
-      } else if (how === "move") {
-        const moved = await entry(directory(to));
-        if (!moved) return; // Never moved, or moved back by an earlier attempt.
-        const original = await entry(directory(from));
-        if (original && !sameEntry(original, moved)) throw split(from, to);
-        await rename(directory(to), directory(from));
-        await flush(envRoot);
-      }
+    async undo(input) {
+      await undoStep(input);
+      await settled(input.how);
     },
   };
 }

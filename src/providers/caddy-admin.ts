@@ -36,32 +36,30 @@ export function createCaddyAdmin(
       return response.json().catch(() => undefined);
     },
     async load(config, signal) {
-      try {
-        const response = await fetch("http://localhost/load", {
-          method: "POST",
-          unix: socket,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(config),
-          signal: AbortSignal.any([
-            AbortSignal.timeout(LOAD_TIMEOUT_MS),
-            ...(signal ? [signal] : []),
-          ]),
-        });
-        const text = await response.text().catch(() => "");
-        if (response.ok) return undefined;
-        const error = (() => {
-          try {
-            return (JSON.parse(text) as { error?: unknown }).error;
-          } catch {
-            return undefined;
-          }
-        })();
-        return typeof error === "string" && error
-          ? error
-          : text.trim() || `HTTP ${response.status}`;
-      } catch (error) {
-        return error instanceof Error ? error.message : String(error);
-      }
+      // No answer (cancelled, timed out, the socket closed) is thrown, never told apart from a refusal: Caddy may still
+      // hold the whole request, and apply it.
+      const response = await fetch("http://localhost/load", {
+        method: "POST",
+        unix: socket,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+        signal: AbortSignal.any([
+          AbortSignal.timeout(LOAD_TIMEOUT_MS),
+          ...(signal ? [signal] : []),
+        ]),
+      });
+      const text = await response.text().catch(() => "");
+      if (response.ok) return undefined;
+      const error = (() => {
+        try {
+          return (JSON.parse(text) as { error?: unknown }).error;
+        } catch {
+          return undefined;
+        }
+      })();
+      return typeof error === "string" && error
+        ? error
+        : text.trim() || `HTTP ${response.status}`;
     },
     async stop() {
       const response = await call("/stop", "POST");

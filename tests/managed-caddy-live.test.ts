@@ -644,3 +644,119 @@ test("real Caddy never applies a configuration a crashed rigd sent after the nex
     await rm(paths.cleanStop, { force: true });
   }
 }, 180_000);
+
+test("real Caddy never applies a load a stopping rigd cancelled after sending it: that rigd records no clean stop, and the next rigd restarts Caddy", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const https = freePort();
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("another program"),
+  });
+  cleanups.push(async () => other.stop(true));
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(async () => {
+    const pid = await job.pid!();
+    if (pid) process.kill(pid, "SIGCONT");
+    await job.remove();
+  });
+  const managed = (
+    route: { domain: string; port: number | null },
+    caddyAdmin = admin,
+  ) =>
+    createManagedCaddy({
+      root,
+      settings: async () => settings,
+      dashboard: { current: () => route, confirmed: async () => route },
+      run: runCommand,
+      job: createProcessCaddyJob({
+        root,
+        paths,
+        userHome: home,
+        admin: caddyAdmin,
+      }),
+      admin: caddyAdmin,
+    });
+  const withheld = { domain: "rig.example.test", port: null };
+  const first = managed(withheld);
+  await first.republish();
+  await job.install();
+  await first.close();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("rig.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    expect((await get("rig.example.test", https)).status).toBe(503);
+    expect(existsSync(paths.cleanStop)).toBe(true);
+    // A rigd routes the dashboard's domain to its port; Caddy takes the whole load but has not applied it when that rigd
+    // stops, cancelling it.
+    const caddyPid = (await job.pid!())!;
+    let sent = false;
+    const old = managed(
+      { domain: "rig.example.test", port: other.port! },
+      {
+        ...admin,
+        load: (config, signal) => {
+          process.kill(caddyPid, "SIGSTOP");
+          sent = true;
+          return admin.load(config, signal);
+        },
+      },
+    );
+    const publishing = old.refreshDashboard().catch(() => {});
+    for (let i = 0; i < 200 && !sent; i++) await Bun.sleep(10);
+    await Bun.sleep(200);
+    await old.close();
+    await publishing;
+    expect(existsSync(paths.cleanStop)).toBe(false);
+    // The next rigd starts: Caddy goes on as soon as the next rigd's first request to it is on its way.
+    let held = true;
+    const resumed = async <T>(request: () => Promise<T>) => {
+      if (!held) return request();
+      held = false;
+      const answer = request();
+      await Bun.sleep(10);
+      process.kill(caddyPid, "SIGCONT");
+      return answer;
+    };
+    const next = managed(withheld, {
+      ...admin,
+      reachable: () => resumed(() => admin.reachable()),
+      config: () => resumed(() => admin.config()),
+      stop: () => resumed(() => admin.stop()),
+    });
+    await next.refreshDashboard();
+    await Bun.sleep(300);
+    expect([attempt, (await get("rig.example.test", https)).status]).toEqual([
+      attempt,
+      503,
+    ]);
+    await next.close();
+  }
+}, 180_000);

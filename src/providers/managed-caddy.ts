@@ -74,8 +74,10 @@ export interface CaddyAdmin {
   reachable(): Promise<boolean>;
   /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. */
   config(): Promise<unknown>;
-  /** Has Caddy run `config` (POST /load): resolves to undefined once Caddy has taken it, or to why it did not. Made by
-   * rigd itself, never by a process of its own, so nothing rigd started can submit a configuration after rigd is gone. */
+  /** Has Caddy run `config` (POST /load): resolves to undefined once Caddy has taken it, or to why it refused it; rejects
+   * when Caddy did not answer (cancelled, timed out, unreachable), since Caddy may still hold the request and apply it.
+   * Made by rigd itself, never by a process of its own, so nothing rigd started can submit a configuration after rigd is
+   * gone. */
   load(config: unknown, signal?: AbortSignal): Promise<string | undefined>;
 }
 /** Thrown by activation, before anything is loaded, when the generation routes the dashboard to a port rigd no longer
@@ -181,6 +183,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   const closing = new AbortController();
   /** Set once Caddy is known to hold nothing an earlier rigd sent (see recover). */
   let recovered = false;
+  /** Set when a load of this rigd's went unanswered: Caddy may still apply it, so this rigd cannot record a clean stop. */
+  let unanswered = false;
   const closed = () =>
     new RigError(
       "PROXY_CLOSED",
@@ -617,7 +621,12 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       const refused =
         adapted.config === undefined
           ? adapted.reason
-          : await options.admin.load(adapted.config, closing.signal);
+          : await options.admin
+              .load(adapted.config, closing.signal)
+              .catch((error: unknown) => {
+                unanswered = true;
+                return error instanceof Error ? error.message : String(error);
+              });
       if (refused !== undefined) {
         const reason = lastOutputLine(
           redactSecrets(refused, secret ? [secret] : []),
@@ -914,8 +923,9 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     async close() {
       closing.abort();
       await pending.catch(() => {});
-      // Only a rigd that made sure of what Caddy holds can vouch for it; otherwise the next one restarts Caddy too.
-      if (!recovered) return;
+      // Only a rigd that made sure of what Caddy holds, and had every load of its own answered, can vouch for it; otherwise
+      // the next one restarts Caddy, which discards whatever it still holds.
+      if (!recovered || unanswered) return;
       await replacePrivateFile(
         options.root,
         paths.cleanStop,

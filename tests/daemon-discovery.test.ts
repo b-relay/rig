@@ -110,6 +110,7 @@ test("a record whose process is verified reaches rigd with the token, from rig a
     project: "demo",
     directory: "/rig/env/demo",
     services: [],
+    jobs: [],
     files: [],
   };
   reply = (path) =>
@@ -246,7 +247,7 @@ async function servedEditors() {
     env: createEnvEditor({
       envRoot: join(root, "env"),
       resolveProject: registered,
-      services: async () => ["web"],
+      declared: async () => ({ services: ["web"], jobs: [] }),
       exclusive: (_project, operation) => operation(),
       record: async () => {},
       now: () => new Date().toISOString(),
@@ -345,7 +346,10 @@ test("the dashboard reads rigd's env files, writes and reveals, through JSON", a
         },
         root,
       ),
-    ).toEqual({ value: "secret" });
+    ).toEqual({
+      value: "secret",
+      revision: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
   } finally {
     await server.stop(true);
   }

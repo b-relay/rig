@@ -413,9 +413,12 @@ export async function composeDaemon(
         (project) => project.name === name,
       );
     },
-    async services(repoPath) {
-      const source = await readProjectConfigSource(repoPath);
-      return Object.keys(source.config.services ?? {}).sort();
+    async declared(repoPath) {
+      const { config } = await readProjectConfigSource(repoPath);
+      return {
+        services: Object.keys(config.services ?? {}).sort(),
+        jobs: Object.keys(config.jobs ?? {}).sort(),
+      };
     },
     exclusive: runtime.exclusive,
     async record(operation) {

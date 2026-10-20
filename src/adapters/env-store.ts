@@ -11,9 +11,11 @@ import {
   type EnvChange,
 } from "./env-file-edit";
 
-/** Which operator env file: the Project's or one Service's, for every role (`all.env`) or one role. */
+/** Which operator env file: the Project's, one Service's or one Job's, for every role (`all.env`) or one role. A
+ * Service and a Job never share a name, so each owns `<project>/<name>/`. */
 export interface EnvScope {
   service?: string;
+  job?: string;
   role?: TargetRole;
 }
 /** What the dashboard may know of an env file without its values. */
@@ -30,17 +32,18 @@ export interface EnvFileView {
   /** Why the file cannot be read or edited: a line the reader refuses (by number, never its value). */
   problem?: string;
 }
-/** Pure: the operator file a scope names: `<envRoot>/<project>[/<service>]/<role or all>.env`, the files
+/** Pure: the operator file a scope names: `<envRoot>/<project>[/<service or job>]/<role or all>.env`, the files
  * resolve.ts layers into each invocation's environment. Names are checked by the caller's schema. */
 export function envScopeFile(
   envRoot: string,
   project: string,
   scope: EnvScope,
 ): string {
+  const owner = scope.service ?? scope.job;
   return join(
     envRoot,
     project,
-    ...(scope.service ? [scope.service] : []),
+    ...(owner ? [owner] : []),
     `${scope.role ?? "all"}.env`,
   );
 }
@@ -92,11 +95,12 @@ export async function describeEnvFile(
     ...(problem ? { problem } : {}),
   };
 }
-/** One value of the file, for a signed-in operator who asked to see it. */
+/** One value of the file, for a signed-in operator who asked to see it, with the revision it was read from, so a page
+ * never shows it beside a newer file. */
 export async function revealEnvValue(
   path: string,
   key: string,
-): Promise<string> {
+): Promise<{ value: string; revision: string }> {
   const text = await readText(path);
   const values = text === undefined ? {} : parseEnvironmentFile(text, path);
   if (!Object.hasOwn(values, key))
@@ -106,7 +110,7 @@ export async function revealEnvValue(
       "Reload the page; the file may have changed.",
       { path, key },
     );
-  return values[key]!;
+  return { value: values[key]!, revision: envRevision(text) };
 }
 /** Applies `changes` to the file if it still has `expectedRevision`, keeping its comments and order. The new
  * content is written to a private temporary file beside it and renamed over it, so a reader sees the old file
@@ -120,15 +124,16 @@ export async function writeEnvFile(
   /** The directory every directory down to the file's is kept private under, such as `<RIG_ROOT>/env`. */
   privateRoot?: string,
 ): Promise<EnvFileView> {
-  const conflict = () =>
+  // Names what the file holds now, never a value, so whoever wrote against the older read sees what moved.
+  const conflict = (now: string | undefined) =>
     new RigError(
       "ENV_REVISION_CONFLICT",
-      `${path} changed since it was read.`,
-      "Reload the page to read the current file, then make the change again.",
-      { path },
+      `${path} changed since it was read, so nothing was written: ${now === undefined ? "it no longer exists" : `it now assigns ${envKeys(now).join(", ") || "nothing"}`}.`,
+      "Read the file again, check your changes against it, and save them on the current file.",
+      { path, revision: envRevision(now) },
     );
   const current = await readText(path);
-  if (envRevision(current) !== expectedRevision) throw conflict();
+  if (envRevision(current) !== expectedRevision) throw conflict(current);
   if (current !== undefined) {
     const problem = problemOf(current, path);
     if (problem)
@@ -150,8 +155,8 @@ export async function writeEnvFile(
       durable: true,
       // Checked again just before the rename, so an edit saved meanwhile in an editor is not overwritten.
       confirm: async () => {
-        if (envRevision(await readText(path)) !== expectedRevision)
-          throw conflict();
+        const now = await readText(path);
+        if (envRevision(now) !== expectedRevision) throw conflict(now);
       },
     });
   } catch (error) {

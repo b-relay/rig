@@ -59,6 +59,8 @@ async function fixture(config: ProjectConfig = shop()) {
   /** Services whose every start fails, and those whose next start fails. */
   const failAlways = new Set<string>();
   const failOnce = new Set<string>();
+  /** Runs once a Service of this name has started, as another process's doing meanwhile. */
+  const afterStart = new Map<string, () => void>();
   /** Every breach of the rule, described. */
   const breaches: string[] = [];
   const events: string[] = [];
@@ -105,6 +107,7 @@ async function fixture(config: ProjectConfig = shop()) {
         pid: ++pid,
         incarnation: request.incarnation,
       });
+      afterStart.get(request.componentName)?.();
       return { outcome: "started" };
     },
     async stop(key) {
@@ -233,6 +236,8 @@ async function fixture(config: ProjectConfig = shop()) {
     listening,
     failAlways,
     failOnce,
+    afterStart,
+    processes,
     breaches,
     events,
     git,
@@ -317,6 +322,43 @@ test("a failed deploy's rollback never publishes a path to a Service that is not
     "/api": "503",
     "/": `127.0.0.1:${WEB}`,
   });
+  expect(f.breaches).toEqual([]);
+});
+
+test("a deploy whose new web exits while its api starts is not committed: the previous revision serves again and the deploy is recorded failed", async () => {
+  const f = await fixture();
+  await f.deploy("c1");
+  f.config.services!.web!.command = "node web2.js";
+  f.config.services!.api!.command = "node api2.js";
+  // The new web passed its start gate; it exits as api starts.
+  f.afterStart.set("api", () => {
+    f.afterStart.delete("api");
+    for (const [key, observation] of f.processes)
+      if (key.endsWith(":web") && observation.state === "running")
+        f.processes.set(key, {
+          state: "stopped",
+          incarnation: observation.incarnation,
+          exitCode: 23,
+        });
+  });
+  await expect(f.deploy("c2")).rejects.toMatchObject({
+    code: "PROCESS_EXITED",
+  });
+  expect((await f.stable()).commit).toBe("c1");
+  expect(await f.paths()).toEqual({
+    "/api": `127.0.0.1:${API}`,
+    "/": `127.0.0.1:${WEB}`,
+  });
+  const activity = (await f.command({
+    action: "activity",
+    project: "shop",
+  })) as { operations: { action: string; outcome: string }[] };
+  expect(
+    activity.operations.filter((operation) => operation.action === "deploy"),
+  ).toEqual([
+    expect.objectContaining({ outcome: "deployed" }),
+    expect.objectContaining({ outcome: "failed" }),
+  ]);
   expect(f.breaches).toEqual([]);
 });
 

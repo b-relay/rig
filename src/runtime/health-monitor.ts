@@ -16,13 +16,15 @@ import {
 import type { ServiceHealth } from "../domain/project-status";
 import type {
   OperationRecord,
+  RuntimeState,
   ServiceRun,
   StateStore,
   TargetRecord,
 } from "../domain/runtime";
-import type { RuntimeDependencies } from "./contracts";
+import type { RuntimeDependencies, WorkReport } from "./contracts";
 import type { ObservationEffects } from "./status";
 import { currentRun } from "./supervision";
+import { trackedWorkReport } from "./work-report";
 
 /* The epoch rule: how the monitor keeps a stale observation out of what it caches and records.
  *
@@ -99,6 +101,10 @@ export interface HealthMonitorDependencies {
   /** Calls `fire` once after `delayMs`; returns the cancellation. A test passes a fake clock's. */
   schedule(delayMs: number, fire: () => void): () => void;
   diagnostic: RuntimeDependencies["diagnostic"];
+  /** Where each Service's checks (`<target id>:<service>`), the records of its changes of health (`…/record`: Activity, the
+   * end of an unhealthy stretch) and the evidence its checks write to the Target log (`…/evidence`) say they failed, and
+   * later that they succeeded. */
+  report: WorkReport;
   /** Checks that may run at once across the Host; HEALTH_CHECK_CONCURRENCY when absent. */
   concurrency?: number;
 }
@@ -235,6 +241,28 @@ export function createHealthMonitor(
     else running--;
   };
   const keyOf = (targetId: string, service: string) => `${targetId}:${service}`;
+  const report = trackedWorkReport(deps.report);
+  /** Writes about a change of health not made yet, oldest first, by Service. Each is made by a later pass while the epoch
+   * rule still allows it (see `recordChange`), so a transition is recorded once, never about another process. */
+  const unwritten = new Map<string, UnwrittenRecord[]>();
+  /** Reports `work` of the Service as failed, and records it in the diagnostic log. */
+  const failed = async (
+    work: string,
+    about: string,
+    target: Pick<TargetRecord, "name">,
+    error: unknown,
+  ) => {
+    report.failed(work, about, error);
+    await deps
+      .diagnostic({
+        operationId: deps.id(),
+        action: "health",
+        outcome: "failed",
+        target: target.name,
+        errorCode: diagnosticErrorCode(error),
+      })
+      .catch(() => {});
+  };
   /** Whether a write derived from a read taken at `since` may still be applied for the Service. */
   const current = (targetId: string, service: string, since: number) =>
     !stopped &&
@@ -334,6 +362,10 @@ export function createHealthMonitor(
     },
     async pass() {
       if (stopped) return;
+      // A Service's change of health that Activity could not take yet is written first; one with a check in flight is
+      // written by that check.
+      for (const key of [...unwritten.keys()])
+        if (!inFlight.has(key)) await writeRecords(key);
       const since = clock;
       const recorded = await deps.store.read();
       if (stopped) return;
@@ -391,17 +423,9 @@ export function createHealthMonitor(
                   await act(target.id, component.name, verdict);
               }
             })()
-              .catch(async (error: unknown) => {
-                await deps
-                  .diagnostic({
-                    operationId: deps.id(),
-                    action: "health",
-                    outcome: "failed",
-                    target: target.name,
-                    errorCode: diagnosticErrorCode(error),
-                  })
-                  .catch(() => {});
-              })
+              .catch((error: unknown) =>
+                failed(key, checking(target, component.name), target, error),
+              )
               .finally(() => inFlight.delete(key));
             work.add(job);
             void job.finally(() => work.delete(job));
@@ -432,15 +456,12 @@ export function createHealthMonitor(
               if (next) await act(target.id, component.name, next);
               else await checkTurn(target, component);
             } catch (error) {
-              await deps
-                .diagnostic({
-                  operationId: deps.id(),
-                  action: "health",
-                  outcome: "failed",
-                  target: target.name,
-                  errorCode: diagnosticErrorCode(error),
-                })
-                .catch(() => {});
+              await failed(
+                key,
+                checking(target, component.name),
+                target,
+                error,
+              );
             } finally {
               inFlight.delete(key);
             }
@@ -475,6 +496,11 @@ export function createHealthMonitor(
       for (const [targetId, mark] of targetMarks)
         if (!targetsKept.has(targetId) && !stopped && mark <= since)
           targetMarks.delete(targetId);
+      // A failure about a Service no longer checked, with nothing of it left to write, no longer stands.
+      report.only((work) => {
+        const key = work.replace(/\/(?:record|evidence)$/, "");
+        return monitored.has(key) || inFlight.has(key) || unwritten.has(key);
+      });
     },
   };
 
@@ -689,6 +715,14 @@ export function createHealthMonitor(
       (signal) => deps.observations.health(target, component, signal),
       policy.timeoutMs,
     );
+    // Its evidence not reaching the Target log is reported, and never changes what the check found.
+    if (result !== undefined && "unrecorded" in result && result.unrecorded)
+      report.failed(
+        `${key}/evidence`,
+        `Writing the health check evidence of ${named(target, service)} to its Target log`,
+        result.unrecorded,
+      );
+    else if (result !== undefined) report.succeeded(`${key}/evidence`);
     // The answer speaks only for the process it asked: one an Operation began to stop or replace meanwhile, or that ended
     // on its own before supervision recorded it, is not what runs now.
     if (paused(target, service, since)) return undefined;
@@ -750,6 +784,7 @@ export function createHealthMonitor(
       });
       await forgetStretch(target, service, since, identity);
     }
+    report.succeeded(key);
     const action = actionFor(outcome.state, policy, at);
     return isDue(action)
       ? { action, since, check, incarnation: identity }
@@ -889,9 +924,7 @@ export function createHealthMonitor(
     since: number,
     incarnation: string | undefined,
   ): Promise<void> {
-    if (!current(target.id, service, since)) return;
-    await deps.store.update((state) => {
-      if (!current(target.id, service, since)) return;
+    await recordChange(target, service, since, (state) => {
       const run = state.targets.find((t) => t.id === target.id)?.services?.[
         service
       ];
@@ -900,25 +933,87 @@ export function createHealthMonitor(
     });
   }
 
-  /** One Activity entry about the Service, under the epoch rule. */
+  /** One Activity entry about the Service, under the epoch rule, at the time it is asked for. */
   async function record(
     target: TargetRecord,
     service: string,
     since: number,
     entry: Pick<OperationRecord, "action" | "outcome" | "message">,
   ): Promise<void> {
-    if (!current(target.id, service, since)) return;
-    await deps.store.update((state) => {
-      if (!current(target.id, service, since)) return;
+    const id = deps.id(),
+      occurredAt = new Date(deps.now()).toISOString();
+    await recordChange(target, service, since, (state) =>
       recordActivity(state, {
-        id: deps.id(),
+        id,
         projectId: target.projectId,
         project: state.projects.find((p) => p.id === target.projectId)?.name,
         target: target.name,
         component: { kind: "service", name: service },
-        occurredAt: new Date(deps.now()).toISOString(),
+        occurredAt,
         ...entry,
-      });
-    });
+      }),
+    );
   }
+  /** Queues a write of a change of the Service's health behind any not written yet, then writes the queue. */
+  async function recordChange(
+    target: TargetRecord,
+    service: string,
+    since: number,
+    apply: (state: RuntimeState) => void,
+  ): Promise<void> {
+    if (!current(target.id, service, since)) return;
+    const key = keyOf(target.id, service);
+    unwritten.set(key, [
+      ...(unwritten.get(key) ?? []),
+      { target, service, since, apply },
+    ]);
+    await writeRecords(key);
+  }
+  /** Writes the Service's queued changes of health in order, each only while the epoch rule still allows it; one that fails
+   * is reported and kept, with those after it, for the next pass. */
+  async function writeRecords(key: string): Promise<void> {
+    const queued = unwritten.get(key) ?? [];
+    while (queued.length) {
+      const { target, service, since, apply } = queued[0]!;
+      if (current(target.id, service, since))
+        try {
+          await deps.store.update((state) => {
+            if (current(target.id, service, since)) apply(state);
+          });
+        } catch (error) {
+          await failed(
+            `${key}/record`,
+            `Recording a change of health of ${named(target, service)}`,
+            target,
+            error,
+          );
+          return;
+        }
+      queued.shift();
+    }
+    unwritten.delete(key);
+    report.succeeded(`${key}/record`);
+  }
+}
+/** A write about a change of a Service's health (its Activity entry, the end of its unhealthy stretch) not made yet: made
+ * only while the epoch rule allows a write derived from `since`. */
+interface UnwrittenRecord {
+  target: TargetRecord;
+  service: string;
+  since: number;
+  apply(state: RuntimeState): void;
+}
+/** How a Service is named to the operator: `web on stable of demo`. */
+function named(
+  target: Pick<TargetRecord, "name" | "plan">,
+  service: string,
+): string {
+  return `${service} on ${target.name} of ${target.plan.project}`;
+}
+/** The work of checking a Service's health, as the operator reads it. */
+function checking(
+  target: Pick<TargetRecord, "name" | "plan">,
+  service: string,
+): string {
+  return `Checking the health of ${named(target, service)}`;
 }

@@ -1,12 +1,14 @@
 import { createAdminActivityJournal } from "../adapters/admin-activity";
 import { readProxySettings } from "../adapters/proxy-settings";
 import {
+  FAILURE_MONITOR,
   HEALTH_MONITOR,
   JOB_SCHEDULER,
   USAGE_SAMPLER,
   createNoticeBoard,
   recordingDiagnostic,
   startFailureMonitor,
+  workReport,
 } from "./notices";
 import {
   HEALTH_MONITOR_TICK_MS,
@@ -294,6 +296,7 @@ export async function composeDaemon(
     reconcileGate: "closed",
     healthResults: (target, service) => health?.results(target, service),
     notices: notices.list,
+    supervision: workReport(notices, FAILURE_MONITOR),
     readAdminActivity: adminActivity.read,
     inspectHost: async () => [
       ...(await inspectHost(root)),
@@ -370,6 +373,7 @@ export async function composeDaemon(
       return () => clearTimeout(timer);
     },
     diagnostic: recordingDiagnostic(diagnostic, notices),
+    report: workReport(notices, HEALTH_MONITOR),
   });
   const monitor = health;
   // Scheduled job runs start, end and stop as Operations on their Target; the scheduler itself only reads state and
@@ -382,10 +386,12 @@ export async function composeDaemon(
     busy: runtime.targetBusy,
     start: runtime.runScheduledJob,
     settle: runtime.settleJob,
+    enforceDeadline: runtime.enforceJobDeadline,
     releaseCheckouts: runtime.releaseHeldCheckouts,
     stopJobsIfOff: runtime.stopJobsIfOff,
     tidyBackups: runtime.tidyBackups,
     diagnostic: recordingDiagnostic(diagnostic, notices),
+    report: workReport(notices, JOB_SCHEDULER),
   });
   const editor = createConfigEditor({
     async resolveProject(name) {

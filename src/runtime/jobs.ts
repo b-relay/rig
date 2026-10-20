@@ -45,6 +45,13 @@ type EndDependencies = Pick<
 /** The variable a backup job's command, and a restore, find their backup directory in. */
 export const BACKUP_DIR_VARIABLE = "RIG_BACKUP_DIR";
 
+/** Whether `run` is past its timeout at `now` (Unix milliseconds). */
+export function pastTimeout(run: JobRun, now: number): boolean {
+  return (
+    run.timeout !== undefined &&
+    now >= Date.parse(run.startedAt) + run.timeout * 1000
+  );
+}
 /** The record of `job` of the Target `targetId`, if any. */
 export function findJobRecord(
   state: { readonly jobs?: readonly JobRecord[] },
@@ -69,15 +76,30 @@ function ensureJobRecord(
 
 /** Pure: how `run` ended, from what its process left behind. A stop Rig decided on (`run.stopping`) says it: stopped by
  * Rig, or timed out. Otherwise an exit record of this run says it: exit 0 succeeded, anything else failed. Otherwise
- * nothing recorded how it ended. */
+ * nothing recorded how it ended. It ended when its process did, as this run's exit record or Rig's stop of it says,
+ * however much later that is recorded (`at`); `at` itself when neither says it trustworthily (between the run's start
+ * and `at`). */
 export function endedRun(
   run: JobRun,
-  observation: Pick<ProcessObservation, "incarnation" | "exitCode" | "signal">,
+  observation: Pick<
+    ProcessObservation,
+    "incarnation" | "exitCode" | "signal" | "exitedAt"
+  >,
   at: string,
 ): JobRun {
   const evidence =
     observation.incarnation === run.id &&
     (observation.exitCode !== undefined || observation.signal !== undefined);
+  const within = (time: string | undefined) =>
+    time !== undefined &&
+    Date.parse(time) >= Date.parse(run.startedAt) &&
+    Date.parse(time) <= Date.parse(at)
+      ? time
+      : undefined;
+  const finishedAt =
+    (evidence ? within(observation.exitedAt) : undefined) ??
+    within(run.stopping?.endedAt) ??
+    at;
   const outcome: JobOutcome =
     run.stopping?.cause ??
     (evidence
@@ -88,7 +110,7 @@ export function endedRun(
   const { stopping: _decided, ...rest } = run;
   return {
     ...rest,
-    finishedAt: at,
+    finishedAt,
     outcome,
     ...(evidence && observation.exitCode !== undefined
       ? { exitCode: observation.exitCode }
@@ -201,32 +223,76 @@ export async function stopJobRun(
   },
   stops?: StopControl,
 ): Promise<JobSettlement> {
+  const stopped = await stopJobProcess(target, job, run, cause, deps, stops);
+  if (stopped !== "ended") return stopped;
+  return await settleJobRun(target, job, run.id, deps);
+}
+/** Stops the process of the run `run` of `job`, if it still runs, and leaves recording its end to the caller: the decision
+ * and its cause are recorded before the stop signal, and when the stop found the process gone after it. Only a process
+ * carrying the run's incarnation is ever signalled, so this needs no hold on the Target: a run started meanwhile (once
+ * this one ended) is left alone. `ended` once nothing of the run runs; `unknown` when its process cannot be shown to be
+ * this run's; `gone` when the record names another run by now. */
+async function stopJobProcess(
+  target: TargetRecord,
+  job: string,
+  run: JobRun,
+  cause: "stopped" | "timed-out",
+  deps: Pick<EndDependencies, "store" | "now"> & {
+    lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
+  },
+  stops?: StopControl,
+): Promise<"ended" | "unknown" | "gone"> {
   const observed = await deps.lifecycle.observeJob(target, job);
   if (observed.state === "unknown") return "unknown";
-  if (observed.state === "running") {
-    // Only a process that names this run is signalled. One with another incarnation, or none (a lease that did not record
-    // it), cannot be shown to be this run's, so it stays uncertain rather than be stopped in its place.
-    if (observed.incarnation !== run.id) return "unknown";
-    let decided = false;
+  if (observed.state !== "running") return "ended";
+  // Only a process that names this run is signalled. One with another incarnation, or none (a lease that did not record
+  // it), cannot be shown to be this run's, so it stays uncertain rather than be stopped in its place.
+  if (observed.incarnation !== run.id) return "unknown";
+  let decided = false;
+  await deps.store.update((state) => {
+    const record = findJobRecord(state, target.id, job);
+    if (record?.running?.id !== run.id) return;
+    record.running.stopping ??= { cause, at: deps.now() };
+    decided = true;
+  });
+  if (!decided) return "gone";
+  const result = await deps.lifecycle.stopJob(
+    target,
+    {
+      name: job,
+      incarnation: run.id,
+      ...(run.stopTimeout !== undefined
+        ? { stopTimeout: run.stopTimeout }
+        : {}),
+    },
+    stops,
+  );
+  // The stop removed the process's exit record, so its end is recorded here.
+  if (result.outcome === "stopped") {
+    const endedAt = deps.now();
     await deps.store.update((state) => {
-      const record = findJobRecord(state, target.id, job);
-      if (record?.running?.id !== run.id) return;
-      record.running.stopping ??= { cause, at: deps.now() };
-      decided = true;
+      const stopping = findJobRecord(state, target.id, job)?.running;
+      if (stopping?.id === run.id && stopping.stopping)
+        stopping.stopping.endedAt ??= endedAt;
     });
-    if (!decided) return "gone";
-    await deps.lifecycle.stopJob(
-      target,
-      {
-        name: job,
-        ...(run.stopTimeout !== undefined
-          ? { stopTimeout: run.stopTimeout }
-          : {}),
-      },
-      stops,
-    );
   }
-  return await settleJobRun(target, job, run.id, deps);
+  return "ended";
+}
+/** Stops the run `runId` of `job` once it is past its timeout, whether or not an Operation holds its Target, recorded as
+ * timed out: a deploy or another long Operation on the Target never extends a run's limit. Its end is recorded later,
+ * under the Target's lease (`settleJobRun`). Nothing when the record names another run by now, or no timeout has passed. */
+export async function enforceJobDeadline(
+  target: TargetRecord,
+  job: string,
+  runId: string,
+  deps: Pick<EndDependencies, "store" | "now"> & {
+    lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
+  },
+  stops?: StopControl,
+): Promise<void> {
+  const run = findJobRecord(await deps.store.read(), target.id, job)?.running;
+  if (run?.id !== runId || !pastTimeout(run, Date.parse(deps.now()))) return;
+  await stopJobProcess(target, job, run, "timed-out", deps, stops);
 }
 
 /** Stops every run of `target`'s jobs in progress, each within the stop_timeout it started with, and records each as

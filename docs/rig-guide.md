@@ -1050,9 +1050,16 @@ example `web did not become ready (last check: HTTP 503).` or `(last check:
 exit code 3: probing)`, and the Target log records each change in that
 observation as a `health` line, so a probe that never answers, a 5xx, or a
 check command's last output line is visible in `rig logs` rather than
-discarded. A Service without a healthcheck, or whose healthcheck has no
+discarded. A Target log that cannot be written never fails a check: the check
+counts as what it found, and the evidence is written by a later check.
+A Service without a healthcheck, or whose healthcheck has no
 `test`, is ready once every port it declares accepts a connection on
 `127.0.0.1` or `::1`, within 30 seconds (or that healthcheck's `start_period`).
+When a start has more than one Service, every Service it started is verified
+again once the last one passed, before anything is published: one that exited
+while a later Service was still starting fails the start as `PROCESS_EXITED`
+(`web was ready, then exited with code 23 before working finished starting.`),
+and the start is rolled back, so a deploy restores the revision it replaced.
 A Service with neither a check nor a port must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
@@ -1365,13 +1372,21 @@ message, and its hint follows from that: an exit points at `rig logs
 running doctor again.
 
 Background failures inside `rigd` are not dropped. When the diagnostic log
-cannot be written, or a supervision pass fails, `rigd` keeps one
-bounded notice per channel (a count, the first and last time, and the latest
-message; never log contents) and `rig doctor` reports it as a failing
-`rigd/diagnostics` or `rigd/monitor` check with what it means: operation
-outcomes are never changed by a logging failure, and exits are neither
-recorded nor retried until a pass succeeds again, which clears the notice. The
-notices live in memory and reset when `rigd` restarts.
+cannot be written, or supervision, an ongoing health check or a scheduled job's
+work fails, `rigd` keeps one bounded notice per channel (a count, the first and
+last time, and the latest message; never log contents) and `rig doctor`
+reports it as a failing `rigd/diagnostics`, `rigd/monitor`, `rigd/health` or
+`rigd/jobs` check with what it means: operation outcomes are never changed by
+a logging failure; a Target whose supervision failed has its exits neither
+recorded nor acted on; a health check's result, or its Activity entry or Target
+log evidence, may be missing; a job's start, recorded end, timeout or clean-up
+did not happen. Each failure is kept under the work it is about (a Target, a
+Service's checks, a job) and cleared only when that same work succeeds again,
+or is no longer needed: another Target's or job's success, or a pass that
+skipped the work because an Operation held its Target, never clears it. `rigd`
+retries every second, and a health change Activity could not take is written
+once it can, at the time it happened. The notices live in memory and reset
+when `rigd` restarts.
 
 An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
 or a malformed record) never makes `rigd` exit: startup records the failure in
@@ -1874,8 +1889,11 @@ Service a deploy keeps running keeps its paths throughout, and a path a deploy
 gives it, on a port it already serves, follows that port; a port it was not
 serving before is published once its process is found listening there on
 `127.0.0.1`. A stopped Target's paths reach its Services again only once a start
-verifies them. A Service that exits on its own and is not started again keeps
-its paths until the next `rig up` or `rig down`.
+verifies them. A Service that exits on its own has its paths withheld by the
+next supervision pass (within about a second) before its exit is recorded, so
+they answer `503` until a restart, automatic or `rig up`, verifies it again;
+while Rig's Caddy cannot be made to withhold them, the exit is not recorded or
+acted on, and `rig doctor` says so (`rigd/monitor`).
 A Preview serves the domain with a dash and its name after the first label:
 `pantry2.dev.b-relay.com` gives `pantry2-feat-x-1a2b3c4d.dev.b-relay.com` for
 the Preview `feat-x-1a2b3c4d`, a sibling of the domain rather than a subdomain
@@ -2172,8 +2190,10 @@ services:
   - `["NONE"]` turns the healthcheck off.
 
   References work as in `command`, `${port}` included. Without `test`, a check
-  passes when every declared port accepts a connection; a Service with no port
-  needs a `test`.
+  passes when every declared port accepts a connection and, as at start, the
+  Service's own process listens on it (a routed port at `127.0.0.1`), so a
+  program that took a port the Service closed never passes its checks; a
+  Service with no port needs a `test`.
 
 - `interval` (default `30s`, at least `5s`): the time between checks while the
   Service runs.
@@ -2307,7 +2327,11 @@ jobs:
   both nights. A schedule in `UTC` never shifts.
 - **`timeout`** (such as `2h`, at most `168h`) stops a run that is still going
   then, with SIGTERM and SIGKILL after its `stop_timeout` (default `10s`), and
-  records it as timed out. Without it a run may take as long as it takes.
+  records it as timed out. Without it a run may take as long as it takes. The
+  limit holds while a deploy or another Operation holds the Target: the run is
+  stopped at its time, and its end is recorded once the Target is free. A run's
+  end in status and Activity is when its process ended, however much later it
+  is recorded.
 - **`targets`** lists the Targets whose schedule runs the job: `working`,
   `stable`, `preview` (every Preview). The default is `[stable]`, so the
   schedule runs it once, against the Production branch, not again in the

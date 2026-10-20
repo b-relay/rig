@@ -310,6 +310,7 @@ test("observe trusts a spawned child's handle: no OS probe, and its exit is repo
       state: "stopped",
       exitCode: 9,
       incarnation: "start-1",
+      exitedAt: expect.any(String),
     });
   } finally {
     await supervisor.stop("stable", { graceMs: 0 });

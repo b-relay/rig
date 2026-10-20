@@ -7,13 +7,15 @@ import type {
   StateStore,
   TargetRecord,
 } from "../domain/runtime";
-import type { RuntimeDependencies } from "./contracts";
+import type { RuntimeDependencies, WorkReport } from "./contracts";
 import {
   findJobRecord,
+  pastTimeout,
   pruneJobRecords,
   recordScheduling,
   type SchedulingFact,
 } from "./jobs";
+import { trackedWorkReport } from "./work-report";
 import { backupWorkPending } from "./backups";
 import type { TargetLifecycle } from "./lifecycle";
 
@@ -46,7 +48,8 @@ export interface ScheduledRunRequest {
   id: string;
 }
 /** How a scheduled time was handled: run, skipped and recorded because a run is still going, passed over because the
- * Target is not meant to run it now (nothing recorded), or deferred because rigd cannot start anything yet. */
+ * Target is not meant to run it now (nothing recorded), deferred because rigd cannot start anything yet, or failed: its run
+ * could not start, which its record and Activity say (start-failed). */
 export type ScheduledRunResult =
   "started" | "skipped" | "passed" | "deferred" | "failed";
 /** A run the scheduler saw ended or past its timeout, for the runtime to settle under the Target's lease. */
@@ -65,19 +68,27 @@ export interface JobSchedulerDependencies {
   /** Whether an Operation holds or waits for the Target, so a run of it may be starting or stopping. */
   busy(target: TargetRecord): boolean;
   /** Runs a due time as an Operation on its Target: waits for the Target like any command, checks it is still meant to run
-   * the job, and starts a run, or records the time skipped while a run is still going. Never rejects. */
+   * the job, and starts a run, or records the time skipped while a run is still going. Rejects when that could not be done
+   * or recorded. */
   start(request: ScheduledRunRequest): Promise<ScheduledRunResult>;
   /** Under the Target's lease, reads the run again and, when it is still the one judged, records its end, or stops it past
-   * its timeout and records it timed out. Never rejects. */
+   * its timeout and records it timed out. Rejects when that could not be done. */
   settle(request: JobSettleRequest): Promise<void>;
-  /** Gives back the Target's held checkouts (of job runs and kept Services) once nothing runs in them. Never rejects. */
+  /** Stops a run past its timeout while an Operation holds its Target, without its lease: only that run's own process is
+   * signalled, and its end is left to `settle` once the Target is free. Rejects when that could not be done. */
+  enforceDeadline(request: JobSettleRequest): Promise<void>;
+  /** Gives back the Target's held checkouts (of job runs and kept Services) once nothing runs in them. Rejects when that
+   * could not be done. */
   releaseCheckouts(targetId: string): Promise<void>;
-  /** Stops the Target's runs in progress when rig.yaml turns its role off. Never rejects. */
+  /** Stops the Target's runs in progress when rig.yaml turns its role off. Rejects when that could not be done. */
   stopJobsIfOff(targetId: string): Promise<void>;
   /** Measures backups left without a size and deletes the backup directories queued for deletion; absent where no job
-   * keeps backups. Never rejects. */
+   * keeps backups. Rejects when the state cannot be read. */
   tidyBackups?(): Promise<void>;
   diagnostic: RuntimeDependencies["diagnostic"];
+  /** Where each piece of the scheduler's work (by its key: `<target id>:<job>`, `off:<target id>`, `checkout:<target id>`,
+   * `backups`) says it failed, and later that it succeeded or is no longer needed. */
+  report: WorkReport;
 }
 export interface JobScheduler {
   /** Hands every due time to `start`, every run that ended or is past its timeout to `settle`, and every kept checkout to
@@ -126,13 +137,7 @@ export function nextJobRun(
   const schedule = jobSchedule(job);
   return schedule && nextRun(schedule, after, jobTimeZone(job, clock));
 }
-/** Whether `run` is past its timeout at `now` (Unix milliseconds). */
-export function pastTimeout(run: JobRun, now: number): boolean {
-  return (
-    run.timeout !== undefined &&
-    now >= Date.parse(run.startedAt) + run.timeout * 1000
-  );
-}
+export { pastTimeout };
 
 /** rigd's job scheduler. It reads state and observes processes but changes neither: whatever it finds is handed to the
  * runtime, which acts under the Target's lease. Each pass reads the recorded Targets, job runs and kept checkouts:
@@ -141,12 +146,14 @@ export function pastTimeout(run: JobRun, now: number): boolean {
  *   dropped, and a Target not meant to run passes them over, recording only that it did;
  * - a run recorded in progress whose process is gone, or which is past its timeout, goes to `settle`, never while an
  *   Operation holds the Target, which may be starting or stopping it; a run a deploy left on its earlier checkout, or of a
- *   job the new plan dropped, too;
+ *   job the new plan dropped, too. A run past its timeout while an Operation holds the Target goes to `enforceDeadline`,
+ *   which stops its process then, so no Operation extends its limit, and `settle` records its end once the Target is free;
  * - a held checkout (a job run's or a kept Service's) goes to `releaseCheckouts`, again every JOB_CHECKOUT_RETRY_MS while it stays;
  * - a Target with a run in progress goes to `stopJobsIfOff` every JOB_OFF_CHECK_MS.
  * Which times were handled lives in memory, seeded from each record's `lastScheduled`, or its `watchedFrom` (written the
  * first time a job is seen), so a new rigd never runs a time twice and runs one it missed by less than the late limit. Work
- * for one job never overlaps. */
+ * for one job never overlaps. Each piece of work that fails is reported under its key until work under that key succeeds,
+ * or the key leaves what the scheduler looks after (its job leaves the plan with no run left, say). */
 export function createJobScheduler(
   deps: JobSchedulerDependencies,
 ): JobScheduler {
@@ -160,29 +167,39 @@ export function createJobScheduler(
   let backupOffer = -Infinity;
   const inFlight = new Set<string>();
   const work = new Set<Promise<void>>();
+  const report = trackedWorkReport(deps.report);
   let stopped = false;
   const idle = async () => {
     while (work.size) await Promise.allSettled([...work]);
   };
+  /** Runs `task` as the work `key`, reported under it: `about` names it to the operator. A task that found nothing to do
+   * (`skipped`) neither failed nor succeeded. */
   const dispatch = (
     key: string,
     label: string,
     target: string,
-    task: () => Promise<void>,
+    about: string,
+    task: () => Promise<void | "skipped">,
   ) => {
     inFlight.add(key);
     const job = task()
-      .catch(async (error: unknown) => {
-        await deps
-          .diagnostic({
-            operationId: deps.id(),
-            action: label,
-            outcome: "failed",
-            target,
-            errorCode: diagnosticErrorCode(error),
-          })
-          .catch(() => {});
-      })
+      .then(
+        (done) => {
+          if (done !== "skipped") report.succeeded(key);
+        },
+        async (error: unknown) => {
+          report.failed(key, about, error);
+          await deps
+            .diagnostic({
+              operationId: deps.id(),
+              action: label,
+              outcome: "failed",
+              target,
+              errorCode: diagnosticErrorCode(error),
+            })
+            .catch(() => {});
+        },
+      )
       .finally(() => inFlight.delete(key));
     work.add(job);
     void job.finally(() => work.delete(job));
@@ -237,15 +254,30 @@ export function createJobScheduler(
       const planned = new Set<string>();
       const facts: SchedulingFact[] = [];
       /** Hands a run that may have ended, or is past its timeout, to the runtime; the process is observed first, unlocked,
-       * so a run that simply goes on costs no lease. */
+       * so a run that simply goes on costs no lease. While an Operation holds the Target, only a run past its timeout is
+       * handed over, to be stopped then. */
       const settle = (target: TargetRecord, job: string, run: JobRun) => {
         const key = `${target.id}:${job}`;
-        dispatch(key, "job", target.name, async () => {
-          const seen = await deps.lifecycle.observeJob(target, job);
-          if (seen.state === "running" && !pastTimeout(run, deps.clock.now()))
-            return;
-          await deps.settle({ targetId: target.id, job, runId: run.id });
-        });
+        const busy = deps.busy(target);
+        if (busy && !pastTimeout(run, now)) return;
+        dispatch(
+          key,
+          "job",
+          target.name,
+          `${busy ? "Stopping the run past its timeout" : "Recording the end of the run"} of ${job} on ${target.name} of ${target.plan.project}`,
+          async () => {
+            const seen = await deps.lifecycle.observeJob(target, job);
+            const request = { targetId: target.id, job, runId: run.id };
+            if (busy && seen.state === "running")
+              await deps.enforceDeadline(request);
+            else if (
+              !busy &&
+              (seen.state !== "running" || pastTimeout(run, deps.clock.now()))
+            )
+              await deps.settle(request);
+            else return "skipped";
+          },
+        );
       };
       for (const target of state.targets)
         for (const job of target.plan.jobs ?? []) {
@@ -256,8 +288,7 @@ export function createJobScheduler(
           const running = record?.running;
           // Only rig run runs a job its targets do not name for this Target.
           if (job.scheduled === false) {
-            if (running && !deps.busy(target))
-              settle(target, job.name, running);
+            if (running) settle(target, job.name, running);
             continue;
           }
           // Seen for the first time: a new rigd counts this job's times from now, not from when it first runs.
@@ -276,28 +307,33 @@ export function createJobScheduler(
               });
             } else {
               // The start settles a run that ended, or records the time skipped while it still goes.
-              dispatch(key, "job", target.name, async () => {
-                const result = await deps.start({
-                  targetId: target.id,
-                  job: job.name,
-                  scheduledFor,
-                  id: deps.id(),
-                });
-                // Nothing could start yet: the time stays due until the late limit.
-                if (result === "deferred") watermarks.set(key, before);
-              });
+              dispatch(
+                key,
+                "job",
+                target.name,
+                `Starting the run of ${job.name} scheduled for ${new Date(scheduledFor).toISOString()} on ${target.name} of ${target.plan.project}`,
+                async () => {
+                  const result = await deps.start({
+                    targetId: target.id,
+                    job: job.name,
+                    scheduledFor,
+                    id: deps.id(),
+                  });
+                  // Nothing could start yet: the time stays due until the late limit.
+                  if (result === "deferred") watermarks.set(key, before);
+                },
+              );
               continue;
             }
           }
-          if (running && !deps.busy(target)) settle(target, job.name, running);
+          if (running) settle(target, job.name, running);
         }
       // A run of a job its Target's plan no longer has (a deploy removed it) still ends on its own checkout and is settled.
       for (const record of state.jobs ?? []) {
         const key = `${record.target}:${record.job}`;
         if (!record.running || planned.has(key) || inFlight.has(key)) continue;
         const target = state.targets.find((t) => t.id === record.target);
-        if (target && !deps.busy(target))
-          settle(target, record.job, record.running);
+        if (target) settle(target, record.job, record.running);
       }
       // rig.yaml turning a Target's role off stops its runs, as rig down would; checked every JOB_OFF_CHECK_MS.
       const withRuns = new Set(
@@ -315,8 +351,12 @@ export function createJobScheduler(
         )
           continue;
         offChecks.set(targetId, now);
-        dispatch(key, "job-off", target.name, () =>
-          deps.stopJobsIfOff(targetId),
+        dispatch(
+          key,
+          "job-off",
+          target.name,
+          `Checking whether rig.yaml turned ${target.name} of ${target.plan.project} off, to stop its runs`,
+          () => deps.stopJobsIfOff(targetId),
         );
       }
       for (const targetId of offChecks.keys())
@@ -334,8 +374,12 @@ export function createJobScheduler(
         )
           continue;
         checkoutOffers.set(targetId, now);
-        dispatch(key, "held-checkout", targetId, () =>
-          deps.releaseCheckouts(targetId),
+        dispatch(
+          key,
+          "held-checkout",
+          targetId,
+          `Giving back the checkouts a run or a kept Service held for ${state.targets.find((t) => t.id === targetId)?.name ?? targetId}`,
+          () => deps.releaseCheckouts(targetId),
         );
       }
       for (const targetId of checkoutOffers.keys())
@@ -348,8 +392,28 @@ export function createJobScheduler(
         now - backupOffer >= JOB_CHECKOUT_RETRY_MS
       ) {
         backupOffer = now;
-        dispatch("backups", "backup-tidy", "", deps.tidyBackups);
+        dispatch(
+          "backups",
+          "backup-tidy",
+          "",
+          "Measuring and deleting backups",
+          deps.tidyBackups,
+        );
       }
+      // A failure of work the scheduler no longer looks after (its job left the plan with no run left, its Target is gone,
+      // nothing is held or queued any more) no longer stands.
+      report.only(
+        (key) =>
+          planned.has(key) ||
+          inFlight.has(key) ||
+          state.jobs?.some(
+            (record) =>
+              record.running && `${record.target}:${record.job}` === key,
+          ) ||
+          (key.startsWith("off:") && withRuns.has(key.slice(4))) ||
+          (key.startsWith("checkout:") && keeping.has(key.slice(9))) ||
+          (key === "backups" && backupWorkPending(state)),
+      );
       for (const key of watermarks.keys())
         if (!planned.has(key)) watermarks.delete(key);
       const prunable = state.jobs?.some(

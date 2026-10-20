@@ -255,17 +255,13 @@ export function backupWorkPending(
     state.backups?.some((backup) => backup.bytes === undefined),
   );
 }
-/** The scheduler's offer: measures every backup left without a size, then deletes every queued directory. Never rejects. */
+/** The scheduler's offer: measures every backup left without a size, then deletes every queued directory. Rejects only when
+ * the state cannot be read; each backup's own failure is a diagnostic, and offered again. */
 export async function tidyBackups(deps: BackupDependencies): Promise<void> {
   if (!deps.backups) return;
-  let unsized: BackupRecord[] = [];
-  try {
-    unsized = ((await deps.store.read()).backups ?? []).filter(
-      (backup) => backup.bytes === undefined,
-    );
-  } catch {
-    return;
-  }
+  const unsized = ((await deps.store.read()).backups ?? []).filter(
+    (backup) => backup.bytes === undefined,
+  );
   for (const backup of unsized)
     await measureBackup(backup, backup.target, deps);
   await removeQueuedBackups(deps);

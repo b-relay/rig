@@ -1,6 +1,7 @@
 import { localActivation } from "./support/activation-doubles";
 import { afterEach, expect, test } from "bun:test";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -1436,4 +1437,105 @@ test("build output is recorded line by line as it arrives, with the time each li
     { timestamp: "t2", component: "setup", stream: "stderr", line: "warned" },
     { timestamp: "t3", component: "setup", stream: "stdout", line: "two" },
   ]);
+});
+
+test("a health check's answer never depends on writing its evidence: an unwritable Target log is said, and the next check writes it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-unlogged-"));
+  roots.push(root);
+  const record = target(root);
+  const adapter = effects(root);
+  await mkdir(record.logRoot, { recursive: true });
+  const log = join(record.logRoot, "target.jsonl");
+  await writeFile(log, "", { mode: 0o400 });
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    readyTimeout: 1,
+    env: {},
+    dependsOn: [],
+    health: "true",
+  };
+  const signal = new AbortController().signal;
+  // Ongoing checks and the start gate alike.
+  expect(await adapter.observations.health(record, web, signal)).toEqual({
+    ready: true,
+    unrecorded: expect.stringContaining("EACCES"),
+  });
+  expect(await adapter.health(web, record, signal)).toMatchObject({
+    ready: true,
+  });
+  await chmod(log, 0o600);
+  expect(await adapter.observations.health(record, web, signal)).toEqual({
+    ready: true,
+  });
+  expect(await readFile(log, "utf8")).toContain('"line":"ready"');
+});
+
+test("an ongoing check of a Service's ports passes only on listeners its own process owns, at the address its route reaches", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-owned-"));
+  roots.push(root);
+  const record = target(root);
+  record.plan.providers = { processSupervisor: "fake" };
+  record.plan.domain = "web.test";
+  record.plan.proxy = { upstream: "web" };
+  const web = {
+    name: "web",
+    kind: "managed" as const,
+    command: "serve",
+    port: 4310,
+    readyTimeout: 1,
+    env: {},
+    dependsOn: [],
+  };
+  record.plan.components = [web];
+  // Something always answers on the port; what the Service's own process listens on changes.
+  let owned: { address: string; port: number }[] = [
+    { address: "127.0.0.1", port: 4310 },
+  ];
+  const supervisor = {
+    observe: async () => ({ state: "running" as const, pid: 4242 }),
+  } as unknown as Supervisor;
+  const adapter = createTargetEffects({
+    connect: async () => ({ ready: true }),
+    listeners: {
+      inspect: async (pid) => ({
+        state: "observed",
+        listeners: owned.map((listener) => ({ pid, ...listener })),
+      }),
+    },
+    root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map([["fake", supervisor]]),
+    run: runCommand,
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: noRoutes(),
+    environment: { PATH: process.env.PATH! },
+  });
+  const check = () =>
+    adapter.observations.health(record, web, new AbortController().signal);
+  expect(await check()).toEqual({ ready: true });
+  // The Service closed its listener and another program answers there.
+  owned = [];
+  expect(await check()).toEqual({
+    ready: false,
+    reason: "port 4310 has no listener owned by web",
+  });
+  // It still listens at ::1, but whoever answers at 127.0.0.1, where the route goes, is someone else.
+  owned = [{ address: "::1", port: 4310 }];
+  expect(await check()).toEqual({
+    ready: false,
+    reason:
+      "web listens on port 4310 only at ::1, but Rig's proxy connects to 127.0.0.1:4310; bind it to 127.0.0.1",
+  });
+  owned = [{ address: "127.0.0.1", port: 4310 }];
+  expect(await check()).toEqual({ ready: true });
+  // The start gate inspects listeners itself, after its own check.
+  owned = [];
+  expect(
+    await adapter.health(web, record, new AbortController().signal),
+  ).toEqual({ ready: true });
 });

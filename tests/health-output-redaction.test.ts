@@ -105,6 +105,7 @@ async function world() {
       return () => timers.splice(timers.indexOf(timer), 1);
     },
     async diagnostic() {},
+    report: { failed() {}, succeeded() {} },
   });
   await runtime.command({ action: "init", repoPath: w.repo });
   return {

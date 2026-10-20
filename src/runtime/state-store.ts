@@ -208,7 +208,8 @@ export function withholdUnredactedHealthOutput(parsed: unknown): void {
 /** Every earlier version this rigd reads besides version 4 (see `MIGRATED_STATE_VERSIONS`) is the current one with less in
  * it, and is read as it is: version 5 has no jobs, version 6 no backups (ADR 0017), and versions before ADR 0016 record no
  * run's `source`, so the first deploy keeps no Service running, and call the checkouts job runs kept `jobCheckouts`, read
- * as `heldCheckouts`. The next write saves the current version, which an older rigd refuses rather than release a
+ * as `heldCheckouts`; versions before 10 record no backup's `sequence`, so their backups rank by their place in the
+ * inventory. The next write saves the current version, which an older rigd refuses rather than release a
  * checkout a kept process runs in. Moving STATE_VERSION on means only adding the old number to MIGRATED_STATE_VERSIONS. */
 function readEarlierVersions(parsed: unknown): void {
   if (

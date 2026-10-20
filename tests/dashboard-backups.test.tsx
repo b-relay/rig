@@ -36,15 +36,19 @@ const job = (fields: Partial<JobReport> = {}): JobReport => ({
   ...fields,
 });
 
-test("a card lists its own job's backups in its own Target, newest first", () => {
+test("a card lists its own job's backups in its own Target, newest first as the backups read orders them", () => {
+  // The newer one finished at an earlier time (a clock set back between them): the list's order stands, not the times.
   const older = backup({
-    id: "20261010T030000Z-16",
-    finishedAt: "2026-10-10T03:00:39.000Z",
+    id: "20261011T030000Z-16",
+    finishedAt: "2026-10-11T03:00:39.000Z",
   });
-  const newer = backup({});
+  const newer = backup({
+    id: "20261011T020000Z-17",
+    finishedAt: "2026-10-11T02:00:41.000Z",
+  });
   const all = [
-    older,
     newer,
+    older,
     backup({ target: "working", id: "20261011T040000Z-3" }),
     backup({ job: "files-backup", id: "20261011T050000Z-1" }),
   ];

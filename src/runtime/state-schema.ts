@@ -538,6 +538,20 @@ const jobRun = z.object({
         .int()
         .positive()
         .describe("How many backups the job kept when the run started."),
+      sequence: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "The id's number in the job's backup sequence, kept with the backup to order it; absent for a run an older Rig started.",
+        ),
+      made: z
+        .literal(true)
+        .optional()
+        .describe(
+          "The run made the directory: recorded once it did, before its process started. Only a directory its run made is deleted when the run fails; one a run never made, or found already there, is left in place.",
+        ),
       lost: z
         .literal(true)
         .optional()
@@ -547,7 +561,7 @@ const jobRun = z.object({
     })
     .optional()
     .describe(
-      "A backup job's run: the directory it writes ($RIG_BACKUP_DIR), recorded before it is made. Kept as a backup when the run succeeds, deleted otherwise.",
+      "A backup job's run: the directory it writes ($RIG_BACKUP_DIR), recorded before it is made. Kept as a backup when the run succeeds, deleted otherwise if the run made it.",
     ),
   restore: z
     .object({
@@ -670,13 +684,16 @@ const operation = z.object({
  * Version 8 (ADR 0016) added where each Service's process runs (`source`), the Services a deploy kept, `watch`, and held
  * checkouts: an older rigd would drop them and release a checkout a kept process still runs in. Version 9 keeps health
  * output only with env-file values redacted: an older rigd would record a failed check's output as printed, and Activity
- * from before it is read with that output withheld (see state-store). */
-export const STATE_VERSION = 9;
+ * from before it is read with that output withheld (see state-store). Version 10 orders backups by `sequence` (on a run's
+ * `backup` and on a backup): an older rigd would record backups without it, which a later rigd would then rank as older
+ * than every backup it made. */
+export const STATE_VERSION = 10;
 /** The older state versions this rigd still reads. Version 4 named the working and stable Targets local and live, or what
  * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs,
- * version 6 is version 7 without backups, version 7 is version 8 before ADR 0016, and version 8 is version 9 with health
- * output unredacted; they are read so. The next write saves STATE_VERSION. */
-export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7, 8];
+ * version 6 is version 7 without backups, version 7 is version 8 before ADR 0016, version 8 is version 9 with health
+ * output unredacted, and version 9 is version 10 with no backup's `sequence`; they are read so. The next write saves
+ * STATE_VERSION. */
+export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7, 8, 9];
 /** The first version whose Activity holds health output only redacted. */
 export const REDACTED_HEALTH_STATE_VERSION = 9;
 /** The version whose Target names are normalized as they are read. */
@@ -759,8 +776,16 @@ export const runtimeStateSchema = z
             .describe("Whether the schedule or rig run started that run."),
           startedAt: text.describe("When its run started (ISO 8601)."),
           finishedAt: text.describe(
-            "When its run ended (ISO 8601); retention keeps the newest by it.",
+            "When its run ended (ISO 8601), for display: retention and latest order backups by sequence, never by time.",
           ),
+          sequence: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe(
+              "Its number in the job's backup sequence (the number its id ends in), which follows the order the job's runs were recorded in: the newest backup has the highest. Absent on a backup an older Rig recorded; those are older than every backup that has one, and ordered among themselves by their place in this list.",
+            ),
           bytes: z
             .number()
             .int()
@@ -788,7 +813,7 @@ export const runtimeStateSchema = z
       )
       .optional()
       .describe(
-        "The last backup number issued per backup directory (<project>/<target>/<job> by name), so a backup id (UTC second and number) is never issued twice; never reset, even when the backups, the Preview or the Project's registration go.",
+        "The last backup number issued per backup directory (<project>/<target>/<job> by name, names that differ only in case sharing one, as they share one directory on a case-insensitive disk), so a backup id (UTC second and number) is never issued twice and its number orders the backups; never reset, even when the backups, the Preview or the Project's registration go.",
       ),
     backupRemovals: z
       .array(

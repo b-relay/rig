@@ -521,7 +521,7 @@ function addBackupCommands(
   backup
     .command("list")
     .description(
-      "List kept backups, newest first, with their job, Target, time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable).",
+      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable).",
     )
     .argument("[job]", "Backup job name under jobs in rig.yaml")
     .argument(

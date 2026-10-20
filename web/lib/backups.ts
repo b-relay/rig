@@ -8,15 +8,16 @@ export { formatBytes } from "../../src/domain/bytes";
 
 export type BackupView = BackupReport;
 
-/** Pure: `job`'s backups in `target`, newest first, from a Project's backup list. */
+/** Pure: `job`'s backups in `target` from a Project's backup list, in its order: newest first, by the number in their ids
+ * rather than their times, which a clock set back would reorder. */
 export function backupsOf(
   backups: readonly BackupView[],
   target: Pick<TargetReport, "name">,
   job: string,
 ): BackupView[] {
-  return backups
-    .filter((backup) => backup.target === target.name && backup.job === job)
-    .sort((a, b) => b.finishedAt.localeCompare(a.finishedAt));
+  return backups.filter(
+    (backup) => backup.target === target.name && backup.job === job,
+  );
 }
 /** Pure: whether `job` keeps backups, so its card offers Back up now and its list. */
 export function isBackupJob(job: Pick<JobReport, "backup">): boolean {

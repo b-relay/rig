@@ -198,7 +198,7 @@ export interface BackupScope {
 }
 /** Where backups live on the Mac (ADR 0017). Every path must be one `location` gave; anything outside the backup root fails
  * BACKUP_PATH untouched, and so does any path below a symlinked or non-directory component between the root and it.
- * Nothing inside a backup is opened or followed, and no mode is changed after a directory is made. */
+ * Nothing inside a backup is opened or followed, and modes change only for a deletion the owner's own modes refuse. */
 export interface BackupStorage {
   /** Pure: the directory of the backup `id` of `scope`; not created. */
   location(scope: BackupScope, id: string): string;
@@ -210,7 +210,9 @@ export interface BackupStorage {
   /** Total bytes under `path`, every entry by its own lstat size; undefined when it is gone or not reachable safely. */
   measure(path: string): Promise<number | undefined>;
   /** Deletes `path` without following any symlink, and its empty parents up to the backup root: `removed`, also when it was
-   * already gone; `skipped`, touching nothing, when a directory on the way is a symlink. Fails BACKUP_REMOVE. */
+   * already gone; `skipped`, touching nothing, when a directory on the way is a symlink. A directory of it the owner may
+   * not write in (one an earlier Rig sealed 0500) is given back to the owner first. Fails BACKUP_REMOVE,
+   * deleting nothing, when another volume is mounted inside it. */
   remove(path: string): Promise<"removed" | "skipped">;
 }
 /** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */

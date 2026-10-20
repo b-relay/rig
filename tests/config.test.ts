@@ -31,6 +31,8 @@ import {
 } from "../src/config/index.js";
 import { referenceResolver, shellVariable } from "../src/config/references";
 import { withValuesWritten } from "../src/config/plan-defaults";
+import { serviceDefinition } from "../src/domain/service-definition";
+import type { ManagedComponent, TargetPlan } from "../src/config/types";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 /** The operator's optional convention files for one scope, in precedence order. */
 const conventionFiles = (role: string, ...scope: string[]) =>
@@ -3147,6 +3149,51 @@ test("a plan written with its values reads exactly as a Rig before reference var
     command: 'dump "a b" "4000"',
     backup: { restore: 'restore "a b" "42"' },
   });
+});
+
+test("a reference's variable is named by its whole path alone: paths that differ only in _ or - get different names, whatever their values, so an unaffected Service keeps its definition", () => {
+  // a reads web-environment's command, b reads web's environment value named command; the two paths read alike.
+  const plan = (command: string) =>
+    resolvePlanWithHost(
+      {
+        config: parseProjectConfig({
+          name: "app",
+          services: {
+            a: { command: "run ${services.web-environment.command}" },
+            b: { command: "run ${services.web.environment.command}" },
+            web: { command: "serve", environment: { command: "same" } },
+            "web-environment": { command },
+          },
+        }),
+        target: "working",
+        workspacePath: "/work",
+        dataRoot: "/data",
+      },
+      RESOLVE_HOST,
+    );
+  const equal = plan("same");
+  const diverged = plan("different");
+  const managed = (p: TargetPlan, name: string) =>
+    p.components.find(
+      (c): c is ManagedComponent => c.kind === "managed" && c.name === name,
+    )!;
+  const plain = "_RIG_services_web_environment_command";
+  expect(managed(equal, "b").command).toBe(`run "$${plain}"`);
+  expect(managed(equal, "a").command).toMatch(
+    /^run "\$_RIG_services_web_environment_command__[0-9a-f]{12}"$/,
+  );
+  // Equal or not, the values never decide a name: b reads the same text and value in both plans.
+  for (const p of [equal, diverged])
+    expect(managed(p, "b").command).toBe(`run "$${plain}"`);
+  expect(managed(diverged, "a").command).toBe(managed(equal, "a").command);
+  expect(serviceDefinition(diverged, managed(diverged, "b"))).toBe(
+    serviceDefinition(equal, managed(equal, "b")),
+  );
+  expect(diverged.referenceValues![plain]).toBe("same");
+  expect(Object.values(diverged.referenceValues!).sort()).toEqual([
+    "different",
+    "same",
+  ]);
 });
 
 test("an environment name starting with _RIG_ is refused, since Rig reserves the prefix for reference variables", () => {

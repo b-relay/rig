@@ -2742,10 +2742,13 @@ shell.
 Because `command`, a shell `test`, `build` and a backup `restore` run under
 `/bin/sh -c`, Rig never writes a referenced value into their text. Each
 reference becomes a quoted expansion of a variable named for what it
-references, such as `"$_RIG_rig_workspace"` or `"$_RIG_environment_DB_URL"`
+references, such as `"$_RIG_rig_workspace"` or `"$_RIG_environment_TOKEN"`
 (`${port}` in a Service is named by that Service's port, such as
 `_RIG_services_web_port`), and the value reaches the command in that variable
-through its environment. A name never depends on the value, so an unchanged
+through its environment. A path with anything but letters and digits between
+its dots, such as `environment.DB_URL` or a Service named `web-api`, is named
+the same way and ends in `__` and a short hash of the whole path, so no two
+paths share a name. A name never depends on the value, so an unchanged
 command reads the same in every checkout and a deploy can keep its Service
 running. The shell expands a variable as data: the
 value is one word, and nothing in it, whether `$(...)`, a backquote, a

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ConfigError } from "./errors";
 import { REFERENCE_VARIABLE_PREFIX } from "../domain/process-environment";
 import {
@@ -44,7 +45,9 @@ export interface ReferenceResolver {
 /** The variable that carries the value of reference `key`, written in the field at config path `at`, into a command: named
  * for what it references, never for its value, so a command reads the same in every checkout. A reference that depends on
  * where it is written is named by its long form: `${port}` in a Service's field by that Service's port, `${rig.data}` by
- * the Service's or job's directory. */
+ * the Service's or job's directory. The name is a function of that path alone: a path of letters and digits between single
+ * dots is written with each dot as `_`; any other path, which that could not tell apart (an `_` or a `-` in a name, say),
+ * is written so and ends in `__` and a hash of the whole path, which no plain path's name contains. */
 export function shellVariable(key: string, at: string): string {
   const owner = /^(services|jobs)\.([^.]+)\./.exec(at);
   const identity =
@@ -55,7 +58,10 @@ export function shellVariable(key: string, at: string): string {
         : key.startsWith("ports.") && owner
           ? `${owner[1]}.${owner[2]}.${key}`
           : key;
-  return `${REFERENCE_VARIABLE_PREFIX}${identity.replace(/[^A-Za-z0-9]/g, "_")}`;
+  const name = `${REFERENCE_VARIABLE_PREFIX}${identity.replace(/[^A-Za-z0-9]/g, "_")}`;
+  return /^[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/.test(identity)
+    ? name
+    : `${name}__${createHash("sha256").update(identity).digest("hex").slice(0, 12)}`;
 }
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
@@ -318,14 +324,15 @@ export function referenceResolver(
             { path: at, place: position.place },
             position.hint,
           );
-        // Two references sanitized to one name would be told apart by a number; one name never carries two values.
-        let name = shellVariable(key, at);
-        for (
-          let n = 2;
-          Object.hasOwn(variables, name) && variables[name] !== result;
-          n++
-        )
-          name = `${shellVariable(key, at)}_${n}`;
+        const name = shellVariable(key, at);
+        // One path has one value in a plan; only two paths whose hashes met could disagree, and that is not run.
+        if (Object.hasOwn(variables, name) && variables[name] !== result)
+          throw new ConfigError(
+            `The reference '\${${key}}' in ${at} would share the variable ${name} with another reference that holds a different value.`,
+            "reference_collision",
+            { key, path: at },
+            "Rename the Service, job or environment name this reference reaches.",
+          );
         variables[name] = result;
         return position.quote === '"'
           ? `\${${name}}`

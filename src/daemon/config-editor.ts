@@ -103,8 +103,15 @@ const configChangeSchema = z.object({
     .array(
       z.object({
         path: z.string().describe("Dotted field path."),
-        before: z.unknown().describe("Its value before; absent when unset."),
-        after: z.unknown().describe("Its value after; absent when removed."),
+        // JSON drops undefined, so a field added or removed has no before or after on the wire.
+        before: z
+          .unknown()
+          .optional()
+          .describe("Its value before; absent when unset."),
+        after: z
+          .unknown()
+          .optional()
+          .describe("Its value after; absent when removed."),
       }),
     )
     .describe("Each edited field's value before and after."),

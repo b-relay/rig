@@ -2,8 +2,16 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  editProjectConfig,
+  previewProjectConfig,
+  readProjectConfigSource,
+} from "../src/config/documents";
+import { createConfigEditor } from "../src/daemon/config-editor";
 import { connectDaemon } from "../src/daemon/connection";
+import { createEnvEditor } from "../src/daemon/env-editor";
 import { processStartTime } from "../src/daemon/process-identity";
+import { startControlPlane } from "../src/daemon/server";
 import { daemon, editConfig, editEnv } from "../web/server/daemon";
 
 /** rig and the dashboard reach rigd through one discovery: the control-plane token goes only to the port of a recorded
@@ -198,5 +206,140 @@ test("a status read is abandoned when its caller goes away, not held until rigd 
   } finally {
     answer.resolve();
     await slow.stop(true);
+  }
+});
+
+/** A Rig root recording a real control plane that serves the real config and env editors for one Project, so replies
+ * cross JSON as rigd sends them: a value that is undefined in the editor is absent on the wire. */
+async function servedEditors() {
+  const root = await mkdtemp(join(directory, "served-"));
+  const repo = join(root, "repo");
+  await mkdir(repo);
+  await writeFile(
+    join(repo, "rig.yaml"),
+    "name: demo\nservices:\n  web:\n    command: serve\n",
+  );
+  const project = { id: "demo-id", name: "demo", repoPath: repo };
+  const registered = async (name: string) =>
+    name === "demo" ? project : undefined;
+  const server = startControlPlane({
+    port: 0,
+    token: TOKEN,
+    instanceId: "served",
+    handle: async () => ({}),
+    editor: createConfigEditor({
+      resolveProject: registered,
+      documents: {
+        read: readProjectConfigSource,
+        preview: previewProjectConfig,
+        apply: editProjectConfig,
+      },
+      exclusive: (_project, operation) => operation(),
+    }),
+    env: createEnvEditor({
+      envRoot: join(root, "env"),
+      resolveProject: registered,
+      services: async () => ["web"],
+      exclusive: (_project, operation) => operation(),
+      record: async () => {},
+      now: () => new Date().toISOString(),
+      id: () => crypto.randomUUID(),
+    }),
+  });
+  await mkdir(join(root, "daemon"));
+  await mkdir(join(root, "auth"));
+  await writeFile(
+    join(root, "daemon", "address.json"),
+    JSON.stringify({
+      port: server.port,
+      instanceId: "served",
+      pid: process.pid,
+      startedAt,
+    }),
+  );
+  await writeFile(join(root, "auth", "control-plane.token"), TOKEN);
+  return { root, server };
+}
+
+test("the dashboard reads rigd's config previews and applies that add and remove a field, through JSON", async () => {
+  const { root, server } = await servedEditors();
+  type Edit =
+    | { op: "set"; path: string[]; value: string }
+    | { op: "remove"; path: string[] };
+  const change = async (action: "preview" | "apply", edit: Edit) => {
+    const { revision } = await editConfig(
+      { action: "read", project: "demo" },
+      root,
+    );
+    return editConfig(
+      { action, project: "demo", expectedRevision: revision, patch: [edit] },
+      root,
+    );
+  };
+  try {
+    const add: Edit = { op: "set", path: ["description"], value: "A pantry." };
+    const added = [{ path: "description", after: "A pantry." }];
+    expect((await change("preview", add)).diff).toEqual(added);
+    expect(await change("apply", add)).toMatchObject({
+      applied: true,
+      diff: added,
+    });
+    const remove: Edit = { op: "remove", path: ["description"] };
+    const removed = [{ path: "description", before: "A pantry." }];
+    expect((await change("preview", remove)).diff).toEqual(removed);
+    expect(await change("apply", remove)).toMatchObject({
+      applied: true,
+      diff: removed,
+    });
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("the dashboard reads rigd's env files, writes and reveals, through JSON", async () => {
+  const { root, server } = await servedEditors();
+  try {
+    const before = await editEnv({ action: "read", project: "demo" }, root);
+    // A file that does not exist yet carries no mode or problem; the Project's own scope names no Service or role.
+    expect(before.files[0]).toEqual({
+      scope: {},
+      path: join(root, "env", "demo", "all.env"),
+      exists: false,
+      revision: before.files[0]!.revision,
+      keys: [],
+    });
+    const web = before.files.find(
+      (file) => file.scope.service === "web" && !file.scope.role,
+    )!;
+    expect(
+      await editEnv(
+        {
+          action: "write",
+          project: "demo",
+          scope: { service: "web" },
+          expectedRevision: web.revision,
+          changes: [{ op: "set", key: "TOKEN", value: "secret" }],
+          actor: "this Mac",
+        },
+        root,
+      ),
+    ).toMatchObject({
+      scope: { service: "web" },
+      exists: true,
+      keys: ["TOKEN"],
+    });
+    expect(
+      await editEnv(
+        {
+          action: "reveal",
+          project: "demo",
+          scope: { service: "web" },
+          key: "TOKEN",
+        },
+        root,
+      ),
+    ).toEqual({ value: "secret" });
+  } finally {
+    await server.stop(true);
   }
 });

@@ -65,11 +65,12 @@ check_destinations() {
 	done
 }
 
-# Fails unless the Rig root and its bin and dashboard directories, where they exist, are private to you, as rigd install
-# requires: real directories (the root alone may be a link, to another volume say), yours, that no one else can write. It
-# runs before anything is staged, so a release is never written through a planted link or into another user's directory.
+# Fails unless the Rig root and its bin, dashboard and daemon directories, where they exist, are private to you, as rigd
+# install requires: real directories (the root alone may be a link, to another volume say), yours, that no one else can
+# write. It runs before anything is staged, so a release is never written through a planted link or into another user's
+# directory.
 check_private_root() {
-	for directory in "$root" "$root/bin" "$root/dashboard"; do
+	for directory in "$root" "$root/bin" "$root/dashboard" "$root/daemon"; do
 		[ -e "$directory" ] || [ -L "$directory" ] || continue
 		if [ "$directory" != "$root" ] && [ -L "$directory" ]; then
 			fail "$directory is a symbolic link; Rig keeps its files only in real directories under its root. Replace the link with a real directory, then install again. Nothing was installed."
@@ -79,6 +80,29 @@ check_private_root() {
 		mode="$(stat -L -f %Lp "$directory")"
 		[ $((0$mode & 022)) -eq 0 ] || fail "$directory can be written by other users; check that nothing in it was changed by someone else, then make it private (chmod 700 $directory) and install again. Nothing was installed."
 	done
+}
+
+# Takes the installation lock, which rigd install and rigd uninstall take too, so one install, upgrade or uninstall changes
+# the Rig root at a time. lockf(1) takes flock(2)'s lock on descriptor 9, which this shell keeps open, so the lock is
+# released once nothing has it open, however the shell ends. The rigd install this runs is handed descriptor 9 and holds
+# the lock through it to its own end, even if this shell is killed first. The file names the holder, pid and start time
+# as rigd records them, for whoever is refused.
+lock_installation() {
+	lock="$root/daemon/install.lock"
+	[ ! -L "$lock" ] || fail "$lock is a symbolic link; remove it, then install again. Nothing was installed."
+	(umask 077 && : >>"$lock")
+	exec 9<>"$lock"
+	lockf -s -t 0 9 || fail "another rigd install, upgrade or uninstall is changing $root. Wait for it to finish, then install again. Nothing was installed."
+	: >"$lock"
+	printf '{"pid":%s,"startedAt":"%s"}\n' "$$" "$(ps -p $$ -o lstart= | sed 's/^ *//; s/ *$//')" >&9
+}
+
+# Whether the dashboard at $2 holds every file of the release's dashboard staged at $1, byte for byte. Files only at $2,
+# such as a cache the running dashboard wrote, do not count against it.
+complete_dashboard() {
+	[ -d "$2" ] && [ ! -L "$2" ] || return 1
+	differences="$(diff -rq "$1" "$2" 2>&1 || :)"
+	[ -z "$(printf '%s\n' "$differences" | grep -vF -e "Only in $2: " -e "Only in $2/" || :)" ]
 }
 
 main() {
@@ -104,7 +128,8 @@ main() {
 	work="$(mktemp -d)"
 	stage=""
 	board=""
-	trap 'rm -rf "$work" ${stage:+"$stage"} ${board:+"$board"}' EXIT
+	aside=""
+	trap 'rm -rf "$work" ${stage:+"$stage"} ${board:+"$board"} ${aside:+"$aside"}' EXIT
 	trap 'exit 1' HUP INT TERM
 	build="rig-$version-darwin-$arch"
 	printf 'Downloading Rig %s for %s...\n' "$version" "$arch"
@@ -134,9 +159,10 @@ main() {
 	# Both executables are staged in a fresh directory beside their destinations before either is replaced, then each is
 	# renamed over its destination, so a running rigd keeps the file it started from and nothing sees a half-written one.
 	# Private whatever the umask: rigd refuses a Rig root directory that others can write.
-	(umask 077 && mkdir -p "$root/bin" "$root/dashboard")
+	(umask 077 && mkdir -p "$root/bin" "$root/dashboard" "$root/daemon")
 	# Again, now that they exist and just before anything is written into them.
 	check_private_root
+	lock_installation
 	stage="$(mktemp -d "$root/bin/.install.XXXXXX")"
 	for name in rig rigd; do
 		cp "$work/unpacked/$build/$name" "$stage/$name"
@@ -145,12 +171,23 @@ main() {
 	# The dashboard goes in beside the ones already there, under its release; rigd runs the one of its own release.
 	board="$(mktemp -d "$root/dashboard/.install.XXXXXX")"
 	cp -R "$work/unpacked/$build/dashboard/." "$board/"
+	# Its file list, SHA-256 per file of the verified archive's dashboard, goes with it: rigd upgrade checks the installed
+	# dashboard against it.
+	(cd "$board" && find . -type f -exec shasum -a 256 {} +) >"$work/files.sha256"
+	cp "$work/files.sha256" "$board/files.sha256"
 	# Checked again just before the renames: a Target may have published one while the release downloaded. rigd
 	# serializes its own publications in-process, so only an instant between this check and the renames is left uncovered.
 	check_destinations
-	# A dashboard of this release that is already installed is the same files, and may be serving, so it stays.
-	if [ ! -e "$root/dashboard/$version" ]; then
-		mv "$board" "$root/dashboard/$version"
+	# A dashboard of this release already installed with every file of the release may be serving, so it stays. Anything
+	# else there, an incomplete copy or a file, is moved aside and replaced; the lock keeps another installer from putting
+	# one there meanwhile, so the staged dashboard becomes the release's directory rather than going inside one.
+	dashboard="$root/dashboard/$version"
+	if ! complete_dashboard "$board" "$dashboard"; then
+		if [ -e "$dashboard" ] || [ -L "$dashboard" ]; then
+			aside="$(mktemp -d "$root/dashboard/.replaced.XXXXXX")"
+			mv "$dashboard" "$aside/"
+		fi
+		mv "$board" "$dashboard"
 		board=""
 	fi
 	for name in rig rigd; do
@@ -158,11 +195,11 @@ main() {
 	done
 	printf 'Installed rig and rigd %s in %s/bin, and the dashboard in %s/dashboard/%s.\n' "$version" "$root" "$root" "$version"
 
-	"$root/bin/rigd" install
+	RIG_INSTALL_LOCK_FD=9 "$root/bin/rigd" install
 
 	# Earlier releases' dashboards go once rigd serves this release, which then runs this release's dashboard. A rigd
 	# install that adopted a running rigd of another release leaves it serving its own, so they stay until then.
-	serving="$(RIG_ROOT="$root" "$root/bin/rigd" status 2>/dev/null | sed -n 's/^Version  *//p')"
+	serving="$(RIG_ROOT="$root" "$root/bin/rigd" status 2>/dev/null 9>&- | sed -n 's/^Version  *//p')"
 	case "$serving" in
 	"${version#v}+"*)
 		for old in "$root"/dashboard/v*; do

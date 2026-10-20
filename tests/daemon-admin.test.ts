@@ -5,12 +5,19 @@ import {
   writeFile,
   readFile,
   mkdir,
-  utimes,
+  stat,
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DaemonAdmin } from "../src/daemon/admin";
 import { processExists } from "../src/daemon/host";
+import { acquireProcessLock } from "../src/adapters/process-lock";
+
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
 
 test("an empty daemon command fails before acquiring a startup log", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-invalid-"));
@@ -849,10 +856,10 @@ test("the daemon command prefers the PATH entry that resolves to the running exe
   }
 });
 
-test("a startup lock left by a dead or replaced startup is reclaimed; a live or recent holder is refused with the lock named and the failure recorded", async () => {
+test("a startup lock a crashed startup left is taken; a live holder is refused with the lock named and the failure recorded", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-guard-"));
   const script = join(root, "child.ts");
-  const guard = join(root, "daemon", "acquiring");
+  const guard = join(root, "daemon", "acquiring.lock");
   await mkdir(join(root, "daemon"), { recursive: true });
   await mkdir(join(root, "auth"));
   await writeFile(join(root, "auth", "control-plane.token"), "test-secret");
@@ -879,6 +886,8 @@ test("a startup lock left by a dead or replaced startup is reclaimed; a live or 
         if (!address) await Bun.sleep(50);
       }
       expect(address).toMatchObject({ pid: child.pid });
+      // Serving, it no longer holds the startup lock, and removed it.
+      expect(await exists(guard)).toBe(false);
     } finally {
       child.kill();
       await child.exited;
@@ -886,56 +895,45 @@ test("a startup lock left by a dead or replaced startup is reclaimed; a live or 
     await rm(join(root, "daemon", "address.json"), { force: true });
     await rm(join(root, "daemon", "owner.json"), { force: true });
   };
-  const refused = async (pattern: RegExp) => {
-    const child = start();
-    expect(await child.exited).not.toBe(0);
-    const stderr = await new Response(child.stderr).text();
-    expect(stderr).toContain("DAEMON_START_LOCK");
-    expect(stderr).toContain(guard);
-    expect(stderr).toMatch(pattern);
-    expect(
-      JSON.parse(
-        await readFile(join(root, "daemon", "startup-failure.json"), "utf8"),
-      ),
-    ).toMatchObject({
-      code: "DAEMON_START_LOCK",
-      hint: expect.stringContaining(guard),
-    });
-    await rm(guard, { recursive: true, force: true });
-  };
   try {
-    // Holder replaced by another process: reclaimed.
-    await mkdir(guard);
-    await writeFile(
-      join(guard, "holder.json"),
+    // A crashed startup holds no lock, whatever its file records.
+    for (const left of [
       JSON.stringify({
         pid: process.pid,
         startedAt: "Thu Jan  1 00:00:00 1970",
       }),
-    );
-    await startsAndServes();
-    // Holder exited: reclaimed.
-    await mkdir(guard);
-    await writeFile(
-      join(guard, "holder.json"),
       JSON.stringify({ pid: 2147483647, startedAt: "x" }),
-    );
+      "",
+    ]) {
+      await writeFile(guard, left);
+      await startsAndServes();
+    }
+    // A live holder: refused, naming its pid and the lock.
+    const held = await acquireProcessLock(guard);
+    if (!("lock" in held)) throw new Error("refused");
+    try {
+      const child = start();
+      expect(await child.exited).not.toBe(0);
+      const stderr = await new Response(child.stderr).text();
+      expect(stderr).toContain("DAEMON_START_LOCK");
+      expect(stderr).toContain(guard);
+      expect(stderr).toContain(`pid ${process.pid}`);
+      expect(
+        JSON.parse(
+          await readFile(join(root, "daemon", "startup-failure.json"), "utf8"),
+        ),
+      ).toMatchObject({
+        code: "DAEMON_START_LOCK",
+        hint: expect.stringContaining(guard),
+      });
+      // The refused startup left the holder's lock alone.
+      expect(JSON.parse(await readFile(guard, "utf8"))).toMatchObject({
+        pid: process.pid,
+      });
+    } finally {
+      await held.lock.release();
+    }
     await startsAndServes();
-    // No holder record (older rigd) and old: reclaimed.
-    await mkdir(guard);
-    const old = new Date(Date.now() - 5 * 60 * 1000);
-    await utimes(guard, old, old);
-    await startsAndServes();
-    // Live holder: refused, naming pid and lock.
-    await mkdir(guard);
-    await writeFile(
-      join(guard, "holder.json"),
-      JSON.stringify({ pid: process.pid }),
-    );
-    await refused(new RegExp(`pid ${process.pid}`));
-    // No holder record and recent: refused.
-    await mkdir(guard);
-    await refused(/begun less than/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -944,12 +942,10 @@ test("a startup lock left by a dead or replaced startup is reclaimed; a live or 
 test("install reports the daemon's own startup failure as soon as it is recorded instead of a generic timeout", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-admin-startfail-"));
   const script = join(root, "child.ts");
-  const guard = join(root, "daemon", "acquiring");
-  await mkdir(guard, { recursive: true });
-  await writeFile(
-    join(guard, "holder.json"),
-    JSON.stringify({ pid: process.pid }),
-  );
+  const guard = join(root, "daemon", "acquiring.lock");
+  await mkdir(join(root, "daemon"), { recursive: true });
+  const held = await acquireProcessLock(guard);
+  if (!("lock" in held)) throw new Error("refused");
   await writeFile(
     script,
     `import { runDaemonHost } from ${JSON.stringify(join(import.meta.dir, "../src/daemon/host.ts"))}; await runDaemonHost({root:process.env.RIG_ROOT!,port:0,handle:async()=>({}),shutdown:async()=>{}});`,
@@ -980,6 +976,7 @@ test("install reports the daemon's own startup failure as soon as it is recorded
       running: false,
     });
   } finally {
+    await held.lock.release();
     await admin.uninstall().catch(() => {});
     await rm(root, { recursive: true, force: true });
   }

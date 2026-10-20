@@ -61,7 +61,7 @@ export async function runRigdCli(
   command
     .command("upgrade")
     .description(
-      "Install the latest release of Rig, or the one named: rig, rigd and the dashboard, through that release's own install script, then restart rigd.",
+      "Install the latest release of Rig, or the one named: rig, rigd and the dashboard, through that release's own install script, then restart rigd. A release already installed is installed again when rig, its dashboard or a rigd serving it is missing.",
     )
     .argument(
       "[version]",
@@ -69,7 +69,7 @@ export async function runRigdCli(
     )
     .option(
       "--check",
-      "Only say whether that release differs from the one installed",
+      "Only say whether that release differs from the one installed, or is installed incompletely",
     )
     .action(
       async (version: string | undefined, options: { check?: boolean }) => {

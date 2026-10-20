@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, rm, readFile, stat } from "node:fs/promises";
+import { rm, readFile } from "node:fs/promises";
 import {
   privateDirectory,
   replacePrivateFile,
@@ -12,6 +12,7 @@ import type { RuntimeCommand } from "./protocol";
 import { RigError } from "../domain/errors";
 import type { z } from "zod";
 import { processStartTime, recordedProcess } from "./process-identity";
+import { acquireProcessLock, type ProcessLock } from "../adapters/process-lock";
 
 /** How long a stop waits for a command that is still answering after the runtime has shut down. */
 const DRAIN_GRACE_MS = 30_000;
@@ -44,8 +45,6 @@ export interface DaemonHostOptions {
   /** Why the dashboard it runs is not served now (see Dashboard.problem), reported by /health. */
   dashboardProblem?: () => string | undefined;
 }
-/** A lock directory without a holder record is stale once older than this. */
-const GUARD_STALE_MS = 60_000;
 /** Exclusive startup guard serializes stale-lease reclamation. Ambiguous ownership fails closed. */
 export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
   try {
@@ -56,57 +55,17 @@ export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
     throw error;
   }
 }
-/** Takes the startup lock, reclaiming one whose holder is gone. Refuses a lock
- * held by a live startup, or by an unknown one begun recently, naming the lock. */
-async function acquireGuard(
-  guard: string,
-  owner: { pid: number; startedAt?: string },
-): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await mkdir(guard, { mode: 0o700 });
-      await writeFile(join(guard, "holder.json"), JSON.stringify(owner), {
-        mode: 0o600,
-        flag: "wx",
-      });
-      return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    const holder = await readFile(join(guard, "holder.json"), "utf8")
-      .then((text) =>
-        ownerSchema
-          .pick({ pid: true, startedAt: true })
-          .parse(JSON.parse(text)),
-      )
-      .catch(() => undefined);
-    if (holder) {
-      const liveness = await recordedProcess(holder);
-      if (liveness === "running" || liveness === "unverified")
-        throw new RigError(
-          "DAEMON_START_LOCK",
-          "Another startup owns the daemon acquisition lock.",
-          `The lock at ${guard} is held by pid ${holder.pid}, which is alive. Wait for that startup to finish; if no rigd is starting for this root, remove ${guard} and retry.`,
-          { guard, pid: holder.pid },
-        );
-    } else {
-      const age =
-        Date.now() - (await stat(guard).catch(() => undefined))?.mtimeMs!;
-      if (!(age >= GUARD_STALE_MS))
-        throw new RigError(
-          "DAEMON_START_LOCK",
-          "Another startup owns the daemon acquisition lock.",
-          `The lock at ${guard} was begun less than a minute ago by a startup that recorded no pid. Wait for it to finish; if no rigd is starting for this root, remove ${guard} and retry.`,
-          { guard },
-        );
-    }
-    await rm(guard, { recursive: true, force: true });
-  }
+/** Takes the startup lock, which one startup holds at a time and a dead one no longer holds. Refuses a lock held by a
+ * live startup, naming the lock and its pid. */
+async function acquireGuard(guard: string): Promise<ProcessLock> {
+  const acquired = await acquireProcessLock(guard);
+  if ("lock" in acquired) return acquired.lock;
+  const { pid } = acquired.held;
   throw new RigError(
     "DAEMON_START_LOCK",
     "Another startup owns the daemon acquisition lock.",
-    `The lock at ${guard} was taken again while this startup reclaimed it. Retry.`,
-    { guard },
+    `The lock at ${guard} is held by ${pid ? `pid ${pid}` : "another process"}, which is still running. Wait for that startup to finish, then retry.`,
+    { guard, ...(pid ? { pid } : {}) },
   );
 }
 /** The prior lease, or undefined when there is none or it is unreadable and no
@@ -153,7 +112,7 @@ async function recordedInstance(path: string): Promise<string | undefined> {
 async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
   const directory = join(options.root, "daemon"),
     lease = join(directory, "owner.json"),
-    guard = join(directory, "acquiring");
+    guard = join(directory, "acquiring.lock");
   await privateDirectory(options.root, directory);
   const owner = {
     pid: process.pid,
@@ -162,7 +121,7 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       startedAt ? { startedAt } : {},
     )),
   };
-  await acquireGuard(guard, owner);
+  const guarded = await acquireGuard(guard);
   let acquired = false;
   try {
     const prior = await readLease(lease, join(directory, "address.json"));
@@ -188,7 +147,9 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
     await replacePrivateFile(options.root, lease, JSON.stringify(owner));
     acquired = true;
   } finally {
-    await rm(guard, { recursive: true });
+    // Only this startup's own lock is released, and a lock file that cannot be removed does not fail a startup that
+    // already holds the lease.
+    await guarded.release().catch(() => {});
   }
   let server: ReturnType<typeof startControlPlane> | undefined;
   // A record that no longer names this instance, or cannot be read at all, is not ours to remove.

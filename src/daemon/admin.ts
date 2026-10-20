@@ -8,7 +8,7 @@ import {
   writeFile,
   rm,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   appendPrivateFile,
   openPrivateFile,
@@ -31,6 +31,7 @@ import { clearStartupFailure, readStartupFailure } from "./startup-failure";
 import { inheritedEnvironment } from "./environment";
 import {
   installationPath,
+  installLockPath,
   readInstallationRecord,
   type DaemonMode,
   type InstallationRecord,
@@ -52,6 +53,10 @@ import {
   createAdminActivityJournal,
   type AdminActivityJournal,
 } from "../adapters/admin-activity";
+import {
+  acquireProcessLock,
+  inheritProcessLock,
+} from "../adapters/process-lock";
 
 export interface DaemonAdminOptions {
   root: string;
@@ -77,6 +82,9 @@ export interface DaemonAdminOptions {
   userName?: string;
   /** Where system plists are staged and installed; tests pass temporary directories. */
   systemPlaces?: SystemPlaces;
+  /** A descriptor open on the installation lock that the release installer passed down (RIG_INSTALL_LOCK_FD): an install
+   * holds the lock through it, so the lock stays held to the end of this run even if the installer dies. */
+  inheritedLock?: number;
 }
 export type LaunchctlRunner = (
   args: readonly string[],
@@ -368,13 +376,40 @@ export class DaemonAdmin {
   async install(operationId?: string): Promise<DaemonStatus> {
     // An unsafe root is refused before anything, Activity included, is written into it.
     await securePrivateRoot(this.options.root);
-    return this.recordAdministration("daemon-install", operationId, async () =>
-      withToolBunWarning(await this.performInstall(), this.options.bun),
+    return this.recordAdministration("daemon-install", operationId, () =>
+      this.exclusively(async () =>
+        withToolBunWarning(await this.performInstall(), this.options.bun),
+      ),
     );
   }
   async uninstall(operationId?: string): Promise<DaemonStatus> {
     return this.recordAdministration("daemon-uninstall", operationId, () =>
-      this.performUninstall(),
+      this.exclusively(() => this.performUninstall()),
+    );
+  }
+  /** Runs `work` holding the installation lock, so one install, upgrade or uninstall changes this Rig root at a time: what
+   * one finds running is still so when it acts. The release installer holds it across the rigd install it runs and passes
+   * it down; another holder is refused, DAEMON_INSTALL_LOCKED. */
+  private async exclusively<T>(work: () => Promise<T>): Promise<T> {
+    const lockPath = installLockPath(this.options.root);
+    await privateDirectory(this.options.root, dirname(lockPath));
+    const acquired =
+      (this.options.inheritedLock === undefined
+        ? undefined
+        : await inheritProcessLock(lockPath, this.options.inheritedLock)) ??
+      (await acquireProcessLock(lockPath, { keep: true }));
+    if ("lock" in acquired)
+      try {
+        return await work();
+      } finally {
+        await acquired.lock.release();
+      }
+    const { pid } = acquired.held;
+    throw new RigError(
+      "DAEMON_INSTALL_LOCKED",
+      "Another rigd install, upgrade or uninstall is changing this Rig root.",
+      `The lock at ${lockPath} is held by ${pid ? `pid ${pid}` : "another process"}, which is still running. Wait for it to finish, then run this command again.`,
+      { lockPath, ...(pid ? { pid } : {}) },
     );
   }
   private async recordAdministration(

@@ -189,12 +189,15 @@ which case startup refuses and names both files. A daemon releases only records
 that still name its own instance on shutdown; a record corrupted or replaced
 while it ran is left alone and never turns a clean stop into a failure.
 
-Daemon startup takes a lock directory, `<RIG_ROOT>/daemon/acquiring`, and
-records its own pid and start time inside it. A lock whose holder has exited or
-whose pid now belongs to another process is reclaimed on the next start, as is
-a lock with no holder record that is more than a minute old. A lock held by a
-live process, or a holder-less lock begun in the last minute, is refused as
-`DAEMON_START_LOCK` with the lock path and pid in the hint. When any start
+Daemon startup takes a lock, `<RIG_ROOT>/daemon/acquiring.lock`, while it
+checks the lease and writes its own. Rig's locks (this one, `rig.yaml.lock`, the
+activity journal's and the installation lock) are flock(2) locks on the open
+file: one process holds each at a time, and a process that dies releases it, so
+there is nothing stale to reclaim, however the last holder ended. The file
+records the holder's pid and start time for whoever is refused, and a holder
+removes the file only while it is still its own. A startup that finds the lock
+held by a live startup is refused as `DAEMON_START_LOCK` with the lock path and
+pid in the hint. When any start
 fails, the daemon writes `<RIG_ROOT>/daemon/startup-failure.json` before it
 exits, and `rigd install` reports that failure's message and hint as
 `DAEMON_START` as soon as it appears, instead of waiting out its timeout;
@@ -267,11 +270,34 @@ the one named (an earlier one rolls back). It runs that release's own `install`
 script, as a first install does, after checking the script against the
 release's `SHA256SUMS`, over HTTPS only. The script checks the archive, puts
 `rig`, `rigd` and the dashboard in place, and runs `rigd install`, which swaps the
-serving daemon as above. `rigd upgrade --check` only says whether that release
-differs from the one installed, which is the release the Rig root's own `rigd`
-reports. The latest release is the one GitHub's latest-release page names, and
-its script must name the same release. Like the install script, it leaves alone a `rig`
-or `rigd` that a Rig Project's Target published.
+serving daemon as above. The latest release is the one GitHub's latest-release
+page names, and its script must name the same release. Like the install script,
+it leaves alone a `rig` or `rigd` that a Rig Project's Target published.
+
+The release installed is the one the Rig root's own `rigd` reports, and it is
+complete only with `rig` of that release, its dashboard as released, and `rigd`
+installed and serving it. The install script writes the dashboard's file list,
+`<RIG_ROOT>/dashboard/<release>/files.sha256` (the SHA-256 of each file of the
+verified archive's dashboard), and the dashboard counts as released only while
+every file it names is there with that digest; files the dashboard wrote while
+serving do not count against it. `rigd upgrade` installs an incomplete release
+again, as after an install that failed once `rigd` was replaced or a dashboard
+that lost a file, and reports what it lacked. `rigd upgrade --check` only says
+whether that release differs from the one installed, or is installed
+incompletely.
+
+One install, upgrade or uninstall changes a Rig root at a time. `rigd install`
+and `rigd uninstall` hold the installation lock, `<RIG_ROOT>/daemon/install.lock`,
+for their whole run. The release's `install` script takes it before it puts the
+release in place, and hands it to the `rigd install` it runs on an open
+descriptor (named by `RIG_INSTALL_LOCK_FD`), so that `rigd install` holds it to
+its own end even if the script is killed first. A `rigd install` handed a
+descriptor that is not open on that lock takes the lock itself. Another one
+started meanwhile is refused at once: `rigd install` and `rigd uninstall` as
+`DAEMON_INSTALL_LOCKED`, naming the lock and the pid holding it, and the script
+before it changes anything. A dashboard of the release already in place is kept
+only when it holds every file of the release as released; anything else there
+is replaced by the release's.
 
 ### Rig's own Caddy
 
@@ -1556,9 +1582,8 @@ or Persistent storage. A record cut short by
 a killed writer never glues onto the next one (the next record starts on its
 own line) and never disables rotation: the segment's day comes from its first
 complete record, or from the file's creation time when none can be read. Daemon administration
-activity is written under a lock file that records the writer's pid and start
-time; a lock left by a writer that died or was replaced, or an unreadable lock
-older than a minute, is reclaimed by the next administration. When activity
+activity is written under a lock (see the startup lock above) that records the
+writer's pid and start time; a writer that died holds it no longer. When activity
 cannot be recorded, the warning names the journal or lock file to inspect, and
 the administration outcome itself is unchanged.
 
@@ -2849,10 +2874,10 @@ Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while
 `rig doctor` and preflight validate the result.
 
-Rig serializes its own config edits with `rig.yaml.lock` beside the file. The
-lock records the editing pid, so one left by a crashed edit is reclaimed once
-that process is gone (or, when it recorded nothing, after a minute). An edit
-refused as `config_locked` names the lock file and the live pid holding it.
+Rig serializes its own config edits with `rig.yaml.lock` beside the file, a
+lock (see the startup lock under Setup) that an edit which crashed holds no
+longer. An edit refused as `config_locked` names the lock file and the live
+pid holding it.
 
 Current config surface:
 

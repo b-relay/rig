@@ -316,18 +316,12 @@ export async function editProjectConfig(
     };
   } finally {
     if (temporary) await unlink(temporary).catch(() => {});
-    await lock.close();
-    await unlink(lockPath);
+    await lock.release();
   }
 }
-/** A lock held by a live edit, or too fresh to reclaim, is refused with the file an operator can inspect or remove. */
+/** A lock held by a running edit is refused with the file and, when recorded, the pid holding it. */
 function configLocked(path: string, held: LockHeld): ConfigError {
-  const cause =
-    held.reason === "alive"
-      ? `is held by pid ${held.pid}, which is alive. Wait for that edit to finish; if no rig config edit is running, remove ${held.lockPath} and retry.`
-      : held.reason === "fresh"
-        ? `was taken less than a minute ago by an edit that recorded no pid. Wait for it; if no rig config edit is running, remove ${held.lockPath} and retry.`
-        : "was taken again while it was being reclaimed. Retry.";
+  const cause = `is held by ${held.pid ? `pid ${held.pid}` : "another process"}, which is still running. Wait for that edit to finish, then retry.`;
   return new ConfigError(
     "Config is being edited by another operation.",
     "config_locked",

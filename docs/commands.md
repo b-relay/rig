@@ -287,9 +287,10 @@ this:
   failing or cutting a record, and exits only once its reader took everything.
   A reader that goes away (`| head`) ends the command with its usual exit; a
   `logs --follow` notices it at its next poll. A write that fails for any other
-  reason (a full disk, a file size limit) ends it with exit 1 and a message
-  on stderr saying its output is incomplete (with the error, such as `EFBIG`),
-  and nothing is added to what stdout already holds.
+  reason (a full disk, a file size limit, a stdout not open for writing) ends
+  it with exit 1 and a message on stderr saying its output is incomplete (with
+  the error, such as `EFBIG`), and nothing is added to what stdout already
+  holds.
 - `logs --follow` has no end of its own. Ctrl-C, SIGTERM or the reader going
   away end it with exit 0, always after a whole record; rigd failing ends it
   with an error line and exit 1.

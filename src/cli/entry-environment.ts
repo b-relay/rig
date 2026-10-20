@@ -100,7 +100,7 @@ export function reportRootFailure(error: unknown, output: UserOutput): number {
  * text queued and tries again shortly, so a slow reader gets every byte rather than a cut record; each write resolves
  * once its text was taken. A reader that has gone away (a closed pipe, `| head`) is seen at the write that fails, even an
  * empty one: that text and all later text to the stream are dropped, and onClosed runs once. Any other write failure
- * (a full disk, a file size limit, EIO) does the same, and `flushed` then names it, since what the stream holds is
+ * (a full disk, a file size limit, a stdout not open for writing) does the same, and `flushed` then names it, since what the stream holds is
  * incomplete. `abandon` drops what is still queued, for a reader that stopped taking it. Bun's stream writes swallow
  * EPIPE, which is why the file descriptors are written directly. */
 export function userOutput(
@@ -176,8 +176,9 @@ function outputStream(fd: 1 | 2, ended: () => void) {
           delay = Math.min(delay * 2, FULL_PIPE_RETRY_MS.last);
           return;
         }
-        // EPIPE and EBADF mean the reader has gone, which ends the command as it wished; anything else is a failure.
-        if (code !== "EPIPE" && code !== "EBADF") failure = code ?? "EIO";
+        // Only EPIPE means the reader has gone, which ends the command as it wished. Anything else is a failure, EBADF
+        // included: on macOS it is a stdout that is closed or not open for writing, which nobody reads either.
+        if (code !== "EPIPE") failure = code ?? "EIO";
         closed = true;
         drop();
         ended();

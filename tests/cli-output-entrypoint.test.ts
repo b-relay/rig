@@ -217,6 +217,17 @@ test("output that cannot be written fails the read on stderr with nothing added 
       fixture,
     );
     expect(closed).toEqual({ exit: 0, stdout: "rig=0\n", stderr: "" });
+    // A stdout open only for reading takes nothing: that is a failure, not a reader that left.
+    const readOnly = await pipeline(
+      `: >"$WORK/read-only"; $RIG list --json 1<"$WORK/read-only"; echo "rig=$?" >&2`,
+      fixture,
+    );
+    expect(readOnly).toEqual({
+      exit: 0,
+      stdout: "",
+      stderr:
+        "rig could not write its output (EBADF), so what it wrote there is incomplete.\nCheck where it goes: the disk's free space, a file size limit, or the device.\nrig=1\n",
+    });
   } finally {
     await fixture.stop();
   }

@@ -105,7 +105,7 @@ export function createEffectPreparation(
         throw new RigError(
           "EFFECTS_RECOVERY",
           "A saved Target effect preparation already exists.",
-          "Run down for this Target to recover its preparation before retrying.",
+          "Run rig down for this Target to recover its preparation before retrying.",
         );
       await privateDirectory(root, dirname(directory(targetId)));
       // The claim is on disk before the directory it names, and the directory before anything is written into it, so

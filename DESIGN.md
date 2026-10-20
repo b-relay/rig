@@ -48,7 +48,6 @@ capability interfaces without Effect TS. See the
 - `rig config`
 - `rig activity`
 - `rig rename` / `rig repoint` / `rig forget` for stopped Projects
-- `rig recipe`
 - `rig deploy`
 - `rig up`
 - `rig down`

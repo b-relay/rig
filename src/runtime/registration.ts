@@ -2,6 +2,8 @@ import { dirname, join } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
+import { rigCommand } from "../domain/rig-command";
+import { shellWord } from "../domain/target-selector";
 import { RigError, failureCauses, failureReason } from "../domain/errors";
 import { observeTargets } from "./status";
 import { keepPublishedNames, planTarget } from "./targets";
@@ -76,7 +78,7 @@ export async function forgetProject(
     throw new RigError(
       "PROJECT_TARGETS",
       `Project '${project.name}' still has ${previews.length} Preview${previews.length === 1 ? "" : "s"}: ${previews.map((t) => t.branch ?? t.name).join(", ")}.`,
-      `Run rig down preview <branch> --destroy for each Preview, then rig forget ${project.name}.`,
+      `Destroy ${previews.length === 1 ? "it" : "them"} with ${previews.map((target) => rigCommand("down", { target }, "--destroy")).join(", ")}, then run rig forget ${shellWord(project.name)}.`,
       { previews: previews.map((t) => t.name) },
     );
   let withdrawal;
@@ -111,13 +113,13 @@ export async function forgetProject(
       return [
         ...(await forgottenWarnings(targets, kept, deps)),
         ...(await forgetUsage(project, deps)),
-        `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${project.name} again.`,
+        `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${shellWord(project.name)} again.`,
       ];
     if (registered === undefined)
       throw new RigError(
         "FORGET_UNCERTAIN",
         `Project '${project.name}' may or may not be forgotten: ${withdrawal.hostnames.length ? `its routes (${withdrawal.hostnames.join(", ")}) were withdrawn, ` : ""}saving the forget failed, and the state could not be read back.`,
-        `Run rig list. If ${project.name} is still registered, run rig forget ${project.name} again${withdrawal.hostnames.length ? "; rig up or rig deploy of a Target publishes its route again otherwise" : ""}.`,
+        `Run rig list. If ${project.name} is still registered, run rig forget ${shellWord(project.name)} again${withdrawal.hostnames.length ? "; rig up or rig deploy of a Target publishes its route again otherwise" : ""}.`,
         { hostnames: [...withdrawal.hostnames] },
         failureCauses(error),
       );
@@ -133,7 +135,7 @@ export async function forgetProject(
       throw new RigError(
         "FORGET_ROLLBACK",
         `Project '${project.name}' is still registered, but the routes for ${unpublished.join(", ")} were withdrawn and could not be published again.`,
-        `Its Targets are stopped, so nothing was served through them; rig up or rig deploy of a Target publishes its route again. Run rig forget ${project.name} to retry.`,
+        `Its Targets are stopped, so nothing was served through them; rig up or rig deploy of a Target publishes its route again. Run rig forget ${shellWord(project.name)} to retry.`,
         { hostnames: unpublished },
         failureCauses(error, recovery),
       );
@@ -232,7 +234,7 @@ function notForgotten(project: ProjectRecord, error: unknown): RigError {
     return new RigError(
       "ROUTE_WITHDRAW",
       `Project '${project.name}' was not forgotten: its routes could not be withdrawn.`,
-      `Its registration and routes are unchanged. Run rig doctor and read the diagnostic log, then run rig forget ${project.name} again.`,
+      `Its registration and routes are unchanged. Run rig doctor and read the diagnostic log, then run rig forget ${shellWord(project.name)} again.`,
       {},
       failureCauses(error),
     );
@@ -241,7 +243,7 @@ function notForgotten(project: ProjectRecord, error: unknown): RigError {
     return new RigError(
       "FORGET_ROLLBACK",
       `Project '${project.name}' was not forgotten, and its routes could not all be put back. ${error.message}`,
-      `${error.hint} Or run rig forget ${project.name} again to finish forgetting it.`,
+      `${error.hint} Or run rig forget ${shellWord(project.name)} again to finish forgetting it.`,
       error.details,
       error.causes,
     );
@@ -250,14 +252,14 @@ function notForgotten(project: ProjectRecord, error: unknown): RigError {
     return new RigError(
       error.code,
       `Project '${project.name}' was not forgotten. ${error.message}`,
-      `${error.hint} Its registration is unchanged; run rig forget ${project.name} again once rig doctor is clean.`,
+      `${error.hint} Its registration is unchanged; run rig forget ${shellWord(project.name)} again once rig doctor is clean.`,
       error.details,
       error.causes,
     );
   return new RigError(
     error.code,
     `Project '${project.name}' was not forgotten: its routes could not be withdrawn. ${error.message}`,
-    `${error.hint} Its registration and routes are unchanged: fix that, then run rig forget ${project.name} again.`,
+    `${error.hint} Its registration and routes are unchanged: fix that, then run rig forget ${shellWord(project.name)} again.`,
     error.details,
     error.causes,
   );

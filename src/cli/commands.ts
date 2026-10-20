@@ -11,6 +11,8 @@ import { RigError } from "../domain/errors";
 import { reported } from "./failure";
 import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
+import { rigCommand, type RigCommandPath } from "../domain/rig-command";
+import { generatedPreviewName } from "../domain/target-selector";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";
@@ -90,8 +92,11 @@ export function createRigCommand(
   addLogsCommand(command, {
     execute,
     now,
-    targetRequest: (target, branch, options) =>
-      targetRequest("logs", target, branch, cwd, options),
+    targetRequest: (target, branch, options, flags) =>
+      targetRequest("logs", target, branch, cwd, options, {
+        path: "logs",
+        flags,
+      }),
     nonEmpty,
     positiveInteger,
   });
@@ -197,7 +202,7 @@ function addProxyCommands(
     )
     .option(
       "--port <port>",
-      "HTTPS port to check (default: proxy.ports.https)",
+      "HTTPS port to check (default: the one Caddy last accepted, not a pending proxy.ports.https edit rig proxy shows; proxy.ports.https when none was recorded)",
       positiveInteger,
     )
     .option(
@@ -288,7 +293,7 @@ export function addHelpCommand(command: Command, executable: string): void {
   command
     .command("help")
     .description("Show help for a command.")
-    .argument("[command...]", "Command path, for example deploy preview")
+    .argument("[command...]", "Command path, for example backup restore")
     .action((path: string[]) => {
       let current = command;
       for (const name of path) {
@@ -325,13 +330,16 @@ function subcommand(command: Command, name: string): Command | undefined {
       candidate.name() === name || candidate.aliases().includes(name),
   );
 }
+/** A command group named without its subcommand (rig backup, rig dns) prints its help, as bare rig does; commander's own
+ * error messages are left out, since rig reports every failure itself. */
 export function terminalCommand(name: string, output: UserOutput): Command {
   return new Command(name)
     .version(RIG_BUILD, "-V, --version", "Print the version.")
     .exitOverride()
     .configureOutput({
       writeOut: (text) => output.write(text),
-      writeErr: () => {},
+      writeErr: (text) => output.write(text),
+      outputError: () => {},
     });
 }
 function projectScope(options: ScopeOptions): { project?: string } {
@@ -379,9 +387,16 @@ function addLifecycleCommands(
         "[target]",
         "working (the default), stable, or preview with a Branch",
       )
-      .argument("[branch]", "Preview Branch or name", nonEmpty)
+      .argument(
+        "[branch]",
+        "Preview Branch (a Preview deployed with its own name: --deployment <name>)",
+        nonEmpty,
+      )
       .option("--project <name>", "Registered Project identity")
-      .option("--deployment <name>", "Explicit Preview name");
+      .option(
+        "--deployment <name>",
+        "A Preview by the name it was deployed with (rig deploy preview --deployment <name>), in place of its Branch",
+      );
     if (action === "down")
       child.option(
         "--destroy",
@@ -398,13 +413,24 @@ function addLifecycleCommands(
         branch: string | undefined,
         options: ScopeOptions,
       ) => {
-        if (options.destroy && target !== PREVIEW_SELECTOR)
+        // Without a Target, --deployment names the Preview to destroy, and targetRequest says how to select it.
+        if (
+          options.destroy &&
+          target !== PREVIEW_SELECTOR &&
+          !(target === undefined && options.deployment)
+        )
           throw new RigError(
             "USAGE",
             "Only a Preview can be destroyed.",
             "Use rig down preview <branch> --destroy.",
           );
-        const request = targetRequest(action, target, branch, cwd, options);
+        const request = targetRequest(action, target, branch, cwd, options, {
+          path: action,
+          flags: [
+            ...(options.destroy ? ["--destroy"] : []),
+            ...(options.kill ? ["--kill"] : []),
+          ],
+        });
         await execute({
           ...request,
           ...(options.destroy ? { action: "destroy" as const } : {}),
@@ -436,7 +462,10 @@ function addDeployCommands(
       "--no-up",
       "Deploy without starting; a running Target is stopped until rig up",
     )
-    .option("--deployment <name>", "Explicit Preview name");
+    .option(
+      "--deployment <name>",
+      "Name the Preview yourself instead of the name Rig makes from its Branch; later commands select it with --deployment <name>",
+    );
   deploy.action(
     async (
       target: string | undefined,
@@ -448,7 +477,21 @@ function addDeployCommands(
         throw new RigError(
           "USAGE",
           "Only a Preview takes --deployment.",
-          "Use rig deploy preview --deployment <name>.",
+          `Use ${terminalText(
+            rigCommand(
+              "deploy",
+              {
+                project: projectScope(options).project,
+                target: {
+                  kind: "preview",
+                  name: previewScope(options).deployment!,
+                  ...(branch ? { branch } : {}),
+                },
+              },
+              ...(options.force ? ["--force"] : []),
+              ...(options.up === false ? ["--no-up"] : []),
+            ),
+          )}.`,
         );
       await execute({
         action: "deploy",
@@ -479,9 +522,16 @@ function addRunCommand(
       "[target]",
       "stable (the default), working, or preview with a Branch",
     )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .argument(
+      "[branch]",
+      "Preview Branch (a Preview deployed with its own name: --deployment <name>)",
+      nonEmpty,
+    )
     .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
+    .option(
+      "--deployment <name>",
+      "A Preview by the name it was deployed with (rig deploy preview --deployment <name>), in place of its Branch",
+    )
     .action(
       async (
         job: string,
@@ -502,6 +552,7 @@ function addRunCommand(
           branch,
           cwd,
           options,
+          { path: "run", job },
         );
         await execute({ ...request, job });
       },
@@ -521,16 +572,23 @@ function addBackupCommands(
   backup
     .command("list")
     .description(
-      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable).",
+      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable). A job named like a Target is given with its Target. With no job before it, preview stable and preview working mean the job preview in that Target, not a Preview of the Branch stable or working: list such a Preview by the name rig status shows, rig backup list preview --deployment <name>.",
     )
     .argument("[job]", "Backup job name under jobs in rig.yaml")
     .argument(
       "[target]",
       "working, stable, or preview with a Branch (default: every Target)",
     )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .argument(
+      "[branch]",
+      "Preview Branch (a Preview deployed with its own name: --deployment <name>)",
+      nonEmpty,
+    )
     .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
+    .option(
+      "--deployment <name>",
+      "A Preview by the name it was deployed with (rig deploy preview --deployment <name>), in place of its Branch",
+    )
     .option("--json", "Render the backups as JSON")
     .action(
       async (
@@ -540,12 +598,18 @@ function addBackupCommands(
         options: ScopeOptions,
       ) => {
         // A Target's name alone lists that Target's backups (rig backup list stable, rig backup list preview <branch>); a
-        // job named like a Target is listed with its Target too: rig backup list stable stable.
+        // job named like a Target is listed with its Target too: rig backup list stable stable, and a job named preview
+        // as rig backup list preview stable or rig backup list preview preview --deployment <name>. So in these two-word
+        // forms with no job before them, a Target's word after preview is that Target, not a Branch.
+        const targets = ["working", "stable", PREVIEW_SELECTOR];
         const targetFirst =
           first !== undefined &&
-          ["working", "stable", PREVIEW_SELECTOR].includes(first) &&
-          (second === undefined || first === PREVIEW_SELECTOR) &&
-          third === undefined;
+          targets.includes(first) &&
+          third === undefined &&
+          (second === undefined ||
+            (first === PREVIEW_SELECTOR &&
+              !["working", "stable"].includes(second) &&
+              !(second === PREVIEW_SELECTOR && options.deployment)));
         const [job, target, branch] = targetFirst
           ? [undefined, first, second]
           : [first, second, third];
@@ -558,7 +622,11 @@ function addBackupCommands(
                 repoPath: cwd,
                 ...projectScope(options),
               }
-            : targetRequest("backups", target, branch, cwd, options);
+            : targetRequest("backups", target, branch, cwd, options, {
+                path: "backup list",
+                ...(job !== undefined ? { job } : {}),
+                ...(options.json ? { flags: ["--json"] } : {}),
+              });
         await execute(
           { ...request, ...(job !== undefined ? { job } : {}) },
           { json: options.json },
@@ -580,9 +648,16 @@ function addBackupCommands(
       "[target]",
       "stable (the default), working, or preview with a Branch",
     )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .argument(
+      "[branch]",
+      "Preview Branch (a Preview deployed with its own name: --deployment <name>)",
+      nonEmpty,
+    )
     .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
+    .option(
+      "--deployment <name>",
+      "A Preview by the name it was deployed with (rig deploy preview --deployment <name>), in place of its Branch",
+    )
     .option("--yes", "Restore without asking for confirmation")
     .action(
       async (
@@ -606,6 +681,12 @@ function addBackupCommands(
           branch,
           cwd,
           options,
+          {
+            path: "backup restore",
+            job,
+            backup: id,
+            ...(options.yes ? { flags: ["--yes"] } : {}),
+          },
         );
         await execute(
           { ...request, job, backup: id },
@@ -749,28 +830,47 @@ function initRequest(cwd: string, options: InitOptions): RuntimeCommand {
       : {}),
   };
 }
+/** The command a usage hint retypes: its path in the grammar, the job and backup it takes before the Target, and the
+ * flags the user gave that change what it does. */
+interface TypedCommand {
+  path: RigCommandPath;
+  job?: string;
+  backup?: string;
+  flags?: string[];
+}
 function targetRequest(
   action: "up" | "down" | "restart" | "logs" | "run" | "backups" | "restore",
   target: string | undefined,
   branch: string | undefined,
   cwd: string,
   options: ScopeOptions,
+  typed: TypedCommand,
 ): RuntimeCommand {
   const preview = previewScope(options);
+  const project = projectScope(options);
+  // The command as the user typed it, with the Preview selected the way the grammar takes it.
+  const retyped = (selected: { name: string; branch?: string }) =>
+    terminalText(
+      rigCommand(
+        typed.path,
+        {
+          project: project.project,
+          ...(typed.job !== undefined ? { job: typed.job } : {}),
+          ...(typed.backup !== undefined ? { backup: typed.backup } : {}),
+          target: { kind: "preview", ...selected },
+        },
+        ...(typed.flags ?? []),
+      ),
+    );
   if (target === undefined) {
-    if (branch || options.deployment)
+    if (options.deployment)
       throw new RigError(
         "USAGE",
         "A Preview is selected with preview.",
-        `Use rig ${action} preview <branch> or rig ${action} preview --deployment <name>.`,
+        `Use ${retyped({ name: options.deployment })}.`,
       );
     // In a checkout the working Target is the one these commands mean unless another is named.
-    return {
-      action,
-      repoPath: cwd,
-      target: "working",
-      ...projectScope(options),
-    };
+    return { action, repoPath: cwd, target: "working", ...project };
   }
   if (
     (target === PREVIEW_SELECTOR && !branch && !options.deployment) ||
@@ -779,14 +879,14 @@ function targetRequest(
     throw new RigError(
       "USAGE",
       "Choose working, stable, or preview <branch>.",
-      `Run rig ${action} --help.`,
+      `Run rig ${typed.path} --help.`,
     );
   // A Branch and --deployment can name different Previews; acting on one while the user typed the other is never safe.
   if (target === PREVIEW_SELECTOR && branch && options.deployment)
     throw new RigError(
       "USAGE",
       "Pass a Preview Branch or --deployment, not both.",
-      `Use rig ${action} preview <branch> or rig ${action} preview --deployment <name>.`,
+      `Use ${retyped({ name: generatedPreviewName(branch), branch })} or ${retyped({ name: options.deployment })}.`,
     );
   return {
     action,
@@ -794,7 +894,7 @@ function targetRequest(
     target,
     ...(branch ? { branch } : {}),
     ...preview,
-    ...projectScope(options),
+    ...project,
   };
 }
 /** An empty value would otherwise be dropped by a truthiness check and silently mean "default". */

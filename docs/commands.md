@@ -47,7 +47,7 @@ rig
 │    --project <name>
 │    --force                        redeploy the same Commit
 │    --no-up                        deploy without starting
-│    --deployment <name>            explicit Preview name
+│    --deployment <name>            name the Preview yourself; other commands select it by this name
 │
 ├─ up      [target] [branch]        target: "working" (default), "stable" or "preview"
 ├─ restart [target] [branch]
@@ -74,7 +74,7 @@ rig
 │    --project <name>   --deployment <name>
 │    --follow                       stream until interrupted, after the matching history
 │    --lines <count>                default 50, at most 10000, counted after filtering
-│    --service <name>               only this Service's or Tool's lines; repeatable
+│    --service <name>               only this Service's, Tool's or job's lines, or setup's; repeatable
 │    --stream stdout|stderr         only this stream
 │    --since <time>  --until <time> 1h, 15m, 2d … back from now, or an ISO time with a zone;
 │                                   --until cannot be combined with --follow
@@ -93,7 +93,8 @@ rig
 │  │                                section (proxy.routes, ports, certificates) as it is now; without Rig's own
 │  │                                Caddy it only withdraws
 │  ├─ verify                        TLS handshake per served hostname; exits 1 when any is not ready
-│  │   --port <port>                default: proxy.ports.https
+│  │   --port <port>                default: the HTTPS port Caddy last accepted, not a pending
+│  │                                proxy.ports.https edit; that setting when none was recorded
 │  │   --wait <seconds>             keep checking failing hostnames this long
 │  │   --staging-ok                 accept certificates from a staging CA
 │  │   --json                       { ready, hostnames, error? }; still exits 1 when not ready
@@ -116,7 +117,7 @@ rig
 │      --zone <zone>
 │      -y, --yes
 │
-└─ help [command...]                for example: rig help deploy preview
+└─ help [command...]                for example: rig help backup restore
 ```
 
 ## rigd
@@ -137,17 +138,27 @@ rigd
 ```
 
 `rigd capture` is not a user command. `rigd`'s child supervisor runs
-`rigd capture <request-file>` for each Service instead of the Service's own
-command. The wrapper starts the Service as its child, writes its output to the
-Target logs, and records its status and exit, so how the Service ended is
-known even when `rigd` was not there to see it. The request file is a small
-JSON document `rigd` writes for that Service: its command, working directory,
-environment, and log directory.
+`rigd capture <request-file>` for each Service, and for each run of a job
+(scheduled, `rig run` or `rig backup restore`), instead of its own command. The
+wrapper starts it as its child, writes its output to the Target logs, and
+records its status and exit, so how it ended is known even when `rigd` was not
+there to see it. The request file is a small JSON document `rigd` writes for
+it: its command, working directory, environment, and log directory.
 
 ## Behavior The Tree Does Not Show
 
 - Target names are fixed: `working`, `stable`, and `preview <branch>` (or
-  `preview --deployment <name>`) for a Preview.
+  `preview --deployment <name>` for one deployed with its own name) for a
+  Preview. The word after `preview` is a Branch, with one exception: with no
+  job before it, `rig backup list preview stable` (or `preview working`) lists
+  the job `preview` in that Target. List a whole Preview of a Branch named
+  `stable` or `working` by its name, `rig backup list preview --deployment
+<name>`; `rig status` shows each Preview's name.
+- `backup` and `dns` without a subcommand print their help, as `rig` does.
+- A hint that names a command for a Target gives it whole, with the Target's own
+  selector and `--project` for the Project it is about, so it works from any
+  directory (and from Activity or the dashboard). A usage error retypes your
+  command corrected, with `--project` only when you gave it.
 - `up`, `down`, `restart`, and `logs` without a Target act on `working`;
   `deploy` without one deploys `stable`. A Preview is never a default. `rig
 status` takes no Target.

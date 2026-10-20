@@ -4,6 +4,7 @@ import { RigError } from "../domain/errors";
 import type { ExecuteCommand } from "./commands";
 import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
+import { shellWord } from "../domain/target-selector";
 import { LONG_LINE_CHARS } from "./output";
 
 interface LogsOptions {
@@ -18,6 +19,8 @@ interface LogsOptions {
   json?: boolean;
   full?: boolean;
 }
+/** How many entries rig logs reads unless --lines says otherwise. */
+const LINES = 50;
 /** The most --service names one request carries, as the control plane allows. */
 const MAX_SERVICES = 64;
 const TIME_HELP = `
@@ -31,8 +34,11 @@ Examples:
   rig logs stable --stream stderr --follow
   rig logs stable --since 2026-09-28T03:00:00Z --until 2026-09-28T04:00:00Z
   rig logs --since 1d --json --full > logs.jsonl
+  rig logs preview feature/login --service web
+  rig logs preview --deployment demo
 
-When older entries match than --lines lets through, stderr says so.
+When older entries match than --lines lets through, stderr says so; a larger
+--lines, or --until an earlier time, reaches them.
 `;
 
 /** `rig logs`: the grammar checks every flag, resolves durations against `now`, and sends one request; rigd checks the
@@ -49,11 +55,12 @@ export function addLogsCommand(
     execute: ExecuteCommand;
     /** The clock `--since 1h` and `--until 1h` count back from. */
     now: () => Date;
-    /** The grammar's one check of a Target selection. */
+    /** The grammar's one check of a Target selection; a hint that retypes the command keeps `flags`. */
     targetRequest(
       target: string | undefined,
       branch: string | undefined,
       options: { project?: string; deployment?: string },
+      flags: string[],
     ): RuntimeCommand;
     /** The grammar's argument parsers, shared with every command. */
     nonEmpty(value: string): string;
@@ -67,9 +74,16 @@ export function addLogsCommand(
       "[target]",
       "working (the default), stable, or preview with a Branch",
     )
-    .argument("[branch]", "Preview Branch or name", nonEmpty)
+    .argument(
+      "[branch]",
+      "Preview Branch (a Preview deployed with its own name: --deployment <name>)",
+      nonEmpty,
+    )
     .option("--project <name>", "Registered Project identity")
-    .option("--deployment <name>", "Explicit Preview name")
+    .option(
+      "--deployment <name>",
+      "A Preview by the name it was deployed with (rig deploy preview --deployment <name>), in place of its Branch",
+    )
     .option(
       "--follow",
       "Keep printing new lines until interrupted, after the matching history; every filter but --until applies",
@@ -78,7 +92,7 @@ export function addLogsCommand(
       "--lines <count>",
       "Number of recent entries, counted after filtering",
       positiveInteger,
-      50,
+      LINES,
     )
     .option(
       "--service <name>",
@@ -126,7 +140,7 @@ export function addLogsCommand(
         const logFilter = logsFilter(options, now());
         await execute(
           {
-            ...targetRequest(target, branch, options),
+            ...targetRequest(target, branch, options, typedFlags(options)),
             lines: options.lines,
             ...(logFilter ? { logFilter } : {}),
           },
@@ -140,6 +154,21 @@ export function addLogsCommand(
     );
 }
 
+/** The flags as the user gave them, shell-quoted, for a hint that retypes the command. */
+function typedFlags(options: LogsOptions): string[] {
+  const valued = (flag: string, value: string | number | undefined) =>
+    value === undefined ? [] : [flag, shellWord(String(value))];
+  return [
+    ...(options.service ?? []).flatMap((name) => valued("--service", name)),
+    ...valued("--stream", options.stream),
+    ...valued("--lines", options.lines === LINES ? undefined : options.lines),
+    ...valued("--since", options.since),
+    ...valued("--until", options.until),
+    ...(options.follow ? ["--follow"] : []),
+    ...(options.full ? ["--full"] : []),
+    ...(options.json ? ["--json"] : []),
+  ];
+}
 /** The filter the flags ask for, or undefined when none narrows the read, so an unfiltered request is unchanged. */
 function logsFilter(
   options: LogsOptions,

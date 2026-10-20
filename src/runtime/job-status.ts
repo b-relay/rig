@@ -6,7 +6,7 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import { backupSummary } from "./backups";
-import { targetSelector } from "../domain/target-selector";
+import { rigCommand } from "../domain/rig-command";
 import { describeRun, findJobRecord, handledTimes } from "./jobs";
 import {
   jobTimeZone,
@@ -34,7 +34,7 @@ export function jobReports(
       ? `${target.kind} is off in rig.yaml, so its jobs are not scheduled.`
       : !schedulesJobs(target)
         ? target.desired !== "running"
-          ? `${target.name} is stopped, so its jobs are not scheduled; rig up ${targetSelector(target)} schedules them again.`
+          ? `${target.name} is stopped, so its jobs are not scheduled; ${rigCommand("up", { target })} schedules them again.`
           : `${target.name} has an unfinished deploy or transition, so its jobs are not scheduled.`
         : undefined;
   const reports = jobs.map((job): JobReport => {

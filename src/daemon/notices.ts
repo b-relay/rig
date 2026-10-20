@@ -12,28 +12,33 @@ export interface NoticeChannel {
   consequence: string;
   hint: string;
 }
+/** What a background failure to save rigd's records needs, and what to do when it is not that. */
+const STATE_WRITE_REPAIR =
+  "rigd must be able to write runtime/state.json under the Rig root: free disk space, or fix the file's owner and permissions.";
+const PERSISTING =
+  "Once the work succeeds the check clears; if it keeps failing while the Rig root is writable, report the message as a Rig issue.";
 export const DIAGNOSTIC_SINK: NoticeChannel = {
   name: "diagnostics",
   consequence: "Operation outcomes were not affected.",
-  hint: "Check that logs/rigd under the Rig root is writable, then run doctor again; the count resets when rigd restarts.",
+  hint: "Make logs/rigd under the Rig root writable again (free disk space, or fix its owner and permissions), then run rig doctor again; the count resets when rigd restarts.",
 };
 export const FAILURE_MONITOR: NoticeChannel = {
   name: "monitor",
   consequence:
     "Until supervising what the message names succeeds, a Service of it that exits is not recorded as Activity, its route not withheld and its restart policy not applied; rigd tries again every second.",
-  hint: "Inspect rigd status, the runtime state file under the Rig root, and rig doctor's proxy checks.",
+  hint: `Run rigd status, and rig activity --all for what rigd last recorded. ${STATE_WRITE_REPAIR} Supervision also withholds routes, so check rig doctor's proxy checks. ${PERSISTING}`,
 };
 export const HEALTH_MONITOR: NoticeChannel = {
   name: "health",
   consequence:
     "Ongoing health checks (healthcheck) of the Services named are not run, or their result is missing from Activity or the Target log, until they succeed; rigd tries again every second.",
-  hint: "Check that the runtime state file and the Target logs under the Rig root are writable, and read rig activity.",
+  hint: `Run rig activity --all for the results the checks last recorded. ${STATE_WRITE_REPAIR} So must the Target's logs under the Rig root. ${PERSISTING}`,
 };
 export const JOB_SCHEDULER: NoticeChannel = {
   name: "jobs",
   consequence:
     "The scheduled starts, recorded ends, timeouts or clean-ups named did not happen until they succeed; rigd tries again every second.",
-  hint: "Inspect the runtime state file under the Rig root, and rig activity.",
+  hint: `Run rig activity --all for the runs rigd last started and ended. ${STATE_WRITE_REPAIR} ${PERSISTING}`,
 };
 export const USAGE_SAMPLER: NoticeChannel = {
   name: "usage",

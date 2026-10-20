@@ -1229,6 +1229,9 @@ test("a build past its budget fails as BUILD_TIMEOUT and dependency installation
     code: "DEPENDENCIES_TIMEOUT",
     message:
       "Project dependency installation (bun install) did not finish within 7 s and was killed.",
+    hint: expect.stringContaining(
+      "Its output so far is in rig logs stable --service setup --project demo. The budget is a fixed ten minutes that rig.yaml does not change",
+    ),
     details: { command: "bun install", timeoutSeconds: 7 },
   });
   expect(requests).toEqual([7000]);

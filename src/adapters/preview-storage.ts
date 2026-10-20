@@ -16,7 +16,7 @@ export const destroyPreview: RuntimeFiles["destroyPreview"] = async (input) => {
     throw new RigError(
       "DESTROY_CLEANUP",
       "Preview storage cleanup is incomplete.",
-      "The stopped Preview remains recorded. Retry down preview --destroy to finish cleanup.",
+      "The stopped Preview remains recorded. Run rig down preview <branch> --destroy again to finish cleanup.",
       { path: base, cause },
     );
   }

@@ -8,6 +8,7 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { BackupReport } from "../daemon/protocol";
+import { rigCommand, type RecordedTarget } from "../domain/rig-command";
 import type { BackupSummaryReport } from "../domain/project-status";
 import type {
   BackupScope,
@@ -354,7 +355,7 @@ export function backupStorage(deps: BackupDependencies): BackupStorage {
  * BACKUP_UNKNOWN, naming the ones there are, or naming none when there are none. */
 export function selectBackup(
   state: Pick<RuntimeState, "backups">,
-  target: Pick<TargetRecord, "id" | "name">,
+  target: Pick<TargetRecord, "id"> & RecordedTarget,
   job: string,
   which: string,
 ): BackupRecord {
@@ -375,8 +376,8 @@ export function selectBackup(
           .map((backup) => backup.id)
           .join(
             ", ",
-          )}${backups.length > 5 ? ` (rig backup list ${job} shows all ${backups.length})` : ""}.`
-      : `A successful run of ${job} makes one: rig run ${job}.`,
+          )}${backups.length > 5 ? ` (${rigCommand("backup list", { job, target })} shows all ${backups.length})` : ""}.`
+      : `A successful run of ${job} makes one: ${rigCommand("run", { job, target })}.`,
     {
       job,
       backup: which,

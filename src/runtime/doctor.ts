@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
-import { deploySelector, targetSelector } from "../domain/target-selector";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { OrphanedTool, RuntimeDependencies } from "./contracts";
 import { join } from "node:path";
@@ -16,6 +15,7 @@ import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
 import { routeOwnerToken } from "../domain/proxy-publication";
 import { transitionInProgress } from "./project-status";
+import { rigCommand } from "../domain/rig-command";
 import {
   identityDriftHint,
   movedProject,
@@ -109,7 +109,7 @@ async function inspectRuntimeHost(
       hint:
         error instanceof RigError
           ? error.hint
-          : "Inspect the runtime state file under the Rig root.",
+          : "rigd could not read runtime/state.json under the Rig root: check that the file exists and rigd's user can read it, then run rig doctor again.",
     });
   }
   return checks;
@@ -248,7 +248,10 @@ export async function doctor(
         message:
           "The last deploy did not complete; its executables and route were not committed.",
         reason: "deployment-incomplete",
-        hint: "Run up for this Target to finish it, or redeploy the same commit.",
+        hint:
+          target.kind === "working"
+            ? `Run ${rigCommand("up", { target })} to finish it.`
+            : `Run ${rigCommand("up", { target })} to finish it, or ${rigCommand("deploy", { target }, "--force")} to deploy it again.`,
       });
     if (target.destructionPending)
       checks.push({
@@ -257,7 +260,7 @@ export async function doctor(
         message:
           "Preview destruction is incomplete; its stopped inventory is retained.",
         reason: "destruction-pending",
-        hint: "Retry down preview --destroy for this Preview to finish cleanup.",
+        hint: `Run ${rigCommand("down", { target }, "--destroy")} again to finish cleanup.`,
       });
     if (transitionInProgress(target, deps.inProgress))
       checks.push({
@@ -273,7 +276,7 @@ export async function doctor(
         message:
           "Deployment recovery is unresolved; Component ownership is uncertain.",
         reason: "deployment-recovery",
-        hint: "Run down for this Target to stop both recorded plans before retrying deployment.",
+        hint: `Run ${rigCommand("down", { target })} to stop both recorded plans before retrying deployment.`,
       });
     checks.push(
       await configCheck(
@@ -326,7 +329,7 @@ export async function doctor(
   );
   for (const report of reports)
     for (const component of report.components)
-      checks.push(componentCheck(report, component));
+      checks.push(componentCheck(report, component, project.name));
   return {
     ok: checks.every((c) => c.ok),
     checks,
@@ -338,7 +341,7 @@ export async function doctor(
  * restart and deploy refuse it, so the check names the line that turns it on and the command that stops it. One recorded
  * stopped is only kept, and passes. */
 function targetOffCheck(
-  target: Pick<TargetRecord, "kind" | "name" | "branch" | "desired">,
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "desired" | "plan">,
   config: Pick<ProjectConfig, "targets">,
 ): DoctorCheck {
   const name = `${target.name}/switch`;
@@ -354,12 +357,12 @@ function targetOffCheck(
     ok: false,
     message: `${off}, but ${target.name} is recorded running: it keeps running, and up, restart and deploy refuse it.`,
     reason: "target-off",
-    hint: `${turnOnInstruction(config, target.kind)} to keep it, or run rig down ${targetSelector(target)} to stop it.`,
+    hint: `${turnOnInstruction(config, target.kind)} to keep it, or run ${rigCommand("down", { target })} to stop it.`,
   };
 }
 /** The Stable Target serves whatever Branch it was deployed from; a Production setting changed since then is drift the operator acts on. */
 function productionBranchCheck(
-  target: Pick<TargetRecord, "kind" | "name" | "branch">,
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "plan">,
   production: string,
 ): DoctorCheck {
   const name = `${target.name}/branch`;
@@ -380,7 +383,7 @@ function productionBranchCheck(
     ok: false,
     message: `${target.name} was deployed from '${target.branch}', but Production is now '${production}'.`,
     reason: "production-branch-drift",
-    hint: `Run rig deploy ${deploySelector(target)} to deploy '${production}', or set production_branch back to '${target.branch}'.`,
+    hint: `Run ${rigCommand("deploy", { target })} to deploy '${production}', or set production_branch back to '${target.branch}'.`,
   };
 }
 /** One read of a config document, kept apart by why it cannot serve a comparison. */
@@ -409,8 +412,8 @@ async function acquireDocument(
     };
   }
 }
-const UNREADABLE_HINT =
-  "Inspect the Project directory and file permissions, then run doctor again.";
+const unreadableHint = (project: string) =>
+  `Inspect the Project directory and file permissions, then run ${rigCommand("doctor", { project })} again.`;
 function projectConfigCheck(
   project: Pick<ProjectRecord, "name" | "repoPath">,
   repository: AcquiredDocument,
@@ -454,7 +457,7 @@ function projectConfigCheck(
         ok: false,
         message: `Project config could not be read. ${repository.failure.message}`,
         reason: "config-unreadable",
-        hint: UNREADABLE_HINT,
+        hint: unreadableHint(project.name),
       };
   }
 }
@@ -481,8 +484,8 @@ async function configCheck(
       message,
       "config-drift",
       target.kind === "working"
-        ? "Run rig restart working (or rig down working, then rig up working) to apply the current configuration."
-        : `Run rig deploy ${deploySelector(target)} --force to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
+        ? `Run ${rigCommand("restart", { target })} to apply the current configuration.`
+        : `Run ${rigCommand("deploy", { target }, "--force")} to re-record the plan from the deployed revision; a same-Commit deploy without --force leaves the Target unchanged.`,
     );
   const invalid = (failure: ConfigError) =>
     failing(
@@ -496,8 +499,8 @@ async function configCheck(
         `${label} could not be read. ${source.failure.message}`,
         "config-unreadable",
         target.kind === "working"
-          ? UNREADABLE_HINT
-          : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run rig deploy ${deploySelector(target)} --force to prepare it again.`,
+          ? unreadableHint(project.name)
+          : `Inspect the Target's checkout at ${target.plan.workspacePath}, or run ${rigCommand("deploy", { target }, "--force")} to prepare it again.`,
       );
     case "invalid":
       // A deployed revision is never edited in place: one committed before the Compose names stays as it was, and only
@@ -506,7 +509,7 @@ async function configCheck(
         ? failing(
             `${label} predates the Compose key names of ADR 0011 and 0012 (run is now command, env is now environment, ready is now healthcheck.test, ready_timeout is now healthcheck.start_period), so its policy was not compared. The Target still runs its recorded plan.`,
             "config-predates-rename",
-            `Commit rig.yaml with the new names, then run rig deploy ${deploySelector(target)}; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.`,
+            `Commit rig.yaml with the new names, then run ${rigCommand("deploy", { target })}; deploying a Commit that uses them clears this check. Deploying or rolling back to a Commit whose rig.yaml uses the old names is refused until it is updated.`,
           )
         : invalid(source.failure);
     case "foreign":
@@ -561,6 +564,7 @@ const HEALTHY_STATES = new Set([
 export function componentCheck(
   target: Pick<TargetRecord, "kind" | "name" | "branch">,
   component: ComponentReport,
+  project: string,
 ): DoctorCheck {
   const name = `${target.name}/${component.name}`;
   if (HEALTHY_STATES.has(component.state))
@@ -575,19 +579,26 @@ export function componentCheck(
     ok: false,
     message: `Component is ${component.state}.${reason ? ` ${reason}` : ""}`,
     reason: component.state,
-    hint: componentHint(targetSelector(target), component),
+    hint: componentHint({ project, target }, component),
   };
 }
-function componentHint(selector: string, component: ComponentReport): string {
+function componentHint(
+  selection: {
+    project: string;
+    target: Pick<TargetRecord, "kind" | "name" | "branch">;
+  },
+  component: ComponentReport,
+): string {
+  const logs = rigCommand("logs", { ...selection, service: component.name });
   if (component.reason === OBSERVATION_EXPIRED)
-    return "Run doctor again; the observation did not finish within the status budget.";
+    return `Run ${rigCommand("doctor", { project: selection.project })} again; the observation did not finish within the status budget.`;
   if (component.state === "unknown")
-    return "Inspect daemon state (rig activity, rigd status) before acting on this component.";
+    return `Inspect daemon state (${rigCommand("activity", { project: selection.project })}, rigd status) before acting on this component.`;
   if (component.state === "failed" || component.exitCode !== undefined)
-    return `Inspect the Target logs (rig logs ${selector}) for why it exited.`;
+    return `Inspect the Target logs (${logs}) for why it exited.`;
   if (component.state === "unhealthy")
-    return `Its health check failed; inspect the Target logs (rig logs ${selector}) and the Service's healthcheck in rig.yaml.`;
+    return `Its health check failed; inspect the Target logs (${logs}) and the Service's healthcheck in rig.yaml.`;
   if (component.state === "missing")
-    return `The installed artifact or storage is absent; run rig up ${selector} or redeploy this Target.`;
-  return "Inspect Target logs and provider configuration.";
+    return `The installed artifact or storage is absent; run ${rigCommand("up", selection)} or redeploy this Target.`;
+  return `Inspect the Target logs (${logs}) and provider configuration.`;
 }

@@ -5,7 +5,7 @@ import { diagnosticErrorCode } from "../domain/errors";
 import { boundedOutput, healthRestartDueAt } from "../domain/health-policy";
 import type { OperationPhase } from "../domain/operation-progress";
 import type { TargetRecord } from "../domain/runtime";
-import { targetSelector } from "../domain/target-selector";
+import { rigCommand } from "../domain/rig-command";
 import type { RuntimeDependencies } from "./contracts";
 import {
   checkIdentity,
@@ -117,7 +117,7 @@ export async function restartForHealth(
         }),
       )
       .catch(() => {});
-  const next = `Rig checks it while it runs, and starts it again in ${Math.round((healthRestartDueAt(stretch) - at) / 60_000)} min while it does not (health restart ${request.attempt + 1}), whatever its restart policy. Run rig restart ${targetSelector(target)} to start it now, or rig down ${targetSelector(target)} to stop trying.`;
+  const next = `Rig checks it while it runs, and starts it again in ${Math.round((healthRestartDueAt(stretch) - at) / 60_000)} min while it does not (health restart ${request.attempt + 1}), whatever its restart policy. Run ${rigCommand("restart", { target })} to start it now, or ${rigCommand("down", { target })} to stop trying.`;
   if (!request.start) {
     phase("stopping");
     try {

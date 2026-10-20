@@ -30,7 +30,7 @@ import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
 import { awaitRestore } from "./restore-wait";
 import { serviceStopSchema, type ServiceStop } from "../daemon/protocol";
-import { PREVIEW_SELECTOR } from "../config/schema";
+import { rigCommand, selectedTarget } from "../domain/rig-command";
 import { z } from "zod";
 import {
   isHelp,
@@ -135,16 +135,18 @@ function leftStopping(
       ? `${services.slice(0, -1).join(", ")} and ${services.at(-1)}`
       : services[0]!;
   const killAt = Math.min(...stopping.map((stop) => Date.parse(stop.killAt)));
-  const target = stopping[0]!.target;
-  const selector =
-    request.target === PREVIEW_SELECTOR
-      ? `preview --deployment ${target}`
-      : target;
-  const project = request.project ? ` --project ${request.project}` : "";
+  const down = rigCommand(
+    "down",
+    {
+      project: request.project,
+      target: selectedTarget(request, stopping[0]!.target),
+    },
+    "--kill",
+  );
   return new RigError(
     "DETACHED",
     `Left ${names} stopping in the background (killing at ${formatClock(new Date(killAt), false)}).`,
-    `Run rig down ${selector}${project} --kill to stop it now.`,
+    `Run ${terminalText(down)} to stop it now.`,
     { operationId, oneLine: true },
   );
 }
@@ -368,11 +370,16 @@ async function restoreOutcome(
   dependencies: CliDependencies,
 ): Promise<unknown> {
   if (!json(started)) return started;
-  const logs = `rig logs ${
-    request.target === PREVIEW_SELECTOR
-      ? `preview --deployment ${terminalText(String(started.target))}`
-      : terminalText(String(started.target ?? request.target))
-  } --service ${request.job}`;
+  const logs = terminalText(
+    rigCommand("logs", {
+      project: request.project,
+      target: selectedTarget(
+        request,
+        String(started.target ?? request.target ?? "stable"),
+      ),
+      ...(request.job !== undefined ? { service: request.job } : {}),
+    }),
+  );
   if (!dependencies.signal?.aborted)
     dependencies.output.error(
       `Restoring ${request.job} from ${terminalText(String(started.backup ?? request.backup))}; its output is in ${logs}.\n`,

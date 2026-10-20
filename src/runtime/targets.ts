@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { generatedPreviewName } from "../domain/target-selector";
+import { generatedPreviewName, shellWord } from "../domain/target-selector";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type {
   ProjectRecord,
@@ -274,7 +274,7 @@ async function committedConfig(
     throw new RigError(
       "PROJECT_IDENTITY",
       `The deployed revision's rig config names Project '${revision.config.name}', not '${project.name}'.`,
-      "Deploy a Commit whose rig config keeps this Project's name, or run rig rename.",
+      `Deploy a Commit whose rig config keeps this Project's name, or adopt the new one: rig rename ${shellWord(revision.config.name)} --project ${shellWord(project.name)}.`,
       { revisionPath: revision.path },
     );
   return revision.config;

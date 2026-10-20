@@ -203,7 +203,7 @@ test("rig logs --json prints one entry per line, a shortened one with the charac
     f.out.stdout.split("\n").map((line) => line && JSON.parse(line)),
   ).toEqual([entry("short"), { ...entry("x".repeat(2000)), omitted: 500 }, ""]);
   expect(f.out.stderr).toBe(
-    "showing the latest 2 entries; older ones match too, --lines or --since to see them\n",
+    "showing the latest 2 entries; older ones match too; a larger --lines, or --until an earlier time, reaches them\n",
   );
   f.out.stdout = "";
   expect(await f.run(["logs", "--json", "--full"])).toBe(0);
@@ -273,7 +273,7 @@ test("rig logs --json --follow keeps printing one entry per line, shortened unle
       full ? entry(long) : { ...entry("x".repeat(2000)), omitted: 500 },
     ]);
     expect(f.out.stderr).toBe(
-      "showing the latest 1 entry; older ones match too, --lines or --since to see them\n",
+      "showing the latest 1 entry; older ones match too; a larger --lines, or --until an earlier time, reaches them\n",
     );
   }
 });

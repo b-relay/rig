@@ -416,8 +416,10 @@ Every hostname has exactly one owner, a Target or one `proxy.routes` entry.
 Any publication that would give one two owners (a deploy, a rollback, a
 recovery stop, a reload, rigd's start) is refused with `ROUTE_CONFLICT`,
 naming both, before anything is written or stopped. To clear one, remove an
-owner: `rig down` or `rig destroy` the Target that should not serve it, or take
-it out of `proxy.routes` and run `rig proxy reload`.
+owner: stop the Target that should not serve it with `rig down` (the hint
+names it, `--project` included; `rig down preview <branch> --destroy` also
+deletes a Preview), or take it out of `proxy.routes` and run
+`rig proxy reload`.
 
 A route whose Target no longer exists (one a `rig forget` from before this was
 fixed left behind, or one whose Target record was lost) owns nothing Rig can
@@ -914,7 +916,7 @@ new Preview destroys as many Previews as needed to fit under the cap once the
 new one is committed, choosing Previews whose deploy never completed first,
 then stopped Previews, then running ones, oldest first within each group. Each
 removal follows the same verified-shutdown, retire, then delete sequence as
-`rig down preview --destroy`, so a replaced Preview's data root and source
+`rig down preview <branch> --destroy`, so a replaced Preview's data root and source
 history do not linger on disk. Every removal is announced before the deploy's
 own outcome line (`share feature-b-9876fedc retired feature/b (Preview
 limit)`) and is
@@ -2569,7 +2571,16 @@ tab has **Back up now**.
 **Listing them.** `rig backup list [job] [target]` shows every Target's
 backups, one job's (`rig backup list db-backup`), one job's in one Target
 (`rig backup list db-backup stable`), or one Target's (`rig backup list
-stable`), by Target and job, each job's newest first:
+stable`), by Target and job, each job's newest first. A job named like a
+Target is given with its Target. One form reads differently from other
+commands: with no job before it, `rig backup list preview stable` (or
+`preview working`) lists the job `preview` in that Target, and
+`rig backup list preview preview --deployment <name>` lists it in that
+Preview. With a job first, `preview` is followed by a Branch as everywhere
+else (`rig backup list nightly-db preview stable` is the Preview of the Branch
+`stable`). To list a whole Preview of a Branch named `stable` or `working`,
+select it by its name: `rig backup list preview --deployment <name>`; `rig
+status` shows each Preview's name, such as `stable-f379ccb9`.
 
 ```
 stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a
@@ -2783,7 +2794,7 @@ name>` for a Preview. Two Projects that both install `cli` on
    An executable Rig did not install is never overwritten
    (`ARTIFACT_UNOWNED`), and one that was edited by hand after installation
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
-   `rig down preview --destroy` too): both name the file, and moving or
+   `rig down preview <branch> --destroy` too): both name the file, and moving or
    deleting it is the way through.
 2. Each Service in dependency order: the process start, then its start check.
    That is its healthcheck passing within `start_period`; without a

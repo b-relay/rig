@@ -464,6 +464,10 @@ test("a restore is refused while a backup runs, for a job without restore, for a
   await expect(f.restore("latest")).rejects.toMatchObject({
     code: "JOB_RUNNING",
     message: expect.stringContaining("db-backup is still running"),
+    // The run's own Target and Project: a bare rig down would mean the working Target of this directory's Project.
+    hint: expect.stringContaining(
+      "rig status --project melody shows it), or stop it with rig down working --project melody,",
+    ),
   });
   await f.finish(0);
   await expect(f.restore("20200101T000000Z-99")).rejects.toMatchObject({
@@ -1158,7 +1162,12 @@ test("backups are ordered by sequence, and those an older Rig recorded by their 
   const fresh = backup("20261014T030000Z-4", "2026-10-14T03:00:00.000Z", 4);
   const fresher = backup("20261013T120000Z-5", "2026-10-13T12:00:00.000Z", 5);
   const state = { backups: [legacySuffixed, legacyPlain] };
-  const target = { id: "t1", name: "working" };
+  const target = {
+    id: "t1",
+    kind: "working" as const,
+    name: "working",
+    plan: { project: "demo" },
+  };
   expect(selectBackup(state, target, "dump", "latest")).toBe(legacyPlain);
   state.backups.push(legacySkewed);
   expect(selectBackup(state, target, "dump", "latest")).toBe(legacySkewed);

@@ -1,10 +1,9 @@
 import { waitForLogPoll } from "./adapters/log-follow-scheduler";
 import { createTerminalInteraction } from "./adapters/terminal-interaction";
 import { randomUUID } from "node:crypto";
-import { runRigCli } from "./cli/rig";
+import { reportStartupFailure, runRigCli } from "./cli/rig";
 import {
   interruptLadder,
-  reportRootFailure,
   rigRoot,
   userOutput,
   verifyRigRoot,
@@ -25,20 +24,34 @@ import { readHostConfig } from "./config";
 import { RigError } from "./domain/errors";
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
-  // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked.
-  const output = userOutput(interrupts.interrupt);
+  // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked. A second
+  // Ctrl-C also gives up on a reader that stopped taking the output.
+  const output = userOutput({
+    onClosed: interrupts.interrupt,
+    abandon: interrupts.detach,
+  });
+  // rig exits once its reader took everything it printed. Output given up on makes the exit an interrupted one; output
+  // that could not be written is a failure, said on stderr so nothing is added to what stdout already holds.
+  const finished = async (code: number) => {
+    const end = await output.flushed();
+    if (end.failed) {
+      await output.error(`${end.failed.message}\n${end.failed.hint}\n`);
+      return 1;
+    }
+    return end.abandoned ? 130 : code;
+  };
+  const cwd = process.cwd();
   let root: string;
   try {
     root = rigRoot();
     await verifyRigRoot(root);
   } catch (error) {
-    return reportRootFailure(error, output);
+    return finished(await reportStartupFailure(args, cwd, output, error));
   }
-  const cwd = process.cwd();
   process.on("SIGINT", interrupts.interrupt);
   process.on("SIGTERM", interrupts.interrupt);
   try {
-    return await runRigCli(args, {
+    const code = await runRigCli(args, {
       root,
       cwd,
       output,
@@ -104,6 +117,7 @@ export async function main(args: readonly string[]): Promise<number> {
         },
       },
     });
+    return await finished(code);
   } finally {
     process.removeListener("SIGINT", interrupts.interrupt);
     process.removeListener("SIGTERM", interrupts.interrupt);
@@ -117,8 +131,8 @@ export function createCliClient(
   connection: DaemonClientOptions = {},
 ): CliDependencies["client"] {
   return {
-    async status(selection) {
-      return (await connectDaemon(root, connection)).status(selection);
+    async status(selection, signal) {
+      return (await connectDaemon(root, connection)).status(selection, signal);
     },
     async command(request, signal) {
       try {

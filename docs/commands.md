@@ -167,7 +167,17 @@ status` takes no Target.
   `activity` and `logs` print JSON Lines, one record per line, for a file a
   program reads record by record. An action (`deploy`, `up`, `down`,
   `restart`, `run`, `backup restore` and the rest) answers with its exit code
-  and a line saying what it did.
+  and a line saying what it did. [Output for programs](#output-for-programs)
+  is the contract a program reading them can rely on.
+- `down`, `status`, `logs` and `activity` run where `rig.yaml` cannot be read
+  (an unknown field, broken YAML, or the file removed) still reach the Project
+  registered there, as `--project` does: `down` stops the recorded Target and
+  warns that it was stopped as recorded, with the config's problem. The
+  Project reached is the nearest one registered around the directory, never
+  one above it or outside its repository: in a Project registered inside
+  another whose `rig.yaml` is gone, it is the inner one, and an unregistered
+  inner `rig.yaml` that fails is refused rather than answered for by the outer
+  one. `up`, `restart`, `deploy` and the rest still fail on the config.
 - `activity` and `logs` print a bounded number of records (20 and 50 by
   default) and say on stderr when they left matching ones out, such as
   `showing 20 of 340 records; --lines or --until to see more`, so stdout redirected to a
@@ -246,3 +256,50 @@ status` takes no Target.
   `rigd install` recorded, so its relative imports resolve.
 - `RIG_ROOT` is the only environment switch: an absolute path, `~/.rig` by
   default. There are no `--state-root` or `--config` overrides.
+
+## Output For Programs
+
+What a read prints with `--json` is meant to be parsed. A program can rely on
+this:
+
+- Stdout holds only the report: one JSON document, or for `activity` and
+  `logs` one JSON object per line. What a read left out
+  (`showing 20 of 340 records`) and progress go to stderr.
+- An empty result is a report: `{"projects":[]}`, or no lines at all from
+  `activity` and `logs`. It exits 0.
+- A failed read prints one `{"error":{"code","message","hint"}}` document on
+  stdout instead, and exits non-zero; for JSON Lines it comes after the last
+  whole record, and is the last line. This holds for every failure, including
+  one before the command could run, such as a `RIG_ROOT` that is not a
+  directory or cannot be written. `operationId` and `diagnosticPath` appear
+  only for an internal fault. Text mode prints the message and hint on stderr.
+- rig checks each reply from rigd against the report it expects, so a reply
+  from a mismatched or faulty rigd fails as `DAEMON_PROTOCOL` with exit 1,
+  never as a partial, empty or `null` report.
+- Exit 0: the report is complete. Exit 1: the read failed (`doctor` also exits
+  1 when a check failed, with its whole report on stdout). Exit 130: it was
+  interrupted. Ctrl-C or SIGTERM before rigd answered prints a `CANCELLED`
+  error saying nothing was printed; a second Ctrl-C while `rig` still waits
+  for a reader to take its output gives up on the rest, which may cut the
+  last line, so a program must treat any exit but 0 (and 1 from `doctor`) as
+  an incomplete report.
+- A slow reader gets every byte: `rig` waits while the pipe is full rather than
+  failing or cutting a record, and exits only once its reader took everything.
+  A reader that goes away (`| head`) ends the command with its usual exit; a
+  `logs --follow` notices it at its next poll. A write that fails for any other
+  reason (a full disk, a file size limit, a stdout not open for writing) ends
+  it with exit 1 and a message on stderr saying its output is incomplete (with
+  the error, such as `EFBIG`), and nothing is added to what stdout already
+  holds.
+- `logs --follow` has no end of its own. Ctrl-C, SIGTERM or the reader going
+  away end it with exit 0, always after a whole record; rigd failing ends it
+  with an error line and exit 1.
+
+Compatibility: the fields each read prints are the contract. Fields are added,
+never renamed, retyped or removed within a major version, so a program must
+ignore fields it does not know and treat an optional field as possibly
+absent. Open vocabularies (an Activity
+`action` or `outcome`, Caddy's `state`, a DNS `verdict`) can gain words. Times
+are ISO 8601 in UTC (`Z`) except `monitor`, whose times are Unix seconds;
+`durationMs` is milliseconds and memory is bytes. Use `rig` and `rigd` of the
+same version; the output carries no schema version of its own.

@@ -74,7 +74,7 @@ async function run(args: string[], local?: Partial<LocalCommands>) {
   const written: string[] = [];
   const command = createRigCommand(
     "/work",
-    { write: (text) => written.push(text), error: () => {} },
+    { write: (text) => void written.push(text), error: () => {} },
     async (request) => {
       requests.push(request);
     },

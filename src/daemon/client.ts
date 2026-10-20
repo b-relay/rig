@@ -81,17 +81,14 @@ const abandoned = () =>
   cancelled(
     "rigd keeps running whatever it was asked; run rig activity to see it.",
   );
-/** A list, logs, activity or backups reply must carry its collection, and a logs reply must name the Project asked for; other actions pass through as received. */
+/** Every read rig prints must match its report schema, and a logs reply must name the Project asked for; a reply that
+ * does not is DAEMON_PROTOCOL, never a report. Mutations' replies pass through as received. */
 function validated(command: RuntimeCommand, result: unknown): unknown {
-  if (
-    command.action !== "list" &&
-    command.action !== "logs" &&
-    command.action !== "activity" &&
-    command.action !== "backups" &&
-    command.action !== "monitor"
-  )
-    return result;
-  const report = readResultSchemas[command.action].safeParse(result);
+  if (!Object.hasOwn(readResultSchemas, command.action)) return result;
+  const report =
+    readResultSchemas[
+      command.action as keyof typeof readResultSchemas
+    ].safeParse(result);
   if (!report.success) throw protocolFailure();
   if (
     command.action === "logs" &&

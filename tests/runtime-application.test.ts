@@ -91,6 +91,7 @@ function fixture() {
           repoPath: path,
           document: await this.read(path),
           gitRequired: false,
+          searched: { repository: path, from: path },
         };
       },
       async read(path) {
@@ -877,6 +878,79 @@ test("a Project whose registered directory no longer exists is named with its pa
     reason: "directory-missing",
     hint,
   });
+});
+
+test("down and the reads of recorded state reach the Project registered where rig.yaml cannot be read, never one above that rig.yaml or outside the repository, while up and restart still refuse", async () => {
+  const { runtime, deps, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  // As the discovery adapter reports them: the file that failed, and where the search ran.
+  const invalid = (path: string, from = "/tmp/developer/src") =>
+    new ConfigError(
+      "Invalid Project configuration.",
+      "invalid_config",
+      { path, searched: { repository: "/tmp/developer", from } },
+      `In ${path}: Fix config: has no field named "unknown".`,
+    );
+  const missing = (repository: string, from: string) =>
+    new ConfigError(
+      "No Project config found in this directory or its parents within the repository.",
+      "missing_config",
+      { startPath: from, searched: { repository, from } },
+    );
+  let failure = invalid("/tmp/developer/rig.yaml");
+  deps.documents.discover = async () => {
+    throw failure;
+  };
+  deps.documents.read = async () => {
+    throw failure;
+  };
+  const working = () => state.targets.find((t) => t.kind === "working")!;
+  // Starting or restarting plans from rig.yaml, so they still fail on it and stop nothing.
+  for (const action of ["up", "restart"] as const)
+    await expect(
+      runtime.command({ action, repoPath: "/tmp/developer/src" }),
+    ).rejects.toMatchObject({ message: "Invalid Project configuration." });
+  expect(working().desired).toBe("running");
+  // An invalid rig.yaml of an unregistered Project nested in the registered one is that Project's, not its parent's.
+  failure = invalid("/tmp/developer/tools/rig.yaml", "/tmp/developer/tools");
+  await expect(
+    runtime.command({ action: "down", repoPath: "/tmp/developer/tools" }),
+  ).rejects.toBe(failure);
+  // No rig.yaml left in a separate repository nested in the registered directory finds nothing above that repository.
+  failure = missing("/tmp/developer/vendor", "/tmp/developer/vendor/lib");
+  await expect(
+    runtime.command({ action: "down", repoPath: "/tmp/developer/vendor/lib" }),
+  ).rejects.toBe(failure);
+  expect(working().desired).toBe("running");
+  failure = invalid("/tmp/developer/rig.yaml");
+  expect(
+    (await runtime.status({ repoPath: "/tmp/developer/src" })).warnings,
+  ).toContain(
+    `Invalid Project configuration. In /tmp/developer/rig.yaml: Fix config: has no field named "unknown".`,
+  );
+  await expect(
+    runtime.command({ action: "logs", repoPath: "/tmp/developer/src" }),
+  ).resolves.toMatchObject({ project: "demo", target: "working" });
+  const stopped = await runtime.command({
+    action: "down",
+    repoPath: "/tmp/developer/src",
+  });
+  expect(stopped).toMatchObject({
+    project: "demo",
+    target: "working",
+    outcome: "stopped",
+    warnings: [
+      `rig.yaml could not be used, so working was stopped as it was recorded. Invalid Project configuration. In /tmp/developer/rig.yaml: Fix config: has no field named "unknown".`,
+    ],
+  });
+  expect(working().desired).toBe("stopped");
+  // With rig.yaml removed, the deepest Project registered between the repository root and the directory is the one.
+  working().desired = "running";
+  failure = missing("/tmp/developer", "/tmp/developer/src");
+  await expect(
+    runtime.command({ action: "down", repoPath: "/tmp/developer/src" }),
+  ).resolves.toMatchObject({ project: "demo", outcome: "stopped" });
 });
 
 test.each(["--project", "cwd"])(

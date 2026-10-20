@@ -231,10 +231,12 @@ export const readActions: ReadonlySet<RuntimeCommand["action"]> = new Set([
   "dns",
   "monitor",
 ] as const);
-/** Replies to the reads whose collections rig renders. A missing or malformed
+/** Replies to the reads rig prints. A missing or malformed report or
  * collection is a protocol failure, never an empty page; unknown top-level keys
- * are kept so a newer rigd can add evidence without breaking an older rig,
- * while each collection item is reduced to the fields rig shows. */
+ * are kept so a newer rigd can add evidence without breaking an older rig.
+ * List, logs and activity items are reduced to the fields rig shows; the
+ * doctor, config, proxy and DNS reports keep every field, since --json prints
+ * them whole. */
 export const listResultSchema = z
   .object({
     projects: z.array(
@@ -431,6 +433,185 @@ export const backupsResultSchema = z
       ),
   })
   .passthrough();
+/** A `doctor` reply. `rig doctor` exits 1 unless `ok` is true. */
+export const doctorResultSchema = z
+  .object({
+    ok: z.boolean().describe("Every check passed."),
+    checks: z
+      .array(
+        z
+          .object({
+            name: z.string().describe("What was checked, such as rigd."),
+            ok: z.boolean(),
+            message: z.string().describe("What the check found."),
+            reason: z
+              .string()
+              .optional()
+              .describe("A stable word for why it failed."),
+            hint: z.string().optional().describe("What to do about a failure."),
+          })
+          .passthrough(),
+      )
+      .readonly(),
+    project: z
+      .string()
+      .optional()
+      .describe(
+        "The Project whose checks are included; absent when only the Host was checked.",
+      ),
+    note: z.string().optional().describe("Why Project checks are absent."),
+  })
+  .passthrough();
+/** A `config` reply: the Project's validated rig.yaml and where it is. */
+export const configResultSchema = z
+  .object({
+    project: z.string().describe("The Project's registered name."),
+    path: z.string().describe("The rig.yaml read."),
+    revision: z
+      .string()
+      .describe(
+        "A digest of its text, which an edit names to be applied only to that text.",
+      ),
+    config: z.record(z.string(), z.unknown()).describe("The validated config."),
+  })
+  .passthrough();
+const proxyUpstream = z
+  .string()
+  .nullable()
+  .describe(
+    "The loopback address a path reaches; null while it is withheld and answers 503.",
+  );
+/** A `proxy` reply: Rig's Caddy and every hostname it serves. */
+export const proxyResultSchema = z
+  .object({
+    caddy: z
+      .object({
+        state: z
+          .string()
+          .describe(
+            "running, unreachable (runs, or may, but does not answer) or stopped.",
+          ),
+        binary: z.string().optional(),
+        ports: z
+          .object({ http: z.number().int(), https: z.number().int() })
+          .passthrough(),
+        ca: z.string().describe("Where its certificates come from."),
+        generation: z
+          .string()
+          .optional()
+          .describe("The served generation; absent before the first."),
+      })
+      .passthrough(),
+    sites: z
+      .array(
+        z.discriminatedUnion("source", [
+          z
+            .object({
+              hostname: z.string(),
+              source: z.literal("target"),
+              project: z.string(),
+              target: z.string(),
+              routes: z
+                .array(
+                  z
+                    .object({ prefix: z.string(), upstream: proxyUpstream })
+                    .passthrough(),
+                )
+                .readonly(),
+              certificate: z.string().optional(),
+            })
+            .passthrough(),
+          z
+            .object({
+              hostname: z.string(),
+              source: z.literal("custom"),
+              upstream: proxyUpstream,
+              certificate: z.string().optional(),
+            })
+            .passthrough(),
+        ]),
+      )
+      .readonly(),
+    pending: z
+      .object({
+        fields: z.array(z.string()).readonly(),
+        reason: z.string(),
+        code: z.string().optional(),
+      })
+      .passthrough()
+      .optional()
+      .describe("Host config proxy settings Caddy does not serve, and why."),
+  })
+  .passthrough();
+/** A `dns` reply (ADR 0018): the zones Rig manages, their records, and where each served hostname points. */
+export const dnsResultSchema = z
+  .object({
+    provider: z.string(),
+    address: z
+      .string()
+      .optional()
+      .describe("This Mac's IPv4 address, when Rig knows it."),
+    addressSource: z.enum(["config", "tailscale"]).optional(),
+    zones: z
+      .array(
+        z
+          .object({ id: z.string(), name: z.string(), status: z.string() })
+          .passthrough(),
+      )
+      .readonly(),
+    unseenZones: z.array(z.string()).readonly().optional(),
+    unreadableZones: z
+      .array(
+        z
+          .object({ zone: z.string(), code: z.string(), message: z.string() })
+          .passthrough(),
+      )
+      .readonly()
+      .optional(),
+    records: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            zone: z.string(),
+            name: z.string(),
+            type: z.string(),
+            content: z.string(),
+            ttl: z.number(),
+            proxied: z.boolean().optional(),
+            priority: z.number().optional(),
+            comment: z.string().optional(),
+            modifiedOn: z.string(),
+          })
+          .passthrough(),
+      )
+      .readonly(),
+    hostnames: z
+      .array(
+        z
+          .object({
+            hostname: z.string(),
+            zone: z.string().optional(),
+            verdict: z.string().describe("mac, elsewhere, missing or unknown."),
+            wildcard: z.boolean(),
+            chain: z.array(z.string()).readonly(),
+            reason: z.string(),
+            fix: z
+              .object({
+                op: z.string(),
+                record: z
+                  .object({ name: z.string(), content: z.string() })
+                  .passthrough(),
+              })
+              .passthrough()
+              .optional(),
+            fixBlocked: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .readonly(),
+  })
+  .passthrough();
 export type BackupReport = z.infer<typeof backupReportSchema>;
 export type BackupsResult = z.infer<typeof backupsResultSchema>;
 export type ListResult = z.infer<typeof listResultSchema>;
@@ -442,6 +623,10 @@ export const readResultSchemas = {
   activity: activityResultSchema,
   backups: backupsResultSchema,
   monitor: monitorResultSchema,
+  doctor: doctorResultSchema,
+  config: configResultSchema,
+  proxy: proxyResultSchema,
+  dns: dnsResultSchema,
 } as const;
 export interface DaemonAddress {
   port: number;

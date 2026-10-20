@@ -1201,7 +1201,10 @@ entries per poll so a busy Target is not throttled to the page size. A follow
 ends on Ctrl-C, SIGTERM, or when whatever reads its output goes away (for
 example `rig logs stable --follow | head`): the write that fails is dropped, the
 command exits 0, and rigd sees no further polls. A quiet follow notices the
-missing reader at its next line, not before.
+missing reader at its next poll, a quarter of a second later, even with no new
+line to write. A follow never runs ahead of a slow reader: it polls again only
+once the reader took the page before, so nothing piles up in `rig` and no line
+is cut.
 
 Every value `rig` prints on one terminal line (Project, Target, Branch and
 Component names, warnings, log lines, prompt labels) is shown as terminal-safe
@@ -1338,11 +1341,13 @@ rig doctor --project pantry
 outside a Project unless `--project <name>` is provided.
 
 `rig list` is Host-scoped and daemon-backed. It fails if `rigd` is unreachable.
-Like `rig logs` and `rig activity`, it validates the reply before rendering:
-a reply whose collection is missing or holds a malformed record fails as
-`DAEMON_PROTOCOL` ("rigd returned an invalid response") with a nonzero exit,
-so a version mismatch can never look like "No Projects registered", "No logs
-yet", or "No activity yet"; only a validated empty collection prints those.
+Like every read (`status`, `doctor`, `config`, `logs`, `activity`, `monitor`,
+`proxy`, `dns list`, `backup list`), it validates the reply before rendering:
+a reply that is not the report, or whose collection is missing or holds a
+malformed record, fails as `DAEMON_PROTOCOL` ("rigd returned an invalid
+response") with a nonzero exit, so a version mismatch can never look like "No
+Projects registered", "No logs yet", "The DNS token sees no zone", or a `null`
+report; only a validated empty collection prints those.
 
 `rig doctor` always runs Host diagnostics. When a Project context is available,
 it also runs Project diagnostics and the clean report names the Project ("Host
@@ -1504,7 +1509,12 @@ then it does its own stop. There is no `--force` alias.
 
 Ctrl-C (or SIGTERM) before a lifecycle or deploy command is submitted cancels
 it: `rig` exits 0 and no runtime change was requested. Ctrl-C during a read
-such as `rig list` or a `rig logs --follow` poll abandons the read and exits 0. Once a mutation is submitted the first Ctrl-C is acknowledged but not
+such as `rig list` abandons the read before rigd answered: `rig` prints none of
+the report, says `The read was interrupted before rigd answered; nothing was
+printed.` (under `--json`, as an `error` document with code `CANCELLED` on
+stdout), and exits 130, so an interrupted read is never taken for an empty
+one. Ctrl-C during a `rig logs --follow` ends the follow with exit 0, as a
+follow has no end of its own. Once a mutation is submitted the first Ctrl-C is acknowledged but not
 honoured, because `rigd` finishes the mutation either way: `rig` prints
 `rigd is still running up (operation <id>); it finishes in the background.
 Press Ctrl-C again to detach.` on stderr and keeps waiting, and a mutation

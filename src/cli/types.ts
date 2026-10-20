@@ -5,10 +5,12 @@ import type { DiagnosticLog } from "../diagnostics/types";
 import type { CertificateVerdict } from "../domain/certificate-check";
 import type { TerminalSize } from "./live-region";
 
-/** The only terminal effect; tests capture the same text a terminal receives. */
+/** The only terminal effect; tests capture the same text a terminal receives. Text is taken in order; a write may return
+ * a promise that resolves once its reader took the text, which a command that keeps writing awaits so it never runs
+ * ahead of a slow reader. */
 export interface UserOutput {
-  write(text: string): void;
-  error(text: string): void;
+  write(text: string): void | Promise<void>;
+  error(text: string): void | Promise<void>;
 }
 /** Commands `rig` carries out itself, without rigd, because what they handle must not cross the control plane. */
 export interface LocalCommands {

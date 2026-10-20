@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { createConnection } from "node:net";
 import {
   mkdir,
   mkdtemp,
@@ -517,3 +518,129 @@ test("real Caddy never takes a configuration from a rigd killed while it publish
   await Bun.sleep(1500);
   expect(await get("rig.example.test", https)).toMatchObject({ status: 503 });
 }, 60_000);
+
+test("real Caddy never applies a configuration a crashed rigd sent after the next rigd has confirmed what it serves: the next rigd restarts Caddy first", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const https = freePort();
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("another program"),
+  });
+  cleanups.push(async () => other.stop(true));
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  const withheld = { domain: "rig.example.test", port: null };
+  const managed = (
+    route: { domain: string; port: number | null },
+    caddyAdmin = admin,
+  ) =>
+    createManagedCaddy({
+      root,
+      settings: async () => settings,
+      dashboard: { current: () => route, confirmed: async () => route },
+      run: runCommand,
+      job: createProcessCaddyJob({
+        root,
+        paths,
+        userHome: home,
+        admin: caddyAdmin,
+      }),
+      admin: caddyAdmin,
+    });
+  await managed(withheld).republish();
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("rig.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  // What a rigd routing the dashboard's domain to its port would have Caddy load: captured, not sent.
+  let stale: unknown;
+  await managed(
+    { domain: "rig.example.test", port: other.port! },
+    {
+      ...admin,
+      load: async (config) => {
+        stale ??= config;
+        return "captured";
+      },
+    },
+  )
+    .refreshDashboard()
+    .catch(() => {});
+  expect(stale).toBeDefined();
+  for (let attempt = 0; attempt < 10; attempt++) {
+    expect((await get("rig.example.test", https)).status).toBe(503);
+    // A rigd sent that load in full and was killed: Caddy holds the request but has not applied it yet.
+    const caddyPid = (await job.pid!())!;
+    // The next rigd's admin connection is open already, as a rigd that has just started reads Caddy's configuration.
+    await admin.config();
+    // As the next rigd makes its first request to Caddy, Caddy holds, in full, a load the crashed rigd sent but has not
+    // applied it yet: it goes on once that request is on its way too.
+    let held = true;
+    const resumed = async <T>(request: () => Promise<T>) => {
+      if (!held) return request();
+      held = false;
+      const sender = createConnection(paths.socket);
+      await new Promise<void>((resolve, reject) => {
+        sender.once("connect", resolve);
+        sender.once("error", reject);
+      });
+      await Bun.sleep(5);
+      process.kill(caddyPid, "SIGSTOP");
+      await Bun.sleep(5);
+      const body = JSON.stringify(stale);
+      await new Promise<void>((resolve) =>
+        sender.end(
+          `POST /load HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+          resolve,
+        ),
+      );
+      sender.destroy();
+      const answer = request();
+      await Bun.sleep(10);
+      process.kill(caddyPid, "SIGCONT");
+      return answer;
+    };
+    const next = managed(withheld, {
+      ...admin,
+      reachable: () => resumed(() => admin.reachable()),
+      config: () => resumed(() => admin.config()),
+      stop: () => resumed(() => admin.stop()),
+    });
+    await next.refreshDashboard();
+    await Bun.sleep(300);
+    expect([attempt, (await get("rig.example.test", https)).status]).toEqual([
+      attempt,
+      503,
+    ]);
+    await next.close();
+    // Each attempt starts as after a crash: no rigd recorded a clean stop.
+    await rm(paths.cleanStop, { force: true });
+  }
+}, 180_000);

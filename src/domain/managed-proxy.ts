@@ -37,6 +37,9 @@ export interface ProxyPaths {
   readonly token: string;
   /** Host config Rig last refused, with why; removed once Host config is accepted. */
   readonly rejectedSettings: string;
+  /** Written by a rigd once nothing it sent can reach Caddy any more (it stopped in order), and taken by the next as it
+   * starts; without it, Caddy may still hold a configuration an earlier rigd sent, and is restarted. */
+  readonly cleanStop: string;
 }
 export function proxyPaths(root: string): ProxyPaths {
   const caddy = join(root, "caddy");
@@ -59,6 +62,7 @@ export function proxyPaths(root: string): ProxyPaths {
     ],
     token: join(root, "auth", "acme-dns.token"),
     rejectedSettings: join(caddy, "settings-rejected.json"),
+    cleanStop: join(caddy, "clean-stop.json"),
   };
 }
 /** The files of one generation; every import of its main file names one of them, so a generation never mixes with another. */

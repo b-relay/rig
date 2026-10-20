@@ -160,9 +160,9 @@ export interface ManagedCaddy {
    * whether its routes are known to hold no other dashboard route: false while it serves `proxy.routes` an older rigd
    * recorded (see GenerationMetadata.ownerRoutesOnly). */
   refreshDashboard(): Promise<{ known: boolean }>;
-  /** Ends publishing, for a rigd that stops: the Caddy command under way is cancelled (its process killed), every change
-   * queued or asked for later fails PROXY_CLOSED, and this resolves once nothing of the queue runs, so no work of this rigd
-   * reaches Caddy after it. What Caddy serves then is confirmed by the next rigd as it starts. */
+  /** Ends publishing, for a rigd that stops: the Caddy command or load under way is cancelled, every change queued or
+   * asked for later fails PROXY_CLOSED, and once nothing of the queue runs this records that the stop was clean (see
+   * `ProxyPaths.cleanStop`). What Caddy serves then is confirmed by the next rigd as it starts. */
   close(): Promise<void>;
   readonly paths: ProxyPaths;
 }
@@ -179,6 +179,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   const reservations = new Map<string, string[]>();
   /** Aborted by `close`: commands under way are killed, and nothing more is published. */
   const closing = new AbortController();
+  /** Set once Caddy is known to hold nothing an earlier rigd sent (see recover). */
+  let recovered = false;
   const closed = () =>
     new RigError(
       "PROXY_CLOSED",
@@ -642,6 +644,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
    * activating, or a reload that never happened. Every change runs this first, so nothing touches an upstream while what
    * Caddy serves is unknown. */
   async function reconcile(kind: PublicationKind): Promise<void> {
+    await recover();
     const current = await currentGeneration();
     if (!current) return;
     const { settings, ownerRoutesOnly } = await accepted();
@@ -660,6 +663,43 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         return confirmed();
       },
     );
+  }
+  /** Makes sure, once, before anything trusts what Caddy reports, that no configuration an earlier rigd sent can still be
+   * applied. One that stopped in order recorded so (`close`). After any other end, a crash or a kill, Caddy may hold a
+   * load that rigd sent but that Caddy applies only after this rigd has read its configuration, so a running Caddy is
+   * restarted: its new process reads the current generation, made to withhold the dashboard first when it routes it (rigd
+   * has not found its dashboard yet), and nothing the old process held. Every route is down for that restart. */
+  async function recover(): Promise<void> {
+    if (recovered) return;
+    const clean = await stat(paths.cleanStop).then(
+      () => true,
+      () => false,
+    );
+    const current = await currentGeneration();
+    if (!clean && current && (await options.job.state()) !== "stopped") {
+      if ((await metadataOf(current))?.dashboard?.port != null) {
+        const { settings, ownerRoutesOnly } = await accepted();
+        await publish(
+          (await readText(generationFiles(current).routes)) ?? "",
+          "settings",
+          settings,
+          ownerRoutesOnly,
+          false,
+        ).catch(() => {});
+        // The restarted Caddy reads `current`: it must not route the dashboard to a port this rigd has not found it on.
+        const now = await currentGeneration();
+        if (now && (await metadataOf(now))?.dashboard?.port != null)
+          throw new RigError(
+            "PROXY_RECOVERY",
+            "Rig's Caddy could not be given a configuration that withholds the dashboard's domain before its restart.",
+            "Run rig doctor; rigd tries again with its next change.",
+          );
+      }
+      if (closing.signal.aborted) throw closed();
+      await options.job.restart();
+    }
+    await rm(paths.cleanStop, { force: true });
+    recovered = true;
   }
   /** Whether generation `directory` routes the dashboard's domain to a port rigd does not confirm now, and Caddy does not
    * serve it already: activating it would send the domain to whatever holds that port. */
@@ -874,6 +914,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     async close() {
       closing.abort();
       await pending.catch(() => {});
+      // Only a rigd that made sure of what Caddy holds can vouch for it; otherwise the next one restarts Caddy too.
+      if (!recovered) return;
+      await replacePrivateFile(
+        options.root,
+        paths.cleanStop,
+        JSON.stringify({ pid: process.pid, at: now().toISOString() }) + "\n",
+      );
     },
     refreshDashboard: () =>
       queued(async () => {
@@ -933,6 +980,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     },
     republish: () =>
       queued(async () => {
+        await recover();
         const requested = await options.settings();
         const before = (await readText(paths.routes)) ?? "";
         const current = await currentGeneration();

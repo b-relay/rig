@@ -119,7 +119,9 @@ dashboard, `rigd status` says why, and `rigd install`, `rigd upgrade` and
 `rigd uninstall` fail with that reason (`DAEMON_STOP`) instead of stopping it;
 run them again once `rig doctor` shows Caddy answering. A `rigd` whose
 dashboard was stopped for a stop that then did not happen serves no dashboard;
-`rigd status` says so, and `rigd install` starts it again. A dashboard an earlier `rigd` left running (one that was killed) is
+`rigd status` says so, and `rigd install` starts it again. After `rigd` crashes or is killed, its next start restarts Rig's Caddy before
+it trusts what Caddy serves, so every route is down for a moment then. A
+dashboard an earlier `rigd` left running (one that was killed) is
 stopped once Caddy is confirmed to withhold its hostname; after an upgrade from
 a Rig that did not record which route was the dashboard's, that waits until
 Caddy accepts Host config (`rig proxy reload`). A Target or

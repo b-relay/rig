@@ -11,6 +11,8 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { managedCaddyWorld, TOKEN } from "./support/managed-caddy-double";
+import { createManagedCaddy } from "../src/providers/managed-caddy";
+import { parseHostConfig } from "../src/config";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -826,4 +828,42 @@ test("close cancels the Caddy command under way, refuses every change after it, 
   await expect(w.caddy.republish()).rejects.toMatchObject({
     code: "PROXY_CLOSED",
   });
+});
+
+test("after an earlier rigd's unclean stop Caddy is restarted before anything reads what it serves; after a clean one it is not", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // This publisher stops in order: it records that nothing it sent can reach Caddy any more.
+  await w.caddy.close();
+  const cleanStop = join(w.root, "caddy", "clean-stop.json");
+  await stat(cleanStop);
+  const next = () =>
+    createManagedCaddy({
+      root: w.root,
+      settings: async () =>
+        parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } }).proxy!,
+      run: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      job: {
+        state: async () => "running",
+        restart: async () => void events.push("restart"),
+      },
+      admin: {
+        reachable: async () => true,
+        config: async () => {
+          events.push("read");
+          return w.control.loaded;
+        },
+        load: async () => undefined,
+      },
+    });
+  const events: string[] = [];
+  // After a clean stop: the record is taken, and Caddy is read as it is.
+  await next().refreshDashboard();
+  expect(events).toEqual(["read"]);
+  await expect(stat(cleanStop)).rejects.toThrow();
+  // After an unclean one (no record): Caddy is restarted first.
+  events.length = 0;
+  await next().refreshDashboard();
+  expect(events[0]).toBe("restart");
+  expect(events).toContain("read");
 });

@@ -177,7 +177,12 @@ export function createProxyInstallation(
       };
       try {
         // The current settings, proxy.routes included, are published.
-        await (how.publish ? how.publish() : caddy.republish());
+        if (how.publish) await how.publish();
+        else {
+          await caddy.republish();
+          // This install published nothing more after it, and says so for the rigd it starts (see ProxyPaths.cleanStop).
+          await caddy.close();
+        }
       } catch (error) {
         await restoreBinary();
         throw error;

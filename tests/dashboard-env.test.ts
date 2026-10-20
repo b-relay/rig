@@ -93,22 +93,13 @@ test("a file reaches the Targets of its role that run its Service", () => {
   ).toEqual(["working"]);
 });
 
-test("Activity names the client a change came from, not a person, in plain words", () => {
-  expect(clientName({ admitted: true, by: "session" }, "100.64.1.2")).toBe(
-    "dashboard (signed in)",
-  );
-  expect(clientName({ admitted: true, by: "client" }, null)).toBe(
-    "dashboard (this Mac)",
-  );
-  expect(clientName({ admitted: true, by: "client" }, "127.0.0.1")).toBe(
-    "dashboard (this Mac)",
-  );
-  expect(
-    clientName({ admitted: true, by: "client" }, "100.64.1.2, 127.0.0.1"),
-  ).toBe("dashboard (100.64.1.2)");
-  expect(clientName({ admitted: true, by: "client" }, "fd7a::1<script>")).toBe(
-    "dashboard (fd7a::1c)",
-  );
+test("Activity names where a signed-in browser's change came from, not a person, in plain words", () => {
+  expect(clientName(null)).toBe("dashboard (this Mac)");
+  expect(clientName("127.0.0.1")).toBe("dashboard (this Mac)");
+  expect(clientName("100.64.1.2")).toBe("dashboard (100.64.1.2)");
+  expect(clientName("100.64.1.2, 127.0.0.1")).toBe("dashboard (100.64.1.2)");
+  expect(clientName("127.0.0.1, 100.64.1.2")).toBe("dashboard (100.64.1.2)");
+  expect(clientName("fd7a::1<script>")).toBe("dashboard (fd7a::1c)");
 });
 
 test("own reads only a record's own entries, so names like constructor stay masked until revealed", () => {

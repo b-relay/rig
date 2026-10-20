@@ -7,15 +7,17 @@ export {
 } from "../../src/domain/trusted-clients";
 
 /** Who may use the relay. The relay holds this Host's control-plane credential, so every
- * request it forwards must come from its own page, under its own name, from a trusted machine. */
+ * request it forwards must come from its own page, under its own name, from this Mac or a trusted
+ * address, and carry a session the access key signed: being on this Mac or a trusted address is
+ * never a sign-in by itself. */
 export interface AccessPolicy {
   /** `host[:port]` values the site answers to, lower case; any other Host header is a DNS-rebinding attempt. */
   hosts: ReadonlySet<string>;
   /** Origins of the site's own pages, lower case. */
   origins: ReadonlySet<string>;
-  /** Client addresses allowed besides loopback: exact IPs or IPv4 CIDR blocks. */
+  /** Client addresses besides loopback that may reach the site and sign in: exact IPs or IPv4 CIDR blocks. */
   trustedClients: readonly TrustedClient[];
-  /** The secret a client outside `trustedClients` signs in with. Without one, such clients are refused outright. */
+  /** The secret every browser signs in with. Without one, no request is admitted. */
   accessKey?: string;
   /** Set when this copy of the site is a Preview: it shows the pages but never relays, and names the host that does. */
   relaysAt?: string;
@@ -28,8 +30,8 @@ export interface RequestFacts {
 export type Admission =
   | {
       admitted: true;
-      /** Loopback or a trusted address, a valid session cookie, or a client about to present the key. */
-      by: "client" | "session" | "signingIn";
+      /** A valid session cookie, or a client about to present the key. */
+      by: "session" | "signingIn";
     }
   | {
       admitted: false;
@@ -45,7 +47,7 @@ const refused = (
 ): Admission => ({ admitted: false, status, code, message });
 
 const LOOPBACK = /^(?:127\.\d+\.\d+\.\d+|::1|::ffff:127\.\d+\.\d+\.\d+)$/;
-/** Pure: whether one client address is loopback or named by the trusted list. */
+/** Pure: whether one client address is loopback or named by the trusted list, so it may reach the site at all. */
 export function trustedClient(
   address: string,
   trusted: readonly TrustedClient[],
@@ -73,11 +75,13 @@ export const sessionValue = (key: string, expires: number): string =>
   `${expires}.${signature(key, expires)}`;
 /** Pure: the cookie that signs a browser in from `now` (epoch milliseconds), as a Set-Cookie
  * header and as the attributes a framework cookie jar takes. Every page reads rigd, so it covers the whole site.
+ * `secure` holds it to HTTPS, as the published name is served; the loopback address is plain HTTP, which never
+ * leaves this Mac, and a browser may keep no Secure cookie for it.
  * SameSite=Lax, not Strict: a browser sends a Strict cookie only on navigations started from this site, so opening
  * the dashboard from a home-screen icon, a bookmark or a link in another app arrived without it and landed on the
  * sign-in page. Lax still withholds it from another site's POSTs, and every change here is a POST (a Server Action,
  * which Next also refuses from another origin); the GET routes only read. */
-export function sessionCookie(key: string, now: number) {
+export function sessionCookie(key: string, now: number, secure: boolean) {
   const value = sessionValue(key, Math.floor(now / 1000) + SESSION_SECONDS);
   return {
     name: SESSION_COOKIE,
@@ -85,11 +89,15 @@ export function sessionCookie(key: string, now: number) {
     maxAge: SESSION_SECONDS,
     path: "/",
     httpOnly: true,
-    secure: true,
+    secure,
     sameSite: "lax" as const,
-    header: `${SESSION_COOKIE}=${value}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Lax`,
+    header: `${SESSION_COOKIE}=${value}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly;${secure ? " Secure;" : ""} SameSite=Lax`,
   };
 }
+/** Pure: whether a request reached the site under its loopback address, which is plain HTTP, rather than the
+ * published name Caddy serves over HTTPS. */
+export const loopbackHost = (host: string | null): boolean =>
+  /^(?:127\.0\.0\.1|localhost):\d+$/i.test(host ?? "");
 const sameText = (a: string, b: string): boolean => {
   const [left, right] = [Buffer.from(a), Buffer.from(b)];
   return left.length === right.length && timingSafeEqual(left, right);
@@ -134,7 +142,9 @@ const TUNNEL_HEADERS = [
 ];
 /** Pure: decides one request. The server listens on loopback only, so a request without
  * X-Forwarded-For came from this machine; Caddy replaces that header with the address it saw.
- * Every page reads rigd and every Server Action drives it, so pages and actions are decided alike. */
+ * Where a request came from only decides whether it may reach the site at all; reading or driving
+ * rigd always takes a session. Every page reads rigd and every Server Action drives it, so pages
+ * and actions are decided alike. */
 export function admit(
   request: RequestFacts,
   policy: AccessPolicy,
@@ -183,29 +193,38 @@ export function admit(
   const clients = forwarded
     ? forwarded.split(",").map((each) => each.trim())
     : [];
-  if (clients.every((each) => trustedClient(each, policy.trustedClients)))
-    return { admitted: true, by: "client" };
-  if (!policy.accessKey)
+  if (!clients.every((each) => trustedClient(each, policy.trustedClients)))
     return refused(
       403,
       "CLIENT",
       "The dashboard is only available from this Mac or a trusted address.",
+    );
+  if (!policy.accessKey)
+    return refused(
+      403,
+      "NO_ACCESS_KEY",
+      "This copy of the dashboard has no access key file, so no browser can sign in.",
     );
   if (signedIn(request.headers.get("cookie"), policy.accessKey, moment.now))
     return { admitted: true, by: "session" };
   if (moment.signingIn) return { admitted: true, by: "signingIn" };
   return refused(401, "KEY_REQUIRED", "Sign in with this Host's access key.");
 }
-/** Pure: who an admitted request came from, in the words Activity records beside a change: a signed-in
- * browser, this Mac, or the trusted address it came from. There are no user accounts; this is the
- * client, not a person. */
-export function clientName(
-  admission: Extract<Admission, { admitted: true }>,
-  forwardedFor: string | null,
-): string {
-  if (admission.by !== "client") return "dashboard (signed in)";
-  const address = forwardedFor?.split(",")[0]?.trim() ?? "";
-  if (!address || LOOPBACK.test(address)) return "dashboard (this Mac)";
+/** Pure: the first forwarded address that is not this Mac's, if any. */
+const elsewhere = (forwardedFor: string | null): string | undefined =>
+  (forwardedFor ?? "")
+    .split(",")
+    .map((each) => each.trim())
+    .find((each) => each && !LOOPBACK.test(each));
+/** Pure: whether a request came from this Mac, directly or through Rig's Caddy, by its forwarded addresses. */
+export const fromThisMac = (forwardedFor: string | null): boolean =>
+  elsewhere(forwardedFor) === undefined;
+/** Pure: where a signed-in browser's change came from, in the words Activity records beside it: this Mac,
+ * or the trusted address it came from. Every change takes a session, so this names the place, not a
+ * proof of who; there are no user accounts. */
+export function clientName(forwardedFor: string | null): string {
+  const address = elsewhere(forwardedFor);
+  if (address === undefined) return "dashboard (this Mac)";
   // Activity accepts a short, plain name; an address is digits, dots, colons and hex letters.
   const plain = address.replace(/[^0-9A-Fa-f.:]/g, "").slice(0, 45);
   return `dashboard (${plain || "trusted client"})`;

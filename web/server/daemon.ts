@@ -11,12 +11,14 @@ import type {
   Reply,
   RuntimeCommand,
 } from "../lib/types";
+import { requireSession } from "./session";
 import { site } from "./site";
 
 /** The site's rigd: the Host's, or the sandbox's when this copy is a Preview. Discovered afresh for each request,
  * since a restarted rigd has a new port, and the way rig discovers it: the token goes only to the daemon whose
- * recorded process is verified to still run. */
-export function daemon(root = site().root): Promise<DaemonClient> {
+ * recorded process is verified to still run. Only for a request that holds a session. */
+export async function daemon(root = site().root): Promise<DaemonClient> {
+  await requireSession();
   return connectDaemon(root);
 }
 /** One command, answered with the reply its action carries. Reads keep rigd's deadlines; a
@@ -82,6 +84,7 @@ async function postEditor(
   reply: z.ZodType,
   root: string,
 ): Promise<unknown> {
+  await requireSession();
   const editor = path === "/v1/config" ? "config editor" : "env editor";
   const address = await liveDaemonAddress(root);
   let response: Response;

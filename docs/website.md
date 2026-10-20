@@ -24,10 +24,11 @@ same Zod schema `rigd` uses and answer an `Outcome`, a value or a failure with
 ## How it reaches rigd
 
 An installed Rig runs the site from its release: `rigd` serves it on
-`127.0.0.1:<dashboard.port>`, and with `dashboard.domain` in Host config Rig's
-own Caddy publishes it at that hostname, with the access key in
-`<RIG_ROOT>/auth/dashboard.key` and `dashboard.trusted_clients` passed to it as
-`RIG_WEB_KEY_FILE` and `RIG_WEB_TRUSTED_CLIENTS`. In this repository it is also a
+`127.0.0.1:<dashboard.port>` with the access key in
+`<RIG_ROOT>/auth/dashboard.key` passed to it as `RIG_WEB_KEY_FILE`, and with
+`dashboard.domain` in Host config Rig's own Caddy publishes it at that
+hostname, with `dashboard.trusted_clients` passed as
+`RIG_WEB_TRUSTED_CLIENTS`. In this repository it is also a
 Rig Service (`services.web` in `rig.yaml`), for developing it: it listens on
 `127.0.0.1` only; the working Target serves it on a loopback port, and Caddy
 publishes each Preview at `rig-<preview>.b-relay.com`. The repository runs no
@@ -252,8 +253,10 @@ with the outcome the command would have answered, or never received.
 ## Who may use the site
 
 Every page reads `rigd` and every action drives it, so `web/proxy.ts` decides
-each request with `web/server/guard.ts` before a page renders, and each Server
-Action decides again. A request is admitted only when all of these hold:
+every request with `web/server/guard.ts` before anything renders, each Server
+Action decides again, and the code that reaches `rigd` (`web/server/daemon.ts`)
+refuses a request without a session whatever page, route or action asked. A
+request is admitted only when all of these hold:
 
 - The `Host` header is the published name (`RIG_WEB_HOST`, set from
   `${rig.host}`) or the Service's own loopback address. This defeats DNS
@@ -266,8 +269,10 @@ Action decides again. A request is admitted only when all of these hold:
 - Every address in `X-Forwarded-For` is loopback or listed in
   `RIG_WEB_TRUSTED_CLIENTS` (comma-separated IPs or IPv4 CIDR blocks, for
   example a Tailscale range `100.64.0.0/10`). Caddy replaces that header with
-  the address it saw, so by default the dashboard works only from the Mac that
-  serves it.
+  the address it saw, so by default the dashboard is reachable only from the
+  Mac that serves it. Any other address is refused outright, even with the key
+  or a session. A trusted address is only allowed to reach the site and sign
+  in; it is never signed in by itself.
 - The request carries none of the headers a tunnel or a second proxy adds
   (`Forwarded`, `X-Real-IP`, `CF-Connecting-IP`, and similar). Behind a tunnel
   Caddy sees the tunnel's loopback address for every visitor, so such requests
@@ -277,42 +282,62 @@ Action decides again. A request is admitted only when all of these hold:
   `RIG_WEB_DASHBOARD_HOST` names the one published host whose dashboard controls
   the Host's `rigd`; any other published copy refuses every request unless it
   is sandboxed (below), so an unreviewed Branch never holds Host control.
+- The request carries a valid session cookie (below), from this Mac as from a
+  trusted address. Only the sign-in page and its own action are served without
+  one.
 
 A malformed `RIG_WEB_TRUSTED_CLIENTS` entry stops the server at startup rather
-than being skipped or widened. Every response carries a per-request nonce
-Content-Security-Policy (scripts only from the site itself, no framing) and
-`Cache-Control: no-store`.
+than being skipped or widened. The proxy runs on every path. Only the readiness
+probe (`/healthz`), `/favicon.ico` and the build's own files under
+`/_next/static/` are served without a session, each matched exactly, so a path
+that only starts like one is decided like any page. The root layout decides the
+request again by itself and shows the sidebar and `rigd`'s state only to a
+signed-in browser, so not even a not-found page shows them to anyone else.
+Every response carries a per-request nonce Content-Security-Policy (scripts
+only from the site itself, no framing), and every page `Cache-Control:
+no-store`.
 
-## Signing in from another device
+## Signing in
 
-`RIG_WEB_KEY_FILE` (set to `${rig.data}/access.key` in `rig.yaml`) names a file
-holding a random access key; the Service creates it, mode 600, on first start and
-logs the file's path, never the key. A client that is not loopback or in
-`RIG_WEB_TRUSTED_CLIENTS` is sent to the sign-in page (`/sign-in?next=<path>`,
+`RIG_WEB_KEY_FILE` names a file holding a random access key; the site creates
+it, mode 600, on first start and logs the file's path, never the key. Without
+it no browser can sign in, so the site admits no one. Every browser without a
+session, on this Mac too, is sent to the sign-in page (`/sign-in?next=<path>`,
 which carries none of the site's frame) and returned to its page afterwards.
-Presenting the key answers a `rig_session` cookie (`HttpOnly`, `Secure`,
-`SameSite=Strict`, `Path=/`) that is an HMAC of its expiry under the key, so
-there is no session store: delete the key file and restart the Service to
-replace the key and end every session. The cookie lasts 400 days, the longest a
-browser keeps one, and every page load renews it, so a browser in use stays
-signed in until the key is replaced. The key itself is never stored in the
-browser. The host, origin, and tunnel rules above still apply to a signed-in
-client.
+Read the key with `cat`:
 
-This matters even on the Mac itself when `rig.b-relay.com` resolves to a
-Tailscale or LAN address: Caddy then sees the browser arrive from that address,
-not from loopback. Read the key with `cat`: the installed dashboard's is
-`<RIG_ROOT>/auth/dashboard.key`, and a Target serving the site (a working copy
-or a Preview) names its key file in its log (`rig logs`).
+- the dashboard that comes with Rig: `<RIG_ROOT>/auth/dashboard.key`
+  (`~/.rig/auth/dashboard.key` by default);
+- a Target serving the site from this repository (a working copy or a
+  Preview): `${rig.data}/access.key` (`RIG_WEB_KEY_FILE` in `rig.yaml`), whose
+  path the Target's log names (`rig logs`).
 
-Anyone holding the key has full control of every Project on the Host. Without
-`RIG_WEB_KEY_FILE`, clients beyond the trusted addresses are refused outright.
+On this Mac the sign-in page names its key file's exact path; a browser
+elsewhere is told only where it lives.
 
-One gap remains: a process on this Mac that cannot read the token file (another
-macOS user, a sandboxed app) can still reach the Service's loopback port, where
-no key is asked for, and forge the headers above. `rigd` alone does not have this
-gap. On a single-user Mac the practical difference is small, since your own
-processes can read the token anyway.
+Presenting the key answers a `rig_session` cookie (`HttpOnly`, `SameSite=Lax`,
+`Path=/`, and `Secure` under the published name; the loopback address is plain
+HTTP, which never leaves this Mac) that is an HMAC of its expiry under the key,
+so there is no session store: delete the key file and restart the Service to
+replace the key and end every session. `SameSite=Lax`, not `Strict`: a browser
+sends a `Strict` cookie only on navigations started from the site itself, so
+opening the dashboard from a bookmark, a home-screen icon or a link in another
+app would land on the sign-in page. `Lax` still withholds the cookie from
+another site's `POST`s, and every change is a `POST` (a Server Action, which the
+origin rules above also refuse from elsewhere); a `GET` only reads. The cookie
+lasts 400 days, the longest a browser keeps one, and every page load renews it,
+so a browser in use stays signed in until the key is replaced. The key itself
+is never stored in the browser. The host, origin, client and tunnel rules above
+still apply to a signed-in client.
+
+When `rig.b-relay.com` resolves to a Tailscale or LAN address, Caddy sees even
+a browser on this Mac arrive from that address, not from loopback, so that
+address must be trusted for the browser to reach the sign-in page.
+
+Anyone holding the key has full control of every Project on the Host. Being on
+this Mac grants nothing by itself: a process that cannot read the key file
+(another macOS user, a sandboxed app) reaches the loopback port but gets only
+the sign-in page.
 
 ## Preview sandboxes
 

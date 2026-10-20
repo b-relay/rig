@@ -17,7 +17,7 @@ export interface SiteSettings {
   root: string;
   /** Set when this copy is a Preview: a throwaway rigd runs here, seeded with demo Projects. */
   sandboxRoot?: string;
-  /** The file holding the access key clients beyond this Mac sign in with. */
+  /** The file holding the access key every browser signs in with. Without one, the site admits no one. */
   keyFile?: string;
   /** The name Caddy publishes this copy under. */
   publicHost?: string;

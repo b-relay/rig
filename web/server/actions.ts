@@ -12,7 +12,13 @@ import {
   type Failure,
   type Outcome,
 } from "../lib/outcome";
-import { admit, clientName, keyMatches, sessionCookie } from "./guard";
+import {
+  admit,
+  clientName,
+  keyMatches,
+  loopbackHost,
+  sessionCookie,
+} from "./guard";
 import { editConfig, editEnv, read } from "./daemon";
 import { sitePolicy } from "./site";
 import { confirmedRestore } from "./restore";
@@ -80,25 +86,20 @@ export async function runConfigEdit(input: unknown): Promise<Outcome<unknown>> {
   if (!request.success) return refused(invalid("a config edit"));
   return attempt(editConfig(request.data));
 }
-/** Reads, reveals, or writes an operator env file (a secret). Who asked is named here, from the
- * request's own admission, never by the browser; rigd records it in Activity with the names changed.
- * The input may hold a value: it is never logged, and a refusal never repeats it. */
+/** Reads, reveals, or writes an operator env file (a secret). Where the signed-in browser asked from
+ * is named here, from the request itself, never by the browser; rigd records it in Activity with the
+ * names changed. The input may hold a value: it is never logged, and a refusal never repeats it. */
 export async function runEnvEdit(input: unknown): Promise<Outcome<unknown>> {
+  const denied = await admission();
+  if (denied) return refused(denied);
   const requestHeaders = await headers();
-  const decision = admit(
-    { method: "POST", headers: requestHeaders },
-    await sitePolicy(),
-    { now: Date.now() },
-  );
-  if (!decision.admitted)
-    return refused({ code: decision.code, message: decision.message });
   const request = envEditorRequestSchema.safeParse(
     typeof input === "object" &&
       input !== null &&
       (input as { action?: unknown }).action === "write"
       ? {
           ...input,
-          actor: clientName(decision, requestHeaders.get("x-forwarded-for")),
+          actor: clientName(requestHeaders.get("x-forwarded-for")),
         }
       : input,
   );
@@ -163,6 +164,7 @@ export async function signIn(
   const { header: _header, ...cookie } = sessionCookie(
     policy.accessKey,
     Date.now(),
+    !loopbackHost((await headers()).get("host")),
   );
   (await cookies()).set(cookie);
   return succeeded({ signedIn: true });

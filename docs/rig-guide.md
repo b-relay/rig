@@ -56,6 +56,14 @@ dashboard that keeps exiting is a `rig doctor` finding. `rigd status` names
 where it is served (`Dashboard  http://127.0.0.1:4280`); a `rigd` run from
 source, or with `dashboard: false`, serves none.
 
+Every browser, on this Mac too, signs in with the dashboard's access key, which
+it creates on its first start in `<RIG_ROOT>/auth/dashboard.key`
+(`~/.rig/auth/dashboard.key` by default). Read it with
+`cat ~/.rig/auth/dashboard.key` and paste it into the sign-in page; the browser
+then stays signed in until the key file is replaced. Being on this Mac grants
+nothing by itself, so another account or app on it that cannot read the key
+gets only the sign-in page.
+
 To reach the dashboard from elsewhere, name a hostname for it; Rig's own Caddy
 (a `proxy` section) publishes it there with a certificate like a Target's:
 
@@ -63,7 +71,7 @@ To reach the dashboard from elsewhere, name a hostname for it; Rig's own Caddy
 # <RIG_ROOT>/config.yaml
 dashboard:
   domain: rig.example.com
-  trusted_clients: [100.64.0.0/10] # your tailnet reaches it without the key
+  trusted_clients: [100.64.0.0/10] # your tailnet may reach it and sign in
 ```
 
 It is served like a `proxy.routes` entry, to the port of the dashboard `rigd`
@@ -76,9 +84,12 @@ until then `rig doctor`'s `dashboard` check names the difference. With Caddy's
 HTTPS port other than 443 (`proxy.ports.https`), the dashboard is addressed as
 `https://rig.example.com:<port>`; while it is published, `rig proxy reload`
 refuses to move that port (`PROXY_CONFIG`), since the running dashboard admits
-only the address it started with, and `rigd install` moves both. A browser from anywhere else signs in with the
-access key in `<RIG_ROOT>/auth/dashboard.key`, which the dashboard creates on
-its first start. `rigd status` then reads
+only the address it started with, and `rigd install` moves both. Only this Mac
+and the addresses in `trusted_clients` reach it there, and each still signs in
+with the access key; any other address is refused outright, key or not. List
+single device addresses rather than a whole range to narrow who may even try.
+When the hostname resolves to this Mac's Tailscale or LAN address, a browser on
+this Mac arrives from that address too, so trust it. `rigd status` then reads
 `Dashboard  https://rig.example.com via http://127.0.0.1:4280, trusting 100.64.0.0/10`,
 and `rigd install` restarts `rigd` when the domain, the trusted clients or the
 port change.
@@ -1519,8 +1530,9 @@ capability:
 - `dashboard.port` (default 4280): where `rigd` serves the dashboard that comes
   with Rig, at `http://127.0.0.1:<port>`; `dashboard: false` turns it off.
   `dashboard.domain` publishes it through Rig's own Caddy at that hostname, and
-  `dashboard.trusted_clients` lists addresses that reach it there without the
-  access key. A change applies when `rigd` next starts (`rigd install`)
+  `dashboard.trusted_clients` lists the addresses besides this Mac that may
+  reach it there and sign in with the access key; every browser signs in. A
+  change applies when `rigd` next starts (`rigd install`)
 
 Rig no longer sends alerts. An `alerts` section an earlier Rig read is ignored,
 so `rigd` still starts, and `rig doctor` asks you to delete it.

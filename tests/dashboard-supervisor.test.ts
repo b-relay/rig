@@ -416,7 +416,7 @@ test("how the dashboard is served reads its local address, and where Caddy publi
   );
 });
 
-test("a published dashboard runs with its host, its access key file, and the clients it trusts; one on this Mac only with none of them", async () => {
+test("a published dashboard runs with its host, its access key file, and the clients it trusts; one on this Mac only with its access key file alone", async () => {
   const f = await installed(`
 Bun.serve({
   port: Number(process.env.PORT),
@@ -452,7 +452,7 @@ Bun.serve({
   expect(JSON.parse((await answer(local.url))!)).toEqual({
     host: null,
     dashboard: null,
-    key: null,
+    key: join(f.root, "auth", "dashboard.key"),
     trusted: null,
   });
   await local.stop();

@@ -1,15 +1,32 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomBytes } from "node:crypto";
-import { admit, sessionCookie } from "./server/guard";
-import { SIGNING_IN_HEADER } from "./server/signing-in";
+import {
+  admit,
+  loopbackHost,
+  sessionCookie,
+  type AccessPolicy,
+} from "./server/guard";
 import { sitePolicy } from "./server/site";
 import { returnPath } from "./lib/return-path";
-/** Decides every page and action before Next renders anything, and gives each page the nonce
- * its scripts run under. Static assets and the readiness probe are excluded by the matcher. */
+/** Runs for every request (there is no matcher): decides every page, action and route before Next renders anything. */
 export async function proxy(request: NextRequest) {
-  const policy = await sitePolicy();
-  const now = Date.now();
-  const admission = admit(request, policy, { now });
+  return guard(request, await sitePolicy(), Date.now());
+}
+/** Pure: whether a path is served without a session: the readiness probe, the icon a browser asks for, and the
+ * build's own scripts, styles and fonts, which the sign-in page needs and which hold nothing about rigd. Exact, so a
+ * path that only starts like one is decided like any page. */
+export const publicPath = (pathname: string): boolean =>
+  pathname === "/healthz" ||
+  pathname === "/favicon.ico" ||
+  pathname.startsWith("/_next/static/");
+/** Decides one request under `policy` at `now` (epoch milliseconds). Every response carries the
+ * Content-Security-Policy, public and not-found ones included, and each page gets the nonce its
+ * scripts run under. */
+export function guard(
+  request: NextRequest,
+  policy: AccessPolicy,
+  now: number,
+): NextResponse {
   const nonce = randomBytes(16).toString("base64");
   const csp = [
     "default-src 'none'",
@@ -24,7 +41,12 @@ export async function proxy(request: NextRequest) {
   ].join("; ");
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("content-security-policy", csp);
-  requestHeaders.delete(SIGNING_IN_HEADER);
+  if (publicPath(request.nextUrl.pathname)) {
+    const answer = NextResponse.next({ request: { headers: requestHeaders } });
+    answer.headers.set("content-security-policy", csp);
+    return answer;
+  }
+  const admission = admit(request, policy, { now });
   const answer = decide(request, admission, requestHeaders);
   answer.headers.set("content-security-policy", csp);
   answer.headers.set("cache-control", "no-store");
@@ -32,14 +54,17 @@ export async function proxy(request: NextRequest) {
   if (admission.admitted && admission.by === "session" && policy.accessKey)
     answer.headers.set(
       "set-cookie",
-      sessionCookie(policy.accessKey, now).header,
+      sessionCookie(
+        policy.accessKey,
+        now,
+        !loopbackHost(request.headers.get("host")),
+      ).header,
     );
   return answer;
 }
 /** An admitted request proceeds. A browser that only lacks a session is sent to the sign-in
- * page, which is served to it with none of the site's frame, and its Server Actions reach Next
- * so that `signIn` can accept the key; every other action refuses again by itself. Anything
- * else is refused here. */
+ * page, and the sign-in page's own Server Action reaches Next so that `signIn` can accept the
+ * key. Anything else is refused here. */
 export function decide(
   request: NextRequest,
   admission: ReturnType<typeof admit>,
@@ -63,9 +88,13 @@ export function decide(
     return NextResponse.next({ request: { headers: requestHeaders } });
   }
   if (admission.code === "KEY_REQUIRED") {
-    requestHeaders.set(SIGNING_IN_HEADER, "1");
     const { pathname, search } = request.nextUrl;
-    if (request.method === "GET" && pathname === "/sign-in")
+    const signInPage = pathname === "/sign-in";
+    if (
+      signInPage &&
+      (request.method === "GET" ||
+        (request.method === "POST" && request.headers.has("next-action")))
+    )
       return NextResponse.next({ request: { headers: requestHeaders } });
     if (request.method === "GET") {
       // A redirect rather than a rewrite: Next spells 127.0.0.1 as localhost in a rewrite's
@@ -75,14 +104,9 @@ export function decide(
       if (pathname !== "/") signIn.searchParams.set("next", pathname + search);
       return NextResponse.redirect(signIn, 303);
     }
-    if (request.method === "POST" && request.headers.has("next-action"))
-      return NextResponse.next({ request: { headers: requestHeaders } });
   }
   return NextResponse.json(
     { error: { code: admission.code, message: admission.message } },
     { status: admission.status },
   );
 }
-export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).*)"],
-};

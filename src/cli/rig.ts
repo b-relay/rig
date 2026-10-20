@@ -5,7 +5,7 @@ import {
   type MonitorResult,
   type RuntimeCommand,
 } from "../daemon/protocol";
-import type { CliDependencies } from "./types";
+import type { CliDependencies, UserOutput } from "./types";
 import { commandPath, createRigCommand, type ExecuteCommand } from "./commands";
 import {
   jsonLines,
@@ -225,7 +225,7 @@ export async function runRigCli(
     if (dependencies.signal?.aborted) throw cancelled();
     const status =
       request.action === "status"
-        ? await dependencies.client.status(correlated)
+        ? await dependencies.client.status(correlated, dependencies.signal)
         : undefined;
     let result =
       status ??
@@ -244,7 +244,7 @@ export async function runRigCli(
     if (watching)
       await watchMonitor(correlated, result, options.window, dependencies);
     else
-      dependencies.output.write(
+      await dependencies.output.write(
         json
           ? ["logs", "activity"].includes(request.action)
             ? jsonLines(request.action, result)
@@ -288,7 +288,8 @@ export async function runRigCli(
         : {}),
     },
   );
-  json = requestsStructuredOutput(command, args);
+  const read = namesRead(command, args);
+  json = read && requestsJson(args);
   try {
     await command.parseAsync(args.length ? [...args] : ["--help"], {
       from: "user",
@@ -309,8 +310,18 @@ export async function runRigCli(
       dependencies.signal?.aborted &&
       error instanceof RigError &&
       error.code === "CANCELLED"
-    )
-      return 0;
+    ) {
+      // An action cancelled before it was submitted changed nothing. A read that ended before its answer is not an empty
+      // answer, so it says so and exits as interrupted.
+      if (!read) return 0;
+      await reportFailure(interruptedRead(), {
+        diagnostics: dependencies.diagnostics,
+        output: dependencies.output,
+        executable: "rig",
+        json,
+      });
+      return 130;
+    }
     await reportFailure(error, {
       diagnostics: dependencies.diagnostics,
       output: dependencies.output,
@@ -322,6 +333,32 @@ export async function runRigCli(
   }
 }
 
+/** A read cancelled before rigd's answer was printed, by Ctrl-C, SIGTERM or a reader that went away. */
+function interruptedRead(): RigError {
+  return new RigError(
+    "CANCELLED",
+    "The read was interrupted before rigd answered; nothing was printed.",
+    "Run it again.",
+  );
+}
+/** A failure before the command could run, such as an unusable Rig root, reported as the command's own failures are: a
+ * read asked for --json prints one error document on stdout. Nothing is recorded, since the diagnostic log is kept under
+ * that root. */
+export async function reportStartupFailure(
+  args: readonly string[],
+  cwd: string,
+  output: UserOutput,
+  error: unknown,
+): Promise<number> {
+  const command = createRigCommand(cwd, output, async () => {});
+  await reportFailure(error, {
+    diagnostics: { record: async () => ({}) },
+    output,
+    executable: "rig",
+    json: namesRead(command, args) && requestsJson(args),
+  });
+  return 1;
+}
 /** Waits for the restore `started` began and resolves the reply with how it `ended`; fails RESTORE_FAILED, with where its
  * output is, when it did not succeed. A Ctrl-C while waiting leaves it running and says how to see its end. */
 async function restoreOutcome(
@@ -387,12 +424,16 @@ async function watchMonitor(
       await dependencies.wait(result.sampledEvery * 1000, dependencies.signal);
       if (dependencies.signal?.aborted) return;
       // A duration is resolved again, so the window moves with the clock; an ISO time stays where it was.
-      result = (await dependencies.client.command(
-        window
-          ? { ...request, window: logTimeWindow(window, clock()) }
-          : request,
-        dependencies.signal,
-      )) as MonitorResult;
+      const next = await dependencies.client
+        .command(
+          window
+            ? { ...request, window: logTimeWindow(window, clock()) }
+            : request,
+          dependencies.signal,
+        )
+        .catch(endsOnCancel(dependencies.signal));
+      if (next === undefined) return;
+      result = next as MonitorResult;
     }
   } finally {
     view.close();
@@ -400,8 +441,9 @@ async function watchMonitor(
 }
 /** Entries fetched per follow poll: --lines sizes the first page only, so a busy Target is not throttled to it. */
 const FOLLOW_BATCH_LINES = 1000;
-/** Follow consumes opaque daemon cursors; duplicate text is never used as identity.
- * It ends on cancellation, which the entrypoint also raises when the terminal stops reading. */
+/** Follow consumes opaque daemon cursors; duplicate text is never used as identity. Each page waits until its reader took
+ * the one before, and an empty page still asks whether the reader is there. It ends on cancellation, which the entrypoint
+ * also raises when the reader has gone away; that is how a stream with no end ends, so it is no failure. */
 async function followLogs(
   request: RuntimeCommand,
   initial: unknown,
@@ -412,22 +454,38 @@ async function followLogs(
   while (!dependencies.signal?.aborted) {
     await dependencies.wait(250, dependencies.signal);
     if (dependencies.signal?.aborted) return;
-    const result = await dependencies.client.command(
-      {
-        ...request,
-        lines: FOLLOW_BATCH_LINES,
-        ...(typeof cursor === "string" ? { after: cursor } : {}),
-      },
-      dependencies.signal,
-    );
+    const result = await dependencies.client
+      .command(
+        {
+          ...request,
+          lines: FOLLOW_BATCH_LINES,
+          ...(typeof cursor === "string" ? { after: cursor } : {}),
+        },
+        dependencies.signal,
+      )
+      .catch(endsOnCancel(dependencies.signal));
+    if (result === undefined) return;
     const page = shortenedLogs(result, print.full);
-    dependencies.output.write(
+    await dependencies.output.write(
       print.json ? jsonLines("logs", page) : renderLogs(page, false),
     );
     cursor = object(result).cursor;
   }
 }
-/** The reads that take --json, by their command path: `proxy verify` and `backup list`, not `proxy reload` or
+/** For a stream that runs until it is cancelled: a request the cancellation abandoned ends it (undefined); any other
+ * failure is the stream's. */
+function endsOnCancel(signal: AbortSignal | undefined) {
+  return (error: unknown): undefined => {
+    if (
+      signal?.aborted &&
+      error instanceof RigError &&
+      error.code === "CANCELLED"
+    )
+      return undefined;
+    throw error;
+  };
+}
+/** The reads, by their command path; each takes --json: `proxy verify` and `backup list`, not `proxy reload` or
  * `backup restore`. */
 const STRUCTURED_READS = [
   "list",
@@ -442,17 +500,20 @@ const STRUCTURED_READS = [
   "dns list",
   "backup list",
 ];
-/** Error rendering follows the same scoped flag even when argument validation fails before execution. The command path
- * is read from the words alone, so `rig proxy --json reload` is the reload it names. */
-function requestsStructuredOutput(
+/** Whether the arguments name a read, from the grammar, even when argument validation fails before execution. The
+ * command path is read from the words alone, so `rig proxy --json reload` is the reload it names. */
+function namesRead(
   command: Parameters<typeof commandPath>[0],
   args: readonly string[],
 ): boolean {
+  const words = beforeSeparator(args).filter((arg) => !arg.startsWith("-"));
+  return STRUCTURED_READS.includes(commandPath(command, words).join(" "));
+}
+/** Error rendering follows the same scoped flag as the read's report. */
+function requestsJson(args: readonly string[]): boolean {
+  return beforeSeparator(args).includes("--json");
+}
+function beforeSeparator(args: readonly string[]): readonly string[] {
   const end = args.indexOf("--");
-  const options = end < 0 ? args : args.slice(0, end);
-  const words = options.filter((arg) => !arg.startsWith("-"));
-  return (
-    options.includes("--json") &&
-    STRUCTURED_READS.includes(commandPath(command, words).join(" "))
-  );
+  return end < 0 ? args : args.slice(0, end);
 }

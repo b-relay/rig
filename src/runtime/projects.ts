@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, sep } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
 import type { ProjectRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
@@ -6,6 +6,15 @@ import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { RuntimeDependencies } from "./contracts";
 import { shellWord } from "../domain/target-selector";
+/** The commands a Project's recorded state answers without its rig.yaml: stopping or destroying a Target, and reading its
+ * status, logs and activity. */
+const RECORDED_STATE_ACTIONS: ReadonlySet<RuntimeCommand["action"]> = new Set([
+  "down",
+  "destroy",
+  "status",
+  "logs",
+  "activity",
+]);
 /** A current registration is authoritative; history is never a candidate path list. */
 export async function selectProject(
   command: RuntimeCommand,
@@ -44,7 +53,18 @@ export async function selectProject(
       "Select a Project.",
       "Run inside a Project directory or pass --project.",
     );
-  const found = await deps.documents.discover(command.repoPath);
+  let found: Awaited<ReturnType<typeof deps.documents.discover>>;
+  try {
+    found = await deps.documents.discover(command.repoPath);
+  } catch (error) {
+    // A stop or a read of what was recorded still reaches the Project registered here when its rig.yaml cannot be read,
+    // as --project does; anything that plans from rig.yaml keeps failing on it.
+    const recorded = RECORDED_STATE_ACTIONS.has(command.action)
+      ? registeredWorkspace(error, state.projects)
+      : undefined;
+    if (!recorded) throw error;
+    return { project: recorded, checkout: command.repoPath };
+  }
   const byName = state.projects.find(
     (p) => p.name === found.document.config.name,
   );
@@ -78,6 +98,31 @@ export async function selectProject(
     );
   assertIdentity(project, found.document);
   return { project, document: found.document, checkout: command.repoPath };
+}
+/** The registered Project whose rig.yaml discovery could not read: the one in the directory of the file that failed, or,
+ * when the repository has no rig.yaml left, the deepest one between the repository root and where the search began.
+ * Never a Project outside that repository, nor one whose config a nearer unreadable one hides. */
+function registeredWorkspace(
+  error: unknown,
+  projects: readonly ProjectRecord[],
+): ProjectRecord | undefined {
+  if (!(error instanceof ConfigError)) return undefined;
+  const { path, repository, searchedFrom } = error.context;
+  if (error.code !== "missing_config")
+    return typeof path === "string"
+      ? projects.find((p) => p.repoPath === dirname(path))
+      : undefined;
+  if (typeof repository !== "string" || typeof searchedFrom !== "string")
+    return undefined;
+  return projects
+    .filter(
+      (p) => within(p.repoPath, repository) && within(searchedFrom, p.repoPath),
+    )
+    .sort((a, b) => b.repoPath.length - a.repoPath.length)[0];
+}
+/** `path` is `directory` or inside it. */
+function within(path: string, directory: string): boolean {
+  return path === directory || path.startsWith(directory + sep);
 }
 /** A config read that found no directory at all, as opposed to a directory without a config. */
 export function registeredDirectoryMissing(error: unknown): boolean {

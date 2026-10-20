@@ -312,7 +312,7 @@ test("rig down on a terminal redraws one board in place with a countdown, and le
 
 test("a terminal line wider than the terminal is cut, so a redraw moves up exactly the rows it drew", () => {
   let text = "";
-  const display = liveDisplay({ error: (value) => (text += value) }, 40);
+  const display = liveDisplay({ error: (value) => void (text += value) }, 40);
   const status = {
     state: "waiting" as const,
     subject: "a",
@@ -329,8 +329,8 @@ test("a terminal line wider than the terminal is cut, so a redraw moves up exact
 test("a command that fails while a Service is still stopping leaves it shown as stopping in rigd, without a countdown", () => {
   let live = "";
   let plain = "";
-  const onTerminal = liveDisplay({ error: (value) => (live += value) });
-  const inPipe = plainDisplay({ error: (value) => (plain += value) });
+  const onTerminal = liveDisplay({ error: (value) => void (live += value) });
+  const inPipe = plainDisplay({ error: (value) => void (plain += value) });
   const status = {
     state: "running" as const,
     project: "fletcher",
@@ -407,8 +407,11 @@ test("a command waiting behind a stop updates its one line in place on a termina
   let live = "";
   let plain = "";
   // Wide enough that the line is never cut.
-  const onTerminal = liveDisplay({ error: (value) => (live += value) }, 100);
-  const inPipe = plainDisplay({ error: (value) => (plain += value) });
+  const onTerminal = liveDisplay(
+    { error: (value) => void (live += value) },
+    100,
+  );
+  const inPipe = plainDisplay({ error: (value) => void (plain += value) });
   for (let ms = 7 * MINUTE; ms < 25 * MINUTE; ms += 1000) {
     const status = waitStatus(reply, at(ms))!;
     onTerminal.show(status, at(ms));

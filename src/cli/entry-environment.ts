@@ -96,31 +96,97 @@ export function reportRootFailure(error: unknown, output: UserOutput): number {
   output.error(`${error.message}\n${error.hint}\n`);
   return 1;
 }
-/** Terminal text is written synchronously so a reader that has gone away (a closed pipe, `| head`) is
- * seen at the write that fails: that text is dropped, onClosed runs once, and later text to that stream is
- * dropped silently. Bun's stream writes swallow EPIPE, which is why the file descriptors are written directly. */
-export function userOutput(onClosed?: () => void): UserOutput {
-  const closed = new Set<number>();
-  const write = (fd: 1 | 2, text: string): void => {
-    if (closed.has(fd)) return;
-    const bytes = Buffer.from(text);
-    let offset = 0;
-    try {
-      while (offset < bytes.length) offset += writeSync(fd, bytes, offset);
-    } catch (error) {
-      if (!isGoneReader(error)) throw error;
-      closed.add(fd);
-      if (closed.size === 1) onClosed?.();
+/** Terminal text, written in order and only as fast as each reader takes it. A full pipe (EAGAIN) keeps the rest of the
+ * text queued and tries again shortly, so a slow reader gets every byte rather than a cut record; each write resolves
+ * once its text was taken. A reader that has gone away (a closed pipe, `| head`) is seen at the write that fails, even an
+ * empty one: that text and all later text to the stream are dropped, and onClosed runs once. `abandon` drops what is
+ * still queued, for a reader that stopped taking it, and `flushed` then resolves false. Bun's stream writes swallow
+ * EPIPE, which is why the file descriptors are written directly. */
+export function userOutput(
+  options: { onClosed?: () => void; abandon?: AbortSignal } = {},
+): UserOutput & {
+  /** Resolves once every text written so far was taken or dropped with its gone reader; false when `abandon` dropped some. */
+  flushed(): Promise<boolean>;
+} {
+  let closed = 0;
+  const stdout = outputStream(1, () => {
+    if (++closed === 1) options.onClosed?.();
+  });
+  const stderr = outputStream(2, () => {
+    if (++closed === 1) options.onClosed?.();
+  });
+  options.abandon?.addEventListener(
+    "abort",
+    () => {
+      stdout.abandon();
+      stderr.abandon();
+    },
+    { once: true },
+  );
+  return {
+    write: stdout.write,
+    error: stderr.write,
+    async flushed() {
+      await Promise.all([stdout.idle(), stderr.idle()]);
+      return !stdout.abandoned() && !stderr.abandoned();
+    },
+  };
+}
+/** How long a full pipe is left before it is tried again, doubling from the first to the last while it stays full. */
+const FULL_PIPE_RETRY_MS = { first: 1, last: 50 };
+function outputStream(fd: 1 | 2, readerGone: () => void) {
+  const queue: { bytes: Buffer; offset: number; taken: () => void }[] = [];
+  let tail: Promise<void> = Promise.resolve();
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let delay = FULL_PIPE_RETRY_MS.first;
+  let closed = false;
+  let dropped = false;
+  const drop = () => {
+    clearTimeout(retry);
+    retry = undefined;
+    for (const pending of queue.splice(0)) pending.taken();
+  };
+  const pump = () => {
+    retry = undefined;
+    while (queue.length) {
+      const head = queue[0]!;
+      try {
+        // An empty text is still written once: that asks the pipe whether its reader is there.
+        do head.offset += writeSync(fd, head.bytes, head.offset);
+        while (head.offset < head.bytes.length);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EAGAIN") {
+          retry = setTimeout(pump, delay);
+          delay = Math.min(delay * 2, FULL_PIPE_RETRY_MS.last);
+          return;
+        }
+        // EPIPE and EBADF mean the reader has gone; any other failure leaves the text no way to reach it either.
+        closed = true;
+        drop();
+        readerGone();
+        return;
+      }
+      delay = FULL_PIPE_RETRY_MS.first;
+      queue.shift();
+      head.taken();
     }
   };
   return {
-    write: (text) => write(1, text),
-    error: (text) => write(2, text),
+    write(text: string): Promise<void> {
+      if (closed) return Promise.resolve();
+      tail = new Promise<void>((taken) => {
+        queue.push({ bytes: Buffer.from(text), offset: 0, taken });
+      });
+      if (queue.length === 1 && !retry) pump();
+      return tail;
+    },
+    idle: () => tail,
+    abandon() {
+      if (queue.length) dropped = true;
+      drop();
+    },
+    abandoned: () => dropped,
   };
-}
-function isGoneReader(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException).code;
-  return code === "EPIPE" || code === "EBADF";
 }
 /** A launchd job must outlive package upgrades, so it records the PATH entry (usually a stable symlink) that resolves to the running executable rather than the resolved, version-specific path. */
 export async function stableExecutablePath(

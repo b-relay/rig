@@ -34,6 +34,7 @@ import type {
 } from "../domain/runtime";
 import {
   RigError,
+  asRigError,
   diagnosticCauses,
   failureReason,
   diagnosticErrorCode,
@@ -1417,6 +1418,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         await releaseHeldCheckouts(target, deps);
         if (jobFailure !== undefined) throw jobFailure;
         recordStopKills(target, operations.get(operationId)!.view);
+        // A stop needs only the record, so an unreadable rig.yaml does not block it; the reply says what was not read.
+        if (configured.failure !== undefined) {
+          const failure = asRigError(configured.failure);
+          warnings.push(
+            `rig.yaml could not be used, so ${target.name} was stopped as it was recorded. ${failure.message} ${failure.hint}`,
+          );
+        }
       } else {
         if (command.action === "restart") {
           target.desired = "stopped";

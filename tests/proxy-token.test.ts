@@ -68,7 +68,7 @@ test("inspection names a missing, exposed or malformed token without revealing i
 test("rig proxy token stores what the local command reads and prints only the path", async () => {
   const written: string[] = [];
   const output = {
-    write: (text: string) => written.push(text),
+    write: (text: string) => void written.push(text),
     error: () => {},
   };
   const command = createRigCommand(

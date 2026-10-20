@@ -1,6 +1,36 @@
 import { test, expect, spyOn } from "bun:test";
 import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient, DEFAULT_READ_DEADLINE_MS } from "../src/daemon/client";
+import type { z } from "zod";
+import {
+  dnsResultSchema,
+  doctorResultSchema,
+  proxyResultSchema,
+} from "../src/daemon/protocol";
+import type { DoctorReport } from "../src/runtime/doctor";
+import type { ProxyReport } from "../src/adapters/proxy-report";
+import type { DnsReport } from "../src/runtime/contracts";
+
+/** Compile-time: the reports rigd builds are what rig accepts, so the schemas cannot drift from them unnoticed. The
+ * schemas keep unknown fields, which `Declared` leaves out of the comparison. */
+function accepts<Schema extends z.ZodType>(
+  _schema: Schema,
+  _report: Declared<z.input<Schema>>,
+): void {}
+type Declared<T> = T extends readonly (infer Item)[]
+  ? readonly Declared<Item>[]
+  : T extends object
+    ? { [K in keyof T as string extends K ? never : K]: Declared<T[K]> }
+    : T;
+export function rigdReportsAreAccepted(
+  doctor: DoctorReport,
+  proxy: ProxyReport,
+  dns: DnsReport,
+): void {
+  accepts(doctorResultSchema, doctor);
+  accepts(proxyResultSchema, proxy);
+  accepts(dnsResultSchema, dns);
+}
 
 test("real localhost daemon authenticates clients and rejects foreign browser origins", async () => {
   const received: unknown[] = [];
@@ -19,7 +49,7 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
       token: "test-secret",
     });
     expect((await client.health()).instanceId).toBe("instance-1");
-    expect(await client.command({ action: "doctor" })).toEqual({
+    expect(await client.command({ action: "up" })).toEqual({
       result: "registered",
     });
     const unauthorized = await fetch(`http://127.0.0.1:${server.port}/health`);
@@ -86,7 +116,7 @@ test("reads wait 5 s for rigd unless the client is told otherwise; mutations car
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch: () => Response.json({ result: [] }),
+    fetch: () => Response.json({ result: { ok: true, checks: [] } }),
   });
   const deadlines = spyOn(AbortSignal, "timeout");
   try {
@@ -551,6 +581,153 @@ test("a browser origin is accepted only for the daemon's own loopback address, w
       (await health({ origin: `http://localhost:${server.port}` })).status,
     ).toBe(200);
     expect((await health({ origin: "http://127.0.0.1:1" })).status).toBe(403);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("doctor, config, proxy and DNS replies that are not their report fail as DAEMON_PROTOCOL in text and JSON, valid empty reports still print, and Doctor's exit follows its validated ok", async () => {
+  const { runRigCli } = await import("../src/cli/rig");
+  let reply: unknown;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => Response.json({ result: reply }),
+  });
+  const reads = {
+    doctor: {
+      args: ["doctor"],
+      valid: { ok: true, checks: [] },
+      nested: { ok: true, checks: [{ name: 7, ok: true, message: "" }] },
+    },
+    config: {
+      args: ["config"],
+      valid: {
+        project: "demo",
+        path: "/repo/rig.yaml",
+        revision: "r1",
+        config: { name: "demo" },
+      },
+      nested: {
+        project: "demo",
+        path: "/repo/rig.yaml",
+        revision: "r1",
+        config: "name: demo",
+      },
+    },
+    proxy: {
+      args: ["proxy"],
+      valid: {
+        caddy: {
+          state: "stopped",
+          ports: { http: 80, https: 443 },
+          ca: "internal",
+        },
+        sites: [],
+      },
+      nested: {
+        caddy: {
+          state: "running",
+          ports: { http: "80", https: 443 },
+          ca: "internal",
+        },
+        sites: [],
+      },
+    },
+    dns: {
+      args: ["dns", "list"],
+      valid: { provider: "cloudflare", zones: [], records: [], hostnames: [] },
+      nested: {
+        provider: "cloudflare",
+        zones: [{ id: 1, name: "example.com" }],
+        records: [],
+        hostnames: [],
+      },
+    },
+  };
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    const run = async (args: string[], result: unknown) => {
+      reply = result;
+      let stdout = "";
+      let stderr = "";
+      const exit = await runRigCli(args, {
+        root: "/tmp/rig-594-transport/.rig",
+        cwd: "/repo",
+        client,
+        output: {
+          write(value: string) {
+            stdout += value;
+          },
+          error(value: string) {
+            stderr += value;
+          },
+        },
+        diagnostics: {
+          async record() {
+            return {};
+          },
+        },
+        wait: async () => {},
+        newOperationId: () => "read-op",
+      });
+      return { exit, stdout, stderr };
+    };
+    const protocol = {
+      error: {
+        code: "DAEMON_PROTOCOL",
+        message: "rigd returned an invalid response.",
+        hint: "Check that rig and rigd use the same version.",
+      },
+    };
+    for (const [action, read] of Object.entries(reads)) {
+      for (const malformed of [null, 42, "report", [], {}, read.nested]) {
+        const json = await run([...read.args, "--json"], malformed);
+        expect({
+          action,
+          malformed,
+          ...json,
+          stdout: JSON.parse(json.stdout),
+        }).toEqual({
+          action,
+          malformed,
+          exit: 1,
+          stdout: protocol,
+          stderr: "",
+        });
+        const text = await run(read.args, malformed);
+        expect({ action, malformed, ...text }).toEqual({
+          action,
+          malformed,
+          exit: 1,
+          stdout: "",
+          stderr: `${protocol.error.message}\n${protocol.error.hint}\n`,
+        });
+      }
+      const valid = await run([...read.args, "--json"], read.valid);
+      expect({
+        action,
+        exit: valid.exit,
+        report: JSON.parse(valid.stdout),
+      }).toEqual({ action, exit: 0, report: read.valid });
+      expect((await run(read.args, read.valid)).exit).toBe(0);
+    }
+    // A field rigd adds is kept: --json prints the report whole.
+    const extended = { ok: true, checks: [], checkedAt: "2026-10-20T00:00Z" };
+    expect(
+      JSON.parse((await run(["doctor", "--json"], extended)).stdout),
+    ).toEqual(extended);
+    const failing = {
+      ok: false,
+      checks: [
+        { name: "rigd", ok: false, message: "The daemon is not reachable." },
+      ],
+    };
+    const doctor = await run(["doctor", "--json"], failing);
+    expect({ exit: doctor.exit, report: JSON.parse(doctor.stdout) }).toEqual({
+      exit: 1,
+      report: failing,
+    });
   } finally {
     await server.stop(true);
   }

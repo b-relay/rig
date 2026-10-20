@@ -817,6 +817,7 @@ for (const when of ["before start", "during wait", "after page"] as const) {
       waits = 0;
     if (when === "before start") controller.abort();
     const start = performance.now();
+    let errors = "";
     expect(
       await runRigCli(["logs", "stable", "--follow"], {
         root: "/isolated/.rig",
@@ -843,7 +844,7 @@ for (const when of ["before start", "during wait", "after page"] as const) {
             if (when === "after page") controller.abort();
           },
           error(value) {
-            throw new Error(value);
+            errors += value;
           },
         },
         diagnostics: {
@@ -853,7 +854,13 @@ for (const when of ["before start", "during wait", "after page"] as const) {
         },
         newOperationId: () => "cancel-follow",
       }),
-    ).toBe(0);
+      // Cancelled before its first page, the read never answered; once it follows, cancelling is how the stream ends.
+    ).toBe(when === "before start" ? 130 : 0);
+    expect(errors).toBe(
+      when === "before start"
+        ? "The read was interrupted before rigd answered; nothing was printed.\nRun it again.\n"
+        : "",
+    );
     expect(performance.now() - start).toBeLessThan(250);
     expect(polls).toBe(when === "before start" ? 0 : 1);
     expect(waits).toBe(when === "during wait" ? 1 : 0);
@@ -1248,54 +1255,68 @@ test("a mutation that finishes after the first Ctrl-C still renders its result a
   expect(text).toContain("beta stable started");
 });
 
-test("Ctrl-C during a read is passed to the client, and the aborted read exits 0", async () => {
-  const cancel = new AbortController();
-  let text = "";
-  let received: AbortSignal | undefined;
-  const exit = await runRigCli(["list"], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    signal: cancel.signal,
-    wait: async () => {},
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status");
-      },
-      command(_request, signal) {
-        received = signal;
-        return new Promise((_resolve, reject) => {
-          signal?.addEventListener("abort", () =>
-            reject(
-              new RigError(
-                "CANCELLED",
-                "The operation was cancelled.",
-                "Retry.",
+for (const json of [false, true])
+  test(`Ctrl-C during a read is passed to the client, and the read that never answered exits 130 (json: ${json})`, async () => {
+    const cancel = new AbortController();
+    let text = "";
+    let errors = "";
+    let received: AbortSignal | undefined;
+    const exit = await runRigCli(json ? ["list", "--json"] : ["list"], {
+      root: "/isolated/.rig",
+      cwd: "/workspace",
+      signal: cancel.signal,
+      wait: async () => {},
+      client: {
+        async status(): Promise<ProjectStatusReport> {
+          throw new Error("Unexpected status");
+        },
+        command(_request, signal) {
+          received = signal;
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener("abort", () =>
+              reject(
+                new RigError(
+                  "CANCELLED",
+                  "The operation was cancelled.",
+                  "Retry.",
+                ),
               ),
-            ),
-          );
-          queueMicrotask(() => cancel.abort());
-        });
+            );
+            queueMicrotask(() => cancel.abort());
+          });
+        },
       },
-    },
-    output: {
-      write(value) {
-        text += value;
+      output: {
+        write(value) {
+          text += value;
+        },
+        error(value) {
+          errors += value;
+        },
       },
-      error(value) {
-        text += value;
+      diagnostics: {
+        async record() {
+          return {};
+        },
       },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    newOperationId: () => "read",
+      newOperationId: () => "read",
+    });
+    expect(exit).toBe(130);
+    expect(received).toBe(cancel.signal);
+    const interrupted = {
+      code: "CANCELLED",
+      message:
+        "The read was interrupted before rigd answered; nothing was printed.",
+      hint: "Run it again.",
+    };
+    if (json) {
+      expect(JSON.parse(text)).toEqual({ error: interrupted });
+      expect(errors).toBe("");
+    } else {
+      expect(text).toBe("");
+      expect(errors).toBe(`${interrupted.message}\n${interrupted.hint}\n`);
+    }
   });
-  expect(exit).toBe(0);
-  expect(received).toBe(cancel.signal);
-  expect(text).toBe("");
-});
 
 function quietDependencies(sink: { text: string }) {
   return {

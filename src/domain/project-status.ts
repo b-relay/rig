@@ -413,7 +413,11 @@ export interface StatusSelection {
   operationId?: string;
 }
 export interface ProjectStatusReader {
-  status(selection: StatusSelection): Promise<ProjectStatusReport>;
+  /** The signal, when given, abandons the read as CANCELLED. */
+  status(
+    selection: StatusSelection,
+    signal?: AbortSignal,
+  ): Promise<ProjectStatusReport>;
 }
 /** A Service's state as its cached health check result says, on one line, the way `rig status` and the dashboard show it:
  * `healthy · checked 12s ago`, `healthy · 1/3 failed · checked 4s ago`, `unhealthy 3/3 · HTTP 503 · restarted 2 times`.

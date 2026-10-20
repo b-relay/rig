@@ -58,7 +58,12 @@ export function createProjectDocuments(
         throw new ConfigError(
           "No Project config found in this directory or its parents within the repository.",
           "missing_config",
-          { startPath: path },
+          // Where the search ran, so a command that needs only recorded state can find the Project registered there.
+          {
+            startPath: path,
+            repository: location.repoPath,
+            searchedFrom: location.mainTreePath,
+          },
           "Run rig init in a repository, or select a registered Project.",
         );
       return { ...found, gitRequired: location.gitRequired };

@@ -1258,7 +1258,7 @@ test("SIGTERM lets an in-flight command finish and answer before the daemon clos
       port: address!.port,
       token: "test-secret",
     });
-    const inFlight = client.command({ action: "doctor" });
+    const inFlight = client.command({ action: "up" });
     await Bun.sleep(300);
     child.kill("SIGTERM");
     expect(await inFlight).toEqual({ done: true });

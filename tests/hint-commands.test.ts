@@ -11,6 +11,7 @@ import {
   type RigCommandPath,
 } from "../src/domain/rig-command";
 import { generatedPreviewName } from "../src/domain/target-selector";
+import { pendingRenameAdvice } from "../src/runtime/rename";
 import { shellArgs } from "./support/shell-args";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 
@@ -375,4 +376,26 @@ test("a line the shell refuses, such as one with an unmatched quote, is refused 
     "--project",
     "a b",
   ]);
+});
+
+test("the advice for an unfinished rename names rename commands the grammar accepts", async () => {
+  const advice = [
+    pendingRenameAdvice({ name: "before", repoPath: "/r" }, { to: "after" }),
+    pendingRenameAdvice({ name: "before", repoPath: "/r" }, { to: "before" }),
+    pendingRenameAdvice(
+      { name: "a".repeat(129), repoPath: "/r" },
+      { to: "short" },
+    ),
+  ].join(" ");
+  const commands = [...advice.matchAll(/rig rename .+?(?= to | in )/g)].map(
+    (match) => match[0],
+  );
+  expect(commands).toEqual([
+    "rig rename after --project before",
+    "rig rename before --project before",
+    "rig rename before --project before",
+    "rig rename short",
+  ]);
+  for (const command of commands)
+    expect(await refusal(shellArgs(command))).toBeUndefined();
 });

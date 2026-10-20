@@ -3052,8 +3052,8 @@ changes, the rename is recorded on the registration: the new name, which no
 other Project may then take by `rig init` or `rig rename`, and how the env
 directory is carried (a copy is made aside and published whole). A failure
 puts rig.yaml and the env files back. A rename interrupted by a crash is
-reported by `rig doctor` (`project-rename`): `rig rename <new> --project <old>`
-finishes it, and `rig rename <old> --project <old>` undoes it, whatever step it
+reported by `rig doctor` (`project-rename`): `rig rename <new name> --project <current name>`
+finishes it, and `rig rename <current name> --project <current name>` undoes it, whatever step it
 reached; any other rename of the Project is refused with `RENAME_PENDING` until
 then. One that only writes the registered name back to a hand-edited rig.yaml
 is finished by running it again. When the env files were moved and a new

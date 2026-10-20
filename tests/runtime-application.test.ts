@@ -5128,7 +5128,7 @@ test("names registered before the name rule keep working, and doctor reports eac
   ).toMatchObject({
     ok: false,
     hint: expect.stringContaining(
-      "rig deploy preview feature --deployment <new name>, then rig down preview --deployment all --destroy",
+      "rig deploy preview feature --deployment <new name>, then rig down preview --deployment all --project demo --destroy",
     ),
   });
   expect(report.checks.find((check) => check.name === "DEV/name")?.ok).toBe(

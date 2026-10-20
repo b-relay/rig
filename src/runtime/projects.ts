@@ -6,6 +6,7 @@ import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { DiscoverySearch, RuntimeDependencies } from "./contracts";
 import { shellWord } from "../domain/target-selector";
+import { pendingRenameAdvice } from "./rename";
 import {
   MAX_NAME_LENGTH,
   caseVariantOf,
@@ -289,7 +290,7 @@ function assertRegistrationAvailable(
     throw new RigError(
       "PROJECT_CONFLICT",
       `Project '${renaming.name}' has an unfinished rename to '${renaming.renaming!.to}', so its env files may be under that name already.`,
-      `Choose another name: ${anotherName(identity)}. Or finish or undo that rename first (rig rename ${renaming.renaming!.to} --project ${renaming.name}, or rig rename ${renaming.name} --project ${renaming.name}).`,
+      `Choose another name: ${anotherName(identity)}. Or end that rename first. ${pendingRenameAdvice(renaming, renaming.renaming!)}`,
       { registeredName: renaming.name },
     );
   if (

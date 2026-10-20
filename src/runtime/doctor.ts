@@ -287,7 +287,7 @@ async function projectNamesCheck(
     hint: [
       ...shared.map(
         (names) =>
-          `Rename all but one of ${quoted(names)}: run rig rename <new name> --project ${names[names.length - 1]}. The renamed Project keeps a copy of the env files; remove from each copy what belongs to the other Project.`,
+          `Rename all but one of ${quoted(names)}: run rig rename <new name> --project ${shellWord(names[names.length - 1]!)}. The renamed Project keeps a copy of the env files; remove from each copy what belongs to the other Project.`,
       ),
       ...long.map(
         (project) =>

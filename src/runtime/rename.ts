@@ -7,6 +7,7 @@ import type {
 } from "../domain/runtime";
 import { RigError, failureCauses, failureReason } from "../domain/errors";
 import { MAX_NAME_LENGTH, nameKey, nameProblem } from "../domain/names";
+import { shellWord } from "../domain/target-selector";
 import type { RuntimeDependencies } from "./contracts";
 
 /** What a rename did: the record as stored, and what the operator should know about the files it carried. */
@@ -150,14 +151,14 @@ export async function renameProject(
         project: renamed(project, newName, configPath),
         warnings: [
           ...copyWarnings(project, newName, carried, sharedWith, envRoot),
-          `The rename was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig rename ${newName} --project ${project.name} to finish the rename.`,
+          `The rename was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, finish the rename: ${pendingRenameAdvice(project, { to: newName })}`,
         ],
       };
     if (saved === undefined)
       throw new RigError(
         "RENAME_UNCERTAIN",
         `Project '${project.name}' may or may not be renamed '${newName}': its rig.yaml and env files have the new name, saving the registration failed, and the state could not be read back.`,
-        `Run rig list. If ${project.name} is still listed, run rig rename ${newName} --project ${project.name} to finish the rename.`,
+        `Run rig list. If ${project.name} is still listed: ${pendingRenameAdvice(project, { to: newName })}`,
         { from: project.name, to: newName },
         failureCauses(error),
       );
@@ -190,11 +191,12 @@ export function pendingRenameAdvice(
   pending: Pick<PendingRename, "to">,
 ): string {
   const { name } = project;
+  const [to, own] = [shellWord(pending.to), shellWord(name)];
   if (nameProblem(name))
-    return `Run rig rename ${pending.to} in ${project.repoPath} to finish the rename.`;
+    return `Run rig rename ${to} in ${project.repoPath} to finish the rename.`;
   return pending.to === name
-    ? `Run rig rename ${name} --project ${name} to finish writing name: ${name} to rig.yaml.`
-    : `Run rig rename ${pending.to} --project ${name} to finish the rename, or rig rename ${name} --project ${name} to undo it.`;
+    ? `Run rig rename ${own} --project ${own} to finish writing name: ${name} to rig.yaml.`
+    : `Run rig rename ${to} --project ${own} to finish the rename, or rig rename ${own} --project ${own} to undo it.`;
 }
 /** Puts rig.yaml and the env files back as they were before `pending` began, then clears its record, so nothing is left
  * half done. Fails RENAME_ROLLBACK, keeping the record, when something cannot be put back: running the rename again
@@ -275,7 +277,7 @@ function nameTaken(
         ? "The new Project name is already registered."
         : `The new Project name differs only in case from Project '${project.name}', and a Mac's disk does not tell them apart: they would share operator env files and Tool paths.`,
     pending
-      ? `Choose another name, or finish or undo that rename first (rig rename ${project.renaming!.to} --project ${project.name}, or rig rename ${project.name} --project ${project.name}).`
+      ? `Choose another name, or end that rename first. ${pendingRenameAdvice(project, project.renaming!)}`
       : "Choose another name.",
     { registeredName: project.name },
   );

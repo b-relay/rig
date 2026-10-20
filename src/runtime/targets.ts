@@ -108,7 +108,7 @@ export function assertNewPreviewName(
     throw new RigError(
       "PREVIEW_NAME",
       `This Project already has a Preview named '${variant}', which differs from '${name}' only in case: a Mac's disk does not tell them apart, so they would share Tool paths.`,
-      `Deploy to it with --deployment ${variant}, or choose another name.`,
+      `Deploy to it with --deployment ${shellWord(variant)}, or choose another name.`,
       { name, existing: variant },
     );
 }

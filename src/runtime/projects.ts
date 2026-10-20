@@ -4,7 +4,7 @@ import type { ProjectRecord } from "../domain/runtime";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
-import type { RuntimeDependencies } from "./contracts";
+import type { DiscoverySearch, RuntimeDependencies } from "./contracts";
 import { shellWord } from "../domain/target-selector";
 /** The commands a Project's recorded state answers without its rig.yaml: stopping or destroying a Target, and reading its
  * status, logs and activity. */
@@ -60,11 +60,21 @@ export async function selectProject(
     // A stop or a read of what was recorded still reaches the Project registered here when its rig.yaml cannot be read,
     // as --project does; anything that plans from rig.yaml keeps failing on it.
     const recorded = RECORDED_STATE_ACTIONS.has(command.action)
-      ? registeredWorkspace(error, state.projects)
+      ? workspaceOfFailure(error, state.projects)
       : undefined;
     if (!recorded) throw error;
     return { project: recorded, checkout: command.repoPath };
   }
+  // A Project registered nearer than the config found has lost its own rig.yaml; what it recorded is its, not the outer
+  // Project's, so a stop never falls through to an ancestor.
+  const nearest = registeredWorkspace(state.projects, found.searched);
+  if (
+    RECORDED_STATE_ACTIONS.has(command.action) &&
+    nearest &&
+    nearest.repoPath !== found.repoPath &&
+    within(nearest.repoPath, found.repoPath)
+  )
+    return { project: nearest, checkout: command.repoPath };
   const byName = state.projects.find(
     (p) => p.name === found.document.config.name,
   );
@@ -99,26 +109,41 @@ export async function selectProject(
   assertIdentity(project, found.document);
   return { project, document: found.document, checkout: command.repoPath };
 }
-/** The registered Project whose rig.yaml discovery could not read: the one in the directory of the file that failed, or,
- * when the repository has no rig.yaml left, the deepest one between the repository root and where the search began.
- * Never a Project outside that repository, nor one whose config a nearer unreadable one hides. */
-function registeredWorkspace(
+/** The registered Project a failed discovery ran in: the nearest one around where it searched, whether its own rig.yaml
+ * failed or is gone and an outer one failed instead. Undefined when none is registered there, or when the config that
+ * failed lies nearer than it, which is another, unregistered Project's. */
+function workspaceOfFailure(
   error: unknown,
   projects: readonly ProjectRecord[],
 ): ProjectRecord | undefined {
   if (!(error instanceof ConfigError)) return undefined;
-  const { path, repository, searchedFrom } = error.context;
-  if (error.code !== "missing_config")
-    return typeof path === "string"
-      ? projects.find((p) => p.repoPath === dirname(path))
-      : undefined;
-  if (typeof repository !== "string" || typeof searchedFrom !== "string")
-    return undefined;
+  const { path, searched } = error.context;
+  if (!isSearch(searched)) return undefined;
+  const nearest = registeredWorkspace(projects, searched);
+  if (!nearest || typeof path !== "string") return nearest;
+  const failed = dirname(path);
+  return failed !== nearest.repoPath && within(failed, nearest.repoPath)
+    ? undefined
+    : nearest;
+}
+/** The deepest Project registered between the repository root and where the search began; never one outside it. */
+function registeredWorkspace(
+  projects: readonly ProjectRecord[],
+  searched: DiscoverySearch,
+): ProjectRecord | undefined {
   return projects
     .filter(
-      (p) => within(p.repoPath, repository) && within(searchedFrom, p.repoPath),
+      (p) =>
+        within(p.repoPath, searched.repository) &&
+        within(searched.from, p.repoPath),
     )
     .sort((a, b) => b.repoPath.length - a.repoPath.length)[0];
+}
+function isSearch(value: unknown): value is DiscoverySearch {
+  const search = value as Partial<DiscoverySearch> | undefined;
+  return (
+    typeof search?.repository === "string" && typeof search.from === "string"
+  );
 }
 /** `path` is `directory` or inside it. */
 function within(path: string, directory: string): boolean {

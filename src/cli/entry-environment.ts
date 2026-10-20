@@ -99,22 +99,23 @@ export function reportRootFailure(error: unknown, output: UserOutput): number {
 /** Terminal text, written in order and only as fast as each reader takes it. A full pipe (EAGAIN) keeps the rest of the
  * text queued and tries again shortly, so a slow reader gets every byte rather than a cut record; each write resolves
  * once its text was taken. A reader that has gone away (a closed pipe, `| head`) is seen at the write that fails, even an
- * empty one: that text and all later text to the stream are dropped, and onClosed runs once. `abandon` drops what is
- * still queued, for a reader that stopped taking it, and `flushed` then resolves false. Bun's stream writes swallow
+ * empty one: that text and all later text to the stream are dropped, and onClosed runs once. Any other write failure
+ * (a full disk, a file size limit, EIO) does the same, and `flushed` then names it, since what the stream holds is
+ * incomplete. `abandon` drops what is still queued, for a reader that stopped taking it. Bun's stream writes swallow
  * EPIPE, which is why the file descriptors are written directly. */
 export function userOutput(
   options: { onClosed?: () => void; abandon?: AbortSignal } = {},
 ): UserOutput & {
-  /** Resolves once every text written so far was taken or dropped with its gone reader; false when `abandon` dropped some. */
-  flushed(): Promise<boolean>;
+  /** Resolves once every text written so far was taken, or dropped with its gone reader: `abandoned` when `abandon`
+   * dropped some, `failed` when a write failed for any other reason. */
+  flushed(): Promise<{ abandoned: boolean; failed?: RigError }>;
 } {
   let closed = 0;
-  const stdout = outputStream(1, () => {
+  const ended = () => {
     if (++closed === 1) options.onClosed?.();
-  });
-  const stderr = outputStream(2, () => {
-    if (++closed === 1) options.onClosed?.();
-  });
+  };
+  const stdout = outputStream(1, ended);
+  const stderr = outputStream(2, ended);
   options.abandon?.addEventListener(
     "abort",
     () => {
@@ -128,19 +129,33 @@ export function userOutput(
     error: stderr.write,
     async flushed() {
       await Promise.all([stdout.idle(), stderr.idle()]);
-      return !stdout.abandoned() && !stderr.abandoned();
+      const failure = stdout.failure() ?? stderr.failure();
+      return {
+        abandoned: stdout.abandoned() || stderr.abandoned(),
+        ...(failure
+          ? {
+              failed: new RigError(
+                "OUTPUT_FAILED",
+                `rig could not write its ${stdout.failure() ? "output" : "error output"} (${failure}), so what it wrote there is incomplete.`,
+                "Check where it goes: the disk's free space, a file size limit, or the device.",
+                { code: failure },
+              ),
+            }
+          : {}),
+      };
     },
   };
 }
 /** How long a full pipe is left before it is tried again, doubling from the first to the last while it stays full. */
 const FULL_PIPE_RETRY_MS = { first: 1, last: 50 };
-function outputStream(fd: 1 | 2, readerGone: () => void) {
+function outputStream(fd: 1 | 2, ended: () => void) {
   const queue: { bytes: Buffer; offset: number; taken: () => void }[] = [];
   let tail: Promise<void> = Promise.resolve();
   let retry: ReturnType<typeof setTimeout> | undefined;
   let delay = FULL_PIPE_RETRY_MS.first;
   let closed = false;
   let dropped = false;
+  let failure: string | undefined;
   const drop = () => {
     clearTimeout(retry);
     retry = undefined;
@@ -155,15 +170,17 @@ function outputStream(fd: 1 | 2, readerGone: () => void) {
         do head.offset += writeSync(fd, head.bytes, head.offset);
         while (head.offset < head.bytes.length);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EAGAIN") {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EAGAIN") {
           retry = setTimeout(pump, delay);
           delay = Math.min(delay * 2, FULL_PIPE_RETRY_MS.last);
           return;
         }
-        // EPIPE and EBADF mean the reader has gone; any other failure leaves the text no way to reach it either.
+        // EPIPE and EBADF mean the reader has gone, which ends the command as it wished; anything else is a failure.
+        if (code !== "EPIPE" && code !== "EBADF") failure = code ?? "EIO";
         closed = true;
         drop();
-        readerGone();
+        ended();
         return;
       }
       delay = FULL_PIPE_RETRY_MS.first;
@@ -186,6 +203,7 @@ function outputStream(fd: 1 | 2, readerGone: () => void) {
       drop();
     },
     abandoned: () => dropped,
+    failure: () => failure,
   };
 }
 /** A launchd job must outlive package upgrades, so it records the PATH entry (usually a stable symlink) that resolves to the running executable rather than the resolved, version-specific path. */

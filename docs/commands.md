@@ -172,10 +172,12 @@ status` takes no Target.
 - `down`, `status`, `logs` and `activity` run where `rig.yaml` cannot be read
   (an unknown field, broken YAML, or the file removed) still reach the Project
   registered there, as `--project` does: `down` stops the recorded Target and
-  warns that it was stopped as recorded, with the config's problem. Only the
-  Project whose `rig.yaml` failed is reached, never one above it or outside
-  its repository. `up`, `restart`, `deploy` and the rest still fail on the
-  config.
+  warns that it was stopped as recorded, with the config's problem. The
+  Project reached is the nearest one registered around the directory, never
+  one above it or outside its repository: in a Project registered inside
+  another whose `rig.yaml` is gone, it is the inner one, and an unregistered
+  inner `rig.yaml` that fails is refused rather than answered for by the outer
+  one. `up`, `restart`, `deploy` and the rest still fail on the config.
 - `activity` and `logs` print a bounded number of records (20 and 50 by
   default) and say on stderr when they left matching ones out, such as
   `showing 20 of 340 records; --lines or --until to see more`, so stdout redirected to a
@@ -283,8 +285,11 @@ this:
   an incomplete report.
 - A slow reader gets every byte: `rig` waits while the pipe is full rather than
   failing or cutting a record, and exits only once its reader took everything.
-  A reader that goes away (`| head`) ends the command; a `logs --follow`
-  notices it at its next poll.
+  A reader that goes away (`| head`) ends the command with its usual exit; a
+  `logs --follow` notices it at its next poll. A write that fails for any other
+  reason (a full disk, a file size limit) ends it with exit 1 and a message
+  on stderr saying its output is incomplete (with the error, such as `EFBIG`),
+  and nothing is added to what stdout already holds.
 - `logs --follow` has no end of its own. Ctrl-C, SIGTERM or the reader going
   away end it with exit 0, always after a whole record; rigd failing ends it
   with an error line and exit 1.

@@ -53,20 +53,31 @@ export function createProjectDocuments(
   return {
     async discover(path) {
       const location = await inspectProjectLocation(path, discovery);
-      const found = await nearestConfigWithin(location, reads.discoverConfig);
+      // Where the search ran, so a command that needs only recorded state can find the Project registered there.
+      const searched = {
+        repository: location.repoPath,
+        from: location.mainTreePath,
+      };
+      const found = await nearestConfigWithin(
+        location,
+        reads.discoverConfig,
+      ).catch((error: unknown) => {
+        if (!(error instanceof ConfigError)) throw error;
+        throw new ConfigError(
+          error.message,
+          error.code,
+          { ...error.context, searched },
+          error.hint,
+        );
+      });
       if (!found)
         throw new ConfigError(
           "No Project config found in this directory or its parents within the repository.",
           "missing_config",
-          // Where the search ran, so a command that needs only recorded state can find the Project registered there.
-          {
-            startPath: path,
-            repository: location.repoPath,
-            searchedFrom: location.mainTreePath,
-          },
+          { startPath: path, searched },
           "Run rig init in a repository, or select a registered Project.",
         );
-      return { ...found, gitRequired: location.gitRequired };
+      return { ...found, gitRequired: location.gitRequired, searched };
     },
     read: readProjectConfig,
     resolve: (input) => resolveTargetPlan(input, host),

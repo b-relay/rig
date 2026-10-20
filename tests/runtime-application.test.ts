@@ -91,6 +91,7 @@ function fixture() {
           repoPath: path,
           document: await this.read(path),
           gitRequired: false,
+          searched: { repository: path, from: path },
         };
       },
       async read(path) {
@@ -883,18 +884,19 @@ test("down and the reads of recorded state reach the Project registered where ri
   const { runtime, deps, state } = fixture();
   await runtime.command({ action: "init", repoPath: "/tmp/developer" });
   await runtime.command({ action: "up", project: "demo" });
-  const invalid = (path: string) =>
+  // As the discovery adapter reports them: the file that failed, and where the search ran.
+  const invalid = (path: string, from = "/tmp/developer/src") =>
     new ConfigError(
       "Invalid Project configuration.",
       "invalid_config",
-      { path },
+      { path, searched: { repository: "/tmp/developer", from } },
       `In ${path}: Fix config: has no field named "unknown".`,
     );
-  const missing = (repository: string, searchedFrom: string) =>
+  const missing = (repository: string, from: string) =>
     new ConfigError(
       "No Project config found in this directory or its parents within the repository.",
       "missing_config",
-      { startPath: searchedFrom, repository, searchedFrom },
+      { startPath: from, searched: { repository, from } },
     );
   let failure = invalid("/tmp/developer/rig.yaml");
   deps.documents.discover = async () => {
@@ -911,7 +913,7 @@ test("down and the reads of recorded state reach the Project registered where ri
     ).rejects.toMatchObject({ message: "Invalid Project configuration." });
   expect(working().desired).toBe("running");
   // An invalid rig.yaml of an unregistered Project nested in the registered one is that Project's, not its parent's.
-  failure = invalid("/tmp/developer/tools/rig.yaml");
+  failure = invalid("/tmp/developer/tools/rig.yaml", "/tmp/developer/tools");
   await expect(
     runtime.command({ action: "down", repoPath: "/tmp/developer/tools" }),
   ).rejects.toBe(failure);

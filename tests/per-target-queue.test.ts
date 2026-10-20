@@ -149,6 +149,7 @@ async function fixture(host: Record<string, unknown> = {}) {
           repoPath: path,
           document: await this.read(path),
           gitRequired: false,
+          searched: { repository: path, from: path },
         };
       },
       async read(path) {

@@ -84,14 +84,21 @@ import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
 import type { HealthResults } from "./health-monitor";
 import type { HealthTransitions } from "./health-transitions";
+/** Where a discovery searched: upward from `from` (the directory, in the main working tree), never above `repository`. */
+export interface DiscoverySearch {
+  readonly repository: string;
+  readonly from: string;
+}
 export interface ProjectDocuments {
   /** The nearest config at or above `path` inside its Git working repository; a path in a linked
    * worktree is searched from the same place in the main working tree, so it finds the Project its
-   * main checkout registers. A directory that is not a repository is searched alone and reported with `gitRequired`. */
+   * main checkout registers. A directory that is not a repository is searched alone and reported with `gitRequired`.
+   * A config error it throws carries the same `searched` in its context. */
   discover(path: string): Promise<{
     repoPath: string;
     document: ConfigDocument<ProjectConfig>;
     gitRequired: boolean;
+    searched: DiscoverySearch;
   }>;
   read(path: string): Promise<ConfigDocument<ProjectConfig>>;
   initializationInfo(path: string): Promise<{

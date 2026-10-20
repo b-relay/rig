@@ -126,6 +126,7 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
           repoPath: path,
           document: await this.read(path),
           gitRequired: false,
+          searched: { repository: path, from: path },
         };
       },
       async identifyInitialization(path: string) {

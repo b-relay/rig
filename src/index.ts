@@ -30,9 +30,16 @@ export async function main(args: readonly string[]): Promise<number> {
     onClosed: interrupts.interrupt,
     abandon: interrupts.detach,
   });
-  // rig exits once its reader took everything it printed; output given up on makes the exit an interrupted one.
-  const finished = async (code: number) =>
-    (await output.flushed()) ? code : 130;
+  // rig exits once its reader took everything it printed. Output given up on makes the exit an interrupted one; output
+  // that could not be written is a failure, said on stderr so nothing is added to what stdout already holds.
+  const finished = async (code: number) => {
+    const end = await output.flushed();
+    if (end.failed) {
+      await output.error(`${end.failed.message}\n${end.failed.hint}\n`);
+      return 1;
+    }
+    return end.abandoned ? 130 : code;
+  };
   const cwd = process.cwd();
   let root: string;
   try {

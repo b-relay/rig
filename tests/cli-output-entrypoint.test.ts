@@ -183,6 +183,45 @@ test("a one-document read larger than the pipe reaches a slow reader as one vali
   }
 }, 30000);
 
+test("output that cannot be written fails the read on stderr with nothing added to stdout, while a reader that left early ends it with exit 0", async () => {
+  const report = {
+    projects: Array.from({ length: 3000 }, (_, index) => ({
+      name: `project-${index}`,
+      repoPath: `/work/project-${index}`,
+      targetCount: 1,
+    })),
+  };
+  const fixture = await fixtureDaemon(async () => report);
+  try {
+    // An 8 KiB file size limit, with SIGXFSZ ignored so the write fails with EFBIG instead of ending the process.
+    const limited = await pipeline(
+      `trap '' XFSZ; ulimit -f 8; $RIG list --json >"$WORK/out.json" 2>"$WORK/stderr"; echo $? >"$WORK/exit"`,
+      fixture,
+    );
+    expect(limited).toEqual({ exit: 0, stdout: "", stderr: "" });
+    const written = await readFile(join(fixture.directory, "out.json"), "utf8");
+    expect({
+      exit: Number(await readFile(join(fixture.directory, "exit"), "utf8")),
+      stderr: await readFile(join(fixture.directory, "stderr"), "utf8"),
+      bytes: written.length,
+      prefix: JSON.stringify(report).startsWith(written),
+    }).toEqual({
+      exit: 1,
+      stderr:
+        "rig could not write its output (EFBIG), so what it wrote there is incomplete.\nCheck where it goes: the disk's free space, a file size limit, or the device.\n",
+      bytes: 8192,
+      prefix: true,
+    });
+    const closed = await pipeline(
+      `$RIG list --json | head -c 100 >/dev/null; echo "rig=\${PIPESTATUS[0]}"`,
+      fixture,
+    );
+    expect(closed).toEqual({ exit: 0, stdout: "rig=0\n", stderr: "" });
+  } finally {
+    await fixture.stop();
+  }
+}, 30000);
+
 test("a quiet JSON follow ends once its reader has gone, without a new line to write, and polls no more", async () => {
   const entry = {
     timestamp: "2026-10-20T12:00:00Z",

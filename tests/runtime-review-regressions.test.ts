@@ -63,7 +63,13 @@ function fixture() {
       },
     },
     documents: {
-      discover: discoverProject,
+      async discover(path: string) {
+        const found = await discoverProject(path);
+        return {
+          ...found,
+          searched: { repository: found.repoPath, from: path },
+        };
+      },
       read: readProjectConfig,
       resolve: resolveTargetPlan,
     },

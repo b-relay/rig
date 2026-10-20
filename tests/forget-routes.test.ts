@@ -244,6 +244,7 @@ async function rigWorld(
           repoPath: path,
           document: await this.read(path),
           gitRequired: false,
+          searched: { repository: path, from: path },
         };
       },
       async read(path) {

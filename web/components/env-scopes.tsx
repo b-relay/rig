@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { scopeKey } from "@/lib/env";
-import type { EnvFileView } from "@/lib/types";
+import type { EnvFileView, EnvScope } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const ROLE_LABEL = {
@@ -10,33 +10,48 @@ const ROLE_LABEL = {
   preview: "Previews",
 };
 /** The operator env files of a Project as a list to choose from: the Project's files, then each
- * Service's, each for every Target and then per role, with how many names each holds. */
+ * Service's, then each Job's, each for every Target and then per role, with how many names each holds. */
 export function EnvScopes({
   base,
   services,
+  jobs,
   files,
   selected,
 }: {
   /** The page the choice is made on; the scope goes in its query. */
   base: string;
   services: readonly string[];
+  jobs: readonly string[];
   files: readonly EnvFileView[];
   selected: string;
 }) {
-  const groups = [undefined, ...services];
+  const groups = [
+    {
+      title: "Project",
+      owns: (scope: EnvScope) => !scope.service && !scope.job,
+    },
+    ...services.map((service) => ({
+      title: `Service ${service}`,
+      owns: (scope: EnvScope) => scope.service === service,
+    })),
+    ...jobs.map((job) => ({
+      title: `Job ${job}`,
+      owns: (scope: EnvScope) => scope.job === job,
+    })),
+  ];
   return (
     <nav
       aria-label="Env files"
       className="flex flex-col overflow-hidden rounded-xl border bg-card shadow-xs"
     >
-      {groups.map((service) => (
-        <div key={service ?? ""} className="border-b last:border-0">
+      {groups.map((group) => (
+        <div key={group.title} className="border-b last:border-0">
           <div className="px-4 pt-3.5 pb-1.5 text-[11px] font-medium tracking-wider text-idle uppercase">
-            {service ? `Service ${service}` : "Project"}
+            {group.title}
           </div>
           <ul className="flex flex-col pb-2">
             {files
-              .filter((file) => file.scope.service === service)
+              .filter((file) => group.owns(file.scope))
               .map((file) => {
                 const key = scopeKey(file.scope);
                 const current = key === selected;

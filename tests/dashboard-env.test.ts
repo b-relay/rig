@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import {
+  fileNamed,
   layeredKeys,
   own,
-  parseScopeKey,
   readersOf,
   scopeFile,
   scopeKey,
@@ -11,48 +11,68 @@ import {
 import { clientName } from "../web/server/guard";
 import type { EnvFileView } from "../web/lib/types";
 
-const file = (scope: EnvFileView["scope"], keys: string[]): EnvFileView => ({
+const file = (
+  scope: EnvFileView["scope"],
+  keys: string[],
+  revision = "absent",
+): EnvFileView => ({
   scope,
   path: `/rig/env/demo/${scopeFile(scope)}`,
   exists: keys.length > 0,
-  revision: "absent",
+  revision,
   keys,
 });
 
-test("a scope round-trips through its key, and anything malformed names the Project's all.env", () => {
-  for (const scope of [
+test("a scope's key names its file, and anything else names the Project's all.env", () => {
+  const files = [
     {},
     { role: "stable" as const },
     { service: "web" },
     { service: "web", role: "preview" as const },
-  ])
-    expect(parseScopeKey(scopeKey(scope))).toEqual(scope);
-  expect(parseScopeKey("../x:all")).toEqual({});
-  expect(parseScopeKey("web:dev")).toEqual({});
-  expect(parseScopeKey(undefined)).toEqual({});
+    { job: "db-backup", role: "working" as const },
+  ].map((scope) => file(scope, []));
+  for (const each of files)
+    expect(fileNamed(files, scopeKey(each.scope))).toBe(each);
+  for (const key of ["../x:all", "web:dev", undefined])
+    expect(fileNamed(files, key)).toBe(files[0]!);
   expect(scopeFile({ service: "web", role: "stable" })).toBe("web/stable.env");
+  expect(scopeFile({ job: "db-backup" })).toBe("db-backup/all.env");
   expect(scopeReaders({ role: "preview" })).toBe(
-    "Read by every Service and Tool of every Preview.",
+    "Read by every Service, Tool and Job of every Preview.",
+  );
+  expect(scopeReaders({ job: "db-backup", role: "stable" })).toBe(
+    "Read by every run of the db-backup Job, and its restores, in the stable Target.",
   );
 });
 
-test("a Service gets the Project's files, then its own, each for all roles and then its role, later files winning", () => {
+test("a Service or Job gets the Project's files, then its own, each for all roles and then its role, later files winning", () => {
   const files = [
-    file({}, ["A", "B"]),
-    file({ role: "stable" }, ["B"]),
+    file({}, ["A", "B"], "r-all"),
+    file({ role: "stable" }, ["B"], "r-stable"),
     file({ role: "working" }, ["W"]),
-    file({ service: "web" }, ["C"]),
-    file({ service: "web", role: "stable" }, ["A"]),
+    file({ service: "web" }, ["C"], "r-web"),
+    file({ service: "web", role: "stable" }, ["A"], "r-web-stable"),
     file({ service: "api", role: "stable" }, ["D"]),
+    file({ job: "db-backup", role: "stable" }, ["B"], "r-job-stable"),
   ];
-  expect(layeredKeys(files, "stable", "web")).toEqual([
+  expect(layeredKeys(files, "stable", { service: "web" })).toEqual([
     {
       key: "A",
       from: { service: "web", role: "stable" },
+      revision: "r-web-stable",
       shadows: [{}],
     },
-    { key: "B", from: { role: "stable" }, shadows: [{}] },
-    { key: "C", from: { service: "web" }, shadows: [] },
+    { key: "B", from: { role: "stable" }, revision: "r-stable", shadows: [{}] },
+    { key: "C", from: { service: "web" }, revision: "r-web", shadows: [] },
+  ]);
+  expect(layeredKeys(files, "stable", { job: "db-backup" })).toEqual([
+    { key: "A", from: {}, revision: "r-all", shadows: [] },
+    {
+      key: "B",
+      from: { job: "db-backup", role: "stable" },
+      revision: "r-job-stable",
+      shadows: [{}, { role: "stable" }],
+    },
   ]);
   // A Tool gets the Project's files alone.
   expect(layeredKeys(files, "working").map((each) => each.key)).toEqual([
@@ -91,6 +111,8 @@ test("a file reaches the Targets of its role that run its Service", () => {
   expect(
     readersOf({ service: "web" }, targets).map((each) => each.name),
   ).toEqual(["working"]);
+  // Each run and restore of a Job reads its files afresh, so no Target needs a restart.
+  expect(readersOf({ job: "db-backup" }, targets)).toEqual([]);
 });
 
 test("Activity names where a signed-in browser's change came from, not a person, in plain words", () => {

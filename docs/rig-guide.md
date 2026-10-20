@@ -2625,9 +2625,13 @@ A listed `env_file` is required: when it is missing the command fails as
 `ENV_FILE_MISSING` naming the path before any build or process runs. The
 operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
 secrets, since they sit outside every checkout and so work for the Stable
-Target and Previews too. The dashboard's Environment tab edits them, with
-values masked until revealed, and keeps them mode 600; Activity records which
-names changed, never a value. A listed path may be absolute, start with `~/` (the
+Target and Previews too. The dashboard's Environment tab edits them, the
+Project's, each Service's and each job's, with values masked until revealed,
+and keeps them mode 600; Activity records which names changed, never a value.
+A save lands only on the file its changes were made against: when the file
+changed meanwhile (in an editor, or another dashboard), the save is refused,
+the unsaved changes are kept, and the tab names what changed until you review
+them against the current file. A listed path may be absolute, start with `~/` (the
 operator's home; `~user` is rejected as `invalid_path`), or be relative to the
 Target workspace (never to a Service's `working_dir`). On the stable Target and Previews a relative path must stay
 inside that workspace (`path_outside_target` otherwise) and is read from the

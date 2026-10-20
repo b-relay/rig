@@ -161,10 +161,12 @@ export async function signIn(
       message: "That is not this Host's access key.",
       hint: "On the Mac that serves this site, read the key file: <RIG_ROOT>/auth/dashboard.key (~/.rig/auth/dashboard.key by default) for the dashboard that comes with Rig; a working copy or Preview names its own in its log (rig logs).",
     });
+  // On the loopback address the browser already presents the key itself, and a cookie there would reach every port.
+  if (loopbackHost((await headers()).get("host")))
+    return succeeded({ signedIn: true });
   const { header: _header, ...cookie } = sessionCookie(
     policy.accessKey,
     Date.now(),
-    !loopbackHost((await headers()).get("host")),
   );
   (await cookies()).set(cookie);
   return succeeded({ signedIn: true });

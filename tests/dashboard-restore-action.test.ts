@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
-import { local, session } from "./support/dashboard-site";
+import { basic, local } from "./support/dashboard-site";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";
 
@@ -8,7 +8,7 @@ import * as daemon from "../web/server/daemon";
  * control plane are stood in for; admission is the real one, for a signed-in browser on this Mac. */
 
 /** Headers a signed-in dashboard page on this Mac sends with a Server Action. */
-let requestHeaders = new Headers({ ...local(), cookie: session() });
+let requestHeaders = new Headers({ ...local(), authorization: basic() });
 mock.module("next/headers", () => ({
   headers: async () => requestHeaders,
   cookies: async () => ({ get: () => undefined, set() {} }),
@@ -97,7 +97,7 @@ test("the restore action refuses what is not one restore of a named backup, and 
   const own = requestHeaders;
   requestHeaders = new Headers({
     ...local(),
-    cookie: session(),
+    authorization: basic(),
     origin: "https://elsewhere.example",
   });
   try {

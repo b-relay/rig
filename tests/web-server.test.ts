@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import {
   accessPolicy,
   admit,
+  basicPassword,
   keyMatches,
   loopbackHost,
   sessionCookie,
@@ -44,27 +45,55 @@ const post = (headers: Record<string, string>) =>
   });
 const at = { now: NOW };
 
-test("the site's own page is admitted with a session under its published name and on loopback", () => {
+/** An Authorization header presenting `password` the way a browser answers the loopback address's key challenge. */
+const basic = (password: string, user = "rig") =>
+  `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
+const loopback = { host: "127.0.0.1:4100", origin: "http://127.0.0.1:4100" };
+
+test("the site's own page is admitted with a session under its published name, and with the key on loopback", () => {
   const cookie = signedInCookie;
   expect(
     admit(post({ "x-forwarded-for": "127.0.0.1", cookie }), policy, at),
   ).toEqual({ admitted: true, by: "session" });
   expect(
+    admit(post({ ...loopback, authorization: basic(KEY) }), policy, at),
+  ).toEqual({ admitted: true, by: "key" });
+  expect(
     admit(
-      post({ host: "127.0.0.1:4100", origin: "http://127.0.0.1:4100", cookie }),
+      request("GET", { host: "localhost:4100", authorization: basic(KEY, "") }),
       policy,
       at,
-    ),
-  ).toEqual({ admitted: true, by: "session" });
-  expect(
-    admit(request("GET", { host: "localhost:4100", cookie }), policy, at)
-      .admitted,
+    ).admitted,
   ).toBe(true);
+});
+
+test("on loopback no cookie counts, since a browser sends it to every port there; only the key itself does", () => {
+  for (const headers of [
+    { cookie: signedInCookie },
+    { authorization: basic("wrong") },
+    { authorization: `Bearer ${KEY}` },
+    { authorization: basic(KEY).replace("Basic", "Digest") },
+  ] as Record<string, string>[])
+    expect(admit(post({ ...loopback, ...headers }), policy, at)).toMatchObject({
+      status: 401,
+      code: "KEY_REQUIRED",
+    });
+  // Nor does presenting the key to signIn: on loopback there is nothing for it to hand out.
+  expect(
+    admit(post(loopback), policy, { ...at, signingIn: true }),
+  ).toMatchObject({ code: "KEY_REQUIRED" });
+  // The key works only on loopback; under the published name it takes the session cookie.
+  expect(admit(post({ authorization: basic(KEY) }), policy, at)).toMatchObject({
+    code: "KEY_REQUIRED",
+  });
+  expect(basicPassword(basic("a:b:c"))).toBe("a:b:c");
+  expect(basicPassword("Basic !!!")).toBeUndefined();
+  expect(basicPassword(null)).toBeUndefined();
 });
 
 test("being on this Mac or a trusted address is no sign-in: without a session it is sent to sign in", () => {
   for (const headers of [
-    { host: "127.0.0.1:4100", origin: "http://127.0.0.1:4100" },
+    loopback,
     { "x-forwarded-for": "127.0.0.1" },
     { "x-forwarded-for": "100.101.102.103" },
   ] as Record<string, string>[])
@@ -131,8 +160,26 @@ test("a change needs a browser origin; a link from elsewhere opens a page but ca
   ).toMatchObject({ code: "ORIGIN" });
 });
 
-test("only loopback and trusted client addresses reach the site, session or not, and every forwarded hop must", () => {
+test("a trusted list limits the site to loopback and its addresses, session or not, and every forwarded hop must be in it", () => {
   const cookie = signedInCookie;
+  // An empty list limits nothing: any address signs in with the key, and still needs it.
+  const open = accessPolicy({
+    publicHost: "rig.b-relay.com",
+    port: 4100,
+    accessKey: KEY,
+  });
+  expect(
+    admit(post({ "x-forwarded-for": "203.0.113.9" }), open, at),
+  ).toMatchObject({ status: 401, code: "KEY_REQUIRED" });
+  expect(
+    admit(post({ "x-forwarded-for": "203.0.113.9" }), open, {
+      ...at,
+      signingIn: true,
+    }),
+  ).toEqual({ admitted: true, by: "signingIn" });
+  expect(
+    admit(post({ "x-forwarded-for": "203.0.113.9", cookie }), open, at),
+  ).toEqual({ admitted: true, by: "session" });
   for (const signedIn of [{}, { cookie }] as Record<string, string>[])
     expect(
       admit(post({ "x-forwarded-for": "203.0.113.9", ...signedIn }), policy, {
@@ -227,6 +274,7 @@ test("a sandboxed Preview relays, since it only reaches its own rigd", () => {
     port: 4100,
     sandboxed: true,
     accessKey: KEY,
+    trustedClients: parseTrustedClients("100.64.0.0/10"),
   });
   expect(sandboxed.relaysAt).toBeUndefined();
   expect(
@@ -437,7 +485,7 @@ test("a session is refused once expired, forged, or signed with a replaced key",
 
 test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
   const now = 1_800_000_000_000;
-  const cookie = sessionCookie("key-a", now, true);
+  const cookie = sessionCookie("key-a", now);
   const { header } = cookie;
   const value = `${cookie.name}=${cookie.value}`;
   const days = (count: number) => count * 24 * 60 * 60 * 1000;
@@ -454,17 +502,13 @@ test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
     secure: true,
     sameSite: "lax",
   });
-  // On the loopback address, plain HTTP, the same cookie without Secure.
-  const plain = sessionCookie("key-a", now, false);
-  expect(plain.header).toContain("Path=/; HttpOnly; SameSite=Lax");
-  expect(plain).toMatchObject({ value: cookie.value, secure: false });
   expect(loopbackHost("127.0.0.1:4100")).toBe(true);
   expect(loopbackHost("localhost:4100")).toBe(true);
   expect(loopbackHost("rig.b-relay.com")).toBe(false);
   expect(loopbackHost("127.0.0.1.evil.test:4100")).toBe(false);
   expect(loopbackHost(null)).toBe(false);
   // A visit on day 399 issues a cookie that outlives the first.
-  const later = sessionCookie("key-a", now + days(399), true);
+  const later = sessionCookie("key-a", now + days(399));
   const renewed = `${later.name}=${later.value}`;
   expect(signedIn(renewed, "key-a", now + days(700))).toBe(true);
 });

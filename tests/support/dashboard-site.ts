@@ -45,6 +45,9 @@ for (const name of names)
 /** A Cookie header holding a session this site signed, valid for an hour. */
 export const session = (): string =>
   `rig_session=${sessionValue(SITE.key, Math.floor(Date.now() / 1000) + 3600)}`;
+/** An Authorization header presenting the key, as a browser answers the loopback address's challenge. */
+export const basic = (password: string = SITE.key): string =>
+  `Basic ${Buffer.from(`rig:${password}`).toString("base64")}`;
 /** Headers a page on this Mac sends, addressed to the site's loopback port: no X-Forwarded-For. */
 export const local = (): Record<string, string> => ({
   host: `127.0.0.1:${SITE.port}`,

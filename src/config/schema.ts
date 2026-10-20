@@ -1384,7 +1384,7 @@ export const hostConfigSchema = z.strictObject({
           )
           .default([])
           .describe(
-            "Addresses besides this Mac that may reach the published dashboard and sign in with its access key: IP addresses, or IPv4 blocks such as 100.64.0.0/10 for a tailnet. A trusted address still signs in; every other address is refused outright. A change applies when rigd next starts (rigd install).",
+            "Which addresses may reach the published dashboard and sign in with its access key. Empty (the default): any address may. Listed (IP addresses, or IPv4 blocks such as 100.64.0.0/10 for a tailnet): only this Mac and those addresses; every other address is refused outright. Either way every browser signs in with the key; a listed address never skips it. A change applies when rigd next starts (rigd install).",
           ),
       }),
     ])

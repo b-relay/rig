@@ -9,8 +9,9 @@ import { cn } from "@/lib/utils";
 import { SignInForm } from "./form";
 
 export const metadata: Metadata = { title: "Sign in" };
-/** Shown in place of any page to a browser without a session, on this Mac as anywhere else. A browser on this Mac is
- * shown the key file's exact path; one elsewhere only where it lives. */
+/** Shown under the published name in place of any page to a browser without a session (on the loopback address the
+ * browser itself asks for the key). A browser on this Mac is shown the key file's exact path; one elsewhere only
+ * where it lives. */
 export default async function SignInPage() {
   const keyFile = fromThisMac((await headers()).get("x-forwarded-for"))
     ? site().keyFile

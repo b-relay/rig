@@ -1,10 +1,17 @@
 import { expect, mock, test } from "bun:test";
-import { SITE, local, session, throughCaddy } from "./support/dashboard-site";
+import {
+  SITE,
+  basic,
+  local,
+  session,
+  throughCaddy,
+} from "./support/dashboard-site";
 import { NextRequest } from "next/server";
 import * as proxyModule from "../web/proxy";
 
-/** Who reaches the dashboard: every page, Server Action and route takes a session, from this Mac as from anywhere
- * else; where a request comes from only decides whether it may reach the site and sign in at all. Requests go through
+/** Who reaches the dashboard: every page, Server Action and route takes the key, from this Mac as from anywhere
+ * else: on the loopback address the key itself, which the browser keeps for that origin, and under the published
+ * name a session cookie. Where a request comes from only decides whether it may reach the site and sign in at all. Requests go through
  * the real proxy and actions against a site with an access key, published at rig.example.test and trusting
  * 100.64.0.0/10; Next's request headers are stood in for, and the Rig root has no rigd. */
 
@@ -99,11 +106,49 @@ for (const [where, headers] of [
     await expect(asPage(headers, () => daemon())).rejects.toMatchObject({
       code: "SIGN_IN_REQUIRED",
     });
-    // The sign-in page and its own action stay open to it.
-    expect(passed(await page(headers, "/sign-in"))).toBe(true);
-    expect(passed(await action(headers, "/sign-in"))).toBe(true);
   });
 }
+
+test("on the loopback address the sign-in page asks the browser for the key, which it keeps for that origin alone", async () => {
+  const challenge = await page(local(), "/sign-in?next=%2Fprojects%2Fpantry");
+  expect(challenge.status).toBe(401);
+  expect(challenge.headers.get("www-authenticate")).toBe(
+    'Basic realm="Rig dashboard", charset="UTF-8"',
+  );
+  expect(challenge.headers.get("content-security-policy")).toContain(
+    "default-src 'none'",
+  );
+  // Dismissing the prompt shows where the key is.
+  expect(await challenge.text()).toContain(`cat ${SITE.keyFile}`);
+  // There is no sign-in action to reach here, and a session cookie, which the browser would send to every port of
+  // 127.0.0.1, counts for nothing: one replayed from another local listener is refused.
+  expect((await action(local(), "/sign-in")).status).toBe(401);
+  for (const answer of [
+    await page({ ...local(), cookie: session() }),
+    await action({ ...local(), cookie: session() }),
+    await route({ ...local(), cookie: session() }),
+    await page({ ...local(), authorization: basic("wrong") }),
+  ])
+    expect(passed(answer)).toBe(false);
+  expect(
+    await asPage({ ...local(), cookie: session() }, () => runCommand(list)),
+  ).toMatchObject({ ok: false, failure: { code: "KEY_REQUIRED" } });
+  // With the key, the browser goes on to where it was going.
+  const onward = await page(
+    { ...local(), authorization: basic() },
+    "/sign-in?next=%2Fprojects%2Fpantry",
+  );
+  expect(onward.status).toBe(303);
+  expect(new URL(onward.headers.get("location")!).pathname).toBe(
+    "/projects/pantry",
+  );
+});
+
+test("under the published name the sign-in page and its own action stay open to a browser without a session", async () => {
+  const headers = throughCaddy("127.0.0.1");
+  expect(passed(await page(headers, "/sign-in"))).toBe(true);
+  expect(passed(await action(headers, "/sign-in"))).toBe(true);
+});
 
 test("a trusted address without a session is sent to sign in, and reaches no action or route", async () => {
   const headers = throughCaddy(TRUSTED);
@@ -184,12 +229,13 @@ test("the readiness probe and the build's static files need no session, and carr
   }
 });
 
-test("a valid session reaches every page, action and route, from this Mac and from a trusted address", async () => {
+test("the key reaches every page, action and route: on loopback itself, under the published name as a session", async () => {
   for (const headers of [
-    { ...local(), cookie: session() },
+    { ...local(), authorization: basic() },
     { ...throughCaddy("127.0.0.1"), cookie: session() },
     { ...throughCaddy(TRUSTED), cookie: session() },
-  ]) {
+  ] as Record<string, string>[]) {
+    const published = headers.host === SITE.host;
     for (const answer of [
       await page(headers),
       await page(headers, "/"),
@@ -200,7 +246,10 @@ test("a valid session reaches every page, action and route, from this Mac and fr
     ]) {
       expect(passed(answer)).toBe(true);
       expect(answer.headers.get("content-security-policy")).toContain("nonce-");
-      expect(answer.headers.get("set-cookie")).toContain("rig_session=");
+      // Only the published name renews a session; loopback never sets a cookie.
+      if (published)
+        expect(answer.headers.get("set-cookie")).toContain("rig_session=");
+      else expect(answer.headers.get("set-cookie")).toBeNull();
     }
     // Past every check to rigd's door: this Rig root runs no rigd.
     expect(await asPage(headers, () => runCommand(list))).toMatchObject({
@@ -210,27 +259,31 @@ test("a valid session reaches every page, action and route, from this Mac and fr
   }
 });
 
-test("the key signs a browser in from this Mac and from a trusted address, Secure only over HTTPS", async () => {
+test("signIn issues a Secure session cookie under the published name only, never on loopback", async () => {
   jar.length = 0;
-  expect(await asPage(local(), () => signIn("wrong"))).toMatchObject({
+  for (const headers of [throughCaddy("127.0.0.1"), throughCaddy(TRUSTED)]) {
+    expect(await asPage(headers, () => signIn("wrong"))).toMatchObject({
+      ok: false,
+      failure: { code: "KEY_REFUSED" },
+    });
+    expect(await asPage(headers, () => signIn(SITE.key))).toEqual({
+      ok: true,
+      value: { signedIn: true },
+    });
+  }
+  // On loopback a browser without the key is refused, and one presenting it gets no cookie.
+  expect(await asPage(local(), () => signIn(SITE.key))).toMatchObject({
     ok: false,
-    failure: { code: "KEY_REFUSED" },
-  });
-  expect(await asPage(local(), () => signIn(SITE.key))).toEqual({
-    ok: true,
-    value: { signedIn: true },
+    failure: { code: "KEY_REQUIRED" },
   });
   expect(
-    await asPage(throughCaddy(TRUSTED), () => signIn(SITE.key)),
+    await asPage({ ...local(), authorization: basic() }, () =>
+      signIn(SITE.key),
+    ),
   ).toMatchObject({ ok: true });
   expect(jar).toMatchObject([
-    { name: "rig_session", secure: false },
+    { name: "rig_session", secure: true },
     { name: "rig_session", secure: true },
   ]);
-  const renewed = (headers: Record<string, string>) =>
-    page({ ...headers, cookie: session() }).then(
-      (answer) => answer.headers.get("set-cookie") ?? "",
-    );
-  expect(await renewed(local())).not.toContain("Secure");
-  expect(await renewed(throughCaddy(TRUSTED))).toContain("Secure");
+  expect(jar).toHaveLength(2);
 });

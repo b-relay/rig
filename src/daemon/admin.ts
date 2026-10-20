@@ -854,14 +854,19 @@ export class DaemonAdmin {
     const { root } = this.options;
     const { status, records, unverified } = await this.inspect();
     // Rig's Caddy can outlive the daemon's record (an install whose rigd never started removes only the record), so it is
-    // removed whether or not rigd is installed.
-    if (!status.installed && !status.running && !status.reachable)
+    // removed whether or not rigd is installed, a system job by the owner's sudo.
+    if (!status.installed && !status.running && !status.reachable) {
+      if (this.options.mode !== "process") {
+        const leftovers = await this.systemLeftovers();
+        if (leftovers.length) throw this.systemRemovalRequired(leftovers);
+      }
       return {
         ...status,
         outcome: (await this.options.proxy?.remove())
           ? "uninstalled"
           : "unchanged",
       };
+    }
     const address = await readDaemonAddress(root);
     // Without a record the mode is unknown; the stop below then tries both
     // launchd and the pid, so a daemon is never left that nothing can remove.

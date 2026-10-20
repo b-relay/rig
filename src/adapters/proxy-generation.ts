@@ -10,6 +10,7 @@ import {
   proxyPaths,
   settingsDigest,
   type HostRoute,
+  type PublishedDashboard,
 } from "../domain/managed-proxy";
 
 /** One generation as it was published: read from its own directory, never through the `current` link again, so a reader
@@ -23,6 +24,8 @@ export interface PublishedGeneration {
   readonly proxy?: ProxySettings;
   /** The owner's `proxy.routes` it serves, and the dashboard's route. */
   readonly customRoutes: readonly HostRoute[];
+  /** The dashboard's route it serves, as rigd asked for it; null for none. Absent from an older rigd's generations. */
+  readonly dashboard?: PublishedDashboard | null;
   /** Its adapted JSON: what a Caddy serving it reports at GET /config/; absent when unreadable. */
   readonly adapted?: unknown;
 }
@@ -50,6 +53,7 @@ export async function currentGeneration(
           : [];
       })
     : [];
+  const dashboard = metadata.dashboard as Partial<PublishedDashboard> | null;
   const adapted = await readFile(files.adapted, "utf8")
     .then((text) => JSON.parse(text) as unknown)
     .catch(() => undefined);
@@ -59,6 +63,12 @@ export async function currentGeneration(
     ...(adapted !== undefined ? { adapted } : {}),
     ...(proxy.success ? { proxy: proxy.data } : {}),
     customRoutes,
+    ...(dashboard === null
+      ? { dashboard: null }
+      : typeof dashboard?.domain === "string" &&
+          (typeof dashboard.port === "number" || dashboard.port === null)
+        ? { dashboard: { domain: dashboard.domain, port: dashboard.port } }
+        : {}),
   };
 }
 /** Host config's proxy section that Caddy does not serve: which of its parts differ from the accepted settings, and why,

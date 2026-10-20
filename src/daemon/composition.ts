@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { createAdminActivityJournal } from "../adapters/admin-activity";
 import { readProxySettings } from "../adapters/proxy-settings";
 import {
@@ -75,6 +76,7 @@ import {
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
 import { proxyReport } from "../adapters/proxy-report";
+import { currentGeneration } from "../adapters/proxy-generation";
 import { createDnsControl } from "../adapters/dns-control";
 import { readDnsToken } from "../adapters/dns-token";
 import { createCloudflareDns } from "../providers/cloudflare-dns";
@@ -98,7 +100,7 @@ import {
   dashboardServing,
   publishedProxySettings,
   dashboardDirectory,
-  dashboardPublication,
+  servedDashboard,
   openDashboard,
   takeOverDashboard,
   withDashboardRoute,
@@ -178,8 +180,23 @@ export async function composeDaemon(
   ]);
   const environment = inheritedEnvironment(process.env);
   // The published dashboard's route, read once as this rigd starts the dashboard it serves, so Caddy and the dashboard
-  // agree until the next rigd: none when the dashboard is off, unpublished, or not installed.
-  const dashboardRoute = await configuredDashboardRoute(root, host);
+  // agree until the next rigd: none when the dashboard is off, unpublished, or not installed. After a rigd install that
+  // could not set Caddy up, the address Caddy accepted stays until an install publishes the new one; a system rigd is
+  // started before its install publishes, and publishes Host config's itself.
+  const accepted =
+    host.proxyMode === "managed" &&
+    mode !== "system" &&
+    (await stat(proxyPaths(root).installFailed).catch(() => undefined))
+      ? await currentGeneration(root).catch(() => undefined)
+      : undefined;
+  const served = servedDashboard(
+    host,
+    await configuredDashboardRoute(root, host),
+    accepted?.proxy && accepted.dashboard !== undefined
+      ? { dashboard: accepted.dashboard, https: accepted.proxy.ports.https }
+      : undefined,
+  );
+  const dashboardRoute = served.route;
   // Opened below; Caddy reads the route it asks for at every publication.
   let dashboard: Dashboard | undefined;
   // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
@@ -257,9 +274,7 @@ export async function composeDaemon(
       : await openDashboard({
           root,
           port: host.dashboard.port,
-          ...((published) => (published ? { published } : {}))(
-            dashboardPublication(host),
-          ),
+          ...(served.publication ? { published: served.publication } : {}),
           directory: dashboardDirectory(root),
           executable: process.execPath,
           retention: logRetention,

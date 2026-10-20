@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
+import { replacePrivateFile } from "../providers/private-files";
 import { readHostConfig } from "../config";
 import type { ProxyMode, ProxySettings } from "../config/proxy-schema";
 import { inspectProxyToken } from "../adapters/proxy-token";
@@ -47,11 +48,9 @@ export interface ProxyInstallation {
   inSync(): Promise<boolean>;
   /** Installs Rig's Caddy and has it serve the current routes and proxy.routes; resolves to warnings. `publish` replaces
    * publishing here, for a system rigd that keeps running and publishes itself (proxy-apply); `defineJob: false` stops
-   * before the job, for a system job that needs the owner's sudo first. */
-  install(how?: {
-    publish?: () => Promise<unknown>;
-    defineJob?: boolean;
-  }): Promise<string[]>;
+   * before the job, for a system job that needs the owner's sudo first. Otherwise a failure is recorded for the rigd started
+   * next (ProxyPaths.installFailed), and a success clears it. */
+  install(how?: InstallHow): Promise<string[]>;
   /** The plist of Rig's Caddy as a system job (`daemon.start: boot`). */
   systemJob(): { label: string; plist: string };
   /** Refuses, before anything stops, what install would refuse from Host config alone: a missing proxy section, both
@@ -61,6 +60,11 @@ export interface ProxyInstallation {
   /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined, and resolves to whether
    * one was. Certificates, generations and the token stay. */
   remove(): Promise<boolean>;
+}
+/** How `install` sets Rig's Caddy up (see ProxyInstallation.install). */
+export interface InstallHow {
+  readonly publish?: () => Promise<unknown>;
+  readonly defineJob?: boolean;
 }
 export interface ProxyInstallationOptions {
   readonly root: string;
@@ -147,6 +151,88 @@ export function createProxyInstallation(
       ),
     );
   }
+  /** See ProxyInstallation.install. */
+  async function setUp(how: InstallHow): Promise<string[]> {
+    const wanted = await settings();
+    await requireToken(options.root, wanted);
+    const warnings: string[] = [];
+    const job = await currentJob();
+    const wasRunning = (await job.state()) === "running";
+    // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
+    // does.
+    const configured = await configuredDashboardRoute(
+      options.root,
+      await readHostConfig(options.root),
+    );
+    const withheld = configured && {
+      domain: configured.domain,
+      port: null,
+    };
+    const caddy = createManagedCaddy({
+      root: options.root,
+      settings,
+      dashboard: { current: () => withheld, confirmed: async () => withheld },
+      run: options.run,
+      job,
+      admin,
+    });
+    const binary = await installCaddyBinary({
+      source: wanted.caddy,
+      paths,
+      dns: wanted.tls.dns,
+      run: options.run,
+      validate: async (file) => {
+        if (!(await stat(paths.entry).catch(() => undefined))) return;
+        await validateWith(file, paths, options.run, options.root);
+      },
+    });
+    // Until the new binary serves, any failure puts the previous one back, so the link never names a binary the running
+    // Caddy is not, and the next install sees the change again.
+    const restoreBinary = async () => {
+      if (binary.changed) await revertBinary(paths);
+    };
+    try {
+      // The current settings, proxy.routes included, are published.
+      if (how.publish) await how.publish();
+      else {
+        await caddy.republish();
+        // This install published nothing more after it, and says so for the rigd it starts (see ProxyPaths.cleanStop).
+        await caddy.close();
+      }
+    } catch (error) {
+      await restoreBinary();
+      throw error;
+    }
+    if (how.defineJob === false) return warnings;
+    try {
+      const defined = await job.install();
+      // A job that kept running still runs the old binary until it starts again.
+      if (binary.changed && wasRunning && !defined.changed) await job.restart();
+      // The job answers from a process started after the switch, so it runs the new copy: it is the one to go back to now.
+      if (binary.changed) await confirmBinary(paths);
+    } catch (error) {
+      await restoreBinary();
+      // Only a Caddy that did not come up blames the new binary; launchd refusing the job does not.
+      if (
+        !binary.changed ||
+        !binary.previous ||
+        !(error instanceof RigError && error.code === "PROXY_START")
+      )
+        throw error;
+      await job.restart().catch(() => job.install().catch(() => {}));
+      throw new RigError(
+        "PROXY_BINARY_START",
+        `The new Caddy (${binary.version}) did not start, so the previous one runs again.`,
+        `Read ${paths.jobLog} for why it failed, fix proxy.caddy, then run rigd install again.`,
+        {
+          evidence: boundedEvidence(
+            await lastLines(paths.jobLog, options.root),
+          ),
+        },
+      );
+    }
+    return warnings;
+  }
   return {
     mode: async () => (await readHostConfig(options.root)).proxyMode,
     async inSync() {
@@ -169,86 +255,20 @@ export function createProxyInstallation(
       );
     },
     async install(how = {}) {
-      const wanted = await settings();
-      await requireToken(options.root, wanted);
-      const warnings: string[] = [];
-      const job = await currentJob();
-      const wasRunning = (await job.state()) === "running";
-      // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
-      // does.
-      const configured = await configuredDashboardRoute(
-        options.root,
-        await readHostConfig(options.root),
-      );
-      const withheld = configured && {
-        domain: configured.domain,
-        port: null,
-      };
-      const caddy = createManagedCaddy({
-        root: options.root,
-        settings,
-        dashboard: { current: () => withheld, confirmed: async () => withheld },
-        run: options.run,
-        job,
-        admin,
-      });
-      const binary = await installCaddyBinary({
-        source: wanted.caddy,
-        paths,
-        dns: wanted.tls.dns,
-        run: options.run,
-        validate: async (file) => {
-          if (!(await stat(paths.entry).catch(() => undefined))) return;
-          await validateWith(file, paths, options.run, options.root);
-        },
-      });
-      // Until the new binary serves, any failure puts the previous one back, so the link never names a binary the running
-      // Caddy is not, and the next install sees the change again.
-      const restoreBinary = async () => {
-        if (binary.changed) await revertBinary(paths);
-      };
+      // A system rigd publishes for itself (proxy-apply); otherwise the rigd started next reads how this went.
+      if (how.publish || how.defineJob === false) return setUp(how);
       try {
-        // The current settings, proxy.routes included, are published.
-        if (how.publish) await how.publish();
-        else {
-          await caddy.republish();
-          // This install published nothing more after it, and says so for the rigd it starts (see ProxyPaths.cleanStop).
-          await caddy.close();
-        }
+        const warnings = await setUp(how);
+        await rm(paths.installFailed, { force: true });
+        return warnings;
       } catch (error) {
-        await restoreBinary();
+        await replacePrivateFile(
+          options.root,
+          paths.installFailed,
+          JSON.stringify({ at: new Date().toISOString() }) + "\n",
+        ).catch(() => {});
         throw error;
       }
-      if (how.defineJob === false) return warnings;
-      try {
-        const defined = await job.install();
-        // A job that kept running still runs the old binary until it starts again.
-        if (binary.changed && wasRunning && !defined.changed)
-          await job.restart();
-        // The job answers from a process started after the switch, so it runs the new copy: it is the one to go back to now.
-        if (binary.changed) await confirmBinary(paths);
-      } catch (error) {
-        await restoreBinary();
-        // Only a Caddy that did not come up blames the new binary; launchd refusing the job does not.
-        if (
-          !binary.changed ||
-          !binary.previous ||
-          !(error instanceof RigError && error.code === "PROXY_START")
-        )
-          throw error;
-        await job.restart().catch(() => job.install().catch(() => {}));
-        throw new RigError(
-          "PROXY_BINARY_START",
-          `The new Caddy (${binary.version}) did not start, so the previous one runs again.`,
-          `Read ${paths.jobLog} for why it failed, fix proxy.caddy, then run rigd install again.`,
-          {
-            evidence: boundedEvidence(
-              await lastLines(paths.jobLog, options.root),
-            ),
-          },
-        );
-      }
-      return warnings;
     },
     async preflight() {
       const wanted = await settings();

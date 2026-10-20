@@ -123,6 +123,38 @@ export async function configuredDashboardRoute(
     https: host.proxy?.ports.https ?? 443,
   };
 }
+/** Pure: where a starting rigd serves the dashboard: its route through Rig's Caddy and the publication the dashboard admits.
+ * Host config's (`configured`, and dashboardPublication), unless Caddy's current generation (`accepted`: the dashboard
+ * route it records and its HTTPS port) was accepted with another domain or HTTPS port, as after an install whose
+ * publication Caddy refused. Then the dashboard keeps the address Caddy serves, or none when Caddy serves none, until
+ * rigd install publishes the new one. `accepted` is undefined before the first generation, or for one an older rigd made. */
+export function servedDashboard(
+  host: Pick<HostConfig, "dashboard" | "proxy">,
+  configured: DashboardRoute | undefined,
+  accepted:
+    | { readonly dashboard: PublishedDashboard | null; readonly https: number }
+    | undefined,
+): { route?: DashboardRoute; publication?: DashboardPublication } {
+  const publication = dashboardPublication(host);
+  const asConfigured = {
+    ...(configured ? { route: configured } : {}),
+    ...(publication ? { publication } : {}),
+  };
+  if (!configured || !accepted || host.dashboard === false) return asConfigured;
+  if (accepted.dashboard === null) return {};
+  const { domain } = accepted.dashboard;
+  const https = accepted.https;
+  if (domain === configured.domain && https === configured.https)
+    return asConfigured;
+  return {
+    route: { domain, port: configured.port, https },
+    publication: {
+      domain,
+      authority: https === 443 ? domain : `${domain}:${https}`,
+      trustedClients: host.dashboard.trusted_clients,
+    },
+  };
+}
 /** Pure: proxy settings with the dashboard's route beside the owner's proxy.routes, as DNS records name the hostnames Rig's
  * Caddy serves. Never what Caddy publishes: the dashboard's upstream comes only from rigd's verified dashboard (see
  * Dashboard.route). Host config refuses a domain proxy.routes already has. */

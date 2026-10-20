@@ -22,6 +22,7 @@ import { processExists } from "../src/daemon/host";
 import { dashboardDirectory } from "../src/daemon/dashboard";
 import { currentGeneration } from "../src/adapters/proxy-generation";
 import { RigError } from "../src/domain/errors";
+import { rigFixture } from "./support/rig-fixture";
 import { readInstallationRecord } from "../src/daemon/installation";
 import { proxyPaths } from "../src/domain/managed-proxy";
 import { createCaddyAdmin } from "../src/providers/caddy-admin";
@@ -340,9 +341,12 @@ test("a dashboard address Caddy could not take is published by the next rigd ins
     hostnames: ["dash-a.example.test"],
     https: w.ports.https,
   });
+  // The rigd it started is told so: its dashboard keeps the address Caddy accepted.
+  expect(existsSync(w.paths.installFailed)).toBe(true);
   // Once the port is free, the same command publishes the new address and withdraws the old one.
   blocker.stop(true);
   expect(await w.admin.install()).toMatchObject({ outcome: "installed" });
+  expect(existsSync(w.paths.installFailed)).toBe(false);
   expect(await served()).toEqual({
     hostnames: ["dash-b.example.test"],
     https,
@@ -356,3 +360,98 @@ test("a dashboard address Caddy could not take is published by the next rigd ins
   expect(await w.admin.install()).toMatchObject({ outcome: "installed" });
   expect(await served()).toEqual({ hostnames: [], https });
 }, 120_000);
+
+/** What `hostname` answers on Caddy's HTTPS `port` (internal CA, so unverified): its body, or undefined when nothing does. */
+async function through(
+  hostname: string,
+  port: number,
+): Promise<string | undefined> {
+  const child = Bun.spawn(
+    [
+      "/usr/bin/curl",
+      "-sk",
+      "--max-time",
+      "3",
+      "--resolve",
+      `${hostname}:${port}:127.0.0.1`,
+      "-w",
+      "\n%{http_code}",
+      `https://${hostname}:${port}/`,
+    ],
+    { stdout: "pipe", stderr: "ignore" },
+  );
+  const lines = (await new Response(child.stdout).text()).split("\n");
+  await child.exited;
+  return lines.at(-1) === "200" ? lines.slice(0, -1).join("\n") : undefined;
+}
+async function eventually<T>(
+  read: () => Promise<T>,
+  wanted: T,
+  ms = 30_000,
+): Promise<T> {
+  let value = await read();
+  for (
+    const deadline = Date.now() + ms;
+    !Bun.deepEquals(value, wanted) && Date.now() < deadline;
+    value = await read()
+  )
+    await Bun.sleep(250);
+  return value;
+}
+
+test("after a rigd install whose new dashboard address Caddy refused, the running dashboard keeps the address Caddy serves; the next install moves both", async () => {
+  if (!caddy)
+    throw new Error("Proxy installation tests require a local caddy.");
+  // Source rig and rigd, with the real dashboard supervisor: the dashboard answers with the address it admits.
+  const f = await rigFixture();
+  cleanups.push(() => f.cleanup());
+  const server = join(dashboardDirectory(f.root), "web", "server.js");
+  await mkdir(join(server, ".."), { recursive: true });
+  await writeFile(
+    server,
+    `Bun.serve({ port: Number(process.env.PORT), hostname: process.env.HOSTNAME, fetch: () => new Response(process.env.RIG_WEB_DASHBOARD_HOST ?? "unpublished") });`,
+  );
+  const http = freePort();
+  const dashboard = freePort();
+  const configure = (domain: string, https: number) =>
+    writeFile(
+      join(f.root, "config.yaml"),
+      `proxy:\n  caddy: ${caddy}\n  ports: { http: ${http}, https: ${https} }\n  tls: { ca: internal }\ndashboard:\n  domain: ${domain}\n  port: ${dashboard}\n`,
+    );
+  const local = () =>
+    fetch(`http://127.0.0.1:${dashboard}/`)
+      .then((response) => response.text())
+      .catch(() => undefined);
+  const a = { domain: "dash-a.example.test", https: freePort() };
+  await configure(a.domain, a.https);
+  expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+  const atA = `${a.domain}:${a.https}`;
+  expect(await eventually(() => through(a.domain, a.https), atA)).toBe(atA);
+
+  // Another program holds the new HTTPS port, so Caddy refuses the new address.
+  const b = { domain: "dash-b.example.test", https: freePort() };
+  const blocker = Bun.serve({
+    hostname: "127.0.0.1",
+    port: b.https,
+    fetch: () => new Response("another program"),
+  });
+  cleanups.push(async () => blocker.stop(true));
+  const before = await recordedPid(join(f.root, "daemon", "address.json"));
+  await configure(b.domain, b.https);
+  expect((await f.rigd(["install"])).code).not.toBe(0);
+  // A new rigd runs, and its dashboard admits the address Caddy still serves it at, not the refused one.
+  expect(await recordedPid(join(f.root, "daemon", "address.json"))).not.toBe(
+    before,
+  );
+  expect(await eventually(local, atA)).toBe(atA);
+  expect(await eventually(() => through(a.domain, a.https), atA)).toBe(atA);
+
+  // Once the port is free, the same command moves Caddy and the dashboard together.
+  blocker.stop(true);
+  expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+  const atB = `${b.domain}:${b.https}`;
+  expect(await eventually(local, atB)).toBe(atB);
+  expect(await eventually(() => through(b.domain, b.https), atB)).toBe(atB);
+  expect(await through(a.domain, a.https)).toBeUndefined();
+  expect((await f.rigd(["install"])).stdout).toContain("unchanged");
+}, 180_000);

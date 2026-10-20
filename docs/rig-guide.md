@@ -335,7 +335,10 @@ within 30 seconds is replaced by the previous one again (`PROXY_BINARY_START`).
 whenever the configuration Caddy serves was accepted with other ones, so after
 an install whose publication failed (a new HTTPS port another program held, for
 example), running it again finishes the change rather than reporting
-`unchanged`. A new definition of the LaunchAgent is loaded only once launchd has
+`unchanged`. Until then the dashboard keeps the domain and HTTPS port Caddy
+still serves it at, and `rig doctor`'s `dashboard` check names the difference.
+A `proxy.routes` hostname a Target already serves is refused before `rigd` is
+restarted. A new definition of the LaunchAgent is loaded only once launchd has
 let the old job go. `rigd uninstall` stops the job and keeps the certificates
 and your files; when stopping it fails, the installation record stays, and
 running `rigd uninstall` again finishes it, as it also removes a Caddy job left

@@ -20,6 +20,7 @@ import {
   withDashboardRoute,
   dashboardDirectory,
   dashboardServing,
+  servedDashboard,
   openDashboard,
   stopLeftOverDashboard,
   type DashboardDependencies,
@@ -603,6 +604,48 @@ test("a published dashboard on a Caddy whose HTTPS port is not 443 is addressed 
   expect(policy.hosts.has("rig.example.com:8443")).toBe(true);
   expect(policy.origins.has("https://rig.example.com:8443")).toBe(true);
   expect(policy.relaysAt).toBeUndefined();
+});
+
+test("the dashboard a rigd serves keeps the domain and HTTPS port Caddy accepted, or none, until Caddy accepts Host config's", () => {
+  const host = parseHostConfig({
+    proxy: {
+      caddy: "/usr/local/bin/caddy",
+      ports: { http: 8080, https: 8444 },
+    },
+    dashboard: {
+      domain: "new.example.com",
+      port: 4281,
+      trusted_clients: ["100.64.0.0/10"],
+    },
+  });
+  const configured = { domain: "new.example.com", port: 4281, https: 8444 };
+  // Nothing accepted to compare (no failed install, or no generation yet), or Caddy accepted exactly this: Host config's.
+  for (const accepted of [
+    undefined,
+    { dashboard: { domain: "new.example.com", port: null }, https: 8444 },
+  ])
+    expect(servedDashboard(host, configured, accepted)).toEqual({
+      route: configured,
+      publication: dashboardPublication(host),
+    });
+  // Caddy accepted another domain and port: those stay, with Host config's local port and trusted clients.
+  expect(
+    servedDashboard(host, configured, {
+      dashboard: { domain: "old.example.com", port: 4280 },
+      https: 8443,
+    }),
+  ).toEqual({
+    route: { domain: "old.example.com", port: 4281, https: 8443 },
+    publication: {
+      domain: "old.example.com",
+      authority: "old.example.com:8443",
+      trustedClients: ["100.64.0.0/10"],
+    },
+  });
+  // Caddy serves no dashboard: none is published.
+  expect(
+    servedDashboard(host, configured, { dashboard: null, https: 8444 }),
+  ).toEqual({});
 });
 
 test("while rigd serves a published dashboard, settings that move Caddy's HTTPS port are refused until rigd install moves both", () => {

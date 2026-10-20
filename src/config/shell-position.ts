@@ -246,8 +246,7 @@ function heredocBodiesEnd(
       const text = prefix.slice(line, end);
       const ended =
         !joined &&
-        (heredoc.strip ? text.replace(/^\t+/, "") : text) ===
-          heredoc.delimiter;
+        (heredoc.strip ? text.replace(/^\t+/, "") : text) === heredoc.delimiter;
       joined = heredoc.expands && text.endsWith("\\");
       line = end + 1;
       if (ended) break;

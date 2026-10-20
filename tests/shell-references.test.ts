@@ -48,16 +48,16 @@ async function run(command: string) {
 
 test.each([
   ["bare", "printf '%s\\n' ${environment.VALUE} ${rig.workspace}"],
-  ["double quotes", 'printf \'%s\\n\' "${environment.VALUE}" "${rig.workspace}"'],
+  [
+    "double quotes",
+    'printf \'%s\\n\' "${environment.VALUE}" "${rig.workspace}"',
+  ],
   ["single quotes", "printf '%s\\n' '${environment.VALUE}' '${rig.workspace}'"],
   [
     "a command substitution inside double quotes",
     "printf '%s\\n' \"$(printf '%s\\n' '${environment.VALUE}' ${rig.workspace})\"",
   ],
-  [
-    "a here-string",
-    "cat <<< ${environment.VALUE}; cat <<<\"${rig.workspace}\"",
-  ],
+  ["a here-string", 'cat <<< ${environment.VALUE}; cat <<<"${rig.workspace}"'],
   [
     "the line after an unquoted heredoc",
     "cat <<EOF\n$HOME\nEOF\nprintf '%s\\n' ${environment.VALUE} ${rig.workspace}",
@@ -78,17 +78,14 @@ test.each([
     "the line after a comment holding quotes",
     "# it's \"quoted\" `here`\nprintf '%s\\n' ${environment.VALUE} ${rig.workspace}",
   ],
-])(
-  "a reference in %s reaches /bin/sh as literal data",
-  async (_, command) => {
-    const ran = await run(shell(command));
-    expect(ran.files).toEqual([]);
-    expect(ran.stdout.trimEnd().split("\n").slice(-2)).toEqual([
-      HOSTILE,
-      WORKSPACE,
-    ]);
-  },
-);
+])("a reference in %s reaches /bin/sh as literal data", async (_, command) => {
+  const ran = await run(shell(command));
+  expect(ran.files).toEqual([]);
+  expect(ran.stdout.trimEnd().split("\n").slice(-2)).toEqual([
+    HOSTILE,
+    WORKSPACE,
+  ]);
+});
 
 test("a port in arithmetic or [[ ... ]] stays a number, and an escaped character before a reference is still the author's", async () => {
   const command = shell(
@@ -108,10 +105,7 @@ test.each([
   ["a tab-stripped heredoc body", "cat <<-EOF\n\t${rig.workspace}\n\tEOF"],
   ["a heredoc's delimiter", "cat <<${environment.VALUE}\nbody\n"],
   ["the rest of a heredoc's line", "cat <<EOF; echo ${rig.workspace}\nEOF"],
-  [
-    "a second heredoc's body",
-    "cat <<A <<B\nA\n${environment.VALUE}\nB",
-  ],
+  ["a second heredoc's body", "cat <<A <<B\nA\n${environment.VALUE}\nB"],
   [
     "a heredoc body after a line that only resembles its delimiter",
     "cat <<EOF\nEOF \n\tEOF\n${environment.VALUE}\nEOF",
@@ -131,13 +125,19 @@ test.each([
     "echo ok \\\n# ${environment.VALUE}",
   ],
   ["the position after a backslash", "echo \\${environment.VALUE}"],
-  ["the position after a backslash in double quotes", 'echo "\\${rig.workspace}"'],
+  [
+    "the position after a backslash in double quotes",
+    'echo "\\${rig.workspace}"',
+  ],
   ["backquotes", "echo `echo ${environment.VALUE}`"],
   [
     "a case statement inside a command substitution",
     "x=\"$(case a in a) echo '${environment.VALUE}';; esac)\"",
   ],
-  ["arithmetic, for a value that is not a number", "echo $(( ${environment.VALUE} ))"],
+  [
+    "arithmetic, for a value that is not a number",
+    "echo $(( ${environment.VALUE} ))",
+  ],
   ["an arithmetic command", "(( ${rig.workspace} ))"],
   ["[[ ... ]], for a value that needs quoting", "[[ ${rig.workspace} -eq 1 ]]"],
 ])("a reference in %s is refused, naming the field", (_, command) => {
@@ -164,7 +164,8 @@ test("a build that writes a heredoc from references is refused when the config i
     parseProjectConfig({
       name: "heredoc",
       environment: { VALUE: "$(printf expanded)" },
-      build: "cat > result.txt <<EOF\n${environment.VALUE}\n${rig.workspace}\nEOF\n",
+      build:
+        "cat > result.txt <<EOF\n${environment.VALUE}\n${rig.workspace}\nEOF\n",
       services: { web: { command: "serve" } },
     }),
   ).toThrow(

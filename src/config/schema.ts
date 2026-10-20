@@ -259,7 +259,7 @@ const healthcheckTest = z
     text
       .refine(localCheck, LOCAL_CHECK)
       .describe(
-        `A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. Referenced values in a shell command are quoted as in command. ${SHELL_REFERENCES} ${referencesIn("service")}`,
+        `A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. A failed shell command shows its last output line, with every env-file value replaced by [redacted]. Referenced values in a shell command are quoted as in command. ${SHELL_REFERENCES} ${referencesIn("service")}`,
       ),
     z
       .array(z.string())
@@ -985,7 +985,11 @@ function validateReferences(
     ),
     ...[settings.env_file ?? []]
       .flat()
-      .map((value): [string[], string, boolean] => [["env_file"], value, false]),
+      .map((value): [string[], string, boolean] => [
+        ["env_file"],
+        value,
+        false,
+      ]),
   ];
   for (const [name, service] of Object.entries(settings.services ?? {})) {
     const own = ["services", name];

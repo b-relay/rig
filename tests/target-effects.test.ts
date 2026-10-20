@@ -1256,6 +1256,57 @@ test("an HTTP health probe treats a redirect as ready, reports a failed status, 
   }
 });
 
+test("a failed health command's output has every env-file value redacted before it is cut to one log line", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-redact-"));
+  const files = await mkdtemp(join(tmpdir(), "rig-health-env-"));
+  roots.push(root, files);
+  const operator = join(files, "all.env");
+  await writeFile(
+    join(files, "web.env"),
+    'API_TOKEN=tok-0123456789abcdef\nPEM="line-one-of-key\\nline-two-of-key"\nFLAG=on\n',
+    { mode: 0o600 },
+  );
+  await writeFile(operator, "DB_PASSWORD=hunter22\n", { mode: 0o600 });
+  const record = target(root);
+  const probe = (health: string) =>
+    effects(root).observations.health(
+      record,
+      {
+        name: "web",
+        kind: "managed" as const,
+        command: "serve",
+        readyTimeout: 1,
+        env: { PUBLIC_NAME: "visible-public" },
+        envFiles: [
+          { path: join(files, "web.env"), required: true },
+          { path: operator, required: false },
+        ],
+        dependsOn: [],
+        health,
+      },
+      new AbortController().signal,
+    );
+  // The value sits past the cut: redacted first, no prefix of it is left.
+  const padding = "x".repeat(150);
+  expect(await probe(`echo "${padding}$API_TOKEN" >&2; exit 2`)).toEqual({
+    ready: false,
+    reason: `exit code 2: ${padding}[redacted]`,
+  });
+  // Each line of a multi-line value, an operator file's value, and stdout too; a value too short to match only itself and
+  // a public value stay.
+  expect(
+    await probe(
+      'printf \'%s %s %s %s\\n\' "$PEM" "$DB_PASSWORD" "$FLAG" "$PUBLIC_NAME"; exit 1',
+    ),
+  ).toEqual({
+    ready: false,
+    reason: "exit code 1: [redacted] [redacted] on visible-public",
+  });
+  const logged = await readFile(join(record.logRoot, "target.jsonl"), "utf8");
+  expect(logged).toContain("[redacted]");
+  expect(logged).not.toMatch(/tok-0123|hunter22|of-key/);
+});
+
 test("build output is recorded line by line as it arrives, with the time each line was seen", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-build-stream-"));
   roots.push(root);

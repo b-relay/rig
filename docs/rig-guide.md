@@ -2165,6 +2165,16 @@ again when a check passes (`web is healthy again: its health check passed.`).
 `rig status` and the dashboard show the cached result without running
 anything, and `rig doctor` reports an unhealthy Service. Rig sends no alerts.
 
+A failed command check's output is the exit code or timeout and the last
+non-empty line the command printed, stderr first, cut to 160 characters.
+Status, Activity, the Target logs, a `HEALTH_FAILED` start error and the
+dashboard show only that line, with every value from the Service's env files
+(its listed `env_file`s and the operator env files, which the dashboard keeps
+behind Reveal) replaced by `[redacted]` before it is cut. A value shorter
+than 4 characters is left, since it would match ordinary text, and Rig cannot
+recognise a value the command changes, such as an encoded one, so a check
+should still print a reason rather than a credential.
+
 With `on_failure: restart`, an unhealthy Service is stopped through the
 normal stop path, within its `stop_timeout` and under its Target's lock or
 queue like any command, and started again with a fresh environment and the

@@ -5,7 +5,7 @@ import { RigError } from "../src/domain/errors";
 
 const leaf = { name: "DB", source: "env.DB", value: "app" };
 
-test("later sources win, and overrides name every source of a file-supplied name without its value", () => {
+test("later sources win, overrides name every source of a file-supplied name without its value, and every file value is a secret", () => {
   const composed = composeEnvironment({
     baseline: { PATH: "/bin", DB: "baseline" },
     publicEnv: { DB: "app", ONLY_PUBLIC: "1" },
@@ -26,6 +26,8 @@ test("later sources win, and overrides name every source of a file-supplied name
     { key: "DB", sources: ["env", "/a.env"] },
     { key: "TOKEN", sources: ["/a.env", "/b.env"] },
   ]);
+  // Every value a file supplies is one to redact, an overridden one too; baseline and public-only values are not.
+  expect(composed.secrets).toEqual(["one", "app", "two", "x"]);
 });
 
 test("only the final file value of a guarded leaf decides a conflict, and an equal string under another name is not provenance", () => {

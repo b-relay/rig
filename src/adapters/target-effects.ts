@@ -43,12 +43,16 @@ import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
 import type { TargetEffects } from "../runtime/lifecycle";
-/** The last non-empty output line, trimmed to fit one log line, or undefined. */
-function lastLine(output: string): string | undefined {
-  const lines = output.split("\n").filter((line) => line.trim() !== "");
-  return lines.length
-    ? lines[lines.length - 1]!.trim().slice(0, 160)
-    : undefined;
+/** A failed health command's last non-empty output line, stderr first, with every env-file value redacted and then cut to
+ * fit one log line, since it is shown in status, Activity and errors; undefined when it printed nothing. */
+function healthOutput(
+  result: CommandResult,
+  secrets: readonly string[],
+): string | undefined {
+  const line = lastOutputLine(result.stderr) ?? lastOutputLine(result.stdout);
+  return line === undefined
+    ? undefined
+    : redactValues(line, secrets).slice(0, 160);
 }
 /** A probe transport failure named by its error code when it has one, else its message. */
 function failureReason(error: unknown): string {
@@ -63,7 +67,9 @@ import {
   RigError,
   failureCauses,
   failureReason as describedFailure,
+  lastOutputLine,
 } from "../domain/errors";
+import { redactValues } from "../domain/redaction";
 import {
   createArtifactOwnership,
   type OrphanedArtifact,
@@ -147,13 +153,14 @@ export function createTargetEffects(
   const ignored = gitIgnoreCheck(options.run, options.environment);
   const noted = new Set<string>();
   /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, then its env files.
-   * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment. */
-  const environment = async (
+   * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment and
+   * `secrets`, the list of them to redact. */
+  const invocationEnvironment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent | PlanJob,
     /** Inputs of a Project-scope command, which no Component carries. */
     projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
-  ): Promise<Record<string, string>> => {
+  ): Promise<{ env: Record<string, string>; secrets: string[] }> => {
     const scope = component ?? target.plan;
     const loaded = await loadEnvironmentFiles(
       scope.envFiles ?? [],
@@ -181,8 +188,12 @@ export function createTargetEffects(
     for (const note of fresh) noted.add(`${target.id}:${note}`);
     if (fresh.length)
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
-    return composed.env;
+    return { env: composed.env, secrets: composed.secrets };
   };
+  const environment = async (
+    ...args: Parameters<typeof invocationEnvironment>
+  ): Promise<Record<string, string>> =>
+    (await invocationEnvironment(...args)).env;
   /** Runs a shell command in the Target workspace, or in `cwd` inside it, within a budget in seconds and records its output,
    * including what a killed command printed before its budget ran out, under the Component name. */
   /** The directory a Component's build or shell check runs in. A working_dir must be a directory inside the workspace,
@@ -375,15 +386,16 @@ export function createTargetEffects(
           signal.removeEventListener("abort", forward);
         }
       }
+      const { env, secrets } = await invocationEnvironment(target, component);
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
         cwd: await runDirectory(target, component),
-        env: await environment(target, component),
+        env,
         signal,
         timeoutMs,
       });
       if (result.exitCode === 0) return { ready: true };
-      const detail = lastLine(result.stderr) ?? lastLine(result.stdout);
+      const detail = healthOutput(result, secrets);
       return {
         ready: false,
         reason: `${result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,

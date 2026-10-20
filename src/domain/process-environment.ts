@@ -14,6 +14,8 @@ export interface EnvOverride {
 export interface ComposedEnvironment {
   env: Record<string, string>;
   overrides: EnvOverride[];
+  /** Every value an env file supplies, which output Rig keeps or shows beyond the Target logs must not carry. */
+  secrets: string[];
 }
 /** Composes one invocation's process environment: the controlled baseline, then public env, then each file in order.
  * A public env leaf the invocation's commands were built from (`guarded`) may not get a different final value from a file,
@@ -61,5 +63,6 @@ export function composeEnvironment(input: {
       ...input.files.map((file) => file.values),
     ),
     overrides,
+    secrets: input.files.flatMap((file) => Object.values(file.values)),
   };
 }

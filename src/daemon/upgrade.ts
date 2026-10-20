@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -254,8 +254,9 @@ export async function installedRelease(
 }
 
 /** What the installation of `release` (such as v0.2.0) in `root` lacks besides its rigd, as a phrase; undefined when it
- * is complete: `rig` of the same release, the release's dashboard, and rigd installed and serving that release. The install
- * script replaces rig and rigd before it runs rigd install, so a failure after that leaves rigd of the release alone. */
+ * is complete: `rig` of the same release, the release's dashboard as released (see dashboardGap), and rigd installed and
+ * serving that release. The install script replaces rig and rigd before it runs rigd install, so a failure after that
+ * leaves rigd of the release alone. */
 export async function installationGap(
   root: string,
   release: string,
@@ -264,19 +265,45 @@ export async function installationGap(
   const number = release.slice(1);
   if ((await installedRelease(join(root, "bin", "rig"))) !== number)
     return `rig in ${join(root, "bin")} is not ${release}`;
-  const server = join(root, "dashboard", release, "web", "server.js");
-  if (
-    !(await stat(server).then(
-      (info) => info.isFile(),
-      () => false,
-    ))
-  )
-    return `its dashboard has no ${server}`;
+  const dashboard = await dashboardGap(join(root, "dashboard", release));
+  if (dashboard) return dashboard;
   const daemon = await status();
   if (!daemon.installed) return "rigd is not installed";
   if (!daemon.reachable) return "rigd is not running";
   if (!daemon.version?.startsWith(`${number}+`))
     return `rigd ${daemon.version ?? "of an older release"} is serving`;
+  return undefined;
+}
+
+/** What the dashboard installed at `directory` lacks of its release, as a phrase; undefined when every file its file list
+ * (`files.sha256`, which the install script writes from the verified archive: `<SHA-256>  ./<path>` per file) names is
+ * there with that digest. Files the list does not name, such as a cache the dashboard wrote, do not count. */
+export async function dashboardGap(
+  directory: string,
+): Promise<string | undefined> {
+  const list = await readFile(join(directory, "files.sha256"), "utf8").catch(
+    () => undefined,
+  );
+  const entries = (list ?? "")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => /^([0-9a-f]{64}) {2}\.\/(.+)$/.exec(line));
+  if (
+    !list ||
+    entries.some(
+      (entry) =>
+        !entry || entry[2]!.split("/").some((part) => part === ".." || !part),
+    ) ||
+    !entries.some((entry) => entry![2] === "web/server.js")
+  )
+    return `its dashboard has no file list at ${join(directory, "files.sha256")}`;
+  for (const entry of entries) {
+    const [, digest, path] = entry!;
+    const bytes = await readFile(join(directory, path!)).catch(() => undefined);
+    if (!bytes) return `its dashboard has no ${join(directory, path!)}`;
+    if (createHash("sha256").update(bytes).digest("hex") !== digest)
+      return `its dashboard's ${join(directory, path!)} is not as released`;
+  }
   return undefined;
 }
 

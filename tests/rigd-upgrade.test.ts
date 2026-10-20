@@ -19,6 +19,7 @@ import {
   installedRelease,
   upgrade,
   type UpgradeDependencies,
+  type UpgradeRequest,
 } from "../src/daemon/upgrade";
 
 const roots: string[] = [];
@@ -346,6 +347,13 @@ async function scriptRelease(tag: string, rigd: (ran: string) => string) {
     );
     await writeFile(join(dir, "rigd"), rigd(ran));
     await writeFile(join(dir, "dashboard", "web", "server.js"), "// served");
+    await mkdir(join(dir, "dashboard", "web", "node_modules", "dep"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(dir, "dashboard", "web", "node_modules", "dep", "index.js"),
+      "// dependency",
+    );
     await chmod(join(dir, "rig"), 0o755);
     await chmod(join(dir, "rigd"), 0o755);
     const tar = Bun.spawn([
@@ -377,7 +385,10 @@ async function scriptRelease(tag: string, rigd: (ran: string) => string) {
     home,
     root,
     ran,
-    upgrade: (missing: UpgradeDependencies["missing"]) =>
+    upgrade: (
+      missing: UpgradeDependencies["missing"],
+      request: UpgradeRequest = {},
+    ) =>
       upgrade(
         {
           releases: `file://${join(home, "download")}`,
@@ -401,7 +412,7 @@ async function scriptRelease(tag: string, rigd: (ran: string) => string) {
               stderr: "ignore",
             }).exited,
         },
-        {},
+        request,
       ),
   };
 }
@@ -472,9 +483,27 @@ test("an upgrade whose rigd install failed after rigd was replaced is installed 
   // Now complete, the next upgrade is current and runs nothing.
   expect((await f.upgrade(missing)).outcome).toBe("current");
   expect(await readFile(f.ran, "utf8")).toBe("install\ninstall\nstatus\n");
+  // A runtime dependency of the dashboard lost while its server stays: --check says so, and the upgrade puts it back.
+  const dependency = join(
+    f.root,
+    "dashboard",
+    tag,
+    "web",
+    "node_modules",
+    "dep",
+    "index.js",
+  );
+  await rm(dependency);
+  expect(await f.upgrade(missing, { check: true })).toMatchObject({
+    outcome: "incomplete",
+    missing: `its dashboard has no ${dependency}`,
+  });
+  expect(await f.upgrade(missing)).toMatchObject({ outcome: "completed" });
+  expect(await readFile(dependency, "utf8")).toBe("// dependency");
+  expect(await missing(tag)).toBeUndefined();
 });
 
-test("a release whose rigd is installed is complete only with rig of that release, its dashboard, and rigd installed and serving it", async () => {
+test("a release whose rigd is installed is complete only with rig of that release, every file of its dashboard, and rigd installed and serving it", async () => {
   const home = await mkdtemp(join(tmpdir(), "rigd-gap-"));
   roots.push(home);
   const tag = "v0.2.0";
@@ -492,13 +521,38 @@ test("a release whose rigd is installed is complete only with rig of that releas
   await chmod(join(home, "bin", "rig"), 0o755);
   expect(await gap()).toBe(`rig in ${join(home, "bin")} is not ${tag}`);
   await writeFile(join(home, "bin", "rig"), "#!/bin/sh\necho 0.2.0+test\n");
-  const server = join(home, "dashboard", tag, "web", "server.js");
-  expect(await gap()).toBe(`its dashboard has no ${server}`);
-  // A directory where the server should be is no server.
-  await mkdir(server, { recursive: true });
-  expect(await gap()).toBe(`its dashboard has no ${server}`);
-  await rm(server, { recursive: true });
+  const dashboard = join(home, "dashboard", tag);
+  const list = join(dashboard, "files.sha256");
+  const server = join(dashboard, "web", "server.js");
+  const dependency = join(dashboard, "web", "node_modules", "dep", "index.js");
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+  await mkdir(join(dashboard, "web", "node_modules", "dep"), {
+    recursive: true,
+  });
   await writeFile(server, "// served");
+  await writeFile(dependency, "// dependency");
+  // Without the list the install script writes, the dashboard cannot be checked.
+  expect(await gap()).toBe(`its dashboard has no file list at ${list}`);
+  await writeFile(
+    list,
+    `${sha("// served")}  ./web/server.js\n${sha("// dependency")}  ./web/node_modules/dep/index.js\n`,
+  );
+  expect(await gap()).toBeUndefined();
+  // A runtime dependency missing, or changed, while the server is still there.
+  await rm(dependency);
+  expect(await gap()).toBe(`its dashboard has no ${dependency}`);
+  await writeFile(dependency, "// edited");
+  expect(await gap()).toBe(`its dashboard's ${dependency} is not as released`);
+  await writeFile(dependency, "// dependency");
+  // A file the dashboard wrote itself does not count; a list that names a path outside it is no list.
+  await writeFile(join(dashboard, "web", "cache"), "written while serving");
+  expect(await gap()).toBeUndefined();
+  await writeFile(list, `${sha("x")}  ./../outside\n`);
+  expect(await gap()).toBe(`its dashboard has no file list at ${list}`);
+  await writeFile(
+    list,
+    `${sha("// served")}  ./web/server.js\n${sha("// dependency")}  ./web/node_modules/dep/index.js\n`,
+  );
   expect(await gap()).toBeUndefined();
   status = { installed: false, running: false, reachable: false };
   expect(await gap()).toBe("rigd is not installed");

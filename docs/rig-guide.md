@@ -270,25 +270,34 @@ the one named (an earlier one rolls back). It runs that release's own `install`
 script, as a first install does, after checking the script against the
 release's `SHA256SUMS`, over HTTPS only. The script checks the archive, puts
 `rig`, `rigd` and the dashboard in place, and runs `rigd install`, which swaps the
-serving daemon as above. The release installed is the one the Rig root's own
-`rigd` reports, and it is complete only with `rig` of that release, its
-dashboard, and `rigd` installed and serving it: `rigd upgrade` installs an
-incomplete one again, as after an install that failed once `rigd` was replaced,
-and reports what it lacked. `rigd upgrade --check` only says whether that
-release differs from the one installed, or is installed incompletely.
+serving daemon as above. The latest release is the one GitHub's latest-release
+page names, and its script must name the same release. Like the install script,
+it leaves alone a `rig` or `rigd` that a Rig Project's Target published.
+
+The release installed is the one the Rig root's own `rigd` reports, and it is
+complete only with `rig` of that release, its dashboard as released, and `rigd`
+installed and serving it. The install script writes the dashboard's file list,
+`<RIG_ROOT>/dashboard/<release>/files.sha256` (the SHA-256 of each file of the
+verified archive's dashboard), and the dashboard counts as released only while
+every file it names is there with that digest; files the dashboard wrote while
+serving do not count against it. `rigd upgrade` installs an incomplete release
+again, as after an install that failed once `rigd` was replaced or a dashboard
+that lost a file, and reports what it lacked. `rigd upgrade --check` only says
+whether that release differs from the one installed, or is installed
+incompletely.
 
 One install, upgrade or uninstall changes a Rig root at a time. `rigd install`
 and `rigd uninstall` hold the installation lock, `<RIG_ROOT>/daemon/install.lock`,
-for their whole run, and the release's `install` script holds it from putting
-the release in place to the end of the `rigd install` it runs (which goes ahead
-under its installer's lock). Another one started meanwhile is refused at once:
-`rigd install` and `rigd uninstall` as `DAEMON_INSTALL_LOCKED`, naming the lock
-and the pid holding it, and the script before it changes anything. A dashboard
-of the release already in place is kept only when it holds every file of the
-release as released (files it wrote while serving do not count against it);
-anything else there is replaced by the release's. The latest release is the one GitHub's latest-release page names, and
-its script must name the same release. Like the install script, it leaves alone a `rig`
-or `rigd` that a Rig Project's Target published.
+for their whole run. The release's `install` script takes it before it puts the
+release in place, and hands it to the `rigd install` it runs on an open
+descriptor (named by `RIG_INSTALL_LOCK_FD`), so that `rigd install` holds it to
+its own end even if the script is killed first. A `rigd install` handed a
+descriptor that is not open on that lock takes the lock itself. Another one
+started meanwhile is refused at once: `rigd install` and `rigd uninstall` as
+`DAEMON_INSTALL_LOCKED`, naming the lock and the pid holding it, and the script
+before it changes anything. A dashboard of the release already in place is kept
+only when it holds every file of the release as released; anything else there
+is replaced by the release's.
 
 ### Rig's own Caddy
 

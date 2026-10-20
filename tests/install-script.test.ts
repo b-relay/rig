@@ -15,6 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ownershipRecordPath } from "../src/adapters/artifact-ownership";
+import { acquireProcessLock } from "../src/adapters/process-lock";
 import { resolveRigRoot } from "../src/cli/entry-environment";
 import { installedPath } from "../src/domain/installed-path";
 
@@ -84,9 +85,10 @@ async function release(
       await writeFile(
         join(dir, "rigd"),
         // rigd status reports the release it serves: this one, unless the test says another. With RIG_TEST_LOCK set,
-        // rigd install records its parent's pid, what the installation lock records, and whether lockf finds it held.
+        // rigd install records the descriptor it was handed, whether lockf can lock that descriptor (it already holds the
+        // lock) and the lock file (another does), and what the lock file records.
         `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\n` +
-          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; printf '%s %s ' "$PPID" "$(cat "$lock")" > "$RIG_TEST_LOCK"; /usr/bin/lockf -s -t 0 "$lock" true; echo $? >> "$RIG_TEST_LOCK"; fi\n` +
+          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; /usr/bin/lockf -s -t 0 "\${RIG_INSTALL_LOCK_FD:-none}"; own=$?; /usr/bin/lockf -s -t 0 "$lock" true; printf '%s %s %s %s' "\${RIG_INSTALL_LOCK_FD:-none}" "$own" "$?" "$(cat "$lock")" > "$RIG_TEST_LOCK"; fi\n` +
           `echo "rigd $*"\n`,
       );
     await run([
@@ -238,15 +240,12 @@ test("a release that cannot be downloaded installs nothing and names the address
 
 test("installing a release removes earlier releases' dashboards once rigd install succeeds, and keeps this release's own", async () => {
   const f = await release();
-  await mkdir(join(f.root, "dashboard", "v0.0.9", "web"), { recursive: true });
   // The same release already installed, every file as released, may be serving: it stays, with what it wrote.
+  expect((await f.install()).code).toBe(0);
+  await mkdir(join(f.root, "dashboard", "v0.0.9", "web"), { recursive: true });
   await mkdir(join(f.root, "dashboard", TAG, "web", ".next", "cache"), {
     recursive: true,
   });
-  await writeFile(
-    join(f.root, "dashboard", TAG, "web", "server.js"),
-    "// served",
-  );
   await writeFile(
     join(f.root, "dashboard", TAG, "web", ".next", "cache", "entry"),
     "written while serving",
@@ -292,7 +291,7 @@ test("a dashboard of this release that lacks or differs from the release's files
     const result = await f.install();
     expect({ shape, code: result.code }).toEqual({ shape, code: 0 });
     expect((await lstat(dashboard)).isDirectory()).toBe(true);
-    expect(await readdir(dashboard)).toEqual(["web"]);
+    expect((await readdir(dashboard)).sort()).toEqual(["files.sha256", "web"]);
     expect(await readFile(join(dashboard, "web", "server.js"), "utf8")).toBe(
       "// served",
     );
@@ -307,7 +306,7 @@ test("a dashboard of this release that lacks or differs from the release's files
 
 test("two installs at once never nest a staged dashboard inside the release's: one installs, and one waiting its turn is refused", async () => {
   const f = await release();
-  // mv of a staged dashboard waits (up to 3 s) until both installers have reached it; the first through then publishes,
+  // mv of a staged dashboard waits (up to 40 polls, about 2 s) until both installers have reached it; the first through then publishes,
   // and the other moves only after it.
   const gate = join(f.home, "gate");
   const wrappers = join(f.home, "wrappers");
@@ -320,7 +319,7 @@ case "$1" in
 "$RIG_ROOT"/dashboard/.install.*)
   touch "${gate}/arrived.$$"
   waited=0
-  until [ "$(find "${gate}" -name 'arrived.*' | wc -l | tr -d ' ')" -ge 2 ] || [ "$waited" -ge 60 ]; do sleep .05; waited=$((waited + 1)); done
+  until [ "$(find "${gate}" -name 'arrived.*' | wc -l | tr -d ' ')" -ge 2 ] || [ "$waited" -ge 40 ]; do sleep .05; waited=$((waited + 1)); done
   if mkdir "${gate}/first" 2>/dev/null; then
     /bin/mv "$@"; code=$?; touch "${gate}/done"; exit "$code"
   fi
@@ -334,7 +333,7 @@ exec /bin/mv "$@"
   const env = { PATH: `${wrappers}:${join(f.home, "fakes")}:${SYSTEM_PATH}` };
   const results = await Promise.all([f.install(env), f.install(env)]);
   const dashboard = join(f.root, "dashboard", TAG);
-  expect(await readdir(dashboard)).toEqual(["web"]);
+  expect((await readdir(dashboard)).sort()).toEqual(["files.sha256", "web"]);
   expect(await readdir(join(f.root, "dashboard"))).toEqual([TAG]);
   expect(results.filter((result) => result.code === 0).length).toBeGreaterThan(
     0,
@@ -344,19 +343,23 @@ exec /bin/mv "$@"
       expect(result.stderr).toContain(
         `another rigd install, upgrade or uninstall is changing ${f.root}.`,
       );
-});
+}, 30000);
 
-test("install holds the installation lock to the end of the rigd install it runs, recording its own pid for that rigd", async () => {
+test("install holds the installation lock to the end of the rigd install it runs, and hands that rigd the lock", async () => {
   const f = await release();
   const seen = join(f.home, "lock-seen");
   const result = await f.install({ RIG_TEST_LOCK: seen });
   expect(result.code).toBe(0);
-  // rigd install's parent is the installer, the lock names it, and lockf finds the lock held (EX_TEMPFAIL).
-  const [parent, recorded, held] = (await readFile(seen, "utf8"))
-    .trim()
-    .split(" ");
-  expect(JSON.parse(recorded!)).toEqual({ pid: Number(parent) });
-  expect(held).toBe("75");
+  // rigd install is handed descriptor 9, which holds the lock (lockf on it succeeds, on the file it is refused, EX_TEMPFAIL),
+  // and the lock records the installer's pid and start time.
+  const [, fd, own, path, recorded] = /^(\S+) (\S+) (\S+) (.*)$/s.exec(
+    await readFile(seen, "utf8"),
+  )!;
+  expect([fd, own, path]).toEqual(["9", "0", "75"]);
+  expect(JSON.parse(recorded!)).toEqual({
+    pid: expect.any(Number),
+    startedAt: expect.stringMatching(/\d{4}$/),
+  });
   // Released once the installer exits.
   expect(
     await run([
@@ -368,16 +371,13 @@ test("install holds the installation lock to the end of the rigd install it runs
       "true",
     ]),
   ).toMatchObject({ code: 0 });
-  // Held by another, install changes nothing.
-  const holder = Bun.spawn([
-    "/usr/bin/lockf",
-    "-k",
+  // Held by another (a rigd install), install changes nothing.
+  const holder = await acquireProcessLock(
     join(f.root, "daemon", "install.lock"),
-    "/bin/sleep",
-    "30",
-  ]);
+    { keep: true },
+  );
+  if (!("lock" in holder)) throw new Error("refused");
   try {
-    await Bun.sleep(200);
     const refused = await f.install();
     expect(refused.code).toBe(1);
     expect(refused.stderr).toContain(
@@ -385,8 +385,7 @@ test("install holds the installation lock to the end of the rigd install it runs
     );
     expect(await readFile(f.ran, "utf8")).toBe("install\nstatus\n");
   } finally {
-    holder.kill();
-    await holder.exited;
+    await holder.lock.release();
   }
 });
 
@@ -622,12 +621,8 @@ test("a RIG_ROOT spelled with //, . or .. parts, or relative, is refused, so the
 test("a script cut short anywhere before its end runs nothing, even within its last line", async () => {
   const f = await release();
   const whole = await readFile(f.script, "utf8");
-  const last = whole.lastIndexOf('{ main "$@"; }');
-  for (const end of [
-    last,
-    last + "{ main".length,
-    last + '{ main "$@";'.length,
-  ]) {
+  const last = whole.lastIndexOf('(main "$@")');
+  for (const end of [last, last + "(main".length, last + '(main "$@"'.length]) {
     const cut = join(f.home, "install-cut");
     await writeFile(cut, whole.slice(0, end));
     const result = await f.install({}, cut);

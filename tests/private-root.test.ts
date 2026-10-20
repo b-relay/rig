@@ -26,6 +26,11 @@ import {
 } from "../src/providers/process-inspection";
 import { runCommand } from "../src/providers/command-runner";
 import { accessKey } from "../web/server/access-key";
+import * as fsp from "node:fs/promises";
+import { createFileDiagnosticLog } from "../src/diagnostics/file-log";
+import { openSqliteUsageHistory } from "../src/adapters/sqlite-usage-history";
+import { writeEnvFile } from "../src/adapters/env-store";
+import { ABSENT_REVISION } from "../src/adapters/env-file-edit";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -355,4 +360,102 @@ test("the dashboard's access key is never read from or written through a link pl
   expect(key).toHaveLength(43);
   expect(await mode(file)).toBe(0o600);
   expect(await accessKey(file, root)).toBe(key);
+});
+
+test("the diagnostic log is never rotated, archived or chmodded through a link planted at it", async () => {
+  const { root, outside } = await layout();
+  await mkdir(join(root, "logs", "rigd"), { recursive: true, mode: 0o700 });
+  // An outside file holding yesterday's record, so a rotation would archive it.
+  const target = join(outside, "old.jsonl");
+  await writeFile(
+    target,
+    `${JSON.stringify({ timestamp: "2026-10-01T00:00:00.000Z", source: "rigd", level: "info", event: "old" })}\n`,
+    { mode: 0o644 },
+  );
+  await symlink(target, join(root, "logs", "rigd", "rigd.jsonl"));
+  const before = await snapshot(outside);
+  const log = createFileDiagnosticLog({
+    root,
+    source: "rigd",
+    now: () => new Date("2026-10-20T12:00:00.000Z"),
+  });
+  expect(await log.record({ event: "probe" })).toEqual({
+    error: "Diagnostic evidence could not be recorded.",
+  });
+  expect(await snapshot(outside)).toEqual(before);
+  expect(
+    (await readdir(join(root, "logs", "rigd"))).filter((name) =>
+      name.startsWith("rigd-"),
+    ),
+  ).toEqual([]);
+});
+
+test("Monitor's database is never opened through a link planted at it or at a sidecar, and a new one is private", async () => {
+  const { root, outside } = await layout();
+  const path = join(root, "monitor", "usage.sqlite");
+  await mkdir(join(root, "monitor"), { mode: 0o700 });
+  const database = join(outside, "other.sqlite");
+  await writeFile(database, "", { mode: 0o644 });
+  for (const planted of [path, `${path}-wal`]) {
+    await symlink(database, planted);
+    const before = await snapshot(outside);
+    expect(() => openSqliteUsageHistory(path)).toThrow(
+      expect.objectContaining({ code: "RIG_FILE_UNTRUSTED" }),
+    );
+    expect(await snapshot(outside)).toEqual(before);
+    await rm(planted);
+  }
+  const previous = process.umask(0o002);
+  try {
+    const history = openSqliteUsageHistory(path);
+    await history.close();
+  } finally {
+    process.umask(previous);
+  }
+  expect((await lstat(path)).isFile()).toBe(true);
+  expect(await mode(path)).toBe(0o600);
+});
+
+test("a state update whose directory cannot be flushed says so, with the new state already in place; an env edit takes it as done", async () => {
+  const { root } = await layout();
+  const store = new FileStateStore(root);
+  await store.update(() => {});
+  const real = fsp.open;
+  const failing = spyOn(fsp, "open").mockImplementation((async (
+    ...args: Parameters<typeof real>
+  ) => {
+    const handle = await real(...args);
+    if (args[1] === "r" && (await handle.stat()).isDirectory())
+      handle.sync = async () => {
+        throw Object.assign(new Error("I/O error"), { code: "EIO" });
+      };
+    return handle;
+  }) as typeof real);
+  try {
+    await expect(
+      store.update((state) => {
+        state.activity = [];
+        (state as { marker?: string }).marker = "new";
+      }),
+    ).rejects.toMatchObject({
+      code: "FILE_NOT_DURABLE",
+      details: { path: join(root, "runtime", "state.json"), published: true },
+    });
+    expect(
+      await readFile(join(root, "runtime", "state.json"), "utf8"),
+    ).toContain('"marker": "new"');
+
+    const env = join(root, "env", "demo", "all.env");
+    await expect(
+      writeEnvFile(
+        env,
+        {},
+        ABSENT_REVISION,
+        [{ op: "set", key: "A", value: "1" }],
+        join(root, "env"),
+      ),
+    ).resolves.toMatchObject({ exists: true, keys: ["A"] });
+  } finally {
+    failing.mockRestore();
+  }
 });

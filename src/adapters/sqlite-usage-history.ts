@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { preparePrivateStoreSync } from "../providers/private-files";
 import { decodeHistogram, encodeHistogram } from "../domain/usage-histogram";
 import {
   decodeMinute,
@@ -22,7 +21,13 @@ const SCHEMA_VERSION = 1;
  * packed slots per series and minute; history one row of two histograms per series and minute. The database is in WAL
  * mode so the dashboard's reads never wait behind rigd's writes. */
 export function openSqliteUsageHistory(path: string): UsageHistory {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  // SQLite opens the database and its sidecars itself, following links; each is checked first, and the database is made
+  // without following one.
+  preparePrivateStoreSync(path, [
+    `${path}-wal`,
+    `${path}-shm`,
+    `${path}-journal`,
+  ]);
   const db = new Database(path, { create: true, strict: true });
   db.run("PRAGMA journal_mode = WAL");
   db.run("PRAGMA synchronous = NORMAL");

@@ -44,7 +44,15 @@ led to is left alone, and a log is appended only when it is not a link. Two
 kinds of files there follow their own rules: a Service's data (its database
 files and data directories) is the application's, and the route file another
 Caddy imports is written through its link on purpose, at the real path Rig
-read. The root itself may be a link, for example to another volume. The
+read. Monitor's SQLite database and its sidecar files are checked the same
+way before SQLite opens them, and the release install script checks the root,
+`bin` and `dashboard` before it stages anything. The root itself may be a
+link, for example to another volume. These checks are made by path: they keep
+another user, and links or directories planted at rest, from steering Rig's
+writes, but like the route file's pinning ([ADR
+0014](adr/0014-rig-owned-caddy.md)) they are not a boundary against a process
+running as you that swaps a checked directory while Rig works, since that
+process can edit Rig's files directly anyway. The
 capture wrapper (`rigd capture`) runs only a request that is a regular file the
 user owns and no one else can write, in a capture directory that is the user's
 alone.

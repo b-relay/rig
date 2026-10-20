@@ -1,9 +1,11 @@
 import { boundedEvidence, failureCategories } from "../domain/errors";
 import { Database } from "bun:sqlite";
-import { chmod, open, readdir, rm, link, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, rm, link } from "node:fs/promises";
 import { join } from "node:path";
 import {
   appendInPrivateDirectory,
+  preparePrivateStoreSync,
   privateDirectory,
 } from "../providers/private-files";
 import type { DiagnosticEntry, DiagnosticLog } from "./types";
@@ -126,8 +128,12 @@ export function createFileDiagnosticLog(
 
 /** SQLite owns a kernel-released write lock; a killed writer leaves no stale lease to reclaim. */
 async function acquireLock(path: string): Promise<() => void> {
-  // Made (0600) or opened first without following a link, so SQLite never creates its file where a planted link leads.
-  await appendInPrivateDirectory(path, "");
+  // SQLite opens the lock and its journal itself, following links: each is made or checked first, never through one.
+  preparePrivateStoreSync(path, [
+    `${path}-journal`,
+    `${path}-wal`,
+    `${path}-shm`,
+  ]);
   const database = new Database(path, { create: true });
   try {
     database.exec("PRAGMA busy_timeout=0");
@@ -182,11 +188,18 @@ async function rotateDiagnostic(
   source: string,
   today: string,
 ): Promise<void> {
+  // Judged before anything is read or moved: a link or anything but a regular file is never rotated, and the record that
+  // follows refuses it too.
+  const identity = await lstat(path, { bigint: true }).catch((error) => {
+    if (hasCode(error, "ENOENT")) return undefined;
+    throw error;
+  });
+  if (identity === undefined) return;
+  if (!identity.isFile()) throw new Error("Diagnostic log is not a file.");
   const previousDay = await segmentDay(path);
   if (!previousDay || previousDay >= today) return;
-  const identity = await stat(path, { bigint: true });
   const canonical = join(directory, `${source}-${previousDay}.jsonl`);
-  const archived = await stat(canonical, { bigint: true }).catch((error) => {
+  const archived = await lstat(canonical, { bigint: true }).catch((error) => {
     if (hasCode(error, "ENOENT")) return undefined;
     throw error;
   });
@@ -198,11 +211,17 @@ async function rotateDiagnostic(
     await link(path, archive);
   } catch (error) {
     if (!hasCode(error, "EEXIST")) throw error;
-    const existing = await stat(archive, { bigint: true });
-    if (existing.ino !== identity.ino || existing.dev !== identity.dev)
-      throw new Error("Diagnostic archive identity conflict.");
   }
-  await chmod(archive, 0o600);
+  // The archive is made private through a descriptor proven to be the active file's own inode, never through a link.
+  const file = await open(archive, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const opened = await file.stat({ bigint: true });
+    if (opened.ino !== identity.ino || opened.dev !== identity.dev)
+      throw new Error("Diagnostic archive identity conflict.");
+    await file.chmod(0o600);
+  } finally {
+    await file.close();
+  }
   // If a writer dies between link and unlink, the next writer recognizes the same inode and completes rotation.
   await rm(path);
 }

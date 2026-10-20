@@ -155,6 +155,9 @@ export async function writeEnvFile(
       },
     });
   } catch (error) {
+    // The edit is in place; flushing its directory has always been best effort here.
+    if (error instanceof RigError && error.code === "FILE_NOT_DURABLE")
+      return describeEnvFile(path, scope);
     if (error instanceof RigError) throw error;
     throw new RigError(
       "ENV_WRITE",

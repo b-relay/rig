@@ -1,4 +1,11 @@
-import { constants, type Stats } from "node:fs";
+import {
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  type Stats,
+} from "node:fs";
 import {
   chmod,
   lstat,
@@ -17,7 +24,10 @@ import { within } from "../domain/paths";
 
 /** Rig's files under its root. Every directory from the root down to a file Rig writes is a real directory the current user
  * owns and no one else can write, made 0700 whatever the umask; a file is never written through a symbolic link, so nothing
- * planted under the root can send a write outside it. The root itself may be reached through a link. */
+ * planted under the root can send a write outside it. The root itself may be reached through a link.
+ * The checks are made by path, and a writer may check a directory once and keep using it (a log): they stop other users and
+ * anything planted at rest, not a process running as the same user that swaps a checked directory meanwhile. That user can
+ * edit these files directly anyway, as ADR 0014's threat model says of the route file. */
 
 const PRIVATE_DIRECTORY = 0o700;
 const writableByOthers = (mode: number) => (mode & 0o022) !== 0;
@@ -35,9 +45,10 @@ export async function privateDirectory(
 
 /** Replaces `path` whole: the bytes go to a new private file beside it (created exclusively, never through a link), which is
  * then renamed over whatever `path` was, so a reader sees the old file or the new one and a link at `path` is replaced, not
- * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename and its directory after it. `confirm`
- * runs once the new file is written, just before the rename; what it throws abandons the replacement. A failed replacement
- * leaves `path` as it was and removes the temporary file. */
+ * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename and its directory after it; a directory
+ * that cannot be flushed fails FILE_NOT_DURABLE, with the new contents already in place (`published: true`). `confirm` runs
+ * once the new file is written, just before the rename; what it throws abandons the replacement. Any other failure leaves
+ * `path` as it was and removes the temporary file. */
 export async function replacePrivateFile(
   root: string,
   path: string,
@@ -64,8 +75,41 @@ export async function replacePrivateFile(
   } finally {
     await rm(temporary, { force: true });
   }
-  // The file is replaced by now; a directory that cannot be flushed does not make that a failed write.
-  if (options.durable) await syncDirectory(directory).catch(() => {});
+  if (options.durable)
+    await syncDirectory(directory).catch((error: NodeJS.ErrnoException) => {
+      throw notDurable(path, error);
+    });
+}
+
+/** For a store a library opens itself, following links as it goes (SQLite): makes `directory` 0700 when it is missing and
+ * checks it as `privateDirectory` does, creates `path` exclusively (0600, never through a link) when it is missing, and checks
+ * `path` and each of `sidecars` that exists is a regular file the user owns that no one else can write. Synchronous, for
+ * stores opened synchronously. The directory above `directory` is checked as rigd starts. */
+export function preparePrivateStoreSync(
+  path: string,
+  sidecars: readonly string[],
+): void {
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY });
+  assertPrivateDirectory(directory, lstatSync(directory));
+  try {
+    closeSync(
+      openSync(
+        path,
+        constants.O_WRONLY |
+          constants.O_CREAT |
+          constants.O_EXCL |
+          constants.O_NOFOLLOW,
+        0o600,
+      ),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  for (const file of [path, ...sidecars]) {
+    const info = lstatSync(file, { throwIfNoEntry: false });
+    if (info) assertPrivateFile(file, info);
+  }
 }
 
 /** Opens `path` in a private directory for writing, refusing a link there: `append` adds to it (creating it when missing),
@@ -147,12 +191,7 @@ export async function readPrivateFile(
       : error;
   });
   try {
-    const info = await file.stat();
-    if (!info.isFile()) throw notPrivate(path, "is not a regular file");
-    if (info.uid !== currentUid())
-      throw notPrivate(path, `is owned by uid ${info.uid}, not by you`);
-    if (writableByOthers(info.mode))
-      throw notPrivate(path, "can be written by other users");
+    assertPrivateFile(path, await file.stat());
     return await file.readFile("utf8");
   } finally {
     await file.close();
@@ -229,6 +268,15 @@ async function checkDirectory(
   info: Stats,
   how: "make" | "check",
 ): Promise<void> {
+  assertPrivateDirectory(path, info);
+  // Only the bits others have are taken away: what the owner may do stays as the owner set it.
+  if (how === "make" && (info.mode & 0o077) !== 0)
+    await chmod(path, info.mode & 0o700);
+}
+
+/** Fails RIG_ROOT_UNSAFE unless `info` (from lstat, or stat for the root) is a real directory the user owns that no one
+ * else can write. */
+function assertPrivateDirectory(path: string, info: Stats): void {
   if (info.isSymbolicLink()) throw linkRefused(path);
   if (!info.isDirectory())
     throw unsafe(
@@ -248,9 +296,16 @@ async function checkDirectory(
       "can be written by other users",
       `Check that nothing in it was changed by someone else, then make it private: chmod 700 ${path}`,
     );
-  // Only the bits others have are taken away: what the owner may do stays as the owner set it.
-  if (how === "make" && (info.mode & 0o077) !== 0)
-    await chmod(path, info.mode & 0o700);
+}
+
+/** Fails RIG_FILE_UNTRUSTED unless `info` (from lstat or fstat) is a regular file the user owns that no one else can write. */
+function assertPrivateFile(path: string, info: Stats): void {
+  if (info.isSymbolicLink()) throw notPrivate(path, "is a symbolic link");
+  if (!info.isFile()) throw notPrivate(path, "is not a regular file");
+  if (info.uid !== currentUid())
+    throw notPrivate(path, `is owned by uid ${info.uid}, not by you`);
+  if (writableByOthers(info.mode))
+    throw notPrivate(path, "can be written by other users");
 }
 
 const currentUid = () => process.getuid?.() ?? -1;
@@ -276,4 +331,14 @@ const notPrivate = (path: string, problem: string) =>
     `${path} ${problem}, so Rig will not use it.`,
     `Rig only uses files under its root that it wrote and that are private to you. Remove ${path}; Rig writes it again.`,
     { path, problem },
+  );
+
+/** FILE_NOT_DURABLE: `path` holds its new contents, but the rename may not survive a crash. A caller that promises
+ * durability reports it; others may take the write as done. */
+const notDurable = (path: string, error: NodeJS.ErrnoException) =>
+  new RigError(
+    "FILE_NOT_DURABLE",
+    `${path} was replaced, but its directory could not be flushed to disk (${error.code ?? "error"}).`,
+    "The new contents are in place but may not survive a crash. Check the disk, then retry.",
+    { path, published: true, cause: error.code ?? "error" },
   );

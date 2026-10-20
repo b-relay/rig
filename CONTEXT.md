@@ -170,7 +170,10 @@ that no one else can write, and Rig never writes there through a link: a
 record is a new private file renamed into place, and a log is appended only
 when it is not a link. `rigd install` and `rigd`'s
 start refuse a root that is not (`RIG_ROOT_UNSAFE`), and the capture wrapper
-runs only a request that is private to the user (`RIG_FILE_UNTRUSTED`).
+runs only a request that is private to the user (`RIG_FILE_UNTRUSTED`). The
+checks keep other users and links planted at rest from steering Rig's writes;
+they are not a boundary against a process running as the same user, which can
+edit the root directly ([ADR 0014](docs/adr/0014-rig-owned-caddy.md)).
 
 ### Host config
 

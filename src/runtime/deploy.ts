@@ -209,8 +209,6 @@ async function activate(
       // A failed preparation changed nothing: the previous Deployment, whose process keys the candidate shares, keeps running.
       // Only what the candidate started stops: a kept Service still running the process it was kept with is never
       // stopped by a failed deploy, and the previous plan's start below finds it running.
-      /** The previous plan without the Services left running, once they are known: what the restored route must not reach. */
-      let stoppedPrevious: TargetRecord | undefined;
       if (transitioned) {
         // A kept Service whose start check failed in the candidate's start is restarted from the previous plan, like the
         // Services the candidate started; one that ended meanwhile was started by the candidate.
@@ -223,15 +221,11 @@ async function activate(
             : [],
         );
         await deps.lifecycle.down(withoutServices(candidate, untouched));
-        if (previous) {
-          stoppedPrevious = withoutServices(previous, untouched);
-          await deps.lifecycle.down(stoppedPrevious);
-        }
+        if (previous)
+          await deps.lifecycle.down(withoutServices(previous, untouched));
       }
+      // The previous plan's route comes back withheld for every Service just stopped (the effect checkpoint restores it so).
       await checkpoint.rollback();
-      // The route restored is the previous plan's, which names the ports of the Services just stopped: they are withheld
-      // until the previous plan's start verifies them again.
-      if (stoppedPrevious) await deps.lifecycle.withhold(stoppedPrevious);
     } catch (recoveryError) {
       candidate.recovery ??= {
         plan: candidate.plan,
@@ -519,6 +513,9 @@ export async function stopForRecovery(
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   if (!target.recovery) return target;
+  // Both plans' processes stop here under one set of process keys, and the route may name either plan's ports: all of it
+  // is withheld before either plan stops anything.
+  await deps.lifecycle.withhold(target);
   await deps.lifecycle.down(target);
   if (target.recovery.stage === "committing") {
     await deps.lifecycle.commitEffects(target);

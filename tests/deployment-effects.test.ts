@@ -240,7 +240,7 @@ test("rig down of an interrupted deploy withholds the route inside the interrupt
   await f.lifecycle.up(f.previous);
   // A rigd that stopped after the candidate's route was published, before the deploy was decided.
   await f.lifecycle.checkpoint(f.candidate, f.previous);
-  await f.effects.route(f.candidate, { verified: new Set(["web"]) });
+  await f.effects.route(f.candidate, { verified: new Set([12345]) });
   const recovering: TargetRecord = {
     ...f.candidate,
     recovery: {
@@ -311,8 +311,13 @@ test("a crash between an applied route and its journal capture is rolled back by
   await f.lifecycle.down(f.previous);
   const route = await f.router.checkpoint(f.previous.id);
   let crashed = false;
+  // It dies once the route is applied, before the journal captures it.
   const crashing: Router = {
     ...f.router,
+    async apply(request) {
+      await f.router.apply(request);
+      crashed = true;
+    },
     async checkpoint(key) {
       if (crashed) throw new Error("rigd died before capture");
       return f.router.checkpoint(key);
@@ -320,7 +325,6 @@ test("a crash between an applied route and its journal capture is rolled back by
   };
   const effects = f.adapters({ router: crashing });
   await effects.checkpoint(f.candidate);
-  crashed = true;
   await expect(
     effects.route(f.candidate, { verified: new Set() }),
   ).rejects.toThrow("rigd died");

@@ -37,8 +37,8 @@ import { isSourceEntrypoint } from "../providers/artifact-installer";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
-import { parseOwnedSites } from "../providers/route-file";
-import { routeUpstream } from "../domain/route-upstream";
+import { liveUpstreams, parseOwnedSites } from "../providers/route-file";
+import { routeUpstream, upstreamPort } from "../domain/route-upstream";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
@@ -739,22 +739,20 @@ export function createTargetEffects(
           "The route upstream is not a managed Component.",
           "Correct the Project proxy configuration.",
         );
-      // A Service is withheld on every hostname it serves, so a path withheld on one site withholds it on all.
-      const held = new Set(
-        (await options.router.withheld(target.id)).map(
-          (path) => `${path.hostname} ${path.prefix}`,
-        ),
+      // A port is live while the route reaches it now, which it does only from its Service's verified start until just
+      // before that Service stops; `withhold` takes ports out, `verified` adds them. Every path goes to its port's state,
+      // so a path moved to another Service is live exactly when that Service's port is.
+      const live = new Set(
+        [
+          ...liveUpstreams(
+            (await options.router.checkpoint(target.id)).value ?? "",
+          ),
+        ].map(upstreamPort),
       );
-      const withheld = new Set([
-        ...sites.flatMap((site) =>
-          site.routes
-            .filter((route) => held.has(`${site.hostname} ${route.prefix}`))
-            .map((route) => route.service),
-        ),
-        ...("withhold" in change ? change.withhold : []),
-      ]);
+      if ("withhold" in change)
+        for (const port of change.withhold) live.delete(port);
       if ("verified" in change)
-        for (const service of change.verified) withheld.delete(service);
+        for (const port of change.verified) live.add(port);
       await transactions.withRouteChange(target.id, () =>
         options.router.apply({
           key: target.id,
@@ -762,9 +760,7 @@ export function createTargetEffects(
             hostname: site.hostname,
             routes: site.routes.map((route) => ({
               prefix: route.prefix,
-              upstream: withheld.has(route.service)
-                ? null
-                : routeUpstream(route.port),
+              upstream: live.has(route.port) ? routeUpstream(route.port) : null,
             })),
           })),
         }),
@@ -775,8 +771,7 @@ export function createTargetEffects(
         (await options.router.checkpoint(target.id)).value ?? "",
       );
       const reaching = (upstream: string | null) =>
-        upstream !== null &&
-        (!ports || ports.has(Number(/:(\d+)$/.exec(upstream)?.[1])));
+        upstream !== null && (!ports || ports.has(upstreamPort(upstream)));
       if (
         !published.some((site) =>
           site.routes.some((path) => reaching(path.upstream)),

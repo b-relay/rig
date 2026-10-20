@@ -247,6 +247,28 @@ export function parseOwnedSites(block: string): RouteSite[] {
   }
   return sites;
 }
+/** The upstreams a Rig block reaches: every path's that is not withheld. */
+export function liveUpstreams(block: string): Set<string> {
+  return new Set(
+    parseOwnedSites(block).flatMap((site) =>
+      site.routes.flatMap((path) =>
+        path.upstream === null ? [] : [path.upstream],
+      ),
+    ),
+  );
+}
+/** `block` with every path whose upstream `live` does not name withheld, written as Rig writes a withheld path; every other
+ * line, such as the Host's extra directives, as it was. */
+export function withheldExcept(
+  block: string,
+  live: ReadonlySet<string>,
+): string {
+  return block.replace(
+    /^(\s*)reverse_proxy (\S+)$/gm,
+    (line, indent: string, upstream: string) =>
+      live.has(upstream) ? line : `${indent}respond 503`,
+  );
+}
 /** Reads back what a Rig block publishes: for each site, the prefixes whose handler is `respond 503`. */
 export function withheldPaths(block: string): WithheldPath[] {
   return parseOwnedSites(block).flatMap((site) =>

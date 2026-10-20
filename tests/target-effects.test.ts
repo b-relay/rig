@@ -1263,7 +1263,7 @@ test("a failed health command's output has every env-file value redacted before 
   const operator = join(files, "all.env");
   await writeFile(
     join(files, "web.env"),
-    'API_TOKEN=tok-0123456789abcdef\nPEM="line-one-of-key\\nline-two-of-key"\nFLAG=on\n',
+    'API_TOKEN=tok-0123456789abcdef\nPEM="line-one-of-key\\nline-two-of-key"\nFLAG=on\nPADDED=" padded-token-012345 "\n',
     { mode: 0o600 },
   );
   await writeFile(operator, "DB_PASSWORD=hunter22\n", { mode: 0o600 });
@@ -1302,9 +1302,18 @@ test("a failed health command's output has every env-file value redacted before 
     ready: false,
     reason: "exit code 1: [redacted] [redacted] on visible-public",
   });
+  // A value with blanks around it, printed as it is or as the shell splits it unquoted: Rig trims no blank before it redacts.
+  for (const health of [
+    'printf "%s\\n" "$PADDED" >&2; exit 1',
+    "printf '%s\\n' $PADDED >&2; exit 1",
+  ])
+    expect(await probe(health)).toEqual({
+      ready: false,
+      reason: "exit code 1: [redacted]",
+    });
   const logged = await readFile(join(record.logRoot, "target.jsonl"), "utf8");
   expect(logged).toContain("[redacted]");
-  expect(logged).not.toMatch(/tok-0123|hunter22|of-key/);
+  expect(logged).not.toMatch(/tok-0123|hunter22|of-key|padded-token/);
 });
 
 test("build output is recorded line by line as it arrives, with the time each line was seen", async () => {

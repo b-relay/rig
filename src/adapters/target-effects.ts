@@ -43,16 +43,17 @@ import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
 import type { TargetEffects } from "../runtime/lifecycle";
-/** A failed health command's last non-empty output line, stderr first, with every env-file value redacted and then cut to
- * fit one log line, since it is shown in status, Activity and errors; undefined when it printed nothing. */
+/** A failed health command's last non-empty output line, stderr first, cut to fit one log line, since it is shown in status,
+ * Activity and errors. Every env-file value is redacted in the output as printed, before a line is picked, trimmed or cut;
+ * undefined when it printed nothing. */
 function healthOutput(
   result: CommandResult,
   secrets: readonly string[],
 ): string | undefined {
-  const line = lastOutputLine(result.stderr) ?? lastOutputLine(result.stdout);
-  return line === undefined
-    ? undefined
-    : redactValues(line, secrets).slice(0, 160);
+  const line =
+    lastOutputLine(redactValues(result.stderr, secrets)) ??
+    lastOutputLine(redactValues(result.stdout, secrets));
+  return line?.slice(0, 160);
 }
 /** A probe transport failure named by its error code when it has one, else its message. */
 function failureReason(error: unknown): string {

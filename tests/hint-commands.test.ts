@@ -12,6 +12,7 @@ import {
 } from "../src/domain/rig-command";
 import { generatedPreviewName } from "../src/domain/target-selector";
 import { shellArgs } from "./support/shell-args";
+import type { RuntimeCommand } from "../src/daemon/protocol";
 
 /** Every command a hint, a help text or the documentation tells the user to run must be one the CLI's grammar accepts.
  * Parsing runs the real grammar with every effect stubbed: whatever reaches rigd, the terminal or the DNS read counts as
@@ -267,6 +268,10 @@ test("every hint rigd and rig render with rigCommand, pasted into a shell, selec
     "feat/$((1+1))",
     "fix/$HOME",
     "=ls",
+    // Target words, which a jobless rig backup list after preview reads as a job and its Target.
+    "stable",
+    "working",
+    "preview",
   ];
   const targets: CommandSelection["target"][] = [
     { kind: "working", name: "working" },
@@ -295,7 +300,13 @@ test("every hint rigd and rig render with rigCommand, pasted into a shell, selec
     path === "run" || path.startsWith("backup");
   const cases = paths.flatMap((path) =>
     targets.flatMap((target) =>
-      (takesJob(path) ? jobs : [undefined]).flatMap((job) =>
+      // rig backup list also lists a whole Target, with no job.
+      (path === "backup list"
+        ? [undefined, ...jobs]
+        : takesJob(path)
+          ? jobs
+          : [undefined]
+      ).flatMap((job) =>
         ["my shop", "it's $x"].map((project) => ({
           path,
           target: target!,
@@ -313,7 +324,7 @@ test("every hint rigd and rig render with rigCommand, pasted into a shell, selec
       ...(path === "backup restore" ? { backup: "latest" } : {}),
       ...(path === "logs" ? { service: "web" } : {}),
     });
-    const requests: unknown[] = [];
+    const requests: RuntimeCommand[] = [];
     await createRigCommand(
       "/workspace",
       { write() {}, error() {} },
@@ -325,22 +336,30 @@ test("every hint rigd and rig render with rigCommand, pasted into a shell, selec
       .catch((error: unknown) => {
         throw new Error(`${line}: ${String(error)}`);
       });
-    expect({ line, requests }).toEqual({
+    const [sent] = requests;
+    // The Preview it selects is the one whose name its Branch or --deployment gives.
+    const selected =
+      sent?.target === "preview"
+        ? (sent.deployment ??
+          (sent.branch === undefined
+            ? undefined
+            : generatedPreviewName(sent.branch)))
+        : sent?.target;
+    expect({
       line,
-      requests: [
-        expect.objectContaining({
-          project,
-          target: target.kind,
-          ...(target.kind === "preview"
-            ? target.branch !== undefined &&
-              generatedPreviewName(target.branch) === target.name
-              ? { branch: target.branch }
-              : { deployment: target.name }
-            : {}),
-          ...(job !== undefined ? { job } : {}),
-          ...(path === "backup restore" ? { backup: "latest" } : {}),
-        }),
-      ],
+      requests: requests.length,
+      selected,
+      job: sent?.job,
+    }).toEqual({
+      line,
+      requests: 1,
+      selected: target.name,
+      job,
+    });
+    expect(sent).toMatchObject({
+      project,
+      target: target.kind,
+      ...(path === "backup restore" ? { backup: "latest" } : {}),
     });
   }
 }, 60_000);

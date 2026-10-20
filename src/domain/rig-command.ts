@@ -64,6 +64,23 @@ export function selectedTarget(
   };
 }
 
+/** The words that select `target` in `path`. rig backup list without a job reads `preview stable` and `preview working`
+ * as the job preview in that Target, so a Preview of the Branch stable or working is selected by its name there. */
+function selector(
+  path: RigCommandPath,
+  target: TargetRef,
+  job: string | undefined,
+): string {
+  if (path === "deploy") return deploySelector(target);
+  if (
+    path === "backup list" &&
+    job === undefined &&
+    target.kind === "preview" &&
+    (target.branch === "stable" || target.branch === "working")
+  )
+    return `preview --deployment ${target.name}`;
+  return targetSelector(target);
+}
 /** A rig command for a hint to print, in the CLI's grammar, with every word the shell would read quoted: the command,
  * the job and backup it takes first, the Target (as `rig deploy` deploys it again, for a deploy) and a stable deploy's
  * Branch, then --service, --project and `flags`. So `rigCommand("run", { job: "import", target })` for a recorded
@@ -84,9 +101,7 @@ export function rigCommand(
     path,
     ...(job === undefined ? [] : [shellWord(job)]),
     ...(backup === undefined ? [] : [shellWord(backup)]),
-    ...(target === undefined
-      ? []
-      : [path === "deploy" ? deploySelector(target) : targetSelector(target)]),
+    ...(target === undefined ? [] : [selector(path, target, job)]),
     ...(branch === undefined ? [] : [shellWord(branch)]),
     ...(service === undefined ? [] : ["--service", shellWord(service)]),
     ...(project === undefined ? [] : ["--project", shellWord(project)]),

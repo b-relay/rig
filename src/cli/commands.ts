@@ -572,7 +572,7 @@ function addBackupCommands(
   backup
     .command("list")
     .description(
-      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable). A job named like a Target is given with its Target: rig backup list preview stable lists the job preview in stable.",
+      "List kept backups by Target and job, each job's newest first, with their time, size and the run that made them: every Target's, one job's (rig backup list db-backup), one job's in one Target (rig backup list db-backup stable), or one Target's (rig backup list stable). A job named like a Target is given with its Target. With no job before it, preview stable and preview working mean the job preview in that Target, not a Preview of the Branch stable or working: list such a Preview by the name rig status shows, rig backup list preview --deployment <name>.",
     )
     .argument("[job]", "Backup job name under jobs in rig.yaml")
     .argument(
@@ -599,8 +599,8 @@ function addBackupCommands(
       ) => {
         // A Target's name alone lists that Target's backups (rig backup list stable, rig backup list preview <branch>); a
         // job named like a Target is listed with its Target too: rig backup list stable stable, and a job named preview
-        // as rig backup list preview stable or rig backup list preview preview --deployment <name>. So after preview, a
-        // Target's word is that Target, never a Branch.
+        // as rig backup list preview stable or rig backup list preview preview --deployment <name>. So in these two-word
+        // forms with no job before them, a Target's word after preview is that Target, not a Branch.
         const targets = ["working", "stable", PREVIEW_SELECTOR];
         const targetFirst =
           first !== undefined &&

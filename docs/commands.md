@@ -149,7 +149,11 @@ it: its command, working directory, environment, and log directory.
 
 - Target names are fixed: `working`, `stable`, and `preview <branch>` (or
   `preview --deployment <name>` for one deployed with its own name) for a
-  Preview. The word after `preview` is always a Branch.
+  Preview. The word after `preview` is a Branch, with one exception: with no
+  job before it, `rig backup list preview stable` (or `preview working`) lists
+  the job `preview` in that Target. List a whole Preview of a Branch named
+  `stable` or `working` by its name, `rig backup list preview --deployment
+<name>`; `rig status` shows each Preview's name.
 - `backup` and `dns` without a subcommand print their help, as `rig` does.
 - A hint that names a command for a Target gives it whole, with the Target's own
   selector and `--project` for the Project it is about, so it works from any

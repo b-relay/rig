@@ -436,6 +436,15 @@ test("rig backup list takes a job named like a Target before its Target, so a jo
     // A Target alone, and a Preview by its Branch, read as before.
     [["preview", "feature/x"], { target: "preview", branch: "feature/x" }],
     [["stable"], { target: "stable" }],
+    // With a job first, preview takes a Branch as everywhere else, and a whole Preview is also selected by its name.
+    [
+      ["nightly-db", "preview", "stable"],
+      { target: "preview", branch: "stable", job: "nightly-db" },
+    ],
+    [
+      ["preview", "--deployment", "stable-f379ccb9"],
+      { target: "preview", deployment: "stable-f379ccb9" },
+    ],
   ];
   for (const [args, request] of cases) {
     const h = harness(() => ({ project: "shop", backups: [] }));

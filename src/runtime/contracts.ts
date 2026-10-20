@@ -239,10 +239,21 @@ export interface RuntimeNotice {
   consequence: string;
   hint: string;
 }
+/** Where rigd's background work (supervision, ongoing health checks, scheduled jobs) says how each piece of it went. Each
+ * piece is keyed by what it is about (`work`), so its failure stays reported, as a doctor notice, until that same work
+ * succeeds: another piece's success, or a pass that skipped it, never clears it. */
+export interface WorkReport {
+  /** `work` failed; `about` names it for the operator (`Supervising stable of demo`). */
+  failed(work: string, about: string, error: unknown): void;
+  /** `work` succeeded, or is no longer needed. */
+  succeeded(work: string): void;
+}
 export interface RuntimeDependencies {
   root: string;
   /** Background failures the daemon has noted since it started; doctor reports each one. */
   notices?(): RuntimeNotice[];
+  /** Where supervision passes report each Target's share; absent, a failure goes to the diagnostic log only. */
+  supervision?: WorkReport;
   readAdminActivity(): Promise<OperationRecord[]>;
   inspectHost(): Promise<
     {

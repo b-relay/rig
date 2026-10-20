@@ -276,6 +276,7 @@ describe("rigd supervisor: a capture wrapper killed together with its applicatio
         state: "stopped",
         signal: "SIGTERM",
         incarnation: "start-1",
+        exitedAt: expect.any(String),
         recordedBy: "rigd",
       });
       expect(alive(application)).toBe(false);
@@ -292,6 +293,7 @@ describe("rigd supervisor: a capture wrapper killed together with its applicatio
         state: "stopped",
         signal: "SIGTERM",
         incarnation: "start-1",
+        exitedAt: expect.any(String),
         recordedBy: "rigd",
       });
       // A new start clears it: it never explains the next start's end.
@@ -351,6 +353,7 @@ describe("rigd supervisor: a capture wrapper killed together with its applicatio
         state: "stopped",
         signal: "SIGKILL",
         incarnation: "start-1",
+        exitedAt: expect.any(String),
         recordedBy: "rigd",
       });
     } finally {

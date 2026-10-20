@@ -31,6 +31,9 @@ export function hostnameFields(
     ? { route: hostnames[0]!, hostnames: [...hostnames] }
     : {};
 }
+/** A health check's answer. `unrecorded` says why its evidence could not be written to the Target log; logging never
+ * changes the answer, and evidence not written is written by the next check. */
+export type HealthObservation = HealthCheck & { readonly unrecorded?: string };
 export interface ObservationEffects {
   process(
     target: TargetRecord,
@@ -41,7 +44,7 @@ export interface ObservationEffects {
     target: TargetRecord,
     component: ManagedComponent,
     signal: AbortSignal,
-  ): Promise<HealthCheck>;
+  ): Promise<HealthObservation>;
   artifact(
     target: TargetRecord,
     component: InstalledComponent,

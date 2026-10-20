@@ -404,6 +404,7 @@ function world(
         return () => timers.splice(timers.indexOf(timer), 1);
       },
       async diagnostic() {},
+      report: { failed() {}, succeeded() {} },
     });
   monitor = daemon();
   const settle = async () => {

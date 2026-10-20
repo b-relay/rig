@@ -44,6 +44,7 @@ import {
 } from "../domain/errors";
 import { resolve as resolvePath } from "node:path";
 import { routeOwnerToken } from "../domain/proxy-publication";
+import { trackedWorkReport } from "./work-report";
 import {
   activationJournal,
   intendRunning,
@@ -133,6 +134,8 @@ import { createHostReservations } from "./host-reservations";
 import { targetHostnames } from "./dns-hostnames";
 import { DNS_REFUSALS, requestedDnsChange } from "../domain/dns-records";
 import {
+  enforceJobDeadline,
+  findJobRecord,
   recordScheduling,
   recordSkippedRun,
   settleJobRun,
@@ -209,8 +212,9 @@ export interface RigRuntime extends ProjectStatusReader {
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
   restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
   /** Gives back the checkouts of the Target `targetId` that job runs or kept Services held after a deploy, once nothing
-   * runs in them, under the Target's lease; drops those of a Target that is gone. Never rejects. */
-  releaseHeldCheckouts(targetId: string): Promise<void>;
+   * runs in them, under the Target's lease; drops those of a Target that is gone. A failure is recorded, and rejects;
+   * `skipped` when an Operation held the Target, so nothing was tried. */
+  releaseHeldCheckouts(targetId: string): Promise<void | "skipped">;
   /** Withdraws every route block whose Target no state record names, so a hostname a forgotten or lost Target held can be
    * published again; rigd runs it once it has started, and a deploy, up or restart of a Target with a route runs it first
    * (`rig proxy reload` runs its own, failing when it fails). Withdraws nothing while the route file lies outside the Rig
@@ -219,22 +223,29 @@ export interface RigRuntime extends ProjectStatusReader {
   withdrawOrphanedRoutes(): Promise<string[]>;
   /** Measures any backup a rigd that stopped right after its run left without a size, then deletes the backup
    * directories queued for deletion (failed runs', and backups past keep or of a destroyed Preview), forgetting each one
-   * deleted. Never rejects. */
+   * deleted. Rejects only when the state cannot be read; each backup's own failure is a diagnostic, tried again later. */
   tidyBackups(): Promise<void>;
   /** Settles a run the scheduler judged ended or past its timeout, under its Target's lease: reads the run again and acts
-   * only when the record still names it, stopping it (timed out) only while its own process runs. Never rejects. */
+   * only when the record still names it, stopping it (timed out) only while its own process runs. A failure is recorded,
+   * and rejects. */
   settleJob(request: JobSettleRequest): Promise<void>;
+  /** Stops a run past its timeout while an Operation holds its Target, without waiting for its lease: only the process
+   * carrying the run's incarnation is signalled, and the run's end is left to `settleJob`. A failure is recorded, and
+   * rejects. */
+  enforceJobDeadline(request: JobSettleRequest): Promise<void>;
   /** Stops the job runs in progress of the Target `targetId` when rig.yaml turns its role off, under its lease, as rig down
-   * would. Never rejects. */
+   * would. A failure is recorded, and rejects. */
   stopJobsIfOff(targetId: string): Promise<void>;
   /** Runs one scheduled time of a job as an Operation on its Target: it waits for the Target like any command, then starts
    * a run when the Target is still deployed, meant to run and on in rig.yaml, the job is still in its plan and the time is
-   * not past the late limit; a run still going makes it record the time skipped. Never rejects; failures are recorded. */
+   * not past the late limit; a run still going makes it record the time skipped. A run whose start failed is `failed`, as
+   * its record says; a failure to do or record any of this is recorded, and rejects. */
   runScheduledJob(request: ScheduledRunRequest): Promise<ScheduledRunResult>;
   command(command: RuntimeCommand): Promise<unknown>;
   /** The daemon's first pass: adopts what survived, re-stops what was meant to stop, and applies restart policy. */
   reconcile(): Promise<SupervisionPass>;
-  /** A later pass: applies restart policy to the Targets meant to run. Never raises; failures go to the diagnostic log. */
+  /** A later pass: applies restart policy to the Targets meant to run. Never raises; failures go to the diagnostic log and
+   * are reported to `supervision`, each Target's until supervising it succeeds again (or it is no longer supervised). */
   supervise(): Promise<SupervisionPass>;
   /** Runs `operation`, a config edit, while no other config edit, `init`, `rename`, `repoint` or `forget` of the named
    * Project runs. It does not wait for the Project's Target operations, which run beside it and plan from rig.yaml as it
@@ -243,6 +254,8 @@ export interface RigRuntime extends ProjectStatusReader {
   drain(): Promise<void>;
 }
 const reads = readActions;
+/** The supervision work that reads the runtime state, beside each Target's share (by its id). */
+const STATE_WORK = "state";
 /** How many times an Operation selects again because what it selected changed while it waited. */
 const MAX_SELECTIONS = 3;
 /** What an Operation selected changed while it waited for its scopes; it selects again. */
@@ -291,6 +304,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
     : input;
   const locks = createOperationLocks();
+  /** How supervision went: reading the state (`STATE_WORK`), and each Target's share by its id. */
+  const supervision = trackedWorkReport(deps.supervision);
   const reservations = createHostReservations();
   let draining = false;
   let passes = 0;
@@ -1875,7 +1890,15 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             ...diagnosticCauses(error),
           })
           .catch(() => {});
-        return "failed";
+        // The run's own failure to start is the job's, which its record and Activity say; anything else is rigd's.
+        const last = findJobRecord(
+          await deps.store.read().catch(() => ({ jobs: [] })),
+          request.targetId,
+          request.job,
+        )?.last;
+        if (last?.id === request.id && last.outcome === "start-failed")
+          return "failed";
+        throw error;
       } finally {
         lease.release();
         operations.delete(operationId);
@@ -1886,7 +1909,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     return await running;
   };
   /** Runs `work` on the recorded Target `targetId` under its lease, as rigd's own Operation `action`; undefined when the
-   * Target is gone or rigd is draining. Failures go to the diagnostic log. */
+   * Target is gone or rigd is draining. A failure goes to the diagnostic log, and rejects. */
   const onTarget = async (
     targetId: string,
     action: string,
@@ -1934,6 +1957,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             ...diagnosticCauses(error),
           })
           .catch(() => {});
+        throw error;
       } finally {
         lease.release();
         operations.delete(operationId);
@@ -1996,16 +2020,17 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       const recorded = state.targets.find((target) => target.id === targetId);
       if (recorded) {
         // An Operation on the Target may be starting or stopping its Services: the next offer looks again.
-        if (targetBusy(recorded)) return;
+        if (targetBusy(recorded)) return "skipped";
         // Observed without the Target's lease, as the scheduler observes job runs: only a checkout nothing runs in any
         // more, or that is a plan's again, is worth taking the lease for, so a Service that keeps running in one costs
         // its Target nothing.
+        // One whose standing cannot be read is tried under the lease too, where that failure is the offer's.
         let due = false;
         for (const held of state.heldCheckouts ?? [])
           if (
             held.target === targetId &&
             (await revisionStanding(held.workspace, state, deps).catch(
-              () => "held" as const,
+              () => "unknown" as const,
             )) !== "held"
           ) {
             due = true;
@@ -2015,16 +2040,20 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         return await onTarget(
           targetId,
           "held-checkout",
-          (target) => releaseHeldCheckouts(target, deps),
+          async (target) => {
+            const [failure] = await releaseHeldCheckouts(target, deps);
+            if (failure) throw failure;
+          },
           "supervising",
         );
       }
       // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop. Only
       // what was given back is forgotten; a failure stays for the scheduler's next offer.
-      await forgetReleasedCheckouts(
+      const [failure] = await forgetReleasedCheckouts(
         (state.heldCheckouts ?? []).filter((kept) => kept.target === targetId),
         deps,
-      ).catch(() => {});
+      );
+      if (failure) throw failure;
     },
     settleJob: (request) =>
       onTarget(request.targetId, "job", async (target, lifecycle) => {
@@ -2040,6 +2069,39 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         else await settleJobRun(target, request.job, run.id, held);
         await releaseHeldCheckouts(target, deps);
       }),
+    // No lease: the Operation holding the Target may hold it for as long as a build takes, and the run's limit does not
+    // wait for it. Only the run's own process is signalled, and its end is recorded by `settleJob` under the lease.
+    async enforceJobDeadline(request) {
+      if (draining) return;
+      const target = (await deps.store.read()).targets.find(
+        (t) => t.id === request.targetId,
+      );
+      if (!target) return;
+      const enforcing = enforceJobDeadline(
+        target,
+        request.job,
+        request.runId,
+        deps,
+        { detach: detaching.signal },
+      );
+      executing.add(enforcing);
+      void enforcing.finally(() => executing.delete(enforcing)).catch(() => {});
+      try {
+        await enforcing;
+      } catch (error) {
+        await deps
+          .diagnostic({
+            operationId: deps.id(),
+            action: "job",
+            outcome: "failed",
+            target: target.name,
+            errorCode: diagnosticErrorCode(error),
+            ...diagnosticCauses(error),
+          })
+          .catch(() => {});
+        throw error;
+      }
+    },
     async stopJobsIfOff(targetId) {
       const state = await deps.store.read();
       const target = state.targets.find((t) => t.id === targetId);
@@ -2173,7 +2235,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     let expected: string[] = [];
     const settled = new Set<string>();
     try {
-      // Unreadable state is recorded and left alone; the daemon keeps serving so doctor and status can show it.
+      // Unreadable state is recorded, reported and left alone; the daemon keeps serving so doctor and status can show it.
       let state;
       try {
         state = await deps.store.read();
@@ -2182,8 +2244,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         operations.delete(hostId);
         if (action === "reconcile") reconcilePending = true;
         await failed(error);
+        supervision.failed(STATE_WORK, "Reading the runtime state", error);
         return {};
       }
+      supervision.succeeded(STATE_WORK);
       if (action === "reconcile") reconcilePending = false;
       if (action === "reconcile") {
         await pruneCheckpoints(state, deps);
@@ -2207,6 +2271,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           !target.destructionPending &&
           (action === "reconcile" || target.desired === "running"),
       );
+      // A Target gone, stopped or in a transition is not supervised: a failure about it no longer stands.
+      const supervised = new Set(eligible.map((target) => target.id));
+      supervision.only((work) => work === STATE_WORK || supervised.has(work));
       const parts = eligible.map((target) => ({
         id: `${action}:${target.id}`,
         scopes: [targetScope(target.projectId, target)],
@@ -2229,21 +2296,30 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         for (const target of eligible)
           if (target.kind !== "stable" && !finding?.settled.has(target.id))
             unmarked.set(target.id, mark);
+      // A Target another Operation holds is skipped: neither a failure nor a recovery of its supervision.
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
-        return held
-          ? [
-              superviseJob(
-                target.id,
-                held,
-                action,
-                failed,
-                settled,
-                finding?.settled,
-                mark,
-              ),
-            ]
-          : [];
+        if (!held) return [];
+        const about = `Supervising ${target.name} of ${state.projects.find((p) => p.id === target.projectId)?.name ?? target.projectId}`;
+        let failure = false;
+        return [
+          superviseJob(
+            target.id,
+            held,
+            action,
+            async (error, name) => {
+              failure = true;
+              supervision.failed(target.id, about, error);
+              await failed(error, name);
+            },
+            settled,
+            finding?.settled,
+            mark,
+          ).then((due) => {
+            if (!failure) supervision.succeeded(target.id);
+            return due;
+          }),
+        ];
       });
     } finally {
       lease?.release();
@@ -2808,12 +2884,13 @@ async function destroyPreview(
   ).catch(() => {});
 }
 /** Drops the mirror registration of each checkout in `kept`, whose Target is gone, and forgets the records of those it
- * dropped; one that fails stays recorded. */
+ * dropped; one that fails stays recorded for the next offer, and its failure is resolved. */
 async function forgetReleasedCheckouts(
   kept: readonly HeldCheckout[],
   deps: Pick<RuntimeDependencies, "sources" | "store">,
-): Promise<void> {
+): Promise<unknown[]> {
   const released: HeldCheckout[] = [];
+  const failures: unknown[] = [];
   for (const checkout of kept)
     try {
       await deps.sources.release({
@@ -2821,10 +2898,10 @@ async function forgetReleasedCheckouts(
         workspacePath: checkout.workspace,
       });
       released.push(checkout);
-    } catch {
-      /* Kept for the next offer. */
+    } catch (error) {
+      failures.push(error);
     }
-  if (!released.length) return;
+  if (!released.length) return failures;
   await deps.store.update((state) => {
     state.heldCheckouts = state.heldCheckouts?.filter(
       (other) =>
@@ -2834,18 +2911,21 @@ async function forgetReleasedCheckouts(
         ),
     );
   });
+  return failures;
 }
 /** Gives back the checkouts held for `target` (one a job run kept, recorded with the run's end, one a kept Service ran
- * in, recorded by its deploy, or one a recovery dropped) once no job run or Service process runs in them, and forgets each one given back or that
- * is a plan's checkout again. One still run in stays recorded for the next offer. The caller holds the Target. One that
- * cannot be removed stays recorded too, and is a diagnostic, never an Operation's failure. */
+ * in, recorded by its deploy, or one a recovery dropped) once no job run or Service process runs in them, and forgets each
+ * one given back or that is a plan's checkout again. One still run in stays recorded for the next offer, and is no
+ * failure. The caller holds the Target. One that cannot be removed stays recorded too, and is a diagnostic, never an
+ * Operation's failure: it is resolved, for the scheduler's offer to report (CHECKOUT_RELEASE). */
 async function releaseHeldCheckouts(
   target: TargetRecord,
   deps: RuntimeDependencies,
-): Promise<void> {
+): Promise<RigError[]> {
   const held = ((await deps.store.read()).heldCheckouts ?? []).filter(
     (checkout) => checkout.target === target.id,
   );
+  const failures: RigError[] = [];
   for (const checkout of held) {
     const [result] = await releaseRevisions(
       [
@@ -2856,7 +2936,7 @@ async function releaseHeldCheckouts(
       ],
       deps,
     );
-    if (result?.outcome === "failed")
+    if (result?.outcome === "failed") {
       await deps
         .diagnostic({
           operationId: deps.id(),
@@ -2867,6 +2947,16 @@ async function releaseHeldCheckouts(
           ...result.causes,
         })
         .catch(() => {});
+      failures.push(
+        new RigError(
+          "CHECKOUT_RELEASE",
+          result.warning,
+          "Rig offers it again every 30 seconds; check that the checkout's directory under the Rig root can be removed.",
+          { path: result.workspacePath },
+          result.causes,
+        ),
+      );
+    }
     // Given back, or a plan's own checkout again (which the deploy that supersedes it gives back), or nothing Rig owns.
     if (
       result === undefined ||
@@ -2881,6 +2971,7 @@ async function releaseHeldCheckouts(
         );
       });
   }
+  return failures;
 }
 /** Previews leave in this order at the limit: ones whose deploy never completed, then stopped ones, then running ones. */
 function evictionRank(target: TargetRecord): number {

@@ -17,11 +17,17 @@ import {
 } from "../src/runtime/job-scheduler";
 import { jobReports } from "../src/runtime/job-status";
 import {
+  enforceJobDeadline,
   recordSkippedRun,
   settleJobRun,
   startJobRun,
   stopJobRun,
 } from "../src/runtime/jobs";
+import {
+  JOB_SCHEDULER,
+  createNoticeBoard,
+  workReport,
+} from "../src/daemon/notices";
 import { logComponents } from "../src/runtime/log-services";
 import { STATE_VERSION } from "../src/runtime/state-schema";
 
@@ -122,6 +128,9 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
   const requests: ScheduledRunRequest[] = [];
   let ids = 0;
   let busy = false;
+  /** While set, a start waits for the Target to be free, as a start queued behind a deploy does. */
+  let startsWait = false;
+  const freed: (() => void)[] = [];
   let deferring = false;
   let releasing = true;
   const now = () => new Date(clock.ms).toISOString();
@@ -137,9 +146,17 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     async observeJob(_target: TargetRecord, name: string) {
       return processes.get(name) ?? { state: "stopped" as const };
     },
-    async stopJob(_target: TargetRecord, planned: Pick<PlanJob, "name">) {
-      // As the supervisor does, a job with nothing running is left alone, unannounced.
-      if (processes.get(planned.name)?.state !== "running")
+    async stopJob(
+      _target: TargetRecord,
+      planned: Pick<PlanJob, "name"> & { incarnation?: string },
+    ) {
+      // As the supervisor does, a job with nothing running is left alone, unannounced, and so is another run's process.
+      const running = processes.get(planned.name);
+      if (
+        running?.state !== "running" ||
+        (planned.incarnation !== undefined &&
+          running.incarnation !== planned.incarnation)
+      )
         return { outcome: "unchanged" as const };
       stops.push(planned.name);
       processes.set(planned.name, { state: "stopped" });
@@ -147,6 +164,13 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     },
   };
   const runDeps = { store, lifecycle, now };
+  /** The notices rigd's doctor would report, as composition wires them. */
+  const board = createNoticeBoard(now);
+  /** Each settlement fails with this while set, as a state write on a full disk. */
+  let settleFailure: Error | undefined;
+  /** Each deadline stop, and each checkout offer, fails with these while set. */
+  let deadlineFailure: Error | undefined;
+  let releaseFailure: Error | undefined;
   const recorded = async () =>
     (await store.read()).targets.find((t) => t.id === "t1")!;
   const scheduler = () =>
@@ -158,6 +182,8 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       busy: () => busy,
       async start(request): Promise<ScheduledRunResult> {
         requests.push(request);
+        if (startsWait && busy)
+          await new Promise<void>((resolve) => freed.push(resolve));
         if (deferring) return "deferred";
         const target = await recorded();
         const planned = target.plan.jobs!.find((j) => j.name === request.job)!;
@@ -186,6 +212,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
         }
       },
       async settle(request) {
+        if (settleFailure) throw settleFailure;
         const target = await recorded();
         const run = (await store.read()).jobs?.find(
           (r) => r.job === request.job,
@@ -196,6 +223,9 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
         else await settleJobRun(target, request.job, run.id, runDeps);
       },
       async releaseCheckouts(targetId) {
+        // As the runtime does: nothing is tried while an Operation holds the Target.
+        if (busy) return "skipped";
+        if (releaseFailure) throw releaseFailure;
         if (!releasing) return;
         const kept = (await store.read()).heldCheckouts ?? [];
         released.push(
@@ -207,10 +237,20 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
           );
         });
       },
+      async enforceDeadline(request) {
+        if (deadlineFailure) throw deadlineFailure;
+        await enforceJobDeadline(
+          await recorded(),
+          request.job,
+          request.runId,
+          runDeps,
+        );
+      },
       async stopJobsIfOff(targetId) {
         offChecks.push(targetId);
       },
       async diagnostic() {},
+      report: workReport(board, JOB_SCHEDULER),
     });
   let current = scheduler();
   const pass = async (iso?: string) => {
@@ -231,16 +271,39 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     restart() {
       current = scheduler();
     },
-    end(name: string, exitCode: number) {
+    /** The run of `name` exits with `exitCode`; with `exitedAt`, its exit record says when. */
+    end(name: string, exitCode: number, exitedAt?: string) {
       const running = processes.get(name);
       processes.set(name, {
         state: "stopped",
         incarnation: running?.incarnation,
         exitCode,
+        ...(exitedAt ? { exitedAt } : {}),
       });
+    },
+    notices: () => board.list(),
+    setSettleFailure(value: Error | undefined) {
+      settleFailure = value;
+    },
+    setDeadlineFailure(value: Error | undefined) {
+      deadlineFailure = value;
+    },
+    setReleaseFailure(value: Error | undefined) {
+      releaseFailure = value;
     },
     setBusy(value: boolean) {
       busy = value;
+      if (!busy) for (const free of freed.splice(0)) free();
+    },
+    setStartsWait(value: boolean) {
+      startsWait = value;
+    },
+    /** One pass, without waiting for the work it dispatched, which may wait for the Target. */
+    async passOnly(iso: string) {
+      clock.ms = at(iso);
+      await current.pass();
+      for (let round = 0; round < 10; round++)
+        await new Promise((resolve) => setImmediate(resolve));
     },
     setDeferring(value: boolean) {
       deferring = value;
@@ -482,7 +545,7 @@ test("a deferred time is tried again", async () => {
   expect(w.started.length).toBe(1);
 });
 
-test("a run past its timeout is stopped and recorded as timed out; none is settled while its Target is busy", async () => {
+test("a run past its timeout is stopped and recorded as timed out", async () => {
   const w = world(
     stableTarget([
       job("mb-mirror", "0 7 * * 3,6", { timeout: 3600, stopTimeout: 30 }),
@@ -494,17 +557,237 @@ test("a run past its timeout is stopped and recorded as timed out; none is settl
     timeout: 3600,
     stopTimeout: 30,
   });
-  w.setBusy(true);
-  await w.pass("2026-10-14T13:00:01Z");
+  await w.pass("2026-10-14T12:59:59Z");
   expect(w.stops).toEqual([]);
-  w.setBusy(false);
-  await w.pass("2026-10-14T13:00:02Z");
+  await w.pass("2026-10-14T13:00:00Z");
   expect(w.stops).toEqual(["mb-mirror"]);
   expect(w.record("mb-mirror")!.last).toMatchObject({ outcome: "timed-out" });
   expect(w.store.state.activity.at(-1)).toMatchObject({
     outcome: "failed",
     message: "mb-mirror: timed out in 1h00m and was stopped",
   });
+});
+
+test("a run's timeout is enforced while an Operation holds its Target; its end is recorded once the Target is free, at the time it was stopped", async () => {
+  const w = world(
+    stableTarget([job("tick", "* * * * *", { timeout: 3, stopTimeout: 1 })]),
+  );
+  await w.pass("2026-10-14T12:00:00Z");
+  await w.pass("2026-10-14T12:01:00Z");
+  // A deploy holds the Target, for longer than the run may take.
+  w.setBusy(true);
+  await w.pass("2026-10-14T12:01:02Z");
+  expect(w.stops).toEqual([]);
+  await w.pass("2026-10-14T12:01:03Z");
+  expect(w.stops).toEqual(["tick"]);
+  expect(w.processes.get("tick")?.state).toBe("stopped");
+  // Settlement still waits for the Target: the run is recorded in progress, with the decision and when it was stopped.
+  expect(w.record("tick")!.running).toMatchObject({
+    stopping: {
+      cause: "timed-out",
+      at: "2026-10-14T12:01:03.000Z",
+      endedAt: "2026-10-14T12:01:03.000Z",
+    },
+  });
+  await w.pass("2026-10-14T12:01:20Z");
+  expect(w.record("tick")!.running).toBeDefined();
+  w.setBusy(false);
+  await w.pass("2026-10-14T12:01:30Z");
+  expect(w.record("tick")!.last).toMatchObject({
+    outcome: "timed-out",
+    finishedAt: "2026-10-14T12:01:03.000Z",
+  });
+  expect(w.store.state.activity.at(-1)).toMatchObject({
+    occurredAt: "2026-10-14T12:01:03.000Z",
+    message: "tick: timed out in 3s and was stopped",
+  });
+});
+
+test("a run's deadline is enforced even while its job's next scheduled start waits behind the Operation holding the Target", async () => {
+  const w = world(
+    stableTarget([job("tick", "* * * * *", { timeout: 3, stopTimeout: 1 })]),
+    [
+      {
+        target: "t1",
+        job: "tick",
+        watchedFrom: "2026-10-14T11:59:00.000Z",
+        running: {
+          id: "manual",
+          trigger: "manual",
+          startedAt: "2026-10-14T11:59:58.000Z",
+          timeout: 3,
+          stopTimeout: 1,
+        },
+      },
+    ],
+  );
+  w.processes.set("tick", { state: "running", incarnation: "manual" });
+  w.setStartsWait(true);
+  w.setBusy(true);
+  // 12:00 comes due before the run's deadline (12:00:01); its start waits for the Target.
+  await w.passOnly("2026-10-14T12:00:00Z");
+  expect(w.requests).toHaveLength(1);
+  expect(w.stops).toEqual([]);
+  await w.passOnly("2026-10-14T12:00:01Z");
+  expect(w.stops).toEqual(["tick"]);
+  expect(w.record("tick")!.running?.stopping).toMatchObject({
+    cause: "timed-out",
+    endedAt: "2026-10-14T12:00:01.000Z",
+  });
+  // Once the Target is free, the waiting start records the run's end, then starts the next run.
+  w.setBusy(false);
+  await w.pass("2026-10-14T12:00:20Z");
+  expect(w.record("tick")!.last).toMatchObject({
+    id: "manual",
+    outcome: "timed-out",
+    finishedAt: "2026-10-14T12:00:01.000Z",
+  });
+});
+
+test("a deadline enforced while the Target is busy never signals another run's process", async () => {
+  const w = world(
+    stableTarget([job("tick", "0 0 1 1 *", { timeout: 3, stopTimeout: 1 })]),
+    [
+      {
+        target: "t1",
+        job: "tick",
+        running: {
+          id: "old",
+          trigger: "manual",
+          startedAt: "2026-10-14T12:00:00.000Z",
+          timeout: 3,
+        },
+      },
+    ],
+  );
+  // What runs under the job's key carries another incarnation: it is not this run's to stop.
+  w.processes.set("tick", { state: "running", incarnation: "newer" });
+  w.setBusy(true);
+  await w.pass("2026-10-14T12:00:10Z");
+  expect(w.stops).toEqual([]);
+  expect(w.processes.get("tick")).toEqual({
+    state: "running",
+    incarnation: "newer",
+  });
+  expect(w.record("tick")!.running?.stopping).toBeUndefined();
+});
+
+test("a run of a job a deploy dropped is stopped at its timeout while the Target is busy too", async () => {
+  const w = world(stableTarget([job("tick", "0 0 1 1 *")]), [
+    {
+      target: "t1",
+      job: "removed",
+      running: {
+        id: "old",
+        trigger: "manual",
+        startedAt: "2026-10-14T12:00:00.000Z",
+        timeout: 60,
+      },
+    },
+  ]);
+  w.processes.set("removed", { state: "running", incarnation: "old" });
+  w.setBusy(true);
+  await w.pass("2026-10-14T12:01:00Z");
+  expect(w.stops).toEqual(["removed"]);
+  w.setBusy(false);
+  await w.pass("2026-10-14T12:01:05Z");
+  expect(w.record("removed")!.last).toMatchObject({
+    outcome: "timed-out",
+    finishedAt: "2026-10-14T12:01:00.000Z",
+  });
+});
+
+test("a run that exited while its Target was busy is recorded as ending when it exited, not when it was settled", async () => {
+  const w = world(stableTarget([job("short", "0 0 1 1 *")]), [
+    {
+      target: "t1",
+      job: "short",
+      running: {
+        id: "run1",
+        trigger: "manual",
+        startedAt: "2026-10-13T21:35:21.000Z",
+      },
+    },
+  ]);
+  w.processes.set("short", { state: "running", incarnation: "run1" });
+  w.setBusy(true);
+  w.end("short", 0, "2026-10-13T21:35:24.000Z");
+  await w.pass("2026-10-13T21:35:30Z");
+  w.setBusy(false);
+  await w.pass("2026-10-13T21:35:33Z");
+  expect(w.record("short")!.last).toMatchObject({
+    outcome: "succeeded",
+    finishedAt: "2026-10-13T21:35:24.000Z",
+  });
+  expect(w.store.state.activity.at(-1)).toMatchObject({
+    occurredAt: "2026-10-13T21:35:24.000Z",
+    message: "short: succeeded in 3s (rig run)",
+  });
+});
+
+test("an exit time that is not this run's, or not between its start and now, is not trusted: the run ends when it is settled", async () => {
+  for (const evidence of [
+    { incarnation: "other", exitedAt: "2026-10-13T21:35:24.000Z" },
+    { incarnation: "run1", exitedAt: "2026-10-13T21:30:00.000Z" },
+    { incarnation: "run1", exitedAt: "2026-10-13T22:00:00.000Z" },
+  ]) {
+    const w = world(stableTarget([job("short", "0 0 1 1 *")]), [
+      {
+        target: "t1",
+        job: "short",
+        running: {
+          id: "run1",
+          trigger: "manual",
+          startedAt: "2026-10-13T21:35:21.000Z",
+        },
+      },
+    ]);
+    w.processes.set("short", { state: "stopped", exitCode: 1, ...evidence });
+    await w.pass("2026-10-13T21:35:33Z");
+    expect(w.record("short")!.last!.finishedAt).toBe(
+      "2026-10-13T21:35:33.000Z",
+    );
+  }
+});
+
+test("a settlement that fails raises the jobs notice, which another job's success does not clear and its own retry does", async () => {
+  const w = world(
+    stableTarget([job("fails", "0 0 1 1 *"), job("tick", "* * * * *")]),
+    [
+      {
+        target: "t1",
+        job: "fails",
+        running: {
+          id: "run1",
+          trigger: "manual",
+          startedAt: "2026-10-14T12:00:00.000Z",
+        },
+      },
+    ],
+  );
+  w.processes.set("fails", { state: "running", incarnation: "run1" });
+  w.end("fails", 17);
+  w.setSettleFailure(new Error("ENOSPC: no space left on device"));
+  await w.pass("2026-10-14T12:00:03Z");
+  expect(w.notices()).toEqual([
+    expect.objectContaining({
+      channel: "jobs",
+      message:
+        "Recording the end of the run of fails on stable of melody failed: ENOSPC: no space left on device",
+    }),
+  ]);
+  // tick starts and is recorded meanwhile; the failure of fails stands.
+  await w.pass("2026-10-14T12:01:00Z");
+  expect(w.started.map((run) => run.job)).toEqual(["tick"]);
+  expect(w.notices()).toHaveLength(1);
+  expect(w.record("fails")!.running).toBeDefined();
+  w.setSettleFailure(undefined);
+  await w.pass("2026-10-14T12:01:01Z");
+  expect(w.record("fails")!.last).toMatchObject({
+    outcome: "failed",
+    exitCode: 17,
+  });
+  expect(w.notices()).toEqual([]);
 });
 
 test("a run that ended on its own before its timeout was noticed keeps its own exit", async () => {
@@ -649,4 +932,87 @@ test("status and logs keep a run whose job a deploy removed, unscheduled", () =>
       "jobs.palettes.targets does not name stable, so only rig run runs it here.",
   });
   expect(manual[0]).not.toHaveProperty("nextRunAt");
+});
+
+test("a checkout offer that fails keeps the jobs notice through an offer skipped for a busy Target, while other jobs go on, until giving it back succeeds", async () => {
+  const w = world(stableTarget([job("tick", "* * * * *")]));
+  await w.store.update((state) => {
+    state.heldCheckouts = [
+      { target: "t1", project: "p1", workspace: "/rig/revisions/r1" },
+    ];
+  });
+  w.setReleaseFailure(new Error("disk busy"));
+  await w.pass("2026-10-14T12:00:30Z");
+  expect(w.notices()).toEqual([
+    expect.objectContaining({
+      channel: "jobs",
+      message:
+        "Giving back the checkouts a run or a kept Service held for stable failed: disk busy",
+    }),
+  ]);
+  // The next offer finds the Target busy and tries nothing: no recovery.
+  w.setReleaseFailure(undefined);
+  w.setBusy(true);
+  await w.pass("2026-10-14T12:01:00Z");
+  expect(w.notices()).toHaveLength(1);
+  expect(w.store.state.heldCheckouts).toHaveLength(1);
+  // tick still starts and ends meanwhile.
+  expect(w.started.map((run) => run.job)).toEqual(["tick"]);
+  w.end("tick", 0);
+  w.setBusy(false);
+  // Skipped, so offered again at the next pass rather than 30 s later.
+  await w.pass("2026-10-14T12:01:01Z");
+  expect(w.record("tick")!.last).toMatchObject({ outcome: "succeeded" });
+  expect(w.released).toEqual(["/rig/revisions/r1"]);
+  expect(w.store.state.heldCheckouts).toEqual([]);
+  expect(w.notices()).toEqual([]);
+});
+
+test("a run's failed deadline stop is reported for that run alone: once it is gone and another run of the job starts, the notice goes", async () => {
+  const w = world(
+    stableTarget([job("tick", "0 0 1 1 *", { timeout: 3, stopTimeout: 1 })]),
+    [
+      {
+        target: "t1",
+        job: "tick",
+        running: {
+          id: "run-a",
+          trigger: "manual",
+          startedAt: "2026-10-14T12:00:00.000Z",
+          timeout: 3,
+        },
+      },
+    ],
+  );
+  w.processes.set("tick", { state: "running", incarnation: "run-a" });
+  w.setBusy(true);
+  w.setDeadlineFailure(new Error("EPERM: the stop was refused"));
+  await w.pass("2026-10-14T12:00:05Z");
+  expect(w.notices()).toEqual([
+    expect.objectContaining({
+      channel: "jobs",
+      message:
+        "Stopping the run of tick on stable of melody past its timeout failed: EPERM: the stop was refused",
+    }),
+  ]);
+  // Run A exits on its own; the Operation that held the Target (a rig run) settles it and starts run B of the same job.
+  await w.store.update((state) => {
+    const record = state.jobs![0]!;
+    record.last = {
+      ...record.running!,
+      finishedAt: "2026-10-14T12:00:06.000Z",
+      outcome: "succeeded",
+      exitCode: 0,
+    };
+    record.running = {
+      id: "run-b",
+      trigger: "manual",
+      startedAt: "2026-10-14T12:00:06.000Z",
+      timeout: 3600,
+    };
+  });
+  w.processes.set("tick", { state: "running", incarnation: "run-b" });
+  w.setBusy(false);
+  await w.pass("2026-10-14T12:00:08Z");
+  expect(w.notices()).toEqual([]);
 });

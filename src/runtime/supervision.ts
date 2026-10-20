@@ -19,6 +19,7 @@ import type { ComponentReport } from "../domain/project-status";
 import { targetSelector } from "../domain/target-selector";
 import type { ProcessObservation } from "../providers/contracts";
 import { boundedObservations } from "./bounded-observations";
+import { plannedRoutes } from "./ports";
 import type { RuntimeDependencies } from "./contracts";
 import type { ActivationJournal, StartEvidence } from "./lifecycle";
 import { preparedBuild, serviceDefinition } from "../domain/service-definition";
@@ -536,34 +537,30 @@ async function settleStopped(
 }
 
 /** One pass over a Target meant to run. A running Service is left alone, which is how a process that survived the daemon is
- * adopted. A stopped one has its outcome recorded once, then is started again only when its policy (within `scope`) retries
- * that outcome, the outcome's budget allows and its backoff has passed. A due attempt waits, spending nothing, while a
- * Service it depends on is not running, and after an unknown exit while one of its ports still accepts connections.
+ * adopted. A stopped one has its routed paths withheld, then its outcome recorded once, then is started again only when its
+ * policy (within `scope`) retries that outcome, the outcome's budget allows and its backoff has passed; the start publishes
+ * its paths again once it is verified. A due attempt waits, spending nothing, while a Service it depends on is not running,
+ * and after an unknown exit while one of its ports still accepts connections.
  * Returns when the earliest scheduled attempt is due, in Unix milliseconds.
- * A record that cannot be saved ends the Service's pass before anything is started. */
+ * A route that cannot be withheld, or a record that cannot be saved, ends the Service's pass before anything is recorded or
+ * started; every other Service is still supervised, and then the first such failure is thrown. */
 export async function superviseTarget(
   target: TargetRecord,
   deps: Deps,
   scope: SupervisionScope = DEFAULT_SUPERVISION_SCOPE,
 ): Promise<number | undefined> {
   let next: number | undefined;
+  const failures: unknown[] = [];
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
     try {
       const due = await superviseService(target, component, deps, scope);
       if (due !== undefined) next = Math.min(next ?? due, due);
     } catch (error) {
-      await deps
-        .diagnostic({
-          operationId: deps.id(),
-          action: "supervise",
-          outcome: "failed",
-          target: target.name,
-          errorCode: diagnosticErrorCode(error),
-        })
-        .catch(() => {});
+      failures.push(error);
     }
   }
+  if (failures.length) throw failures[0];
   return next;
 }
 
@@ -599,6 +596,10 @@ async function superviseService(
     return undefined;
   const policy = component.restart ?? DEFAULT_RESTART_POLICY;
   if (!run?.outcome) {
+    // Nothing of it listens on its ports any more, which any program may bind now: its paths go before its exit is
+    // recorded, so a route that cannot be withheld is tried again by the next pass.
+    if (plannedRoutes(target.plan).some((route) => route.service === service))
+      await deps.lifecycle.withhold(target, [service]);
     const outcome = observedOutcome(run, observation, deps.now());
     run = {
       ...(run ?? {

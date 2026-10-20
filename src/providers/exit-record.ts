@@ -74,13 +74,19 @@ export function wrapperExitEvidence(exit: {
   return undefined;
 }
 /** The exit evidence a stopped observation carries. */
-export function exitEvidence(
-  record: ExitRecord | undefined,
-): { incarnation: string; exitCode?: number; signal?: string } | undefined {
+export function exitEvidence(record: ExitRecord | undefined):
+  | {
+      incarnation: string;
+      exitCode?: number;
+      signal?: string;
+      exitedAt: string;
+    }
+  | undefined {
   if (!record) return undefined;
   return {
     incarnation: record.incarnation,
     ...(record.exitCode === undefined ? {} : { exitCode: record.exitCode }),
     ...(record.signal === undefined ? {} : { signal: record.signal }),
+    exitedAt: record.at,
   };
 }

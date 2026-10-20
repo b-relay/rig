@@ -156,6 +156,7 @@ describe("child supervisor exit contract", () => {
       state: "stopped",
       exitCode: 0,
       incarnation: "start-1",
+      exitedAt: expect.any(String),
     });
   });
 
@@ -168,6 +169,7 @@ describe("child supervisor exit contract", () => {
       state: "stopped",
       exitCode: 3,
       incarnation: "start-1",
+      exitedAt: expect.any(String),
     };
     expect(await untilStopped(supervisor)).toEqual(stopped);
     await Bun.sleep(100);
@@ -184,6 +186,7 @@ describe("child supervisor exit contract", () => {
       state: "stopped",
       signal: "SIGKILL",
       incarnation: "start-1",
+      exitedAt: expect.any(String),
     });
   });
 
@@ -238,16 +241,13 @@ describe("child supervisor exit contract", () => {
   test("an exit record left by an earlier incarnation is removed by the next start and never explains its end", async () => {
     const w = await world();
     const supervisor = w.supervisor();
-    await writeExitRecord(w.root, {
-      key,
-      incarnation: "old",
-      exitCode: 1,
-      at: new Date().toISOString(),
-    });
+    const at = new Date().toISOString();
+    await writeExitRecord(w.root, { key, incarnation: "old", exitCode: 1, at });
     expect(await supervisor.observe(key)).toEqual({
       state: "stopped",
       exitCode: 1,
       incarnation: "old",
+      exitedAt: at,
     });
     const started = await supervisor.ensureRunning(w.request("new", 3));
     expect(await readExitRecord(w.root, key)).toBeUndefined();
@@ -261,6 +261,7 @@ describe("child supervisor exit contract", () => {
       state: "stopped",
       exitCode: 3,
       incarnation: "new",
+      exitedAt: expect.any(String),
     });
     expect(await readExitRecord(w.root, key)).toMatchObject({
       key,

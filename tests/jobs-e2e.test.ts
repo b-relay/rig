@@ -209,3 +209,60 @@ targets:
     await f.cleanup();
   }
 }, 120000);
+
+test("a job's timeout stops it while a deploy's build holds its Target, and its end is when it was stopped", async () => {
+  const f = await rigFixture();
+  try {
+    const delay = join(f.base, "build-delay");
+    const overdue = join(f.base, "overdue");
+    await writeFile(delay, "0");
+    await writeFile(join(f.repo, "build.sh"), `sleep "$(cat '${delay}')"\n`);
+    await writeFile(
+      join(f.repo, "long.sh"),
+      `sleep 6; date > '${overdue}'; sleep 30\n`,
+    );
+    await writeFile(
+      join(f.repo, "rig.yaml"),
+      `name: melody
+build: sh build.sh
+services:
+  hold:
+    command: exec sleep 10000
+    stop_timeout: 1s
+jobs:
+  long:
+    command: sh long.sh
+    schedule: "0 0 1 1 *"
+    timeout: 3s
+    stop_timeout: 1s
+targets:
+  stable: true
+`,
+    );
+    expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["init", "--create-git"])).toMatchObject({ code: 0 });
+    await f.commit();
+    expect(await f.rig(["deploy"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["run", "long"])).toMatchObject({ code: 0 });
+    // The next deploy's build holds the Target for 12 s, past the run's 3 s limit and its 1 s stop grace.
+    await writeFile(delay, "12");
+    const deploying = f.rig(["deploy", "--force"]);
+    await Bun.sleep(8000);
+    expect(await Bun.file(overdue).exists()).toBe(false);
+    expect(await deploying).toMatchObject({ code: 0 });
+    expect(await Bun.file(overdue).exists()).toBe(false);
+    const ended = await until(
+      () => jobStatus(f, "stable", "long"),
+      (job) => job?.last?.outcome === "timed-out",
+    );
+    expect(ended.last.outcome).toBe("timed-out");
+    // It ended at its limit, not when the deploy let rigd record it.
+    expect(
+      Date.parse(ended.last.finishedAt) - Date.parse(ended.last.startedAt),
+    ).toBeLessThan(6000);
+    expect(await f.rig(["down", "stable"])).toMatchObject({ code: 0 });
+    expect(await f.rigd(["uninstall"])).toMatchObject({ code: 0 });
+  } finally {
+    await f.cleanup();
+  }
+}, 120000);

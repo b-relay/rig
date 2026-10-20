@@ -9,6 +9,11 @@ import type {
   Supervisor,
 } from "../src/providers/contracts";
 import { parseProjectConfig } from "../src/config";
+import {
+  FAILURE_MONITOR,
+  createNoticeBoard,
+  workReport,
+} from "../src/daemon/notices";
 import { runtimeWorld } from "./support/runtime-world";
 
 const roots: string[] = [];
@@ -88,6 +93,10 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
   const hold = new Set<number>();
   const published = new Map<string, RouteRequest>();
   const routerFailure: { apply?: (route: RouteRequest) => boolean } = {};
+  /** The runtime's reads of state fail with this while set. */
+  const stateFailure: { read?: Error } = {};
+  /** The notices doctor reports, with supervision reporting to the monitor's channel as rigd wires it. */
+  const board = createNoticeBoard(() => "2026-09-17T00:00:00.000Z");
   const router: Router = {
     async apply(route) {
       if (routerFailure.apply?.(route)) throw new Error("caddy is down");
@@ -154,6 +163,14 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       },
     },
     router,
+    dependencies: ({ store }) => ({
+      supervision: workReport(board, FAILURE_MONITOR),
+      store: {
+        read: () =>
+          stateFailure.read ? Promise.reject(stateFailure.read) : store.read(),
+        update: (change) => store.update(change),
+      },
+    }),
   });
   roots.push(world.root);
   const { clock, store } = world;
@@ -169,6 +186,8 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     listening,
     hold,
     routerFailure,
+    stateFailure,
+    notices: () => board.list(),
     target,
     up: () => runtime.command({ action: "up", project: "demo" }),
     down: () => runtime.command({ action: "down", project: "demo" }),
@@ -197,6 +216,7 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     release(port: number) {
       hold.delete(port);
       held.get(port)?.({ ready: true });
+      held.delete(port);
     },
     async held(port: number) {
       for (let turn = 0; turn < 200 && !held.has(port); turn++)
@@ -285,20 +305,164 @@ test("a replacement that listens beyond loopback is stopped and stays unreachabl
   });
 });
 
-test("when the route cannot be withdrawn the replacement is never started, and the failure is kept as evidence", async () => {
+test("when the route cannot be withheld from a Service that exited, nothing is recorded or started for it until it can", async () => {
   const f = await fixture();
   await f.up();
   await f.exit("api", 3);
   f.routerFailure.apply = () => true;
-  await retry(f);
-
+  expect(await f.supervise()).toEqual({});
   expect(f.starts).toEqual(["web", "api"]);
   expect(await f.running("api")).toBe(false);
   expect(await f.running("web")).toBe(true);
   expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
-  expect((await f.target()).services!.api!.outcome).toMatchObject({
-    kind: "activation-failed",
+  expect((await f.target()).services!.api!.outcome).toBeUndefined();
+  // Once the proxy answers, the next pass withholds its paths, records the exit and starts it again.
+  f.routerFailure.apply = undefined;
+  await retry(f);
+  expect(f.starts).toEqual(["web", "api", "api"]);
+  expect(await f.reach("/api/users")).toBe(`127.0.0.1:${API}`);
+  expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
+});
+
+test("a routed Service that exits on its own and is not restarted has its paths withheld, and they reach it again once it is verified", async () => {
+  const f = await fixture({
+    ...PROJECT,
+    services: {
+      ...PROJECT.services,
+      api: { ...PROJECT.services.api, restart: "no" },
+    },
   });
+  await f.up();
+  await f.exit("api", 3);
+  expect(await f.supervise()).toEqual({});
+  expect((await f.target()).services!.api!.outcome).toMatchObject({
+    kind: "exited",
+    exitCode: 3,
+  });
+  // A program that takes its port now receives nothing for its paths; its sibling's stay.
+  expect(await f.reach("/api/users")).toBeNull();
+  expect(await f.reach("/")).toBe(`127.0.0.1:${WEB}`);
+  await f.up();
+  expect(await f.reach("/api/users")).toBe(`127.0.0.1:${API}`);
+});
+
+test("a start fails, publishing nothing, when a Service it verified exits while a later Service is still starting", async () => {
+  const f = await fixture();
+  f.hold.add(API);
+  const starting = f.up();
+  expect(await f.held(API)).toBe(true);
+  // web passed its start gate; it exits while api's start waits.
+  await f.exit("web", 23);
+  f.release(API);
+  await expect(starting).rejects.toMatchObject({
+    code: "PROCESS_EXITED",
+    message:
+      "web was ready, then exited with code 23 before working finished starting.",
+  });
+  // Nothing was published.
+  expect(await f.routed()).toBe(false);
+  // What it started is stopped again.
+  expect(await f.running("api")).toBe(false);
+  expect(f.stops).toContain("api");
+});
+
+test("a start fails, publishing nothing, when its last Service exits while an earlier one is verified again", async () => {
+  const f = await fixture();
+  f.hold.add(WEB);
+  const starting = f.up();
+  expect(await f.held(WEB)).toBe(true);
+  // web's first check passes; its second, once api has started, waits.
+  f.release(WEB);
+  f.hold.add(WEB);
+  expect(await f.held(WEB)).toBe(true);
+  expect(await f.running("api")).toBe(true);
+  await f.exit("api", 23);
+  f.release(WEB);
+  await expect(starting).rejects.toMatchObject({
+    code: "PROCESS_EXITED",
+    message:
+      "api was ready, then exited with code 23 before working finished starting.",
+  });
+  expect(await f.routed()).toBe(false);
+  expect(await f.running("web")).toBe(false);
+});
+
+test("a Service already running that a start relies on is verified again once the start is done", async () => {
+  const f = await fixture({
+    ...PROJECT,
+    services: {
+      ...PROJECT.services,
+      api: { ...PROJECT.services.api, depends_on: ["web"], restart: "no" },
+    },
+  });
+  await f.up();
+  await f.exit("api", 0);
+  f.hold.add(API);
+  const starting = f.up();
+  expect(await f.held(API)).toBe(true);
+  await f.exit("web", 9);
+  f.release(API);
+  await expect(starting).rejects.toMatchObject({ code: "PROCESS_EXITED" });
+  expect(await f.reach("/api/users")).toBeNull();
+  expect(await f.running("api")).toBe(false);
+  // web's own exit is supervision's: its next pass withholds web's path.
+  await f.supervise();
+  expect(await f.reach("/")).toBeNull();
+});
+
+test("a supervision pass that cannot read the state raises the monitor notice, and the next pass that reads it clears it", async () => {
+  const f = await fixture();
+  await f.up();
+  f.stateFailure.read = new Error("state.json: Unexpected token");
+  expect(await f.supervise()).toEqual({});
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "monitor",
+      message: "Reading the runtime state failed: state.json: Unexpected token",
+    }),
+  ]);
+  f.stateFailure.read = undefined;
+  await f.supervise();
+  expect(f.notices()).toEqual([]);
+});
+
+test("a Service whose supervision fails raises the monitor notice while its siblings are still supervised; a pass that skips the Target leaves it, and only supervising it again clears it", async () => {
+  const f = await fixture();
+  await f.up();
+  await f.exit("web", 1);
+  await f.exit("api", 3);
+  // The proxy refuses to withhold api's paths, and only those.
+  f.routerFailure.apply = (route) =>
+    route.sites.some((site) =>
+      site.routes.some(
+        (path) => path.prefix === "/api" && path.upstream === null,
+      ),
+    );
+  await f.supervise();
+  expect((await f.target()).services!.web!.outcome).toMatchObject({
+    kind: "exited",
+    exitCode: 1,
+  });
+  expect((await f.target()).services!.api!.outcome).toBeUndefined();
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "monitor",
+      message: expect.stringMatching(
+        /^Supervising working of demo failed: ROUTE_WITHHOLD: /,
+      ),
+    }),
+  ]);
+  // An up holds the Target while its readiness waits: the pass skips it, which is no recovery.
+  f.routerFailure.apply = undefined;
+  f.hold.add(API);
+  const starting = f.up();
+  expect(await f.held(API)).toBe(true);
+  await f.supervise();
+  expect(f.notices()).toHaveLength(1);
+  f.release(API);
+  await starting;
+  await f.supervise();
+  expect(f.notices()).toEqual([]);
 });
 
 test("an explicit up withholds the path of a stopped Service under the Target's existing route until that Service is verified", async () => {

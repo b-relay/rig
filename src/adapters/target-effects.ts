@@ -44,6 +44,7 @@ import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
 import {
+  ownedListeners,
   preparationProcessKey,
   type TargetEffects,
 } from "../runtime/lifecycle";
@@ -102,7 +103,7 @@ function failureReason(error: unknown): string {
   }
   return String(error);
 }
-import type { ObservationEffects } from "../runtime/status";
+import type { HealthObservation, ObservationEffects } from "../runtime/status";
 import {
   RigError,
   failureCauses,
@@ -384,20 +385,67 @@ export function createTargetEffects(
   };
   /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. */
   const lastHealth = new Map<string, string>();
+  /** A check's answer, whatever becomes of its evidence: evidence that cannot be written is said (`unrecorded`) and stays
+   * unrecorded, so the next check writes it. */
   const health = async (
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
-  ): Promise<HealthCheck> => {
-    const check = component.health
-      ? await probe(component, target, signal)
-      : await connections(component, signal);
+  ): Promise<HealthObservation> =>
+    await evidenced(
+      component.health
+        ? await probe(component, target, signal)
+        : await connections(component, signal),
+      component,
+      target,
+    );
+  /** An ongoing check, as status and the health monitor run it: the start gate's check, except that a check of the Service's
+   * ports passes only on listeners its own running process owns, so a program that took a port it left never answers
+   * for it. */
+  const ongoingHealth = async (
+    component: ManagedComponent,
+    target: TargetRecord,
+    signal: AbortSignal,
+  ): Promise<HealthObservation> => {
+    if (component.health) return await health(component, target, signal);
+    const reached = await connections(component, signal);
+    const owned = reached.ready
+      ? await ownedListeners(
+          component,
+          target,
+          {
+            listeners: (pid, inspecting) =>
+              options.listeners.inspect(pid, inspecting),
+          },
+          {
+            observe: () =>
+              supervisor(target).observe(
+                `${target.id}:${component.name}`,
+                signal,
+              ),
+          },
+          signal,
+        ).catch((error: unknown): HealthCheck => ({
+          ready: false,
+          reason: describedFailure(error),
+        }))
+      : reached;
+    return await evidenced(owned, component, target);
+  };
+  const evidenced = async (
+    check: HealthCheck,
+    component: ManagedComponent,
+    target: TargetRecord,
+  ): Promise<HealthObservation> => {
     const evidence = check.ready ? "ready" : check.reason;
     const key = `${target.id}:${component.name}`;
-    if (lastHealth.get(key) !== evidence) {
-      lastHealth.set(key, evidence);
-      await recordLines(target, component.name, "health", [evidence]);
-    }
+    if (lastHealth.get(key) !== evidence)
+      try {
+        await recordLines(target, component.name, "health", [evidence]);
+        lastHealth.set(key, evidence);
+      } catch (error) {
+        return { ...check, unrecorded: describedFailure(error) };
+      }
     return check;
   };
   /** Without a check of its own a Service is ready once every port it declares accepts a connection. */
@@ -953,7 +1001,8 @@ export function createTargetEffects(
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),
-      health: (target, component, signal) => health(component, target, signal),
+      health: (target, component, signal) =>
+        ongoingHealth(component, target, signal),
       artifact: async (target, component) => {
         try {
           if (

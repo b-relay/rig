@@ -471,6 +471,37 @@ test("a checkout a run kept is recorded with its end and given back, by the next
   expect((await f.world.store.read()).heldCheckouts).toEqual([]);
 });
 
+test("the scheduler's checkout offer rejects while giving one back fails, and resolves while one is still legitimately held", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  const old = `${f.world.root}/revisions/r1`;
+  await f.deployedFrom(old);
+  await updateState(f.world, (state) => {
+    state.heldCheckouts = [
+      { target: f.target.id, project: f.target.projectId, workspace: old },
+    ];
+  });
+  // run A still runs in it: held, which is nothing to report.
+  await f.runtime.releaseHeldCheckouts(f.target.id);
+  expect(f.released).toEqual([]);
+  f.processes.set(f.key, {
+    state: "stopped",
+    incarnation: "run-a",
+    exitCode: 0,
+  });
+  await updateState(f.world, (state) => {
+    for (const record of state.jobs ?? []) delete record.running;
+  });
+  f.failReleases.count = 1;
+  await expect(
+    f.runtime.releaseHeldCheckouts(f.target.id),
+  ).rejects.toMatchObject({ code: "CHECKOUT_RELEASE" });
+  expect((await f.world.store.read()).heldCheckouts).toHaveLength(1);
+  await f.runtime.releaseHeldCheckouts(f.target.id);
+  expect(f.released).toEqual([old]);
+  expect((await f.world.store.read()).heldCheckouts).toEqual([]);
+});
+
 test("a run settled by the next start keeps its checkout recorded even when that start fails", async () => {
   const f = await fixture();
   expect(await f.scheduled("run-a")).toBe("started");
@@ -655,7 +686,10 @@ test("a removed Target's kept checkouts are forgotten only once given back", asy
     ];
   });
   f.failReleases.count = 1;
-  await f.runtime.releaseHeldCheckouts("gone");
+  // The other is still given back; the failure is the offer's, for the jobs notice.
+  await expect(f.runtime.releaseHeldCheckouts("gone")).rejects.toThrow(
+    "disk busy",
+  );
   expect(f.released).toEqual(["/rig/revisions/r2"]);
   expect((await f.world.store.read()).heldCheckouts).toEqual([
     { target: "gone", project: "p", workspace: "/rig/revisions/r1" },
@@ -663,4 +697,52 @@ test("a removed Target's kept checkouts are forgotten only once given back", asy
   await f.runtime.releaseHeldCheckouts("gone");
   expect(f.released).toEqual(["/rig/revisions/r2", "/rig/revisions/r1"]);
   expect((await f.world.store.read()).heldCheckouts).toEqual([]);
+});
+
+test("a run past its timeout is stopped while an Operation holds its Target, without waiting for it; its end is recorded under the lease afterwards", async () => {
+  const f = await fixture();
+  expect(await f.scheduled("run-a")).toBe("started");
+  // rig run of another job holds the Target while its spawn waits.
+  const spawn = f.holdNextStart();
+  const other = f.runtime.command({
+    action: "run",
+    repoPath: f.world.repo,
+    target: "working",
+    job: "palettes",
+  });
+  await spawn.reached;
+  expect(f.runtime.targetBusy(f.target)).toBe(true);
+  // The scheduler's checkout offer tries nothing then, and says so.
+  expect(await f.runtime.releaseHeldCheckouts(f.target.id)).toBe("skipped");
+  f.world.clock.ms += 3600_000 + 1000;
+  await f.runtime.enforceJobDeadline({
+    targetId: f.target.id,
+    job: "link-resolver",
+    runId: "run-a",
+  });
+  expect(f.signalled.map((stop) => stop.key)).toEqual([f.key]);
+  // The decision was on record before the signal.
+  expect(
+    f.signalled[0]!.state.jobs?.find((r) => r.job === "link-resolver")?.running
+      ?.stopping,
+  ).toMatchObject({ cause: "timed-out" });
+  const stoppedAt = new Date(f.world.clock.ms).toISOString();
+  expect((await f.record())?.running?.stopping).toEqual({
+    cause: "timed-out",
+    at: stoppedAt,
+    endedAt: stoppedAt,
+  });
+  spawn.release();
+  await other;
+  f.world.clock.ms += 60_000;
+  await f.runtime.settleJob({
+    targetId: f.target.id,
+    job: "link-resolver",
+    runId: "run-a",
+  });
+  expect((await f.record())?.last).toMatchObject({
+    id: "run-a",
+    outcome: "timed-out",
+    finishedAt: stoppedAt,
+  });
 });

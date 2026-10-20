@@ -141,6 +141,7 @@ test("a crashed process is observed as stopped with its exit code and incarnatio
     state: "stopped",
     exitCode: 7,
     incarnation: "start-1",
+    exitedAt: expect.any(String),
   });
 });
 test("concurrent up calls create only one process", async () => {
@@ -349,6 +350,7 @@ test("a process that exits is not started again: one attempt is logged and obser
     state: "stopped",
     exitCode: 9,
     incarnation: "start-1",
+    exitedAt: expect.any(String),
   });
 });
 test("capture-backed processes keep writing logs after their starting daemon dies and can be adopted", async () => {
@@ -592,6 +594,7 @@ test("stop after an owned child already exited is unchanged, keeps its exit on r
     state: "stopped",
     exitCode: 7,
     incarnation: "start-1",
+    exitedAt: expect.any(String),
   });
   expect(await supervisor.stop("exited", { graceMs: 1500 })).toEqual({
     outcome: "unchanged",
@@ -601,6 +604,7 @@ test("stop after an owned child already exited is unchanged, keeps its exit on r
     state: "stopped",
     exitCode: 7,
     incarnation: "start-1",
+    exitedAt: expect.any(String),
   });
   const entries = (await readFile(join(root, "target.jsonl"), "utf8"))
     .trim()

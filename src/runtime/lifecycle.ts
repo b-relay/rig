@@ -270,8 +270,10 @@ export interface TargetLifecycle {
     stops?: StopControl,
   ): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Withholds every path of the Target's published route, whatever plan it was published for, confirmed in the proxy. A
-   * recovery that stops two plans' processes withholds this way first. */
-  withhold(target: TargetRecord): Promise<void>;
+   * recovery that stops two plans' processes withholds this way first. With `services`, only the paths the plan routes to
+   * them, as supervision does for a Service that exited on its own; its next verified start publishes them again.
+   * ROUTE_WITHHOLD when the proxy cannot be made to. */
+  withhold(target: TargetRecord, services?: readonly string[]): Promise<void>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout, then any build a daemon that died left
    * running (`observePreparation`). First every path the route publishes to
    * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without
@@ -316,13 +318,18 @@ export interface TargetLifecycle {
     signal?: AbortSignal,
   ): Promise<ProcessObservation>;
   /** Stops the run of `job` in progress within its stop_timeout (the one it started with), telling the stop's observer;
-   * `unchanged` when none runs. */
+   * `unchanged` when none runs, or with `incarnation` when what runs is not that run's process. */
   stopJob(
     target: TargetRecord,
-    job: Pick<PlanJob, "name" | "stopTimeout">,
+    job: JobStop,
     stops?: StopControl,
   ): Promise<StopResult>;
 }
+/** Which job's run a stop is for: its name, the stop_timeout it started with, and the run (its process's incarnation) that
+ * alone may be signalled. */
+export type JobStop = Pick<PlanJob, "name" | "stopTimeout"> & {
+  incarnation?: string;
+};
 export interface ReadinessTiming {
   /** Schedule once after delayMs; never inline. Return an idempotent cancellation.
    * Callbacks and cancellation must not throw. Elapsed callbacks run in deadline order.
@@ -395,7 +402,7 @@ export function withStops(
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
-    withhold: (target) => lifecycle.withhold(target),
+    withhold: (target, services) => lifecycle.withhold(target, services),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
     startJob: (target, job, incarnation, rigEnv) =>
@@ -622,7 +629,19 @@ export function createTargetLifecycle(
           await effects.route(target, {
             withhold: routedPorts(target, unverified),
           });
-        const verified = new Set<number>();
+        /** The Services this start verified, in order, each with the process it verified, and those it left running and only
+         * inspects. */
+        const activated: Activated[] = [];
+        const kept: ManagedComponent[] = [];
+        const processOf = (component: ManagedComponent) => ({
+          observe: () => supervisor.observe(`${target.id}:${component.name}`),
+        });
+        const verifiedNow = async (component: ManagedComponent) =>
+          activated.push({
+            component,
+            process: processOf(component),
+            seen: await processOf(component).observe(),
+          });
         // Dependencies are ordered during plan resolution, before any process starts.
         for (const component of target.plan.components) {
           if (component.kind === "persistent") continue;
@@ -633,7 +652,6 @@ export function createTargetLifecycle(
           }
           const key = `${target.id}:${component.name}`;
           if (observations.get(key)!.state === "running") {
-            const process = { observe: () => supervisor.observe(key) };
             // A dependency that is already running must still be ready before a dependent starts against it.
             if (hasDependents(target, component.name)) {
               await awaitActivation(
@@ -641,20 +659,10 @@ export function createTargetLifecycle(
                 target,
                 effects,
                 timing,
-                process,
+                processOf(component),
               );
-              for (const port of routedPorts(target, [component.name]))
-                verified.add(port);
-            } else
-              // A Service left running (a deploy keeps it) may have been given ports it was never verified on: each of them is
-              // published only once its own process is found listening there.
-              for (const port of await ownedRoutedPorts(
-                component,
-                target,
-                effects,
-                process,
-              ))
-                verified.add(port);
+              await verifiedNow(component);
+            } else kept.push(component);
             continue;
           }
           await startService(
@@ -665,9 +673,28 @@ export function createTargetLifecycle(
             started,
             stops,
           );
-          for (const port of routedPorts(target, [component.name]))
-            verified.add(port);
+          await verifiedNow(component);
         }
+        // A Service verified before a later one started may have ended while that one took its time: each is verified
+        // again, and one that no longer passes fails the start before anything of it is published.
+        for (const { component, process } of activated.slice(0, -1))
+          await confirmActivated(component, target, effects, timing, process);
+        const verified = routedPorts(
+          target,
+          activated.map(({ component }) => component.name),
+        );
+        // A Service left running (a deploy keeps it) may have been given ports it was never verified on: each of them is
+        // published only once its own process is found listening there.
+        for (const component of kept)
+          for (const port of await ownedRoutedPorts(
+            component,
+            target,
+            effects,
+            processOf(component),
+          ))
+            verified.add(port);
+        // Those checks took time too: right before publication, every Service of the start is still the process it verified.
+        await assertStillActive(activated, target);
         // A path an earlier failed start left withheld is released only by its own Service passing the gate.
         await effects.route(target, { verified });
         if (!providedCheckpoint) await checkpoint.commit();
@@ -775,6 +802,30 @@ export function createTargetLifecycle(
           started,
           stops,
         );
+        // What it depends on may have ended while it started; and right before publication, all of them still run.
+        const activated: Activated[] = [
+          {
+            component,
+            process: process(service),
+            seen: await process(service).observe(),
+          },
+        ];
+        for (const name of component.dependsOn) {
+          const dependency = managedComponent(target, name);
+          await confirmActivated(
+            dependency,
+            target,
+            effects,
+            timing,
+            process(name),
+          );
+          activated.push({
+            component: dependency,
+            process: process(name),
+            seen: await process(name).observe(),
+          });
+        }
+        await assertStillActive(activated, target);
         await effects.route(target, {
           verified: routedPorts(target, [service, ...component.dependsOn]),
         });
@@ -890,7 +941,8 @@ export function createTargetLifecycle(
     observePreparation: (target, signal) =>
       effects.supervisor(target).observe(preparationProcessKey(target), signal),
     stopJob: (target, job, stops) => stopJob(target, job, stops),
-    withhold: (target) => effects.withhold(target),
+    withhold: (target, services) =>
+      services ? withholdServices(target, services) : effects.withhold(target),
     async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
@@ -977,7 +1029,7 @@ export function createTargetLifecycle(
    * a job with nothing running is left alone, unannounced. */
   async function stopJob(
     target: TargetRecord,
-    job: Pick<PlanJob, "name" | "stopTimeout">,
+    job: JobStop,
     stops: StopControl = {},
   ): Promise<StopResult> {
     const supervisor = effects.supervisor(target),
@@ -990,6 +1042,9 @@ export function createTargetLifecycle(
     try {
       const result = await supervisor.stop(key, {
         graceMs,
+        ...(job.incarnation !== undefined
+          ? { incarnation: job.incarnation }
+          : {}),
         ...(kill ? { kill } : {}),
         ...(stops.detach ? { detach: stops.detach } : {}),
       });
@@ -1202,7 +1257,7 @@ function assertPrepared(target: TargetRecord): void {
   }
 }
 /** The supervised process behind one component; readiness only counts while it is alive. */
-interface SupervisedProcess {
+export interface SupervisedProcess {
   observe(): Promise<ProcessObservation>;
 }
 /** Whether the Service has something to be ready on: its own check, or declared ports to connect to. */
@@ -1281,7 +1336,7 @@ async function awaitActivation(
       if (controller.signal.aborted || check === false) break;
       const verified = check.ready
         ? await Promise.race([
-            localListeners(
+            ownedListeners(
               component,
               target,
               effects,
@@ -1318,14 +1373,71 @@ async function awaitActivation(
     },
   );
 }
+/** A Service a start verified, with the process it verified. */
+interface Activated {
+  component: ManagedComponent;
+  process: SupervisedProcess;
+  seen: ProcessObservation;
+}
+/** A Service a start verified, verified again once a later part of the start is done, as `awaitActivation`: one that ended
+ * meanwhile fails PROCESS_EXITED, saying it did so after it was ready. */
+async function confirmActivated(
+  component: ManagedComponent,
+  target: TargetRecord,
+  effects: Pick<TargetEffects, "health" | "listeners">,
+  timing: ReadinessTiming,
+  process: SupervisedProcess,
+): Promise<void> {
+  try {
+    await awaitActivation(component, target, effects, timing, process);
+  } catch (error) {
+    if (!(error instanceof RigError) || error.code !== "PROCESS_EXITED")
+      throw error;
+    throw exitedAfterReady(component, target, error.details ?? {});
+  }
+}
+/** Each of `activated` observed once more: still running as the process it verified (same pid and incarnation), else the
+ * start fails PROCESS_EXITED before anything is published. */
+async function assertStillActive(
+  activated: readonly Activated[],
+  target: TargetRecord,
+): Promise<void> {
+  for (const { component, process, seen } of activated) {
+    const now = await process.observe();
+    if (
+      now.state === "running" &&
+      now.pid === seen.pid &&
+      now.incarnation === seen.incarnation
+    )
+      continue;
+    throw exitedAfterReady(component, target, {
+      component: component.name,
+      ...(now.exitCode === undefined ? {} : { exitCode: now.exitCode }),
+      ...(now.signal === undefined ? {} : { signal: now.signal }),
+    });
+  }
+}
+function exitedAfterReady(
+  component: ManagedComponent,
+  target: TargetRecord,
+  details: Record<string, unknown>,
+): RigError {
+  const exitCode = details.exitCode;
+  return new RigError(
+    "PROCESS_EXITED",
+    `${component.name} was ready, then exited${typeof exitCode === "number" ? ` with code ${exitCode}` : ""} before ${targetSelector(target)} finished starting.`,
+    "Inspect the Target logs for why it ended; nothing of this start was published.",
+    details,
+  );
+}
 const ALIVE: HealthCheck = { ready: true };
-/** The listener half of activation, asked of the process that is running now. Not ready while a port the activation rests on
- * (every routed port, and every declared port when connections were the readiness evidence) has no listener among the owned
- * processes: whatever answered there was someone else. Nor while a routed port is owned only at an address other than the
- * route's upstream (::1 rather than 127.0.0.1), where the proxy would reach whoever binds it. Throws LISTENER_NONLOCAL for a
- * listener bound beyond loopback and LISTENER_UNKNOWN when the owner or its sockets cannot be established; PROCESS_EXITED
- * when the process ended meanwhile. */
-async function localListeners(
+/** The listener half of activation, and of an ongoing check of a Service's ports, asked of the process that is running now.
+ * Not ready while a port the check rests on (every routed port, and every declared port when connections were the evidence)
+ * has no listener among the owned processes: whatever answered there was someone else. Nor while a routed port is owned
+ * only at an address other than the route's upstream (::1 rather than 127.0.0.1), where the proxy would reach whoever
+ * binds it. Throws LISTENER_NONLOCAL for a listener bound beyond loopback and LISTENER_UNKNOWN when the owner or its
+ * sockets cannot be established; PROCESS_EXITED when the process ended meanwhile. */
+export async function ownedListeners(
   component: ManagedComponent,
   target: TargetRecord,
   effects: Pick<TargetEffects, "listeners">,

@@ -625,6 +625,11 @@ const jobRun = z.object({
           "Stopped by Rig (rig down, a destroy, an off switch), or at its timeout.",
         ),
       at: text.describe("When Rig decided to stop it (ISO 8601)."),
+      endedAt: text
+        .optional()
+        .describe(
+          "When the stop found its process gone (ISO 8601): the run's end, however much later it is recorded.",
+        ),
     })
     .optional()
     .describe(

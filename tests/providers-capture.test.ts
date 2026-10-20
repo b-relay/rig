@@ -188,6 +188,7 @@ test("capture runs a failing application once, exits with its code, and leaves i
     state: "stopped",
     exitCode: 9,
     incarnation: "start-1",
+    exitedAt: expect.any(String),
   });
 }, 12000);
 test("an observation failure after startup stops the running component deliberately and never reports a start failure", async () => {

@@ -201,6 +201,7 @@ async function world(
         return () => timers.splice(timers.indexOf(timer), 1);
       },
       async diagnostic() {},
+      report: { failed() {}, succeeded() {} },
     });
   };
   open();

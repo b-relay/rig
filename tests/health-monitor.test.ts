@@ -3,6 +3,7 @@ import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import {
+  UNWRITTEN_HEALTH_LIMIT,
   checkIdentity,
   createHealthMonitor,
   type HealthMonitorDependencies,
@@ -10,6 +11,11 @@ import {
   type HealthRestartResult,
 } from "../src/runtime/health-monitor";
 import { STATE_VERSION } from "../src/runtime/state-schema";
+import {
+  HEALTH_MONITOR,
+  createNoticeBoard,
+  workReport,
+} from "../src/daemon/notices";
 
 /** One stable Target with Services under a fake clock: the monitor runs a pass every second of fake time, every check
  * answers as `answer` says, and each restart starts a new process. */
@@ -115,9 +121,18 @@ function fixture(
   let duringObservation: (() => void) | undefined;
   /** Runs once, just after the `left`-th read of state from when it was armed has taken its snapshot. */
   let afterRead: { left: number; run: () => void } | undefined;
+  /** Every state write fails with this while set, as on a full disk. */
+  let writeFailure: Error | undefined;
+  /** Every state read fails with this while set. */
+  let readFailure: Error | undefined;
+  /** What a check says of its evidence that could not be written to the Target log, while set. */
+  let unrecorded: string | undefined;
+  /** The notices rigd's doctor would report, as composition wires them. */
+  const board = createNoticeBoard(() => new Date(now).toISOString());
   const dependencies: HealthMonitorDependencies = {
     store: {
       async read() {
+        if (readFailure) throw readFailure;
         const snapshot = structuredClone(state);
         if (afterRead && --afterRead.left === 0) {
           const { run } = afterRead;
@@ -128,6 +143,7 @@ function fixture(
       },
       async update(change) {
         writes.push(now);
+        if (writeFailure) throw writeFailure;
         await change(state);
       },
     },
@@ -153,9 +169,10 @@ function fixture(
           ...(component.health ? { test: component.health } : {}),
         });
         signals.push(signal);
-        return (await answer(component.name))
-          ? { ready: true }
-          : { ready: false, reason };
+        const check = (await answer(component.name))
+          ? { ready: true as const }
+          : { ready: false as const, reason };
+        return unrecorded ? { ...check, unrecorded } : check;
       },
     },
     now: () => now,
@@ -189,6 +206,7 @@ function fixture(
       return () => timers.splice(timers.indexOf(timer), 1);
     },
     async diagnostic() {},
+    report: workReport(board, HEALTH_MONITOR),
     ...(options.concurrency ? { concurrency: options.concurrency } : {}),
   };
   let monitorUnderTest = createHealthMonitor(dependencies);
@@ -211,6 +229,16 @@ function fixture(
     },
     writes,
     signals,
+    notices: () => board.list(),
+    set writeFailure(value: Error | undefined) {
+      writeFailure = value;
+    },
+    set readFailure(value: Error | undefined) {
+      readFailure = value;
+    },
+    set unrecorded(value: string | undefined) {
+      unrecorded = value;
+    },
     /** Changes state right after the `count`-th read from now, as an Operation finishing between two reads would. */
     afterReads(count: number, run: () => void) {
       afterRead = { left: count, run };
@@ -954,3 +982,139 @@ test.each([2, 3, 4, 5, 6])(
     expect(f.activity()).toEqual([]);
   },
 );
+
+test("a change of health Activity could not take is reported, written once when storage recovers, and never duplicated", async () => {
+  const f = fixture({ retries: 1 });
+  await f.runUntil(1 * SECOND);
+  f.answer = () => false;
+  f.writeFailure = new Error("ENOSPC: no space left on device");
+  await f.runUntil(32 * SECOND);
+  // The check found it unhealthy; only its Activity entry is missing, and the health notice says so.
+  expect(f.result()).toMatchObject({ status: "unhealthy", failures: 1 });
+  expect(f.activity()).toEqual([]);
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "health",
+      message:
+        "Recording the changes of health of web on stable of demo (1 change waiting) failed: ENOSPC: no space left on device",
+    }),
+  ]);
+  // Later checks fail the same way, which is no new change: the one entry is all that is owed.
+  await f.runUntil(70 * SECOND);
+  expect(f.notices()).toHaveLength(1);
+  f.writeFailure = undefined;
+  await f.runUntil(72 * SECOND);
+  expect(f.activity()).toEqual([
+    "web is unhealthy: 1 health check in a row failed (HTTP 503). Its healthcheck's on_failure is report, so Rig only reports it.",
+  ]);
+  // It is recorded at the time the check found it.
+  expect(f.records()[0]!.occurredAt).toBe(new Date(31 * SECOND).toISOString());
+  expect(f.notices()).toEqual([]);
+  await f.runUntil(100 * SECOND);
+  expect(f.activity()).toHaveLength(1);
+  // Its recovery is recorded the same way.
+  f.answer = () => true;
+  f.writeFailure = new Error("ENOSPC: no space left on device");
+  await f.runUntil(122 * SECOND);
+  expect(f.result()).toMatchObject({ status: "healthy" });
+  f.writeFailure = undefined;
+  await f.runUntil(124 * SECOND);
+  expect(f.activity()).toEqual([
+    expect.stringContaining("web is unhealthy"),
+    "web is healthy again: its health check passed.",
+  ]);
+  expect(f.notices()).toEqual([]);
+});
+
+test("a change of health not yet in Activity is dropped once the process is replaced, and its notice goes with it", async () => {
+  const f = fixture({ retries: 1 });
+  await f.runUntil(1 * SECOND);
+  f.answer = () => false;
+  f.writeFailure = new Error("ENOSPC: no space left on device");
+  await f.runUntil(32 * SECOND);
+  expect(f.notices()).toHaveLength(1);
+  // An explicit restart replaces the process: what was found of the old one is not recorded about the new one.
+  f.replace("web");
+  f.monitor.invalidate("t1", "web");
+  f.answer = () => true;
+  f.writeFailure = undefined;
+  await f.runUntil(34 * SECOND);
+  expect(f.activity()).toEqual([]);
+  expect(f.notices()).toEqual([]);
+});
+
+test("a health check's evidence the Target log cannot take never fails the check: the Service stays healthy and is not restarted, and the failure is reported until the log takes it", async () => {
+  const f = fixture({ retries: 1, onFailure: "restart" });
+  f.unrecorded = "EACCES: permission denied, open '/logs/target.jsonl'.";
+  await f.runUntil(62 * SECOND);
+  expect(f.result()).toMatchObject({ status: "healthy", failures: 0 });
+  expect(f.restarts).toEqual([]);
+  expect(f.activity()).toEqual([]);
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "health",
+      message:
+        "Writing the health check evidence of web on stable of demo to its Target log failed: EACCES: permission denied, open '/logs/target.jsonl'.",
+    }),
+  ]);
+  f.unrecorded = undefined;
+  await f.runUntil(92 * SECOND);
+  expect(f.notices()).toEqual([]);
+});
+
+test("a check that cannot run is reported under its Service, and only a check of it that runs again clears that", async () => {
+  const f = fixture();
+  await f.runUntil(30 * SECOND);
+  // The pass at 31 s reads state, then every read after it fails: the check it starts cannot read the plan.
+  f.afterReads(1, () => {
+    f.readFailure = new Error("EIO: state.json could not be read");
+  });
+  await f.runUntil(31 * SECOND);
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "health",
+      message:
+        "Checking the health of web on stable of demo failed: EIO: state.json could not be read",
+    }),
+  ]);
+  f.readFailure = undefined;
+  await f.runUntil(32 * SECOND);
+  expect(f.checks.map((check) => check.at / SECOND)).toEqual([1, 32]);
+  expect(f.notices()).toEqual([]);
+});
+
+test("a Service that flaps through a long storage outage keeps a bounded queue of health changes, says how many it dropped, and writes the rest in order once storage recovers", async () => {
+  const f = fixture({ interval: 5, retries: 1 });
+  await f.runUntil(1 * SECOND);
+  const retained = f.monitor.retained();
+  let checks = 0;
+  f.answer = () => checks++ % 2 === 1;
+  f.writeFailure = new Error("ENOSPC: no space left on device");
+  // About two hundred checks, each a change of health.
+  await f.runUntil(1000 * SECOND);
+  expect(f.activity()).toEqual([]);
+  expect(f.monitor.retained()).toBeLessThanOrEqual(
+    retained + UNWRITTEN_HEALTH_LIMIT,
+  );
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "health",
+      message: expect.stringMatching(
+        /^Recording the changes of health of web on stable of demo \(8 changes waiting, \d+ older dropped\) failed: ENOSPC/,
+      ),
+    }),
+  ]);
+  f.writeFailure = undefined;
+  f.answer = () => true;
+  await f.runUntil(1002 * SECOND);
+  const activity = f.activity();
+  expect(activity[0]).toMatch(
+    /^web: \d+ earlier changes of health were not recorded, as Rig could not write its state\.$/,
+  );
+  expect(activity.length).toBeLessThanOrEqual(UNWRITTEN_HEALTH_LIMIT + 2);
+  // What was kept is the newest, in the order it happened.
+  const times = f.records().map((entry) => Date.parse(entry.occurredAt));
+  expect(times).toEqual([...times].sort((a, b) => a - b));
+  expect(f.notices()).toEqual([]);
+  expect(f.monitor.retained()).toBe(retained);
+});

@@ -231,8 +231,9 @@ export interface JobRun {
   /** Scheduled times skipped because this run was still going. */
   skipped?: number;
   /** Rig decided to stop the run, and why: written before the stop signal, so a rigd that restarts before the end is
-   * recorded still records it as stopped by Rig or timed out. */
-  stopping?: { cause: "stopped" | "timed-out"; at: string };
+   * recorded still records it as stopped by Rig or timed out. `endedAt` is when the stop found its process gone, written
+   * once it did, so the run's end is that time even when it is recorded later (its Target was busy). */
+  stopping?: { cause: "stopped" | "timed-out"; at: string; endedAt?: string };
   /** The fresh directory a backup job's run writes (`$RIG_BACKUP_DIR`), recorded before it is made, with the `keep` the
    * run started with. Absent for a job without `backup` and for a restore. */
   backup?: {

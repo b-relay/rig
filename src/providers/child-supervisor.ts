@@ -172,6 +172,7 @@ export function createChildSupervisor(
         ? {
             incarnation: wrapper!.incarnation,
             ...ended,
+            exitedAt: wrapper!.at,
             recordedBy: "rigd" as const,
           }
         : {}),
@@ -379,6 +380,13 @@ export function createChildSupervisor(
   ): Promise<StopResult> {
     const owned = await recover(key);
     if (!owned) return { outcome: "unchanged" };
+    // Another start's process, or one nothing identifies, is not this stop's: serialized with every start of the key, so
+    // none begins between this look and the signal.
+    if (
+      request.incarnation !== undefined &&
+      owned.incarnation !== request.incarnation
+    )
+      return { outcome: "unchanged" };
     // An application that outlived its wrapper is not this stop's to end: the stop releases only what it owns.
     const before = await observe(key, undefined, "ignore");
     if (before.state === "unknown")

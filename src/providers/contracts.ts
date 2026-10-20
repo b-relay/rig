@@ -26,6 +26,9 @@ export interface StopRequest {
   /** Aborted, it ends the wait at once: the stop fails STOP_DETACHED and the process finishes stopping on its own, still
    * owned, for the next stop to find. rigd's shutdown uses it so it never waits out a long grace. */
   readonly detach?: AbortSignal;
+  /** Only the process started as this incarnation is stopped: another one under the key, or one whose incarnation is not
+   * known, is left alone and the stop is `unchanged`. A caller that does not hold the key's Target uses it. */
+  readonly incarnation?: string;
 }
 /** How a stop ended. `killed` says the process needed SIGKILL: because its grace ran out (`timeout`), or because a kill cut
  * the grace short (`request`). Absent when it exited within its grace or was not running. */
@@ -59,6 +62,8 @@ export interface ProcessObservation {
   readonly exitCode?: number;
   /** The signal that ended the process when it did not exit by itself. */
   readonly signal?: string;
+  /** When its end was recorded (ISO 8601), as the exit record says; absent with no exit record. */
+  readonly exitedAt?: string;
   /** Who recorded the exit when the application's own exit record is missing: `rigd` for its record of the capture wrapper
    * it spawned. The wrapper stops its application before it ends and ends by the signal that stopped it, so its end describes
    * the application's. Absent for the application's own record. */

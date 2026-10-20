@@ -5,6 +5,8 @@ import {
   startFailureMonitor,
   DIAGNOSTIC_SINK,
   FAILURE_MONITOR,
+  JOB_SCHEDULER,
+  workReport,
 } from "../src/daemon/notices";
 
 const clock = () => {
@@ -164,4 +166,40 @@ test("stop resolves only once the pass in flight has settled, and no pass starts
     notices: board,
     run: async () => {},
   })();
+});
+
+test("work reported failed keeps its channel's notice until that same work succeeds; a monitor pass that succeeds clears only its own failure", async () => {
+  const board = createNoticeBoard(clock());
+  const report = workReport(board, JOB_SCHEDULER);
+  report.failed(
+    "t1:backfill",
+    "Recording the end of backfill",
+    new Error("ENOSPC"),
+  );
+  report.failed("t1:mirror", "Starting mirror", new Error("EIO"));
+  expect(board.list()).toEqual([
+    expect.objectContaining({
+      channel: "jobs",
+      count: 2,
+      message: "Starting mirror failed: EIO",
+    }),
+  ]);
+  // The scheduler's pass itself succeeds: the work it dispatched still failed.
+  const stop = startFailureMonitor({
+    intervalMs: 5,
+    notices: board,
+    channel: JOB_SCHEDULER,
+    run: async () => {},
+  });
+  await Bun.sleep(20);
+  await stop();
+  expect(board.list()).toHaveLength(1);
+  report.succeeded("t1:mirror");
+  expect(board.list()).toEqual([
+    expect.objectContaining({
+      message: "Recording the end of backfill failed: ENOSPC",
+    }),
+  ]);
+  report.succeeded("t1:backfill");
+  expect(board.list()).toEqual([]);
 });

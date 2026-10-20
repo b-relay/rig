@@ -31,6 +31,7 @@ import {
   backupId,
   expiredBackups,
   jobBackups,
+  selectBackup,
 } from "../src/runtime/backups";
 import {
   BACKUP_DIR_VARIABLE,
@@ -247,6 +248,7 @@ test("each run of a backup job gets a fresh, empty 0700 directory as $RIG_BACKUP
       "backups/melody/working/db-backup/20261011T030000Z-1",
     ),
     keep: 2,
+    sequence: 1,
     // Recorded once the directory was made, before the command started.
     made: true,
   });
@@ -336,7 +338,7 @@ test("after each success only the newest keep backups stay, never the one that j
   expect((await f.backups()).map((b) => b.path).sort()).toEqual(
     [second, third].sort(),
   );
-  // Pure: the backup that just finished stays even when its time sorts older (a clock set back).
+  // Pure: the backup that just finished stays wherever it is in the list given newest first.
   const backup = (id: string, finishedAt: string): BackupRecord => ({
     target: "t",
     project: "p",
@@ -351,8 +353,8 @@ test("after each success only the newest keep backups stay, never the one that j
   const fresh = backup("a", "2026-01-01T00:00:00.000Z");
   const newer = backup("b", "2026-06-01T00:00:00.000Z");
   const newest = backup("c", "2026-07-01T00:00:00.000Z");
-  expect(expiredBackups([fresh, newer, newest], 2, "a")).toEqual([newer]);
-  expect(expiredBackups([fresh, newer, newest], 1, "a")).toEqual([
+  expect(expiredBackups([newest, newer, fresh], 2, "a")).toEqual([newer]);
+  expect(expiredBackups([newest, newer, fresh], 1, "a")).toEqual([
     newest,
     newer,
   ]);
@@ -770,6 +772,7 @@ test("backup numbers only grow per backup directory: not reset by deletion, a Pr
   expect(allocate("t1", "p1")).toEqual({
     id: "20261011T030000Z-1",
     path: "/rig/backups/melody/feat-x/db-backup/20261011T030000Z-1",
+    sequence: 1,
   });
   keep("t1", "p1", allocate("t1", "p1"));
   expect(state.backups!.map((b) => b.id)).toEqual(["20261011T030000Z-2"]);
@@ -786,6 +789,7 @@ test("backup numbers only grow per backup directory: not reset by deletion, a Pr
   expect(allocate("t3", "p2")).toEqual({
     id: "20261011T030000Z-5",
     path: "/rig/backups/tune/feat-x/db-backup/20261011T030000Z-5",
+    sequence: 5,
   });
   // Another Target or job has a sequence of its own.
   expect(allocate("t4", "p2", "stable").id).toBe("20261011T030000Z-1");
@@ -1114,8 +1118,8 @@ test("latest and retention follow the order backups were made in, not the clock,
   expect((await f.running())!.restore!.path).toBe(third);
 });
 
-test("expiry orders backups by their number; an id without one (an early draft's) is older than every numbered one", () => {
-  const backup = (id: string, at: string): BackupRecord => ({
+test("backups are ordered by sequence, and those an older Rig recorded by their place in the inventory, one total order whatever their ids or times say", () => {
+  const backup = (id: string, at: string, sequence?: number): BackupRecord => ({
     target: "t1",
     project: "p1",
     job: "dump",
@@ -1125,15 +1129,84 @@ test("expiry orders backups by their number; an id without one (an early draft's
     trigger: "manual",
     startedAt: at,
     finishedAt: at,
+    ...(sequence !== undefined ? { sequence } : {}),
   });
-  const first = backup("20261013T120000Z-1", "2026-10-13T12:00:00.000Z");
-  const second = backup("20261013T110000Z-2", "2026-10-13T11:00:00.000Z");
-  const third = backup("20261013T110100Z-3", "2026-10-13T11:01:00.000Z");
-  const draft = backup("20261013T130000Z", "2026-10-13T13:00:00.000Z");
-  expect(expiredBackups([first, second, third], 2, third.id)).toEqual([first]);
-  expect(expiredBackups([draft, first, second, third], 3, third.id)).toEqual([
-    draft,
+  // Recorded by older Rigs, in this order: the first writer's second backup of one second (`-2`), then a later unsuffixed
+  // one, then one of the writer before this, whose time a clock set back made the earliest.
+  const legacySuffixed = backup(
+    "20261012T030000Z-2",
+    "2026-10-12T03:00:00.000Z",
+  );
+  const legacyPlain = backup("20261013T030000Z", "2026-10-13T03:00:00.000Z");
+  const legacySkewed = backup("20261011T030000Z-3", "2026-10-11T03:00:00.000Z");
+  // Recorded by this Rig, the second with its clock set back.
+  const fresh = backup("20261014T030000Z-4", "2026-10-14T03:00:00.000Z", 4);
+  const fresher = backup("20261013T120000Z-5", "2026-10-13T12:00:00.000Z", 5);
+  const state = { backups: [legacySuffixed, legacyPlain] };
+  const target = { id: "t1", name: "working" };
+  expect(selectBackup(state, target, "dump", "latest")).toBe(legacyPlain);
+  state.backups.push(legacySkewed);
+  expect(selectBackup(state, target, "dump", "latest")).toBe(legacySkewed);
+  state.backups.push(fresh, fresher);
+  expect(jobBackups(state, "t1", "dump")).toEqual([
+    fresher,
+    fresh,
+    legacySkewed,
+    legacyPlain,
+    legacySuffixed,
   ]);
+  expect(selectBackup(state, target, "dump", "latest")).toBe(fresher);
+  expect(
+    expiredBackups(jobBackups(state, "t1", "dump"), 3, fresher.id),
+  ).toEqual([legacyPlain, legacySuffixed]);
+});
+
+test("after an upgrade, latest and retention take the backups an older Rig recorded in the order it recorded them", async () => {
+  const f = await fixture({ keep: 2 });
+  // As the first writer left them: a second backup of one second, then a later one without a number.
+  const legacy = [
+    { id: "20261010T030000Z-2", at: "2026-10-10T03:00:00.000Z" },
+    { id: "20261011T020000Z", at: "2026-10-11T02:00:00.000Z" },
+  ];
+  const paths: string[] = [];
+  for (const { id } of legacy) {
+    const path = f
+      .storage()
+      .location({ project: "melody", target: "working", job: "db-backup" }, id);
+    await f.storage().create(path);
+    paths.push(path);
+  }
+  const [older, newer] = paths as [string, string];
+  await f.world.store.update((state) => {
+    state.backups = legacy.map(({ id, at }, i) => ({
+      target: f.target.id,
+      project: f.target.projectId,
+      job: "db-backup",
+      id,
+      path: paths[i]!,
+      run: `legacy-${i}`,
+      trigger: "schedule",
+      startedAt: at,
+      finishedAt: at,
+      bytes: 0,
+    }));
+  });
+  await f.restore("latest");
+  expect((await f.running())!.restore!.path).toBe(newer);
+  await f.finish(0);
+  // The first backup this Rig makes continues past the numbers kept, and keep: 2 lets the oldest legacy one go.
+  const made = await f.backUp();
+  expect((await f.backups()).find((b) => b.path === made)).toMatchObject({
+    id: "20261011T030003Z-3",
+    sequence: 3,
+  });
+  expect((await f.backups()).map((b) => b.path).sort()).toEqual(
+    [newer, made].sort(),
+  );
+  expect(await exists(older)).toBe(false);
+  expect(await exists(newer)).toBe(true);
+  await f.restore("latest");
+  expect((await f.running())!.restore!.path).toBe(made);
 });
 
 test("a backup directory that cannot be deleted stays queued, and its run says it was queued for deletion, not deleted", async () => {
@@ -1284,3 +1357,76 @@ test("Projects whose names differ only in case never get the same backup directo
     { project: "auditcase", target: "working", job: "dump", last: 2 },
   ]);
 });
+
+test.skipIf(process.platform !== "darwin")(
+  "a backup with a volume mounted inside it is not deleted, and nothing on the volume is touched, until it is unmounted",
+  async () => {
+    const f = await fixture({ keep: 1 });
+    const image = join(f.world.root, "volume.dmg");
+    await Bun.$`hdiutil create -size 4m -fs HFS+ -volname rig-backup-test -o ${image} -quiet`.quiet();
+    const mounted: string[] = [];
+    /** Mounts the image at `at`, holding a writable file and a directory sealed 0500, each with its own contents. */
+    const mount = async (at: string) => {
+      await mkdir(at, { recursive: true });
+      await Bun.$`hdiutil attach -nobrowse -noautoopen -mountpoint ${at} ${image} -quiet`.quiet();
+      mounted.push(at);
+      await mkdir(join(at, "locked"), { recursive: true });
+      await writeFile(join(at, "top.txt"), "volume");
+      await writeFile(join(at, "locked", "data"), "locked");
+      await chmod(join(at, "locked"), 0o500);
+    };
+    const untouched = async (at: string) => {
+      expect(await Bun.file(join(at, "top.txt")).text()).toBe("volume");
+      expect(await Bun.file(join(at, "locked", "data")).text()).toBe("locked");
+      expect(await mode(join(at, "locked"))).toBe(0o500);
+    };
+    const detach = async (at: string) => {
+      await Bun.$`hdiutil detach ${at} -force -quiet`.quiet();
+      mounted.splice(mounted.indexOf(at), 1);
+    };
+    try {
+      // Mounted right inside a backup: refused before anything is deleted.
+      const first = await f.backUp("first");
+      const atFirst = join(first, "mounted");
+      await mount(atFirst);
+      await expect(f.storage().remove(first)).rejects.toMatchObject({
+        code: "BACKUP_REMOVE",
+        details: { path: atFirst, mounted: true },
+      });
+      await untouched(atFirst);
+      // Retention queues it, and it stays queued.
+      const second = await f.backUp("second");
+      expect((await f.world.store.read()).backupRemovals).toEqual([
+        expect.objectContaining({ path: first }),
+      ]);
+      await f.runtime.tidyBackups();
+      await untouched(atFirst);
+      expect(await exists(join(first, "melody.dump"))).toBe(true);
+      // Unmounted, the next pass deletes the backup.
+      await detach(atFirst);
+      await f.runtime.tidyBackups();
+      expect(await exists(first)).toBe(false);
+      expect((await f.world.store.read()).backupRemovals).toBeUndefined();
+
+      // Mounted below a directory the first attempt cannot list: the attempt that opens directories stops at the volume.
+      const hidden = join(second, "hidden");
+      const atSecond = join(hidden, "mounted");
+      await mount(atSecond);
+      await chmod(hidden, 0o100);
+      await f.backUp("third");
+      await f.runtime.tidyBackups();
+      await untouched(atSecond);
+      expect((await f.world.store.read()).backupRemovals).toEqual([
+        expect.objectContaining({ path: second }),
+      ]);
+      await detach(atSecond);
+      await f.runtime.tidyBackups();
+      expect(await exists(second)).toBe(false);
+    } finally {
+      for (const at of mounted)
+        await Bun.$`hdiutil detach ${at} -force -quiet`.nothrow().quiet();
+      await Bun.$`chmod -R u+rwx ${f.world.root}`.nothrow().quiet();
+    }
+  },
+  60_000,
+);

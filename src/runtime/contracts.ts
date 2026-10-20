@@ -211,7 +211,8 @@ export interface BackupStorage {
   measure(path: string): Promise<number | undefined>;
   /** Deletes `path` without following any symlink, and its empty parents up to the backup root: `removed`, also when it was
    * already gone; `skipped`, touching nothing, when a directory on the way is a symlink. A directory of it the owner may
-   * not write in (one an earlier Rig sealed 0500) is given back to the owner first. Fails BACKUP_REMOVE. */
+   * not write in (one an earlier Rig sealed 0500) is given back to the owner first. Fails BACKUP_REMOVE,
+   * deleting nothing, when another volume is mounted inside it. */
   remove(path: string): Promise<"removed" | "skipped">;
 }
 /** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */

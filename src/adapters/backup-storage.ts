@@ -1,4 +1,12 @@
-import { chmod, lstat, mkdir, readdir, rm, rmdir } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  mkdir,
+  readdir,
+  rm,
+  rmdir,
+  stat,
+} from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { RigError } from "../domain/errors";
 import { within } from "../domain/paths";
@@ -15,7 +23,7 @@ const OWNER_ACCESS = 0o700;
  * created, counted or deleted through it. The root itself may be a symlink. Nothing inside a backup is ever opened: sizes
  * come from lstat, and deleting never follows a symlink. Modes change only when a backup cannot be deleted because its owner
  * may not write in a directory of it: those of its own real directories are given back to the owner, and the deletion tried
- * again. */
+ * again. A backup with another volume mounted inside it is not deleted at all, so nothing on that volume is touched. */
 export function createBackupStorage(root: string): BackupStorage {
   const base = resolve(root, "backups");
   const inside = (path: string): string => {
@@ -100,20 +108,25 @@ export function createBackupStorage(root: string): BackupStorage {
       const found = await ancestors(base, absolute);
       // A symlinked parent would point the deletion outside the root: skipped, never followed.
       if (found.state === "unsafe") return "skipped";
-      if (found.state === "safe")
+      if (found.state === "safe") {
+        // fs.rm never follows a symlink, but it does enter a volume mounted inside the backup: each attempt is checked first.
+        const volume = (await stat(base)).dev;
         try {
-          // fs.rm never follows a symlink: a symlink here, or anywhere below, is removed as the link itself.
+          await prepareRemoval(absolute, volume, false);
+          // A symlink here, or anywhere below, is removed as the link itself.
           await rm(absolute, { recursive: true, force: true });
-        } catch {
+        } catch (error) {
+          if (error instanceof RigError) throw error;
           // Most likely a directory the owner may not write in (sealed 0500 by an earlier Rig, or made so by the job),
           // which fails as EACCES or, from deeper down, ENOTEMPTY: opened, then deleted again.
           try {
-            await reopenDirectories(absolute);
+            await prepareRemoval(absolute, volume, true);
             await rm(absolute, { recursive: true, force: true });
           } catch (again) {
             throw failure("BACKUP_REMOVE", "delete", absolute, again);
           }
         }
+      }
       await pruneEmptyParents(dirname(absolute), base);
       return "removed";
     },
@@ -152,10 +165,17 @@ async function sizeOf(path: string): Promise<number> {
   }
   return bytes;
 }
-/** Gives the owner back read, write and search on `path` and every directory below it that is a real directory the current
- * user owns, so its entries can be deleted. Nothing is followed: an entry is changed only once lstat shows it is such a
- * directory, never a symlink or a file (a file's mode may be shared through a hard link with one outside the backup). */
-async function reopenDirectories(path: string): Promise<void> {
+/** Before `path` is deleted: fails BACKUP_REMOVE, changing nothing more, at the first directory in it on another volume than
+ * `volume` (the backup root's), so a volume mounted inside a backup is never entered. With `reopen`, also gives the owner
+ * back read, write and search on each directory in it that the current user owns, so its entries can be deleted. Nothing is
+ * followed: an entry is looked at with lstat, and only a real directory is entered or changed, never a symlink or a file (a
+ * file's mode may be shared through a hard link with one outside the backup). A directory that cannot be listed is not
+ * entered, as the deletion cannot enter it either. */
+async function prepareRemoval(
+  path: string,
+  volume: number,
+  reopen: boolean,
+): Promise<void> {
   let info;
   try {
     info = await lstat(path);
@@ -163,11 +183,30 @@ async function reopenDirectories(path: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw error;
   }
-  if (!info.isDirectory() || info.uid !== process.getuid?.()) return;
-  if ((info.mode & OWNER_ACCESS) !== OWNER_ACCESS)
+  if (!info.isDirectory()) return;
+  if (info.dev !== volume)
+    throw new RigError(
+      "BACKUP_REMOVE",
+      `${path} is another volume mounted inside a backup, so Rig did not delete the backup.`,
+      `Unmount it (diskutil unmount ${path}); Rig deletes the backup on its next pass, within 30 seconds.`,
+      { path, mounted: true },
+    );
+  if (
+    reopen &&
+    info.uid === process.getuid?.() &&
+    (info.mode & OWNER_ACCESS) !== OWNER_ACCESS
+  )
     await chmod(path, (info.mode & 0o777) | OWNER_ACCESS);
-  for (const name of await readdir(path))
-    await reopenDirectories(join(path, name));
+  let names: string[];
+  try {
+    names = await readdir(path);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") return;
+    throw error;
+  }
+  for (const name of names)
+    await prepareRemoval(join(path, name), volume, reopen);
 }
 /** A filesystem failure on a backup as a tagged error naming what Rig was doing. */
 function failure(

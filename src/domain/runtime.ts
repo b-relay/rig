@@ -239,6 +239,8 @@ export interface JobRun {
     id: string;
     path: string;
     keep: number;
+    /** The id's number in the job's backup sequence, which orders the backups; absent for a run an older Rig started. */
+    sequence?: number;
     /** The run made the directory, recorded once it did and before its process started: only then is the directory Rig's
      * to delete. A run that stopped before, or found something already there, leaves what is there alone. */
     made?: true;
@@ -264,6 +266,10 @@ export interface BackupRecord {
   trigger: "schedule" | "manual";
   startedAt: string;
   finishedAt: string;
+  /** Its number in the job's backup sequence, which follows the order the job's runs were recorded in: what orders backups
+   * (newest is highest), never their times. Absent on a backup an older Rig recorded, which is older than every one that
+   * has it, and ordered among those by its place in the inventory. */
+  sequence?: number;
   /** Total bytes, recorded once the backup was measured after its run; absent until then. */
   bytes?: number;
 }

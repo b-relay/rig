@@ -538,6 +538,14 @@ const jobRun = z.object({
         .int()
         .positive()
         .describe("How many backups the job kept when the run started."),
+      sequence: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "The id's number in the job's backup sequence, kept with the backup to order it; absent for a run an older Rig started.",
+        ),
       made: z
         .literal(true)
         .optional()
@@ -765,8 +773,16 @@ export const runtimeStateSchema = z
             .describe("Whether the schedule or rig run started that run."),
           startedAt: text.describe("When its run started (ISO 8601)."),
           finishedAt: text.describe(
-            "When its run ended (ISO 8601), for display: retention and latest order backups by the number in their id, never by time.",
+            "When its run ended (ISO 8601), for display: retention and latest order backups by sequence, never by time.",
           ),
+          sequence: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe(
+              "Its number in the job's backup sequence (the number its id ends in), which follows the order the job's runs were recorded in: the newest backup has the highest. Absent on a backup an older Rig recorded; those are older than every backup that has one, and ordered among themselves by their place in this list.",
+            ),
           bytes: z
             .number()
             .int()

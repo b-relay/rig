@@ -44,23 +44,27 @@ export function jobBackups(
   targetId: string,
   job: string,
 ): BackupRecord[] {
-  return (state.backups ?? [])
-    .filter((backup) => backup.target === targetId && backup.job === job)
-    .sort(newestFirst);
-}
-/** Newest first among one job's backups of one Target: by the number in their ids, which only grows as runs are recorded,
- * so a clock set back or forward never reorders them. Times only order an id without a number, which an early draft of
- * Rig wrote, and those come after every numbered one. */
-function newestFirst(a: BackupRecord, b: BackupRecord): number {
-  return (
-    (sequenceOf(b.id) ?? 0) - (sequenceOf(a.id) ?? 0) ||
-    b.finishedAt.localeCompare(a.finishedAt) ||
-    b.startedAt.localeCompare(a.startedAt) ||
-    b.id.localeCompare(a.id, "en", { numeric: true })
+  return newestFirst(
+    (state.backups ?? []).filter(
+      (backup) => backup.target === targetId && backup.job === job,
+    ),
   );
 }
-/** Pure: which of `backups` (one job's, of one Target) leave so that only the newest `keep` stay, the backup `fresh`
- * always among them. */
+/** Pure: one job's backups of one Target, given in the inventory's order, newest first. Never by time, which a clock set
+ * back or forward would reorder: a backup this Rig recorded carries its `sequence`, which follows the order its job's runs
+ * were recorded in; one an older Rig recorded carries none, and is older than every one that does, the later in the
+ * inventory (which adds each backup as its run ends) the newer. The number in an older id is not used: the first writer
+ * numbered only backups made within one second. */
+function newestFirst(backups: readonly BackupRecord[]): BackupRecord[] {
+  const rank = (backup: BackupRecord, position: number) =>
+    backup.sequence !== undefined ? [1, backup.sequence] : [0, position];
+  return backups
+    .map((backup, position) => ({ backup, rank: rank(backup, position) }))
+    .sort((a, b) => b.rank[0]! - a.rank[0]! || b.rank[1]! - a.rank[1]!)
+    .map(({ backup }) => backup);
+}
+/** Pure: which of `backups` (one job's, of one Target, newest first as `jobBackups` gives them) leave so that only the
+ * newest `keep` stay, the backup `fresh` always among them. */
 export function expiredBackups(
   backups: readonly BackupRecord[],
   keep: number,
@@ -68,7 +72,6 @@ export function expiredBackups(
 ): BackupRecord[] {
   return backups
     .filter((backup) => backup.id !== fresh)
-    .sort(newestFirst)
     .slice(Math.max(0, keep - 1));
 }
 
@@ -91,15 +94,15 @@ function sequenceOf(id: string): number | undefined {
  * same name, or a Project registered again, continues it. Names that differ only in case share one sequence, as they share
  * one directory on the Mac's case-insensitive disk, so two Projects named so never get the same path. It also starts past
  * every number the Target's kept backups of the job carry, so a Project renamed while it has backups never repeats one. A
- * backup id is therefore never issued twice for a Target's job, its number orders its backups, and naming one can only ever
- * find the backup it was issued to, or nothing. */
+ * backup id is therefore never issued twice for a Target's job, its number (kept as the run's and the backup's `sequence`)
+ * orders its backups, and naming one can only ever find the backup it was issued to, or nothing. */
 export function allocateBackup(
   state: RuntimeState,
   target: Pick<TargetRecord, "id" | "projectId" | "name">,
   job: string,
   startedAt: string,
   storage: Pick<BackupStorage, "location">,
-): { id: string; path: string } {
+): { id: string; path: string; sequence: number } {
   const project =
     state.projects.find((p) => p.id === target.projectId)?.name ??
     target.projectId;
@@ -116,7 +119,7 @@ export function allocateBackup(
   if (!counters.length)
     (state.backupSequences ??= []).push({ ...scope, last: next });
   const id = backupId(startedAt, next);
-  return { id, path: storage.location(scope, id) };
+  return { id, path: storage.location(scope, id), sequence: next };
 }
 /** Pure: whether two backup scopes name one directory on a case-insensitive disk, as the Mac's is. */
 function sameDirectory(a: BackupScope, b: BackupScope): boolean {
@@ -152,6 +155,7 @@ export function recordBackupEnd(
     trigger: run.trigger === "schedule" ? "schedule" : "manual",
     startedAt: run.startedAt,
     finishedAt: run.finishedAt ?? run.startedAt,
+    ...(made.sequence !== undefined ? { sequence: made.sequence } : {}),
   };
   (state.backups ??= []).push(backup);
   const expired = expiredBackups(
@@ -413,20 +417,20 @@ export async function backupReports(
   deps: Pick<BackupDependencies, "backups">,
 ): Promise<BackupReport[]> {
   const names = new Map(targets.map((target) => [target.id, target.name]));
-  const listed = (state.backups ?? [])
-    .filter(
+  // Newest first, then grouped by a stable sort, so each group keeps that order.
+  const listed = newestFirst(
+    (state.backups ?? []).filter(
       (backup) =>
         names.has(backup.target) &&
         (filter.target === undefined || backup.target === filter.target) &&
         (filter.job === undefined || backup.job === filter.job),
-    )
-    .sort(
-      (a, b) =>
-        names.get(a.target)!.localeCompare(names.get(b.target)!) ||
-        a.target.localeCompare(b.target) ||
-        a.job.localeCompare(b.job) ||
-        newestFirst(a, b),
-    );
+    ),
+  ).sort(
+    (a, b) =>
+      names.get(a.target)!.localeCompare(names.get(b.target)!) ||
+      a.target.localeCompare(b.target) ||
+      a.job.localeCompare(b.job),
+  );
   return await Promise.all(
     listed.map(async (backup): Promise<BackupReport> => {
       const present = deps.backups

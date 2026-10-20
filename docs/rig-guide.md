@@ -107,7 +107,13 @@ dashboard:
 ```
 
 It is served like a `proxy.routes` entry, to the port of the dashboard `rigd`
-runs, and only while one runs: a Target or `proxy.routes` naming the same
+runs, and only once `rigd` has confirmed that the dashboard's own process holds
+`127.0.0.1:<dashboard.port>`. Before that, while it restarts, once it stops, and
+while another program holds the port, Caddy answers the hostname with Rig's
+page (`503 - rig.example.com is currently down`), so a program that takes the
+port never receives its requests. A dashboard that cannot start because another
+program holds its port says so in `rigd status`, in `rig doctor` and in its log.
+A Target or `proxy.routes` naming the same
 hostname is refused (`rigd install` refuses a domain a Target already serves
 before it restarts anything). The route follows the dashboard `rigd` started
 with, so an edit to the domain, port or trusted clients applies when
@@ -1019,7 +1025,13 @@ accepted. When the owning process or its sockets cannot be established the
 start fails as `LISTENER_UNKNOWN` rather than being assumed safe. A routed
 port, and a port used as start evidence, must be listened on by the
 Service's own process tree: an answer from anyone else keeps the Service
-unready. This inspection happens at activation. It is evidence about that
+unready. A routed port's listener must also be on `127.0.0.1` (or its
+IPv4-mapped form), the address Rig's proxy connects to: a Service that listens
+there only on `::1` stays unready, since any program could take `127.0.0.1` at
+that port, and the start fails `HEALTH_FAILED` with, for example, `(last check:
+web listens on port 3000 only at ::1, but Rig's proxy connects to
+127.0.0.1:3000; bind it to 127.0.0.1)`. A port nothing routes may listen on
+`::1` alone. This inspection happens at activation. It is evidence about that
 moment, not containment: a process can bind another address later, and Rig
 does not watch for it. UDP and Unix sockets are not inspected.
 
@@ -1806,7 +1818,12 @@ upstreams. A replacement that fails verification is stopped and its paths stay
 at `503`, also while other Services of the Target start or recover: a path is
 released only when its own Service is next verified, by an automatic retry or
 by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
-not attempted.
+not attempted. Stopping works the same way: `rig down`, `rig restart`, a
+deploy, turning a Target off and stopping a Preview withhold the paths of the
+Services they stop before any process stops, so those paths answer `503`, and a
+program that later takes a freed port never receives their requests. A
+Service a deploy keeps running keeps its paths throughout. A stopped Target's
+paths reach its Services again only once a start verifies them.
 A Preview serves the domain with a dash and its name after the first label:
 `pantry2.dev.b-relay.com` gives `pantry2-feat-x-1a2b3c4d.dev.b-relay.com` for
 the Preview `feat-x-1a2b3c4d`, a sibling of the domain rather than a subdomain

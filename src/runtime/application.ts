@@ -627,6 +627,32 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             "Cannot uninstall rigd while Targets are running or uncertain.",
             "Stop all Targets and verify status first.",
           );
+        // A build a daemon that died left running is in no Target's status: only its recorded process group shows it.
+        const builds = await boundedObservations(
+          state.targets.map(
+            (target) => (signal: AbortSignal) =>
+              deps.lifecycle.observePreparation(target, signal),
+          ),
+          deps.observationBudgetMs,
+          deps.observationDeadline,
+        );
+        const building = state.targets
+          .filter(
+            (_, index) =>
+              builds[index]!.kind !== "completed" ||
+              builds[index]!.value.state !== "stopped",
+          )
+          .map(
+            (target) =>
+              `${state.projects.find((p) => p.id === target.projectId)?.name ?? target.projectId} ${target.name}`,
+          );
+        if (building.length)
+          throw new RigError(
+            "TARGETS_RUNNING",
+            `Cannot uninstall rigd while a build an earlier rigd started may still run for ${building.join(", ")}.`,
+            `Run rig down for ${building.length === 1 ? "that Target" : "each of them"} to stop it, then retry.`,
+            { targets: building },
+          );
         draining = true;
         return { ready: true };
       }
@@ -1308,7 +1334,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           // recovery and the Services as they were. The ownership preflight comes after, in destroyPreview: it refuses
           // a Target with a recovery to settle.
           await stopJobRuns(target, deps);
-          target = await stopForRecovery(target, deps);
+          target = (await stopForRecovery(target, deps)).target;
         }
         await destroyPreview(target, deps, admission.phase);
         return await finish("stopped");
@@ -1341,6 +1367,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           workingCopyDocument(),
           deps,
         );
+      // What a recovery stopped is this down's outcome too: the stop after it finds those processes gone.
+      let recovered: OperationRecord["outcome"] = "unchanged";
       if (target.recovery) {
         if (command.action !== "down")
           throw new RigError(
@@ -1349,7 +1377,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             "Run down for this Target to stop both recorded plans first.",
           );
         admission.phase("stopping", target);
-        target = await stopForRecovery(target, deps);
+        ({ target, outcome: recovered } = await stopForRecovery(target, deps));
       }
       let outcome: OperationRecord["outcome"];
       const warnings: string[] = [];
@@ -1370,7 +1398,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           jobFailure = error;
         }
         outcome = (await stopKeepingKills(target)).outcome;
-        if (stoppedJobs) outcome = "stopped";
+        if (stoppedJobs || recovered === "stopped") outcome = "stopped";
         await releaseHeldCheckouts(target, deps);
         if (jobFailure !== undefined) throw jobFailure;
         recordStopKills(target, operations.get(operationId)!.view);
@@ -2633,6 +2661,21 @@ async function replanWorkingCopy(
     { command, kind: "working", project, document, existing: target },
     deps,
   );
+  // A Service the new plan drops would have nothing left to stop it once its plan is replaced: one a failed down left
+  // running is stopped first, and while it cannot be, the plan that names it stays recorded.
+  const dropped = target.plan.components.filter(
+    (component) =>
+      component.kind === "managed" &&
+      !replanned.plan.components.some(
+        (planned) =>
+          planned.kind === "managed" && planned.name === component.name,
+      ),
+  );
+  if (dropped.length)
+    await deps.lifecycle.down({
+      ...target,
+      plan: { ...target.plan, components: dropped },
+    });
   // A Service a failed down left running is adopted by the next up, not started; its record is what explains its later exit.
   if (target.services) replanned.services = target.services;
   // The plan being replaced is stopped; an executable only it names (a removed Tool, or an alias under the old Target name) goes with it.
@@ -2792,8 +2835,8 @@ async function forgetReleasedCheckouts(
     );
   });
 }
-/** Gives back the checkouts held for `target` (one a job run kept, recorded with the run's end, or one a kept Service ran
- * in, recorded by its deploy) once no job run or Service process runs in them, and forgets each one given back or that
+/** Gives back the checkouts held for `target` (one a job run kept, recorded with the run's end, one a kept Service ran
+ * in, recorded by its deploy, or one a recovery dropped) once no job run or Service process runs in them, and forgets each one given back or that
  * is a plan's checkout again. One still run in stays recorded for the next offer. The caller holds the Target. One that
  * cannot be removed stays recorded too, and is a diagnostic, never an Operation's failure. */
 async function releaseHeldCheckouts(

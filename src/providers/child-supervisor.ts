@@ -180,9 +180,12 @@ export function createChildSupervisor(
     if (options.captureCommand) await removeExitRecord(wrapperExitRoot, key);
   };
   const leasePath = (key: string) => processLeasePath(options.stateRoot, key);
-  /** Replaces the lease for `lease.key` whole, so a reader sees the previous lease or this one, never a partial one. */
+  /** Replaces the lease for `lease.key` whole, so a reader sees the previous lease or this one, never a partial one. It is
+   * flushed to disk before the process it names is released, so a Host that loses power cannot forget a process it ran. */
   const writeLease = (lease: ProcessLease) =>
-    replacePrivateFile(root, leasePath(lease.key), JSON.stringify(lease));
+    replacePrivateFile(root, leasePath(lease.key), JSON.stringify(lease), {
+      durable: true,
+    });
   function serialized<T>(key: string, action: () => Promise<T>): Promise<T> {
     const pending = (operations.get(key) ?? Promise.resolve())
       .catch(() => {})
@@ -628,6 +631,25 @@ export function createChildSupervisor(
         ),
       );
     },
+    own: (key, pid) =>
+      serialized(key, async () => {
+        const identity = await inspect(pid);
+        if (!identity)
+          throw new RigError(
+            "PROCESS_START",
+            "The command ended before it could be recorded.",
+            "Retry the operation.",
+            { key },
+          );
+        // Whatever this supervisor knew under the key is an earlier process: the lease is the one owner from now on.
+        processes.delete(key);
+        await writeLease({ key, pid, identity });
+      }),
+    disown: (key) =>
+      serialized(key, async () => {
+        processes.delete(key);
+        await rm(leasePath(key), { force: true });
+      }),
     async detach() {
       detaching.abort();
       await quiesce();

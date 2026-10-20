@@ -22,7 +22,7 @@ import {
   ownerDetails,
 } from "./artifact-ownership";
 import { fileDigest } from "./file-digest";
-import { replacePrivateFile } from "../providers/private-files";
+import { flushFile, replacePrivateFile } from "../providers/private-files";
 import type { ArtifactIdentity, ArtifactOwner } from "./artifact-ownership";
 const routeSchema = z
   .object({
@@ -315,11 +315,14 @@ export function createEffectTransactions(options: {
     }
     for (const path of destinations) claims.set(path, owner);
   };
+  /** Saves `journal` durably: it is on disk, with the backups beside it, before the change it records is made, and a
+   * committed journal is on disk before its checkpoint is removed. */
   const save = (journal: Journal) =>
     replacePrivateFile(
       options.root,
       join(directory(journal.targetId), "journal.json"),
       JSON.stringify({ ...journal, version: JOURNAL_VERSION }),
+      { durable: true },
     );
   /** The saved journal, or undefined when none exists. Refuses a journal from a
    * newer rigd or one with an invalid value, naming the file and the problem. */
@@ -532,7 +535,8 @@ export function createEffectTransactions(options: {
           options.root,
           file.path,
           await readFile(join(directory(journal.targetId), file.backup)),
-          { mode: file.mode },
+          // On disk before the journal records it as restored.
+          { mode: file.mode, durable: true },
         );
       file.expected = file.before;
       delete file.applying;
@@ -678,12 +682,15 @@ export function createEffectTransactions(options: {
           const before = (await fileDigest(path)) ?? null,
             backup = `${journal.files.length}.backup`,
             mode = before === null ? 0o600 : (await lstat(path)).mode & 0o777;
-          if (before !== null)
+          if (before !== null) {
             await copyFile(
               path,
               join(directory(targetId), backup),
               constants.COPYFILE_EXCL,
             );
+            // The journal that names it is flushed with its directory next, so the backup's own bytes are flushed first.
+            await flushFile(join(directory(targetId), backup));
+          }
           journal.files.push({ path, backup, mode, before, expected: before });
         }
         await save(journal);

@@ -206,6 +206,8 @@ export interface TargetLifecycle {
     candidate: TargetRecord,
   ): Promise<void>;
   /** Installs the workspace's dependencies, then runs the selected build units in plan order, journaling each before and after.
+   * A build a daemon that died left running is stopped first, so two never run in the workspace at once; each command's
+   * process group is recorded before it runs, so the next daemon can stop it in turn.
    * Starts no Service and publishes nothing. The first failing unit stops preparation with BUILD_FAILED or BUILD_TIMEOUT.
    * BUILD_UNKNOWN means a command succeeded but its outcome could not be recorded; the journal still says `started`. */
   prepare(
@@ -270,7 +272,8 @@ export interface TargetLifecycle {
   /** Withholds every path of the Target's published route, whatever plan it was published for, confirmed in the proxy. A
    * recovery that stops two plans' processes withholds this way first. */
   withhold(target: TargetRecord): Promise<void>;
-  /** Stops every Service in reverse dependency order, each within its stop_timeout. First every path the route publishes to
+  /** Stops every Service in reverse dependency order, each within its stop_timeout, then any build a daemon that died left
+   * running (`observePreparation`). First every path the route publishes to
    * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without
    * some Services (a deploy keeping them) leaves their paths as they are. Every Service is attempted, and STOP_INCOMPLETE
    * names the failures, except when the stop is detached: STOP_DETACHED ends it at once; ROUTE_WITHHOLD, once every
@@ -299,6 +302,13 @@ export interface TargetLifecycle {
     incarnation: string,
     rigEnv?: Readonly<Record<string, string>>,
   ): Promise<void>;
+  /** The process group of the build or dependency installation recorded for `target` (see `preparationProcessKey`):
+   * running only while one a daemon that died left behind still runs, since a live daemon's own ends before the Target is
+   * free. */
+  observePreparation(
+    target: TargetRecord,
+    signal?: AbortSignal,
+  ): Promise<ProcessObservation>;
   /** What runs for `job` of `target` now: its process while one runs, or how the last one ended when that was recorded. */
   observeJob(
     target: TargetRecord,
@@ -390,11 +400,20 @@ export function withStops(
       lifecycle.retire(target, publishRemoval, control ?? stops),
     startJob: (target, job, incarnation, rigEnv) =>
       lifecycle.startJob(target, job, incarnation, rigEnv),
+    observePreparation: (target, signal) =>
+      lifecycle.observePreparation(target, signal),
     observeJob: (target, job, signal) =>
       lifecycle.observeJob(target, job, signal),
     stopJob: (target, job, control) =>
       lifecycle.stopJob(target, job, control ?? stops),
   };
+}
+/** The supervisor key a Target's build and dependency installation commands are recorded under, one at a time. A Service
+ * name never holds ':', so it never collides with a Service's, nor with a job's. */
+export function preparationProcessKey(
+  target: Pick<TargetRecord, "id">,
+): string {
+  return `${target.id}:preparation:run`;
 }
 /** The supervisor key of a Target's job runs. A Service name never holds ':', so it never collides with a Service's. */
 export function jobProcessKey(
@@ -536,6 +555,7 @@ export function createTargetLifecycle(
       // an env file changes meanwhile. One that cannot be composed here is composed by the command itself, which fails as
       // it always did; nothing is digested for it.
       const install = await effects.environment(target).catch(() => undefined);
+      await stopPreparation(target);
       await effects.prepare(target, install);
       const installed = install && (await digestOf(target, install));
       const units = await selectUnits(target, select, effects);
@@ -867,6 +887,8 @@ export function createTargetLifecycle(
     },
     observeJob: (target, job, signal) =>
       effects.supervisor(target).observe(jobProcessKey(target, job), signal),
+    observePreparation: (target, signal) =>
+      effects.supervisor(target).observe(preparationProcessKey(target), signal),
     stopJob: (target, job, stops) => stopJob(target, job, stops),
     withhold: (target) => effects.withhold(target),
     async down(target, stops) {
@@ -886,6 +908,13 @@ export function createTargetLifecycle(
           if (isStopDetached(error)) throw error;
           processFailures.push(error);
         }
+      }
+      try {
+        const result = await stopPreparation(target, stops);
+        changed = result.outcome === "stopped" || changed;
+      } catch (error) {
+        if (isStopDetached(error)) throw error;
+        processFailures.push(error);
       }
       if (processFailures.length)
         throw new RigError(
@@ -926,6 +955,23 @@ export function createTargetLifecycle(
     return await effects
       .digestEnvironment?.(target, env)
       .catch(() => undefined);
+  }
+  /** Stops the build a daemon that died left running for `target`, within the default stop grace (a build has no
+   * stop_timeout) or less under a kill; `unchanged` when none runs. */
+  async function stopPreparation(
+    target: TargetRecord,
+    stops: StopControl = {},
+  ): Promise<StopResult> {
+    const supervisor = effects.supervisor(target),
+      key = preparationProcessKey(target);
+    if ((await supervisor.observe(key)).state === "stopped")
+      return { outcome: "unchanged" };
+    const kill = stops.kill?.(target);
+    return await supervisor.stop(key, {
+      graceMs: serviceGraceMs(undefined),
+      ...(kill ? { kill } : {}),
+      ...(stops.detach ? { detach: stops.detach } : {}),
+    });
   }
   /** Stops `job`'s run in progress within its stop_timeout under `stops`, telling the observers as the stop begins and ends;
    * a job with nothing running is left alone, unannounced. */

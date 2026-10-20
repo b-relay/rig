@@ -340,6 +340,7 @@ export function createArtifactOwnership(
           revision,
           repository: repository.roots,
         }),
+        { durable: true },
       );
   };
   return {
@@ -388,6 +389,8 @@ export function createArtifactOwnership(
             ...(identity.target ? { target: identity.target } : {}),
             revision: published,
           }),
+          // On disk before the journal captures it as this change's own.
+          { durable: true },
         );
         await recordProvenance(identity, published, repository);
       }),

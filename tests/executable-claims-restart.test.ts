@@ -104,8 +104,15 @@ function effects(
     ...localActivation(),
     root,
     recordingTime: () => "2026-09-28T12:00:00.000Z",
-    // No Target here has a Service, so the supervisor is never asked anything.
-    supervisors: new Map([["child", {} as Supervisor]]),
+    // No Target here has a Service or a build left running, so the supervisor only ever finds nothing to stop.
+    supervisors: new Map([
+      [
+        "child",
+        {
+          observe: async () => ({ state: "stopped" }),
+        } as Partial<Supervisor> as Supervisor,
+      ],
+    ]),
     run: runCommand,
     installer: installer(stall),
     router: {

@@ -521,7 +521,10 @@ test("durable commit decision recovers new effects and policy after checkpoint f
     recovery: { stage: "committing", commit: "old" },
   });
   f.deps.lifecycle = createTargetLifecycle(f.adapters());
-  const stopped = await stopForRecovery(f.state.targets[0]!, f.deps);
+  const { target: stopped } = await stopForRecovery(
+    f.state.targets[0]!,
+    f.deps,
+  );
   expect(stopped).toMatchObject({ commit: "new", desired: "stopped" });
   expect(stopped.recovery).toBeUndefined();
   expect(await readFile(join(f.root, "bin", "tool"), "utf8")).toBe(

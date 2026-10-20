@@ -15,6 +15,7 @@ import { RigError } from "../domain/errors";
 import {
   privateDirectory,
   replacePrivateFile,
+  syncDirectory,
 } from "../providers/private-files";
 const claimSchema = z
   .object({
@@ -107,6 +108,8 @@ export function createEffectPreparation(
           "Run down for this Target to recover its preparation before retrying.",
         );
       await privateDirectory(root, dirname(directory(targetId)));
+      // The claim is on disk before the directory it names, and the directory before anything is written into it, so
+      // after a crash recovery finds either nothing or a claim that explains what it finds.
       await replacePrivateFile(
         root,
         claimPath(targetId),
@@ -115,8 +118,10 @@ export function createEffectPreparation(
           targetId,
           directory: await canonicalDirectory(targetId),
         }),
+        { durable: true },
       );
       await mkdir(directory(targetId), { mode: 0o700 });
+      await syncDirectory(dirname(directory(targetId)));
     },
     async recover(targetId: string) {
       await validateLayout(targetId);

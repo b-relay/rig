@@ -43,7 +43,10 @@ import { routeUpstream, upstreamPort } from "../domain/route-upstream";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedSites } from "../runtime/ports";
-import type { TargetEffects } from "../runtime/lifecycle";
+import {
+  preparationProcessKey,
+  type TargetEffects,
+} from "../runtime/lifecycle";
 /** A failed health command's last non-empty output line, stderr first, cut to fit one log line, since it is shown in status,
  * Activity and errors. Every env-file value is redacted in the output as printed, before a line is picked, trimmed or cut,
  * and a line the runner kept only part of is left out; undefined when nothing whole is left. */
@@ -261,6 +264,8 @@ export function createTargetEffects(
       );
     return directory;
   };
+  /** Runs a build or dependency installation of `target`. Its process group is recorded under the Target's preparation
+   * key before the command runs and forgotten once it ended, so a daemon that dies meanwhile leaves it to the next one. */
   const runTarget = async (
     command: string,
     target: TargetRecord,
@@ -270,13 +275,25 @@ export function createTargetEffects(
     cwd = target.plan.workspacePath,
   ) => {
     const live = liveRecorder(target, componentName);
-    const result = await options.run({
-      command: ["/bin/sh", "-c", command],
-      cwd,
-      env,
-      timeoutMs: timeoutSeconds * 1000,
-      onOutput: live.receive,
-    });
+    // A plan whose supervisor this rigd lacks records nothing; none of its Services can start either (PROVIDER_MISSING).
+    const owner = options.supervisors.get(
+        target.plan.providers.processSupervisor,
+      ),
+      key = preparationProcessKey(target);
+    let result: CommandResult;
+    try {
+      result = await options.run({
+        command: ["/bin/sh", "-c", command],
+        cwd,
+        env,
+        timeoutMs: timeoutSeconds * 1000,
+        onOutput: live.receive,
+        ...(owner?.own ? { started: (pid) => owner.own!(key, pid) } : {}),
+      });
+    } finally {
+      // A lease left behind names a group that is gone, which a later stop or observation takes as stopped.
+      await owner?.disown?.(key).catch(() => {});
+    }
     // A runner that does not stream hands over its whole output at the end instead.
     if (!(await live.finish()))
       await recordOutput(result, target, componentName);
@@ -1023,7 +1040,10 @@ async function writeInstallReceipt(
   path: string,
   receipt: InstallReceipt,
 ): Promise<void> {
-  await replacePrivateFile(root, path, JSON.stringify(receipt));
+  // On disk before the journal captures it as this change's own.
+  await replacePrivateFile(root, path, JSON.stringify(receipt), {
+    durable: true,
+  });
 }
 
 /** Keys a publication receipt on the public policy the Project declares: its public env and which env files it names, never their contents,

@@ -198,6 +198,16 @@ export async function readPrivateFile(
   }
 }
 
+/** Flushes the bytes of the file at `path` to disk, so a record that names it can rely on them after a crash. */
+export async function flushFile(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Flushes `directory`'s entries, so a rename into it survives a crash. */
 export async function syncDirectory(directory: string): Promise<void> {
   const handle = await open(directory, "r");

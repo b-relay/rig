@@ -9,6 +9,7 @@ import {
   platformKill,
 } from "../src/providers/process-inspection";
 import { createProcessTiming } from "../src/providers/process-timing";
+import { processLeasePath } from "../src/providers/process-lease";
 /** These tests exercise real processes, so they pass the platform clock and signal path explicitly. */
 const platform = () => ({
   timing: createProcessTiming(),
@@ -199,6 +200,53 @@ test("a replacement daemon adopts an identity-matched lease and stops the origin
   ).toEqual({ outcome: "unchanged", pid: started.pid });
   await replacement.stop("recover", { graceMs: 1500 });
   expect(() => process.kill(started.pid!, 0)).toThrow();
+});
+test("a command rigd ran itself and recorded with own is found and stopped by a replacement daemon; disown forgets it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-own-"));
+  roots.push(root);
+  const first = createChildSupervisor({ ...platform(), stateRoot: root });
+  supervisors.push(first);
+  let pid: number | undefined;
+  // The daemon that ran it never sees it end: as when rigd dies during a build.
+  const build = runCommand({
+    command: ["/bin/sh", "-c", "sleep 30 & wait"],
+    env: { PATH: process.env.PATH! },
+    timeoutMs: 60_000,
+    started: async (spawned) => {
+      await first.own!("t1:preparation:run", spawned);
+      pid = spawned;
+    },
+  });
+  for (let i = 0; i < 100 && pid === undefined; i++) await Bun.sleep(10);
+  const replacement = createChildSupervisor({ ...platform(), stateRoot: root });
+  supervisors.push(replacement);
+  expect(await replacement.observe("t1:preparation:run")).toEqual({
+    state: "running",
+    pid: pid!,
+  });
+  expect(
+    await replacement.stop("t1:preparation:run", { graceMs: 1500 }),
+  ).toEqual({ outcome: "stopped" });
+  // The whole group went, the shell's background child with it.
+  expect(await build).toMatchObject({ exitCode: 1 });
+  expect(() => process.kill(-pid!, 0)).toThrow();
+  expect((await replacement.observe("t1:preparation:run")).state).toBe(
+    "stopped",
+  );
+
+  // A command that ended is forgotten: nothing is left for a later daemon to find.
+  const ended = await runCommand({
+    command: ["/bin/sh", "-c", "exit 0"],
+    env: { PATH: process.env.PATH! },
+    started: (spawned) => first.own!("t2:preparation:run", spawned),
+  });
+  expect(ended.exitCode).toBe(0);
+  await first.disown!("t2:preparation:run");
+  expect(
+    await readFile(processLeasePath(root, "t2:preparation:run"), "utf8").catch(
+      (error: NodeJS.ErrnoException) => error.code,
+    ),
+  ).toBe("ENOENT");
 });
 test("a stale lease cannot stop a process whose identity no longer matches", async () => {
   const { createHash } = await import("node:crypto");

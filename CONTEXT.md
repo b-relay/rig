@@ -320,6 +320,12 @@ _Relationship_: Configured routes should remain visible in `rig status` when a
 Target is stopped. The Target and component states communicate that the route
 is not currently available.
 
+_Relationship_: A route's upstream is a listener Rig has verified it owns at
+that moment: a Service's paths reach its port only from its verified start
+until just before it stops (one that exits on its own keeps them until the next
+start or stop of its Target). Otherwise the proxy answers with Rig's not-running reply, so a program that takes a freed port
+never receives the route's requests.
+
 ### Service
 
 A named Project process managed within a Target, such as an API, worker, or

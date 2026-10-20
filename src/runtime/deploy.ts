@@ -224,6 +224,7 @@ async function activate(
         if (previous)
           await deps.lifecycle.down(withoutServices(previous, untouched));
       }
+      // The previous plan's route comes back withheld for every Service just stopped (the effect checkpoint restores it so).
       await checkpoint.rollback();
     } catch (recoveryError) {
       candidate.recovery ??= {
@@ -512,6 +513,9 @@ export async function stopForRecovery(
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
   if (!target.recovery) return target;
+  // Both plans' processes stop here under one set of process keys, and the route may name either plan's ports: all of it
+  // is withheld before either plan stops anything.
+  await deps.lifecycle.withhold(target);
   await deps.lifecycle.down(target);
   if (target.recovery.stage === "committing") {
     await deps.lifecycle.commitEffects(target);

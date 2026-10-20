@@ -18,6 +18,12 @@ import { installCaddyBinary } from "../src/providers/caddy-binary";
 import { createProcessCaddyJob } from "../src/providers/caddy-job";
 import { runCommand } from "../src/providers/command-runner";
 import { createManagedCaddy } from "../src/providers/managed-caddy";
+import { createArtifactInstaller } from "../src/providers/artifact-installer";
+import type { Supervisor } from "../src/providers/contracts";
+import { createTargetEffects } from "../src/adapters/target-effects";
+import { createTargetLifecycle } from "../src/runtime/lifecycle";
+import type { TargetRecord } from "../src/domain/runtime";
+import { localActivation } from "./support/activation-doubles";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -288,4 +294,145 @@ test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down pag
   expect((await get("app.example.test", https)).status).toBe(200);
   await job.remove();
   expect(await job.state()).toBe("stopped");
+}, 60_000);
+
+test("real Caddy never hands a stopped Target's hostname to another program that takes its freed port", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const https = freePort();
+  const servicePort = freePort();
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  /** A program that is not Rig's, listening on `port`; it keeps the path of every request it receives. */
+  const another = (port: number) => {
+    const received: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch: (request) => {
+        received.push(new URL(request.url).pathname);
+        return new Response("another program");
+      },
+    });
+    cleanups.push(async () => server.stop(true));
+    return { received, stop: () => server.stop(true) };
+  };
+
+  // A running, verified Target serving app.example.test from its Service.
+  let service: ReturnType<typeof Bun.serve> | undefined = Bun.serve({
+    hostname: "127.0.0.1",
+    port: servicePort,
+    fetch: () => new Response("service"),
+  });
+  cleanups.push(async () => service?.stop(true));
+  const target: TargetRecord = {
+    id: "target",
+    projectId: "project",
+    name: "stable",
+    kind: "stable",
+    desired: "running",
+    createdAt: "now",
+    updatedAt: "now",
+    logRoot: join(root, "logs"),
+    plan: {
+      project: "demo",
+      target: "stable",
+      workspacePath: root,
+      dataRoot: join(root, "data"),
+      deploymentName: "stable",
+      branchSlug: "main",
+      subdomain: "stable",
+      providers: { processSupervisor: "child" },
+      preparedComponents: [],
+      domain: "app.example.test",
+      proxy: { upstream: "web" },
+      components: [
+        {
+          name: "web",
+          kind: "managed",
+          command: "serve",
+          port: servicePort,
+          readyTimeout: 1,
+          env: {},
+          dependsOn: [],
+        },
+      ],
+    },
+  };
+  const supervisor: Supervisor = {
+    observe: async () =>
+      service ? { state: "running", pid: process.pid } : { state: "stopped" },
+    ensureRunning: async () => ({ outcome: "unchanged" }),
+    async stop() {
+      service?.stop(true);
+      service = undefined;
+      return { outcome: "stopped" };
+    },
+    shutdown: async () => {},
+    detach: async () => {},
+  };
+  const effects = createTargetEffects({
+    ...localActivation([servicePort]),
+    root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map([["child", supervisor]]),
+    run: runCommand,
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: caddy.router,
+    environment: { PATH: process.env.PATH! },
+  });
+  await caddy.republish();
+  await effects.route(target, { verified: new Set([servicePort]) });
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("app.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await get("app.example.test", https)).toEqual({
+    status: 200,
+    body: "service",
+  });
+
+  // rig down: the hostname is withheld before the Service stops, so a program that takes its port receives nothing.
+  await createTargetLifecycle(effects).down(target);
+  const squatter = another(servicePort);
+  expect(await get("app.example.test", https, "/account")).toEqual({
+    status: 503,
+    body: "503 - app.example.test is currently down",
+  });
+  expect(squatter.received).toEqual([]);
 }, 60_000);

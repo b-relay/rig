@@ -21,6 +21,11 @@ import {
   retainFailureCauses,
 } from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
+import {
+  UPSTREAM_HOST,
+  routeUpstream,
+  takesUpstream,
+} from "../domain/route-upstream";
 import { componentDirectory, jobDirectory } from "../config/working-dir";
 import { randomUUID } from "node:crypto";
 
@@ -101,10 +106,16 @@ export interface TargetEffects {
   ): Promise<{ outcome: "installed" | "unchanged" }>;
   /** What the owned process `pid` and its descendants listen on now. May block or ignore cancellation. */
   listeners(pid: number, signal: AbortSignal): Promise<ListenerEvidence>;
-  /** Publishes the Target's whole route map, or removes its route when the plan has none. Every path of a withheld Service
-   * answers 503 instead of reaching a process. A path stays withheld across calls until its Service is named `verified`:
-   * `withhold` adds Services to the ones the published route already withholds, `verified` releases them. */
+  /** Publishes the Target's whole route map, or removes its route when the plan has none. A path reaches its port only while
+   * that port is live: one the published route reaches now, less `withhold`, plus `verified`; every other path answers 503
+   * instead of reaching a process. A port is verified only by its own Service's start gate or ownership inspection, so a path
+   * moved to another Service follows that Service's port, and nothing a withheld port had carries over to another. */
   route(target: TargetRecord, change: RouteChange): Promise<void>;
+  /** Withholds every path of the Target's published route whose upstream is one of `ports` (every path, without `ports`),
+   * and leaves its other paths as published. Resolves only once the proxy is confirmed to serve that, even when the route
+   * file already said so (a publication a crash cut short). Read from the route as published, not from the plan, so a plan
+   * without some of its Services still withholds the rest. */
+  withhold(target: TargetRecord, ports?: ReadonlySet<number>): Promise<void>;
   removeRoute(target: TargetRecord): Promise<void>;
   /** Withdraws the Target's route, confirmed in the proxy before it resolves, and says how to publish it again exactly as it
    * was; undefined when the Target has no route, and then nothing is asked of the proxy. Fails as removing a route fails
@@ -130,9 +141,10 @@ export interface RouteWithdrawal {
    * lifecycle) names in `details.hostnames` those not published again. */
   restore(): Promise<void>;
 }
+/** Ports of the Target's plan to take out of the route, or to publish because their Service was just verified. */
 export type RouteChange =
-  | { readonly withhold: ReadonlySet<string> }
-  | { readonly verified: ReadonlySet<string> };
+  | { readonly withhold: ReadonlySet<number> }
+  | { readonly verified: ReadonlySet<number> };
 /** Where build outcomes are kept. `started` must be durable before it returns: it is the only evidence a crashed build leaves. */
 export interface BuildJournal {
   /** `evidence.environment` is the keyed digest of the environment the unit's command is about to run in. */
@@ -185,6 +197,8 @@ export interface TargetLifecycle {
     target: TargetRecord,
     previous?: TargetRecord,
   ): Promise<TargetEffectCheckpoint>;
+  /** Rolls back the Target's interrupted effect transaction once its Services are down; the route comes back withheld
+   * wherever the route as it is now reaches no upstream. */
   restoreEffects(target: TargetRecord): Promise<void>;
   commitEffects(target: TargetRecord): Promise<void>;
   retireSuperseded(
@@ -245,17 +259,23 @@ export interface TargetLifecycle {
    * records it, the checkout path normalized. Fails as composing that environment fails (an unreadable env file, say), or
    * ENV_DIGEST when no digest can be taken. A deploy compares it with the running process's. */
   environmentDigest(target: TargetRecord, service?: string): Promise<string>;
-  /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others and the route as they
-   * are; SERVICE_UNKNOWN when the plan has no such Service. A health restart stops a Service this way before `recover`
-   * starts it again. */
+  /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others as they are; its routed
+   * paths are withheld first, and a stop whose paths cannot be withheld is not made. SERVICE_UNKNOWN when the plan has no
+   * such Service. A health restart stops a Service this way before `recover` starts it again. */
   stop(
     target: TargetRecord,
     service: string,
     stops?: StopControl,
   ): Promise<{ outcome: "stopped" | "unchanged" }>;
-  /** Stops every Service in reverse dependency order, each within its stop_timeout. Every Service is attempted, and
-   * STOP_INCOMPLETE names the failures, except when the stop is detached: STOP_DETACHED ends it at once. A job run is not
-   * stopped here, so a deploy, which stops the previous plan this way, never cuts one off: `stopJob` stops one. */
+  /** Withholds every path of the Target's published route, whatever plan it was published for, confirmed in the proxy. A
+   * recovery that stops two plans' processes withholds this way first. */
+  withhold(target: TargetRecord): Promise<void>;
+  /** Stops every Service in reverse dependency order, each within its stop_timeout. First every path the route publishes to
+   * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without
+   * some Services (a deploy keeping them) leaves their paths as they are. Every Service is attempted, and STOP_INCOMPLETE
+   * names the failures, except when the stop is detached: STOP_DETACHED ends it at once; ROUTE_WITHHOLD, once every
+   * Service stopped, when the paths could not be withheld. A job run is not stopped here, so a deploy, which stops the
+   * previous plan this way, never cuts one off: `stopJob` stops one. */
   down(
     target: TargetRecord,
     stops?: StopControl,
@@ -365,6 +385,7 @@ export function withStops(
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
+    withhold: (target) => lifecycle.withhold(target),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
     startJob: (target, job, incarnation, rigEnv) =>
@@ -578,8 +599,10 @@ export function createTargetLifecycle(
             observations.get(`${target.id}:${name}`)?.state === "stopped",
         );
         if (unverified.size)
-          await effects.route(target, { withhold: unverified });
-        const verified = new Set<string>();
+          await effects.route(target, {
+            withhold: routedPorts(target, unverified),
+          });
+        const verified = new Set<number>();
         // Dependencies are ordered during plan resolution, before any process starts.
         for (const component of target.plan.components) {
           if (component.kind === "persistent") continue;
@@ -590,13 +613,28 @@ export function createTargetLifecycle(
           }
           const key = `${target.id}:${component.name}`;
           if (observations.get(key)!.state === "running") {
+            const process = { observe: () => supervisor.observe(key) };
             // A dependency that is already running must still be ready before a dependent starts against it.
-            if (hasDependents(target, component.name))
-              await awaitActivation(component, target, effects, timing, {
-                observe: () => supervisor.observe(key),
-              });
-            if (hasDependents(target, component.name))
-              verified.add(component.name);
+            if (hasDependents(target, component.name)) {
+              await awaitActivation(
+                component,
+                target,
+                effects,
+                timing,
+                process,
+              );
+              for (const port of routedPorts(target, [component.name]))
+                verified.add(port);
+            } else
+              // A Service left running (a deploy keeps it) may have been given ports it was never verified on: each of them is
+              // published only once its own process is found listening there.
+              for (const port of await ownedRoutedPorts(
+                component,
+                target,
+                effects,
+                process,
+              ))
+                verified.add(port);
             continue;
           }
           await startService(
@@ -607,9 +645,10 @@ export function createTargetLifecycle(
             started,
             stops,
           );
-          verified.add(component.name);
+          for (const port of routedPorts(target, [component.name]))
+            verified.add(port);
         }
-        // A path an earlier failed start left withheld is released only by that Service passing the gate itself.
+        // A path an earlier failed start left withheld is released only by its own Service passing the gate.
         await effects.route(target, { verified });
         if (!providedCheckpoint) await checkpoint.commit();
         return {
@@ -620,14 +659,20 @@ export function createTargetLifecycle(
         // the Services and effects before it stay for the next daemon, checkpoint included.
         if (isStopDetached(error)) throw error;
         const rollbackErrors: unknown[] = [];
-        for (const key of started.reverse())
-          try {
-            await stopService(target, componentOf(target, key), stops);
-          } catch (failure) {
-            // rigd is shutting down: the Services left are stopping, and the next daemon finishes the stop.
-            if (isStopDetached(failure)) throw failure;
-            rollbackErrors.push(failure);
-          }
+        // What this start started may already be published (a failure after the route was), so it is withheld first.
+        await withholdServices(
+          target,
+          started.map((key) => componentOf(target, key).name),
+        ).catch((failure: unknown) => rollbackErrors.push(failure));
+        if (!rollbackErrors.length)
+          for (const key of started.reverse())
+            try {
+              await stopService(target, componentOf(target, key), stops);
+            } catch (failure) {
+              // rigd is shutting down: the Services left are stopping, and the next daemon finishes the stop.
+              if (isStopDetached(failure)) throw failure;
+              rollbackErrors.push(failure);
+            }
         if (!providedCheckpoint && !rollbackErrors.length)
           try {
             await checkpoint.rollback();
@@ -700,9 +745,8 @@ export function createTargetLifecycle(
       try {
         await effects.prepare(target);
         // Withdrawn before the spawn: the route published for the process that ended must not reach its unverified replacement.
-        const unverified = routedServices(target, (name) => name === service);
-        if (unverified.size)
-          await effects.route(target, { withhold: unverified });
+        const ports = routedPorts(target, [service]);
+        if (ports.size) await effects.route(target, { withhold: ports });
         await startService(
           target,
           component,
@@ -712,7 +756,7 @@ export function createTargetLifecycle(
           stops,
         );
         await effects.route(target, {
-          verified: new Set([service, ...component.dependsOn]),
+          verified: routedPorts(target, [service, ...component.dependsOn]),
         });
         return { outcome: started.length ? "started" : "unchanged" };
       } catch (error) {
@@ -724,6 +768,7 @@ export function createTargetLifecycle(
         const key = `${target.id}:${service}`;
         const seen = await supervisor.observe(key).catch(() => undefined);
         try {
+          await withholdServices(target, [service]);
           await stopService(target, component, stops);
         } catch (failure) {
           if (isStopDetached(failure)) throw failure;
@@ -789,6 +834,7 @@ export function createTargetLifecycle(
           "Select a Service of the recorded plan.",
           { service },
         );
+      await withholdServices(target, [service]);
       const result = await stopService(target, component, stops);
       return {
         outcome: result.outcome === "stopped" ? "stopped" : "unchanged",
@@ -822,11 +868,17 @@ export function createTargetLifecycle(
     observeJob: (target, job, signal) =>
       effects.supervisor(target).observe(jobProcessKey(target, job), signal),
     stopJob: (target, job, stops) => stopJob(target, job, stops),
+    withhold: (target) => effects.withhold(target),
     async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
-      for (const component of [...target.plan.components].reverse()) {
-        if (component.kind !== "managed") continue;
+      const services = target.plan.components.filter(
+        (component): component is ManagedComponent =>
+          component.kind === "managed",
+      );
+      // Withheld, and served so, before anything stops: once a process ends, any program may bind its port.
+      await withholdServices(target, managedServices(target));
+      for (const component of [...services].reverse()) {
         try {
           const result = await stopService(target, component, stops);
           changed = result.outcome === "stopped" || changed;
@@ -845,6 +897,27 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
+  /** Withholds the paths the plan routes to `services`, served so, before any of them is stopped. ROUTE_WITHHOLD, with
+   * nothing stopped, when the proxy cannot be made to: it may still reach those ports, which any program could bind once
+   * freed. */
+  async function withholdServices(
+    target: TargetRecord,
+    services: Iterable<string>,
+  ): Promise<void> {
+    const ports = routedPorts(target, services);
+    if (!ports.size) return;
+    try {
+      await effects.withhold(target, ports);
+    } catch (error) {
+      throw new RigError(
+        "ROUTE_WITHHOLD",
+        `The route of ${target.name} could not be withheld (${failureReason(error)}), so nothing was stopped: the proxy may still reach its Services' ports, which any program could bind once they are freed.`,
+        `Run rig doctor to check the proxy, then retry once it answers (or once it is stopped).`,
+        {},
+        failureCauses(error),
+      );
+    }
+  }
   /** The keyed digest of `env`, a composed environment of `target`; undefined when none can be taken. */
   async function digestOf(
     target: TargetRecord,
@@ -1093,6 +1166,24 @@ function hasReadiness(component: ManagedComponent): boolean {
     Object.keys(declaredPorts(component)).length > 0
   );
 }
+/** The names of the Services of the Target's plan. */
+function managedServices(target: TargetRecord): string[] {
+  return target.plan.components.flatMap((component) =>
+    component.kind === "managed" ? [component.name] : [],
+  );
+}
+/** The ports the plan routes to the Services named `services`: what a route reaches them at. */
+function routedPorts(
+  target: TargetRecord,
+  services: Iterable<string>,
+): Set<number> {
+  const names = new Set(services);
+  return new Set(
+    plannedRoutes(target.plan)
+      .filter((route) => names.has(route.service))
+      .map((route) => route.port),
+  );
+}
 /** The routed Services that `select` picks: the ones whose paths a caller withholds. */
 function routedServices(
   target: TargetRecord,
@@ -1184,8 +1275,10 @@ async function awaitActivation(
 const ALIVE: HealthCheck = { ready: true };
 /** The listener half of activation, asked of the process that is running now. Not ready while a port the activation rests on
  * (every routed port, and every declared port when connections were the readiness evidence) has no listener among the owned
- * processes: whatever answered there was someone else. Throws LISTENER_NONLOCAL for a listener bound beyond loopback and
- * LISTENER_UNKNOWN when the owner or its sockets cannot be established; PROCESS_EXITED when the process ended meanwhile. */
+ * processes: whatever answered there was someone else. Nor while a routed port is owned only at an address other than the
+ * route's upstream (::1 rather than 127.0.0.1), where the proxy would reach whoever binds it. Throws LISTENER_NONLOCAL for a
+ * listener bound beyond loopback and LISTENER_UNKNOWN when the owner or its sockets cannot be established; PROCESS_EXITED
+ * when the process ended meanwhile. */
 async function localListeners(
   component: ManagedComponent,
   target: TargetRecord,
@@ -1225,21 +1318,61 @@ async function localListeners(
         port: exposed.port,
       },
     );
+  const routed = routedPorts(target, [component.name]);
   const evidencePorts = new Set([
     ...(component.health ? [] : Object.values(declaredPorts(component))),
-    ...plannedRoutes(target.plan)
-      .filter((route) => route.service === component.name)
-      .map((route) => route.port),
+    ...routed,
   ]);
-  const missing = [...evidencePorts].find(
-    (port) => !evidence.listeners.some((listener) => listener.port === port),
+  const on = (port: number) =>
+    evidence.listeners.filter((listener) => listener.port === port);
+  const missing = [...evidencePorts].find((port) => !on(port).length);
+  if (missing !== undefined)
+    return {
+      ready: false,
+      reason: `port ${missing} has no listener owned by ${component.name}`,
+    };
+  // A routed port is reached at the route's upstream address; a listener on another one (::1) leaves that address to
+  // whichever program binds it.
+  const unreachable = [...routed].find(
+    (port) => !on(port).some((listener) => takesUpstream(listener.address)),
   );
-  return missing === undefined
+  return unreachable === undefined
     ? ALIVE
     : {
         ready: false,
-        reason: `port ${missing} has no listener owned by ${component.name}`,
+        reason: `${component.name} listens on port ${unreachable} only at ${on(unreachable)[0]!.address}, but Rig's proxy connects to ${routeUpstream(unreachable)}; bind it to ${UPSTREAM_HOST}`,
       };
+}
+/** The routed ports of a running Service that its own process tree listens on at the route's upstream address now, with
+ * nothing of it listening beyond loopback; none when that cannot be established. Never throws: a port it cannot verify
+ * stays withheld, and the process is left running as it was. */
+async function ownedRoutedPorts(
+  component: ManagedComponent,
+  target: TargetRecord,
+  effects: Pick<TargetEffects, "listeners">,
+  process: SupervisedProcess,
+): Promise<number[]> {
+  const routed = routedPorts(target, [component.name]);
+  if (!routed.size) return [];
+  const owner = await process.observe().catch(() => undefined);
+  if (owner?.state !== "running" || owner.pid === undefined) return [];
+  const evidence = await effects.listeners(
+    owner.pid,
+    new AbortController().signal,
+  );
+  const still = await process.observe().catch(() => undefined);
+  if (
+    evidence.state !== "observed" ||
+    still?.state !== "running" ||
+    still.pid !== owner.pid ||
+    evidence.listeners.some((listener) => !loopbackAddress(listener.address))
+  )
+    return [];
+  return [...routed].filter((port) =>
+    evidence.listeners.some(
+      (listener) => listener.port === port && takesUpstream(listener.address),
+    ),
+  );
 }
 /** IPv4 127.0.0.0/8 and IPv6 ::1, also as an IPv4-mapped address; a wildcard or any other address is reachable from elsewhere. */
 export function loopbackAddress(address: string): boolean {

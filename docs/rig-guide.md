@@ -1019,7 +1019,13 @@ accepted. When the owning process or its sockets cannot be established the
 start fails as `LISTENER_UNKNOWN` rather than being assumed safe. A routed
 port, and a port used as start evidence, must be listened on by the
 Service's own process tree: an answer from anyone else keeps the Service
-unready. This inspection happens at activation. It is evidence about that
+unready. A routed port's listener must also be on `127.0.0.1` (or its
+IPv4-mapped form), the address Rig's proxy connects to: a Service that listens
+there only on `::1` stays unready, since any program could take `127.0.0.1` at
+that port, and the start fails `HEALTH_FAILED` with, for example, `(last check:
+web listens on port 3000 only at ::1, but Rig's proxy connects to
+127.0.0.1:3000; bind it to 127.0.0.1)`. A port nothing routes may listen on
+`::1` alone. This inspection happens at activation. It is evidence about that
 moment, not containment: a process can bind another address later, and Rig
 does not watch for it. UDP and Unix sockets are not inspected.
 
@@ -1806,7 +1812,19 @@ upstreams. A replacement that fails verification is stopped and its paths stay
 at `503`, also while other Services of the Target start or recover: a path is
 released only when its own Service is next verified, by an automatic retry or
 by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
-not attempted.
+not attempted. Stopping works the same way: `rig down`, `rig restart`, a
+deploy, turning a Target off, stopping a Preview and a health restart withhold
+the paths of the Services they stop before any process stops, so those paths
+answer `503`, and a program that later takes a freed port never receives their
+requests. When Rig's Caddy cannot be made to withhold them, nothing is stopped
+(`ROUTE_WITHHOLD`). A failed start or deploy that rolls back brings the earlier
+route back with every path of a Service that is not running withheld. A
+Service a deploy keeps running keeps its paths throughout, and a path a deploy
+gives it, on a port it already serves, follows that port; a port it was not
+serving before is published once its process is found listening there on
+`127.0.0.1`. A stopped Target's paths reach its Services again only once a start
+verifies them. A Service that exits on its own and is not started again keeps
+its paths until the next `rig up` or `rig down`.
 A Preview serves the domain with a dash and its name after the first label:
 `pantry2.dev.b-relay.com` gives `pantry2-feat-x-1a2b3c4d.dev.b-relay.com` for
 the Preview `feat-x-1a2b3c4d`, a sibling of the domain rather than a subdomain

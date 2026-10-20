@@ -114,6 +114,7 @@ function fixture(
       return { outcome: "unchanged" };
     },
     async removeRoute() {},
+    async withhold() {},
     async withdrawRoute() {
       return undefined;
     },

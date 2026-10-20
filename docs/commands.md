@@ -181,7 +181,10 @@ status` takes no Target.
   that plans it again), with `JOB_UNAVAILABLE` for a stopped Target, and with
   `TARGET_OFF` for an off Target. `down` and `down --destroy` fail with
   `JOB_STOP_UNVERIFIED` when a job run cannot be confirmed stopped; `down`
-  still stops the Services first, and `--destroy` changes nothing. `status` lists each
+  still stops the Services first, and `--destroy` changes nothing. `down` withholds
+  the Target's routed paths before it stops anything, so its hostnames answer
+  `503` and never reach a program that takes a freed port; when Rig's Caddy
+  cannot be made to, `down` stops nothing and fails `ROUTE_WITHHOLD`. `status` lists each
   Target's jobs with their last and next run, `activity` has one `job` entry
   per ended run, and `logs --service <job>` reads a job's output.
 - `backup list` and `backup restore` work on backup jobs (`backup:` under a

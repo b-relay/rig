@@ -616,6 +616,48 @@ test("a failed deploy stops only what it started and restores the previous plan;
   expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);
 });
 
+test("a deploy never withholds the hostname of a Service it keeps, failed or not, and withholds a restarted one's from before its stop until it is verified", async () => {
+  const f = await fixture();
+  await f.deploy();
+  const routes = () => readFile(join(f.world.root, "Caddyfile"), "utf8");
+  const live = "reverse_proxy 127.0.0.1:4000";
+  expect(await routes()).toContain(live);
+  /** The route file as each process stops. */
+  const seen: string[] = [];
+  f.hooks.beforeStop = async () => void seen.push(await routes());
+
+  // Only web changed: api is kept, and its hostname reaches it throughout.
+  f.git.head = "c2";
+  f.git.changed = () => false;
+  edit(f.config, "web", { command: "node web2.js" });
+  await f.deploy();
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toContain(live);
+  expect(await routes()).toContain(live);
+
+  // The same when the deploy fails and the previous plan is started again.
+  seen.length = 0;
+  f.git.head = "c3";
+  edit(f.config, "web", { command: "node web3.js" });
+  f.failStarts.add("web");
+  await expect(f.deploy()).rejects.toThrow("web could not be spawned");
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toContain(live);
+  expect(await routes()).toContain(live);
+
+  // api changed: its hostname answers Rig's reply before its process stops, and reaches the new one once it is verified.
+  seen.length = 0;
+  f.git.head = "c4";
+  edit(f.config, "api", { command: "node api2.js" });
+  await f.deploy();
+  expect(seen.length).toBeGreaterThan(0);
+  for (const text of seen) {
+    expect(text).not.toContain(live);
+    expect(text).toContain("respond 503");
+  }
+  expect(await routes()).toContain(live);
+});
+
 test("a kept Service that crashes later starts from the current checkout, and the earlier one is given back", async () => {
   const f = await fixture();
   await f.deploy();

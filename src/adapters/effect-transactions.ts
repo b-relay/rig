@@ -11,6 +11,7 @@ import {
   failureReason,
 } from "../domain/errors";
 import type { Router, RouteCheckpoint } from "../providers/caddy-router";
+import { liveUpstreams, withheldExcept } from "../providers/route-file";
 import type {
   PrunedCheckpoint,
   TargetEffectCheckpoint,
@@ -537,8 +538,18 @@ export function createEffectTransactions(options: {
       delete file.applying;
       await save(journal);
     }
-    await options.router.restore(journal.route.before, journal.route.expected);
-    journal.route.expected = journal.route.before;
+    // The route comes back withheld wherever the route as it is now (which recovery just confirmed) reaches no upstream: a
+    // path is published live again only for a process that is still running and verified, never for one that stopped.
+    const { before, expected } = journal.route;
+    const restored: RouteCheckpoint = {
+      key: before.key,
+      value:
+        before.value === null
+          ? null
+          : withheldExcept(before.value, liveUpstreams(expected.value ?? "")),
+    };
+    await options.router.restore(restored, expected);
+    journal.route.expected = restored;
     delete journal.route.applying;
     await save(journal);
     await removeCheckpoint(journal.targetId, { allowMissingDirectory: false });
@@ -735,12 +746,19 @@ export function createEffectTransactions(options: {
         await save(journal);
       }
     },
-    /** Run a change to the owned route with the same intent-then-capture record. */
+    /** Run a change to the owned route with the same intent-then-capture record. An interrupted transaction's journal
+     * records it too (a stop withholds the route before its recovery runs), so that recovery does not take the change for
+     * an outside one. */
     async withRouteChange(
       targetId: string,
       change: () => Promise<void>,
     ): Promise<void> {
-      const journal = active.get(targetId);
+      const journal =
+        active.get(targetId) ??
+        (await load(targetId).then(
+          (saved) => (saved?.phase === "pending" ? saved : undefined),
+          () => undefined,
+        ));
       if (!journal) return change();
       journal.route.applying = true;
       await save(journal);

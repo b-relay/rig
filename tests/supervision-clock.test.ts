@@ -72,6 +72,10 @@ async function fixture() {
         incarnation: processes.get(key)!.incarnation,
       });
     },
+    /** The running process is gone, with nothing to say how: an unknown exit. */
+    async vanish() {
+      processes.delete(`${(await web()).id}:web`);
+    },
     supervise: () => runtime.supervise(),
     wait(ms: number) {
       elapsed += ms;
@@ -194,4 +198,51 @@ test("an attempt made at the same wall-clock time as an expired one, after the c
   expect((await f.run()).exhausted).toBe(true);
   // The initial start, the first restart, and five in the window.
   expect(f.starts).toHaveLength(RESTART_LIMIT + 2);
+});
+
+/** An exit, then supervision, `ms`, and supervision again. */
+async function restart(
+  f: Awaited<ReturnType<typeof fixture>>,
+  exit: "crash" | "vanish",
+  ms: number,
+) {
+  await f[exit]();
+  await f.supervise();
+  f.wait(ms);
+  await f.supervise();
+}
+
+test("a known-exit budget keeps its attempts' ages across an unknown-exit retry when the clock is set back", async () => {
+  // Back: five known-exit restarts 20 s apart, one unknown-exit restart, three healthy hours, the clock set back three hours.
+  const back = await fixture();
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await restart(back, "crash", 2000);
+    back.wait(18_000);
+  }
+  await restart(back, "vanish", 6000);
+  expect(back.starts).toHaveLength(7);
+  back.wait(3 * HOUR);
+  back.step(-3 * HOUR);
+  await restart(back, "crash", 100);
+  expect((await back.run()).exhausted).toBeUndefined();
+  expect(back.starts).toHaveLength(8);
+});
+
+test("a known-exit budget keeps its attempts' ages across an unknown-exit retry when the clock is moved forward", async () => {
+  // Forward: four known-exit restarts at once, one unknown-exit restart, the clock moved an hour on. The four still count:
+  // the next restart waits the fifth step of the back-off, and the crash after it spends the budget.
+  const forward = await fixture();
+  for (let attempt = 1; attempt <= 4; attempt++)
+    await restart(forward, "crash", 1000);
+  await restart(forward, "vanish", 6000);
+  expect(forward.starts).toHaveLength(6);
+  forward.step(HOUR);
+  await restart(forward, "crash", 1500);
+  expect(forward.starts).toHaveLength(6);
+  forward.wait(100);
+  await forward.supervise();
+  expect(forward.starts).toHaveLength(7);
+  await forward.crash();
+  await forward.supervise();
+  expect((await forward.run()).exhausted).toBe(true);
 });

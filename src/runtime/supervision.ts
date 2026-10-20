@@ -223,16 +223,25 @@ interface Mark {
 }
 interface ServiceMarks {
   exit?: { incarnation: string | undefined; at: string; mark: number };
-  attempts: Record<RestartBudget, Mark[]>;
-  /** The attempt this rigd made last, until the record shows it spent: one more attempt than `attempts` holds, at `at`. */
-  made?: Mark & { budget: RestartBudget };
+  attempts: Record<RestartBudget, BudgetMarks>;
+}
+/** One budget's marks: one per attempt its record lists, in order, and the attempt this rigd made last from it until the
+ * record shows that spent. */
+interface BudgetMarks {
+  marks: Mark[];
+  made?: Mark;
 }
 function serviceMarks(marks: RestartMarks, key: string): ServiceMarks {
   let entry = marks.get(key);
   if (!entry)
     marks.set(
       key,
-      (entry = { attempts: { "known-exit": [], "unknown-exit": [] } }),
+      (entry = {
+        attempts: {
+          "known-exit": { marks: [] },
+          "unknown-exit": { marks: [] },
+        },
+      }),
     );
   return entry;
 }
@@ -253,9 +262,10 @@ function exitMark(
   entry.exit = { incarnation: run.incarnation, at: run.outcome.at, mark };
   return mark;
 }
-/** The marks of the attempts `run` spent from `budget`, one for one in order: the ones this rigd holds when the record still
- * lists exactly those, followed by the attempt it made last when the record added just that one; otherwise every attempt
- * placed now. */
+/** The marks of the attempts `run` spent from `budget`, one for one in order. A budget's record only gains the attempt this
+ * rigd made last from it (one more than the marks hold) and loses its oldest, so it is the tail of the marks, with that
+ * attempt when it is one longer: those marks are kept. A record that is not (a previous rigd wrote it, or another writer
+ * reset it) has its attempts placed now. */
 function attemptMarks(
   entry: ServiceMarks,
   run: ServiceRun,
@@ -263,18 +273,18 @@ function attemptMarks(
   clock: Clock,
 ): Mark[] {
   const recorded = spentAttempts(run, budget);
-  const made = entry.made?.budget === budget ? entry.made : undefined;
-  entry.made = undefined;
-  const held = entry.attempts[budget];
-  const lists = (marks: readonly Mark[]) =>
-    marks.length === recorded.length &&
-    marks.every((attempt, index) => attempt.at === recorded[index]);
-  const marks = lists(held)
-    ? held
-    : made && lists([...held, made])
-      ? [...held, { at: made.at, mark: made.mark }]
+  const own = entry.attempts[budget];
+  const timed =
+    own.made && recorded.length === own.marks.length + 1
+      ? [...own.marks, own.made]
+      : own.marks;
+  const offset = timed.length - recorded.length;
+  const marks =
+    offset >= 0 &&
+    recorded.every((at, index) => timed[offset + index]!.at === at)
+      ? timed.slice(offset)
       : recorded.map((at) => ({ at, mark: placed(clock, at) }));
-  entry.attempts[budget] = marks;
+  entry.attempts[budget] = { marks };
   return marks;
 }
 
@@ -736,9 +746,9 @@ async function superviseService(
     run = scheduled.run;
     await saveRun(target, service, run, deps);
     // The record dropped the attempts past the window: so do their marks, at the same positions.
-    entry.attempts[budget] = marks.filter((_mark, index) =>
-      inWindow(budget, ages[index]!),
-    );
+    entry.attempts[budget] = {
+      marks: marks.filter((_mark, index) => inWindow(budget, ages[index]!)),
+    };
   }
   // The delay after the exit, waited in elapsed time.
   const wait = run.retryAt! - endedAt - (clock.elapsed() - exited);
@@ -754,7 +764,7 @@ async function superviseService(
   }
   // The attempt, as recorded and as this rigd saw it happen.
   const attemptAt = clock.now();
-  entry.made = { budget, at: attemptAt, mark: clock.elapsed() };
+  entry.attempts[budget].made = { at: attemptAt, mark: clock.elapsed() };
   const journal = activationJournal(target, budget, deps, { attemptAt });
   let started: Awaited<ReturnType<Deps["lifecycle"]["recover"]>>;
   try {

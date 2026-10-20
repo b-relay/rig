@@ -113,6 +113,8 @@ export async function inheritProcessLock(
     return { held: { lockPath, ...(await recordedPid(lockPath)) } };
   if (code !== 0)
     throw new Error(`lockf could not lock ${lockPath} (exit ${code}).`);
+  // The process that passed the lock down holds it after this one; released, the file names it again.
+  const passer = await readFile(lockPath, "utf8").catch(() => "");
   await recordHolder(fd);
   let released = false;
   return {
@@ -120,7 +122,12 @@ export async function inheritProcessLock(
       async release() {
         if (released) return;
         released = true;
-        closeSync(fd);
+        try {
+          ftruncateSync(fd, 0);
+          writeSync(fd, passer, 0);
+        } finally {
+          closeSync(fd);
+        }
       },
     },
   };

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { closeSync, constants, openSync } from "node:fs";
+import { closeSync, constants, openSync, writeSync } from "node:fs";
 import {
   mkdir,
   mkdtemp,
@@ -223,9 +223,13 @@ test("rigd install holds the installation lock through the descriptor its instal
       await expect(f.admin(options).install()).rejects.toMatchObject({
         code: "DAEMON_INSTALL_LOCKED",
       });
+    const record = JSON.stringify({ pid: process.pid });
+    writeSync(installer, record, 0);
     expect(await f.admin({ inheritedLock: installer }).install()).toMatchObject(
       { outcome: "installed", reachable: true },
     );
+    // Done, it names the installer as the holder again.
+    expect(await readFile(lockPath, "utf8")).toBe(record);
     // The install closed the descriptor when done, and the rigd it started was never handed it, so the lock is free.
     const after = await acquireProcessLock(lockPath, { keep: true });
     expect("lock" in after).toBe(true);

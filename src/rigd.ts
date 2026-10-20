@@ -25,6 +25,7 @@ import { dashboardServing } from "./daemon/dashboard";
 import {
   RELEASES,
   installEnvironment,
+  installationGap,
   installedRelease,
   upgrade,
 } from "./daemon/upgrade";
@@ -70,28 +71,29 @@ export async function main(args: readonly string[]): Promise<number> {
     return 0;
   }
   const mode = process.env.RIG_ROOT ? "process" : "launchd";
-  return await runRigdCli(args, {
-    admin: new DaemonAdmin({
-      root,
-      command: await daemonCommand(),
-      bun: await resolveToolBun({
-        execPath: process.execPath,
-        entrypoint: process.argv[1],
-        PATH: process.env.PATH,
-      }),
-      mode,
-      userHome: homedir(),
-      start: async () => (await readHostConfig(root)).daemon.start,
-      dashboard: async () => dashboardServing(root, await readHostConfig(root)),
-      proxy: createProxyInstallation({
-        root,
-        userHome: homedir(),
-        uid: process.getuid?.() ?? 501,
-        userName: userInfo().username,
-        mode,
-        run: runCommand,
-      }),
+  const admin = new DaemonAdmin({
+    root,
+    command: await daemonCommand(),
+    bun: await resolveToolBun({
+      execPath: process.execPath,
+      entrypoint: process.argv[1],
+      PATH: process.env.PATH,
     }),
+    mode,
+    userHome: homedir(),
+    start: async () => (await readHostConfig(root)).daemon.start,
+    dashboard: async () => dashboardServing(root, await readHostConfig(root)),
+    proxy: createProxyInstallation({
+      root,
+      userHome: homedir(),
+      uid: process.getuid?.() ?? 501,
+      userName: userInfo().username,
+      mode,
+      run: runCommand,
+    }),
+  });
+  return await runRigdCli(args, {
+    admin,
     output: userOutput(),
     newOperationId: randomUUID,
     capture: runCapturedProcess,
@@ -101,6 +103,8 @@ export async function main(args: readonly string[]): Promise<number> {
           releases: process.env.RIG_RELEASE_URL || RELEASES,
           fetch: (url) => fetch(url, { redirect: "manual" }),
           installedRelease: () => installedRelease(join(root, "bin", "rigd")),
+          missing: (release) =>
+            installationGap(root, release, () => admin.status()),
           install: async (script, env) =>
             // Its output is the upgrade's progress, shown as it runs.
             Bun.spawn(["/bin/sh", script], {

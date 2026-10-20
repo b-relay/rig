@@ -12,8 +12,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderResult } from "../src/cli/output";
+import type { DaemonStatus } from "../src/daemon/admin";
 import {
   installEnvironment,
+  installationGap,
   installedRelease,
   upgrade,
   type UpgradeDependencies,
@@ -45,7 +47,10 @@ async function releases(tags: readonly string[], latest: string) {
     );
   };
   for (const tag of tags) await publish(tag, script(tag));
-  const deps = (installed: string | null = "0.1.0"): UpgradeDependencies => ({
+  const deps = (
+    installed: string | null = "0.1.0",
+    missing?: string,
+  ): UpgradeDependencies => ({
     releases: `file://${join(home, "download")}`,
     fetch: async (url) =>
       url.endsWith("/latest")
@@ -56,6 +61,7 @@ async function releases(tags: readonly string[], latest: string) {
         : fetch(url, { redirect: "manual" }),
     // null: no rigd in the Rig root.
     installedRelease: async () => installed ?? undefined,
+    missing: async () => missing,
     install: (file, given) => {
       env.push(given);
       return Bun.spawn(["/bin/sh", file]).exited;
@@ -223,6 +229,7 @@ test("every redirect is followed by rigd upgrade itself and must stay on HTTPS, 
       return typeof answer === "function" ? answer() : answer.clone();
     },
     installedRelease: async () => "0.1.0",
+    missing: async () => undefined,
     install: async (file) => {
       ran.push(file);
       return 0;
@@ -320,23 +327,24 @@ test("the installed release is read from the Rig root's rigd version, and is non
   expect(await installedRelease(join(home, "missing"))).toBeUndefined();
 });
 
-test("end to end, rigd upgrade installs a release through the real install script", async () => {
+/** A release on local files built as the release workflow builds one, with the real install script, whose fake `rigd` is
+ * `rigd` (a shell script body) and whose `rig` reports the release. `upgrade` runs rigd upgrade against it without RIG_ROOT,
+ * as for a default install, so the script finds ~/.rig under HOME. */
+async function scriptRelease(tag: string, rigd: (ran: string) => string) {
   const home = await mkdtemp(join(tmpdir(), "rigd-upgrade-e2e-"));
   roots.push(home);
-  const tag = "v0.2.0";
   const download = join(home, "download", tag);
   await mkdir(download, { recursive: true });
   const ran = join(home, "rigd-ran");
-  // A release archive per architecture, as the release workflow packs it; rigd reports serving this release.
   for (const arch of ["arm64", "x64"]) {
     const build = `rig-${tag}-darwin-${arch}`;
     const dir = join(home, "build", build);
     await mkdir(join(dir, "dashboard", "web"), { recursive: true });
-    await writeFile(join(dir, "rig"), `#!/bin/sh\necho ${arch}\n`);
     await writeFile(
-      join(dir, "rigd"),
-      `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    0.2.0+test"; fi\n`,
+      join(dir, "rig"),
+      `#!/bin/sh\n[ "$1" = --version ] && echo ${tag.slice(1)}+test || echo ${arch}\n`,
     );
+    await writeFile(join(dir, "rigd"), rigd(ran));
     await writeFile(join(dir, "dashboard", "web", "server.js"), "// served");
     await chmod(join(dir, "rig"), 0o755);
     await chmod(join(dir, "rigd"), 0o755);
@@ -365,32 +373,155 @@ test("end to end, rigd upgrade installs a release through the real install scrip
     await new Response(sums.stdout).text(),
   );
   const root = join(home, ".rig");
-  const result = await upgrade(
-    {
-      releases: `file://${join(home, "download")}`,
-      fetch: async (url) =>
-        url.endsWith("/latest")
-          ? new Response(null, {
-              status: 302,
-              headers: { location: `${REPOSITORY}/releases/tag/${tag}` },
-            })
-          : fetch(url, { redirect: "manual" }),
-      installedRelease: () => installedRelease(join(root, "bin", "rigd")),
-      // Without RIG_ROOT, as for a default install, the script finds ~/.rig under HOME.
-      install: (file, env) =>
-        Bun.spawn(["/bin/sh", file], {
-          env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", HOME: home, ...env },
-          stdout: "ignore",
-        }).exited,
-    },
-    {},
+  return {
+    home,
+    root,
+    ran,
+    upgrade: (missing: UpgradeDependencies["missing"]) =>
+      upgrade(
+        {
+          releases: `file://${join(home, "download")}`,
+          fetch: async (url) =>
+            url.endsWith("/latest")
+              ? new Response(null, {
+                  status: 302,
+                  headers: { location: `${REPOSITORY}/releases/tag/${tag}` },
+                })
+              : fetch(url, { redirect: "manual" }),
+          installedRelease: () => installedRelease(join(root, "bin", "rigd")),
+          missing,
+          install: (file, env) =>
+            Bun.spawn(["/bin/sh", file], {
+              env: {
+                PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+                HOME: home,
+                ...env,
+              },
+              stdout: "ignore",
+              stderr: "ignore",
+            }).exited,
+        },
+        {},
+      ),
+  };
+}
+
+test("end to end, rigd upgrade installs a release through the real install script", async () => {
+  const tag = "v0.2.0";
+  // rigd reports serving this release.
+  const f = await scriptRelease(
+    tag,
+    (ran) =>
+      `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    0.2.0+test"; fi\n`,
   );
+  const result = await f.upgrade(async () => undefined);
   expect(result).toEqual({ outcome: "upgraded", release: tag, named: false });
-  expect((await stat(join(root, "bin", "rigd"))).mode & 0o777).toBe(0o755);
+  expect((await stat(join(f.root, "bin", "rigd"))).mode & 0o777).toBe(0o755);
   expect(
-    await readFile(join(root, "dashboard", tag, "web", "server.js"), "utf8"),
+    await readFile(join(f.root, "dashboard", tag, "web", "server.js"), "utf8"),
   ).toBe("// served");
-  expect(await readFile(ran, "utf8")).toBe("install\nstatus\n");
+  expect(await readFile(f.ran, "utf8")).toBe("install\nstatus\n");
+});
+
+test("an upgrade whose rigd install failed after rigd was replaced is installed again by the same upgrade, not taken as current", async () => {
+  const tag = "v0.2.0";
+  // rigd install fails while Host config is invalid (the file `invalid` exists), and otherwise records rigd installed.
+  const f = await scriptRelease(
+    tag,
+    (ran) =>
+      `#!/bin/sh\n[ "$1" = --version ] && { echo 0.2.0+test; exit 0; }\n` +
+      `echo "$@" >> '${ran}'\n` +
+      `if [ "$1" = install ]; then [ -e "$HOME/invalid" ] && exit 1; touch "$HOME/installed"; fi\n` +
+      `if [ "$1" = status ]; then echo "Version    0.2.0+test"; fi\n`,
+  );
+  // What rigd status would say: installed and serving this release once the fake rigd install has run.
+  const status = async (): Promise<DaemonStatus> => {
+    const installed = await stat(join(f.home, "installed")).then(
+      () => true,
+      () => false,
+    );
+    return {
+      installed,
+      running: installed,
+      reachable: installed,
+      ...(installed ? { version: "0.2.0+test" } : {}),
+    };
+  };
+  const missing = (release: string) => installationGap(f.root, release, status);
+  await writeFile(join(f.home, "invalid"), "");
+  await expect(f.upgrade(missing)).rejects.toMatchObject({
+    code: "UPGRADE_FAILED",
+  });
+  // rig and rigd of the release are in place; rigd is not installed.
+  expect(await installedRelease(join(f.root, "bin", "rigd"))).toBe("0.2.0");
+  expect(await missing(tag)).toBe("rigd is not installed");
+  // Host config corrected, the same upgrade completes the installation.
+  await rm(join(f.home, "invalid"));
+  const completed = await f.upgrade(missing);
+  expect(completed).toEqual({
+    outcome: "completed",
+    release: tag,
+    installed: tag,
+    named: false,
+    missing: "rigd is not installed",
+  });
+  expect(renderResult("daemon-upgrade", completed)).toBe(
+    "Installed Rig v0.2.0 again, since it was incomplete (rigd is not installed).\n",
+  );
+  expect(await readFile(f.ran, "utf8")).toBe("install\ninstall\nstatus\n");
+  // Now complete, the next upgrade is current and runs nothing.
+  expect((await f.upgrade(missing)).outcome).toBe("current");
+  expect(await readFile(f.ran, "utf8")).toBe("install\ninstall\nstatus\n");
+});
+
+test("a release whose rigd is installed is complete only with rig of that release, its dashboard, and rigd installed and serving it", async () => {
+  const home = await mkdtemp(join(tmpdir(), "rigd-gap-"));
+  roots.push(home);
+  const tag = "v0.2.0";
+  const serving: DaemonStatus = {
+    installed: true,
+    running: true,
+    reachable: true,
+    version: "0.2.0+test",
+  };
+  let status = serving;
+  const gap = () => installationGap(home, tag, async () => status);
+  expect(await gap()).toBe(`rig in ${join(home, "bin")} is not ${tag}`);
+  await mkdir(join(home, "bin"));
+  await writeFile(join(home, "bin", "rig"), "#!/bin/sh\necho 0.1.0+test\n");
+  await chmod(join(home, "bin", "rig"), 0o755);
+  expect(await gap()).toBe(`rig in ${join(home, "bin")} is not ${tag}`);
+  await writeFile(join(home, "bin", "rig"), "#!/bin/sh\necho 0.2.0+test\n");
+  const server = join(home, "dashboard", tag, "web", "server.js");
+  expect(await gap()).toBe(`its dashboard has no ${server}`);
+  // A directory where the server should be is no server.
+  await mkdir(server, { recursive: true });
+  expect(await gap()).toBe(`its dashboard has no ${server}`);
+  await rm(server, { recursive: true });
+  await writeFile(server, "// served");
+  expect(await gap()).toBeUndefined();
+  status = { installed: false, running: false, reachable: false };
+  expect(await gap()).toBe("rigd is not installed");
+  status = { installed: true, running: false, reachable: false };
+  expect(await gap()).toBe("rigd is not running");
+  status = { ...serving, version: "0.1.0+test" };
+  expect(await gap()).toBe("rigd 0.1.0+test is serving");
+  // --check says so, and installs nothing.
+  const f = await releases([tag], tag);
+  const incomplete = await upgrade(f.deps("0.2.0", "rigd is not running"), {
+    check: true,
+  });
+  expect(incomplete).toEqual({
+    outcome: "incomplete",
+    release: tag,
+    installed: tag,
+    named: false,
+    missing: "rigd is not running",
+  });
+  expect(renderResult("daemon-upgrade", incomplete)).toBe(
+    "Rig v0.2.0 is installed but incomplete: rigd is not running. Run rigd upgrade to complete it.\n",
+  );
+  expect(await f.ran()).toBe("");
 });
 
 test("the install script gets RIG_ROOT as rigd resolved it when one was set, and none otherwise", () => {

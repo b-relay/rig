@@ -37,6 +37,10 @@ export function renderResult(action: string, value: unknown): string {
       return installed
         ? `Upgraded Rig from ${installed} to ${release}.\n`
         : `Installed Rig ${release}.\n`;
+    if (report.outcome === "completed")
+      return `Installed Rig ${release} again, since it was incomplete (${word(report.missing)}).\n`;
+    if (report.outcome === "incomplete")
+      return `Rig ${release} is installed but incomplete: ${word(report.missing)}. Run rigd upgrade${report.named === true ? ` ${release}` : ""} to complete it.\n`;
     if (report.outcome === "available")
       return `Rig ${release} is available; ${installed ? `${installed} is installed` : "none is installed"}. Run rigd upgrade${report.named === true ? ` ${release}` : ""} to install it.\n`;
     return report.named === true

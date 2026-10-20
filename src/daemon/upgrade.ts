@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
+import type { DaemonStatus } from "./admin";
 
 /** Where releases are downloaded from, as the install script reads it: `<releases>/<tag>/<file>`. */
 export const RELEASES = "https://github.com/b-relay/rig/releases/download";
@@ -17,14 +18,19 @@ export interface UpgradeRequest {
 }
 /** What `rigd upgrade` found or did. */
 export interface UpgradeResult {
-  /** current: the release asked for is the one installed. available: `--check` found another. upgraded: installed it. */
-  readonly outcome: "current" | "available" | "upgraded";
+  /** current: the release asked for is the one installed. available: `--check` found another. upgraded: installed it.
+   * incomplete: `--check` found the release's rigd installed but not the rest (see `missing`). completed: installed the
+   * rest. */
+  readonly outcome:
+    "current" | "available" | "upgraded" | "incomplete" | "completed";
   /** The release asked for, such as v0.2.0. */
   readonly release: string;
   /** The release the Rig root's rigd is, such as v0.1.0; absent when it has none. */
   readonly installed?: string;
   /** Whether the release was named; otherwise it is the latest. */
   readonly named: boolean;
+  /** What the installation of the release lacked, when its rigd was installed without the rest. */
+  readonly missing?: string;
 }
 export interface UpgradeDependencies {
   /** `<releases>/<tag>/<file>` downloads a release's file; `RELEASES` unless tests point it at local files. */
@@ -33,6 +39,9 @@ export interface UpgradeDependencies {
   fetch(url: string): Promise<Response>;
   /** The release number of the rigd installed in the Rig root, such as 0.1.0; undefined when there is none. */
   installedRelease(): Promise<string | undefined>;
+  /** What the installation of `release` (such as v0.2.0) lacks besides its rigd (see installationGap); undefined when it is
+   * complete. */
+  missing(release: string): Promise<string | undefined>;
   /** Runs a release's install script, its output shown as it runs; resolves to its exit code. The script finds the Rig
    * root as rigd does (RIG_ROOT when set, else ~/.rig), and so does the rigd install it runs. */
   install(script: string, env: Record<string, string>): Promise<number>;
@@ -63,13 +72,17 @@ export async function upgrade(
     : await latestRelease(deps);
   const installedNumber = await deps.installedRelease();
   const installed = installedNumber ? `v${installedNumber}` : undefined;
+  // A release whose install failed after its rigd was replaced is installed again, not taken as current.
+  const missing =
+    release === installed ? await deps.missing(release) : undefined;
   const result = (outcome: UpgradeResult["outcome"]): UpgradeResult => ({
     outcome,
     release,
     ...(installed ? { installed } : {}),
     named,
+    ...(missing ? { missing } : {}),
   });
-  if (release === installed) return result("current");
+  if (release === installed && !missing) return result("current");
   // Fetched before anything is said to be available, so a release that does not exist is named as such.
   const script = await download(deps, `${deps.releases}/${release}/install`);
   const names = /^version="(v\d+\.\d+\.\d+)"$/m.exec(
@@ -82,7 +95,7 @@ export async function upgrade(
       "That release is not as published; nothing was changed.",
       { release },
     );
-  if (request.check) return result("available");
+  if (request.check) return result(missing ? "incomplete" : "available");
   const sums = new TextDecoder().decode(
     await download(deps, `${deps.releases}/${release}/SHA256SUMS`),
   );
@@ -115,7 +128,7 @@ export async function upgrade(
   } finally {
     await rm(work, { recursive: true, force: true });
   }
-  return result("upgraded");
+  return result(missing ? "completed" : "upgraded");
 }
 
 /** The latest release's tag, from where GitHub's latest-release page redirects: `<repository>/releases/tag/<tag>`. */
@@ -238,6 +251,33 @@ export async function installedRelease(
   } catch {
     return undefined;
   }
+}
+
+/** What the installation of `release` (such as v0.2.0) in `root` lacks besides its rigd, as a phrase; undefined when it
+ * is complete: `rig` of the same release, the release's dashboard, and rigd installed and serving that release. The install
+ * script replaces rig and rigd before it runs rigd install, so a failure after that leaves rigd of the release alone. */
+export async function installationGap(
+  root: string,
+  release: string,
+  status: () => Promise<DaemonStatus>,
+): Promise<string | undefined> {
+  const number = release.slice(1);
+  if ((await installedRelease(join(root, "bin", "rig"))) !== number)
+    return `rig in ${join(root, "bin")} is not ${release}`;
+  const server = join(root, "dashboard", release, "web", "server.js");
+  if (
+    !(await stat(server).then(
+      (info) => info.isFile(),
+      () => false,
+    ))
+  )
+    return `its dashboard has no ${server}`;
+  const daemon = await status();
+  if (!daemon.installed) return "rigd is not installed";
+  if (!daemon.reachable) return "rigd is not running";
+  if (!daemon.version?.startsWith(`${number}+`))
+    return `rigd ${daemon.version ?? "of an older release"} is serving`;
+  return undefined;
 }
 
 /** Pure: the environment a release's install script runs in, from rigd's own: RIG_ROOT as rigd resolved it when one was

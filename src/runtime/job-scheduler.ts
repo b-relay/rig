@@ -78,16 +78,17 @@ export interface JobSchedulerDependencies {
    * signalled, and its end is left to `settle` once the Target is free. Rejects when that could not be done. */
   enforceDeadline(request: JobSettleRequest): Promise<void>;
   /** Gives back the Target's held checkouts (of job runs and kept Services) once nothing runs in them. Rejects when that
-   * could not be done. */
-  releaseCheckouts(targetId: string): Promise<void>;
+   * could not be done; `skipped` when it was not tried (an Operation held the Target), so it is offered again at once. */
+  releaseCheckouts(targetId: string): Promise<void | "skipped">;
   /** Stops the Target's runs in progress when rig.yaml turns its role off. Rejects when that could not be done. */
   stopJobsIfOff(targetId: string): Promise<void>;
   /** Measures backups left without a size and deletes the backup directories queued for deletion; absent where no job
    * keeps backups. Rejects when the state cannot be read. */
   tidyBackups?(): Promise<void>;
   diagnostic: RuntimeDependencies["diagnostic"];
-  /** Where each piece of the scheduler's work (by its key: `<target id>:<job>`, `deadline:<target id>:<job>`, `off:<target id>`, `checkout:<target id>`,
-   * `backups`) says it failed, and later that it succeeded or is no longer needed. */
+  /** Where each piece of the scheduler's work (by its key: `<target id>:<job>`, `deadline:<target id>:<job>:<run id>`,
+   * `off:<target id>`, `checkout:<target id>`, `backups`) says it failed, and later that it succeeded or is no longer
+   * needed. */
   report: WorkReport;
 }
 export interface JobScheduler {
@@ -332,7 +333,8 @@ export function createJobScheduler(
       // limit. Its own key, so it never waits behind that work either.
       for (const record of state.jobs ?? []) {
         const run = record.running;
-        const key = `deadline:${record.target}:${record.job}`;
+        // Keyed by the run: its failure is about that run alone, and goes once the run is gone.
+        const key = `deadline:${record.target}:${record.job}:${run?.id}`;
         const target = state.targets.find((t) => t.id === record.target);
         if (
           !run ||
@@ -402,7 +404,12 @@ export function createJobScheduler(
           "held-checkout",
           targetId,
           `Giving back the checkouts a run or a kept Service held for ${state.targets.find((t) => t.id === targetId)?.name ?? targetId}`,
-          () => deps.releaseCheckouts(targetId),
+          async () => {
+            const done = await deps.releaseCheckouts(targetId);
+            // Not tried: offered again at the next pass, not in JOB_CHECKOUT_RETRY_MS.
+            if (done === "skipped") checkoutOffers.delete(targetId);
+            return done;
+          },
         );
       }
       for (const targetId of checkoutOffers.keys())
@@ -433,7 +440,8 @@ export function createJobScheduler(
             (record) =>
               record.running &&
               (`${record.target}:${record.job}` === key ||
-                `deadline:${record.target}:${record.job}` === key),
+                `deadline:${record.target}:${record.job}:${record.running.id}` ===
+                  key),
           ) ||
           (key.startsWith("off:") && withRuns.has(key.slice(4))) ||
           (key.startsWith("checkout:") && keeping.has(key.slice(9))) ||

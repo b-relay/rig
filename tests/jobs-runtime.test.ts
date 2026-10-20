@@ -712,6 +712,8 @@ test("a run past its timeout is stopped while an Operation holds its Target, wit
   });
   await spawn.reached;
   expect(f.runtime.targetBusy(f.target)).toBe(true);
+  // The scheduler's checkout offer tries nothing then, and says so.
+  expect(await f.runtime.releaseHeldCheckouts(f.target.id)).toBe("skipped");
   f.world.clock.ms += 3600_000 + 1000;
   await f.runtime.enforceJobDeadline({
     targetId: f.target.id,

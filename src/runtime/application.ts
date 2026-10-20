@@ -212,8 +212,9 @@ export interface RigRuntime extends ProjectStatusReader {
    * any command, stops the Service within its stop_timeout and starts it again. Never rejects; failures are recorded. */
   restartUnhealthy(request: HealthRestartRequest): Promise<HealthRestartResult>;
   /** Gives back the checkouts of the Target `targetId` that job runs or kept Services held after a deploy, once nothing
-   * runs in them, under the Target's lease; drops those of a Target that is gone. A failure is recorded, and rejects. */
-  releaseHeldCheckouts(targetId: string): Promise<void>;
+   * runs in them, under the Target's lease; drops those of a Target that is gone. A failure is recorded, and rejects;
+   * `skipped` when an Operation held the Target, so nothing was tried. */
+  releaseHeldCheckouts(targetId: string): Promise<void | "skipped">;
   /** Withdraws every route block whose Target no state record names, so a hostname a forgotten or lost Target held can be
    * published again; rigd runs it once it has started, and a deploy, up or restart of a Target with a route runs it first
    * (`rig proxy reload` runs its own, failing when it fails). Withdraws nothing while the route file lies outside the Rig
@@ -2019,7 +2020,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       const recorded = state.targets.find((target) => target.id === targetId);
       if (recorded) {
         // An Operation on the Target may be starting or stopping its Services: the next offer looks again.
-        if (targetBusy(recorded)) return;
+        if (targetBusy(recorded)) return "skipped";
         // Observed without the Target's lease, as the scheduler observes job runs: only a checkout nothing runs in any
         // more, or that is a plan's again, is worth taking the lease for, so a Service that keeps running in one costs
         // its Target nothing.

@@ -140,7 +140,12 @@ export class DaemonAdmin {
     records: ProcessRecord[];
     unverified?: string;
     /** The reachable daemon's pid and reported version, for an install deciding whether to replace it. */
-    serving?: { pid: number; version?: string; dashboard?: string };
+    serving?: {
+      pid: number;
+      version?: string;
+      dashboard?: string;
+      dashboardProblem?: string;
+    };
     /** Why the recorded daemon could not be contacted: its credential is empty or unreadable. */
     credential?: RigError;
   }> {
@@ -176,7 +181,12 @@ export class DaemonAdmin {
       ...(unverified ? [unverified] : []),
     ];
     const status = (
-      serving?: { pid: number; version?: string; dashboard?: string },
+      serving?: {
+        pid: number;
+        version?: string;
+        dashboard?: string;
+        dashboardProblem?: string;
+      },
       credential?: RigError,
     ) => {
       // A serving daemon of another version is the one thing `rigd install` can change here.
@@ -189,6 +199,9 @@ export class DaemonAdmin {
       const all = [
         ...warnings,
         ...skew,
+        ...(serving?.dashboardProblem
+          ? [`The dashboard is not served now. ${serving.dashboardProblem}`]
+          : []),
         ...(credential ? [`${credential.message} ${credential.hint}`] : []),
       ];
       return {
@@ -241,6 +254,9 @@ export class DaemonAdmin {
               pid: health.pid,
               ...(health.version ? { version: health.version } : {}),
               ...(health.dashboard ? { dashboard: health.dashboard } : {}),
+              ...(health.dashboardProblem
+                ? { dashboardProblem: health.dashboardProblem }
+                : {}),
             }
           : undefined,
       );

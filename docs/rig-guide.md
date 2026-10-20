@@ -83,7 +83,9 @@ exits, and stops it when `rigd` stops. Its output is in
 `<RIG_ROOT>/logs/dashboard/dashboard.log`, rotated like a Target log, and a
 dashboard that keeps exiting is a `rig doctor` finding. `rigd status` names
 where it is served (`Dashboard  http://127.0.0.1:4280`); a `rigd` run from
-source, or with `dashboard: false`, serves none.
+source, or with `dashboard: false`, serves none. When another program holds the
+port, or the dashboard runs but is not found listening on `127.0.0.1:<port>`,
+`rig doctor`, `rigd status` (a warning) and the dashboard's log say so.
 
 Every browser, on this Mac too, signs in with the dashboard's access key, which
 it creates on its first start in `<RIG_ROOT>/auth/dashboard.key`
@@ -107,10 +109,20 @@ dashboard:
 ```
 
 It is served like a `proxy.routes` entry, to the port of the dashboard `rigd`
-runs, and only while one runs: a Target or `proxy.routes` naming the same
-hostname is refused (`rigd install` refuses a domain a Target already serves
-before it restarts anything). The route follows the dashboard `rigd` started
-with, so an edit to the domain, port or trusted clients applies when
+runs, and only while `rigd` has found its own dashboard listening on
+`127.0.0.1:<port>`. Before that, while it restarts, and once it has stopped,
+Caddy answers the hostname with Rig's not-running reply, so a program that takes
+the port never receives its requests. When `rigd` stops, Caddy confirms it
+withholds the hostname before the dashboard is stopped; while Caddy cannot
+confirm that, `rigd` keeps the dashboard running and tries again, and does not
+exit. A dashboard an earlier `rigd` left running (one that was killed) is
+stopped once Caddy is confirmed to withhold its hostname; after an upgrade from
+a Rig that did not record which route was the dashboard's, that waits until
+Caddy accepts Host config (`rig proxy reload`). A Target or
+`proxy.routes` naming the same hostname is refused (`rigd install` refuses a
+domain a Target already serves before it restarts anything). The route follows
+the dashboard `rigd` started with, so an edit to the domain, port or trusted
+clients applies when
 `rigd install` restarts `rigd` (`rig proxy reload` leaves the route as it was);
 until then `rig doctor`'s `dashboard` check names the difference. With Caddy's
 HTTPS port other than 443 (`proxy.ports.https`), the dashboard is addressed as

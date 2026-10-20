@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { RigError } from "./errors";
 import { caddyValue, checkCaddyValue } from "./caddy-value";
 import { NAMED_CAS, type ProxySettings } from "../config/proxy-schema";
+import { routeUpstream } from "./route-upstream";
 
 /** Where Rig's Caddy and its configuration live under the Rig root (ADR 0014). */
 export interface ProxyPaths {
@@ -132,21 +133,45 @@ export function bareHostname(address: string): string {
     .replace(/:\d+$/, "")
     .toLowerCase();
 }
-/** One of the owner's own routes from `proxy.routes`: a hostname outside any Project and the loopback address it reaches. */
+/** One of the owner's own routes from `proxy.routes`, or the dashboard's: a hostname outside any Project and the loopback
+ * address it reaches. */
 export interface HostRoute {
   readonly hostname: string;
-  /** `127.0.0.1:<port>` or `localhost:<port>`. */
-  readonly upstream: string;
+  /** `127.0.0.1:<port>` or `localhost:<port>`; null while it is withheld, answered with Rig's not-running reply. */
+  readonly upstream: string | null;
 }
-/** `proxy.routes` as Rig serves it, sorted by hostname: a bare port means that port on 127.0.0.1. */
-export function hostRoutes(settings: ProxySettings): HostRoute[] {
-  return Object.entries(settings.routes)
-    .map(([hostname, upstream]) => ({
-      hostname,
-      upstream:
-        typeof upstream === "number" ? `127.0.0.1:${upstream}` : upstream,
-    }))
-    .sort((a, b) => a.hostname.localeCompare(b.hostname));
+/** The dashboard's route as Rig's Caddy serves it: its domain to `port` on 127.0.0.1 while rigd has verified that its own
+ * dashboard listens there, and withheld (`port` null) otherwise. The verified port is the route's identity: no other
+ * source names the dashboard's upstream. */
+export interface PublishedDashboard {
+  readonly domain: string;
+  readonly port: number | null;
+}
+/** `proxy.routes` as Rig serves it, with the dashboard's route when there is one, sorted by hostname: a bare port means that
+ * port on 127.0.0.1. Settings an older rigd recorded may hold the dashboard's domain among `proxy.routes`; the dashboard's
+ * route as rigd asks for it now replaces that entry. */
+export function hostRoutes(
+  settings: ProxySettings,
+  dashboard?: PublishedDashboard,
+): HostRoute[] {
+  return [
+    ...Object.entries(settings.routes)
+      .filter(([hostname]) => hostname !== dashboard?.domain)
+      .map(([hostname, upstream]) => ({
+        hostname,
+        upstream:
+          typeof upstream === "number" ? routeUpstream(upstream) : upstream,
+      })),
+    ...(dashboard
+      ? [
+          {
+            hostname: dashboard.domain,
+            upstream:
+              dashboard.port === null ? null : routeUpstream(dashboard.port),
+          },
+        ]
+      : []),
+  ].sort((a, b) => a.hostname.localeCompare(b.hostname));
 }
 
 /** What a generation's main file is rendered from. */
@@ -157,6 +182,8 @@ export interface MainCaddyfileInput {
   readonly generation: string;
   /** Every hostname Rig's route file serves; with `proxy.routes`, what the wildcard certificates cover. */
   readonly hostnames: readonly string[];
+  /** The dashboard's route, served beside `proxy.routes` (see hostRoutes). */
+  readonly dashboard?: PublishedDashboard;
 }
 /** The main Caddyfile of one generation. Pure: the same input renders the same text. Every value from config or the Rig
  * root reaches it through `caddyValue`, checked against its field's shape and quoted, so no value can carry Caddyfile
@@ -183,7 +210,7 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
         "\t}",
       ]
     : ["\tlocal_certs", "\tskip_install_trust"];
-  const owned = hostRoutes(settings);
+  const owned = hostRoutes(settings, input.dashboard);
   const parents =
     settings.tls.certificates === "wildcard"
       ? wildcardParents([
@@ -223,11 +250,14 @@ export function renderMainCaddyfile(input: MainCaddyfileInput): string {
       : []),
     "",
     `import ${caddyValue("path", files.routes)}`,
-    // Validated by the schema and again here: a lowercase hostname and a loopback address, nothing else.
+    // Validated by the schema and again here: a lowercase hostname and a loopback address, nothing else. A withheld one
+    // answers 503, which Rig's down page words (withDownPages).
     ...owned.flatMap((route) => [
       "",
       `${caddyValue("hostname", route.hostname)} {`,
-      `\treverse_proxy ${caddyValue("upstream", route.upstream)}`,
+      route.upstream === null
+        ? "\trespond 503"
+        : `\treverse_proxy ${caddyValue("upstream", route.upstream)}`,
       "}",
     ]),
     "",

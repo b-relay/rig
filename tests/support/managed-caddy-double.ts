@@ -15,7 +15,10 @@ import {
   createManagedCaddy,
   type CaddyJobState,
 } from "../../src/providers/managed-caddy";
-import { bareHostname } from "../../src/domain/managed-proxy";
+import {
+  bareHostname,
+  type PublishedDashboard,
+} from "../../src/domain/managed-proxy";
 import { routeFileHostnames } from "../../src/providers/route-file";
 import type { CommandRunner } from "../../src/providers/contracts";
 
@@ -40,7 +43,7 @@ export async function fakeAdapt(file: string): Promise<unknown> {
     })),
     ...[
       ...text.matchAll(
-        /^"?([^"\s]+)"? \{\n\treverse_proxy "?([^"\s]+)"?\n\}$/gm,
+        /^"?([^"\s]+)"? \{\n\t(?:reverse_proxy "?([^"\s]+)"?|respond 503)\n\}$/gm,
       ),
     ].map((match) => ({
       match: [{ host: [match[1]!] }],
@@ -50,10 +53,12 @@ export async function fakeAdapt(file: string): Promise<unknown> {
           routes: [
             {
               handle: [
-                {
-                  handler: "reverse_proxy",
-                  upstreams: [{ dial: match[2]! }],
-                },
+                match[2] === undefined
+                  ? { handler: "static_response", status_code: 503 }
+                  : {
+                      handler: "reverse_proxy",
+                      upstreams: [{ dial: match[2] }],
+                    },
               ],
             },
           ],
@@ -108,6 +113,8 @@ export async function fakeAdapt(file: string): Promise<unknown> {
 export async function managedCaddyWorld(
   proxy: Record<string, unknown> = {},
   token: string | null = TOKEN,
+  /** The dashboard's route as a rigd would ask for it (ManagedCaddyOptions.dashboard). */
+  dashboard?: () => PublishedDashboard | undefined,
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-managed-"));
   await mkdir(join(root, "caddy", "bin"), { recursive: true });
@@ -132,6 +139,8 @@ export async function managedCaddyWorld(
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
     beforeSettings: undefined as undefined | (() => Promise<void>),
+    /** Runs each time the fake Caddy loads a configuration, with it, before the load is reported done. */
+    onLoad: undefined as undefined | ((config: unknown) => Promise<void>),
     loaded: {} as unknown,
   };
   const run: CommandRunner = async ({ command }) => {
@@ -145,10 +154,12 @@ export async function managedCaddyWorld(
       };
     const failure = failures[verb as "validate" | "reload"];
     if (failure) return { exitCode: 1, stdout: "", stderr: failure };
-    if (verb === "reload" && !control.ignoreReload)
+    if (verb === "reload" && !control.ignoreReload) {
       control.loaded = command[3]!.endsWith(".json")
         ? JSON.parse(await readFile(command[3]!, "utf8"))
         : await fakeAdapt(command[3]!);
+      await control.onLoad?.(control.loaded);
+    }
     return { exitCode: 0, stdout: "", stderr: "" };
   };
   let id = 0;
@@ -169,12 +180,14 @@ export async function managedCaddyWorld(
             "utf8",
           ),
         );
+        await control.onLoad?.(control.loaded);
       },
     },
     admin: {
       reachable: async () => control.reachable,
       config: async () => (control.reachable ? control.loaded : undefined),
     },
+    ...(dashboard ? { dashboard } : {}),
     generationId: () => `g${String(++id).padStart(3, "0")}`,
     reachableWaitMs: 300,
     now: () => new Date("2026-10-10T00:00:00.000Z"),
@@ -222,5 +235,46 @@ export async function managedCaddyWorld(
       return bodies.find((body) => body.includes("# rig begin")) ?? "";
     },
     verbs: () => commands.map((command) => command[1]),
+    /** What the fake Caddy does with requests for `hostname` beside Rig's route file (see hostAnswer). */
+    servedHost: (hostname: string) => hostAnswer(control.loaded, hostname),
   };
+}
+/** What `config` (Caddy's JSON as the fake adapts it) does with requests for `hostname` outside Rig's route file: the
+ * upstream it dials, "withheld" for a 503 reply, or undefined when no site serves it. */
+export function hostAnswer(
+  config: unknown,
+  hostname: string,
+): string | undefined {
+  type Handler = {
+    handler?: string;
+    upstreams?: { dial: string }[];
+    routes?: { handle?: Handler[] }[];
+  };
+  const servers = (
+    config as {
+      apps?: {
+        http?: {
+          servers?: Record<
+            string,
+            {
+              routes?: {
+                match?: { host?: string[] }[];
+                handle?: Handler[];
+              }[];
+            }
+          >;
+        };
+      };
+    }
+  )?.apps?.http?.servers;
+  for (const server of Object.values(servers ?? {}))
+    for (const route of server.routes ?? []) {
+      if (!route.match?.some((match) => match.host?.includes(hostname)))
+        continue;
+      const handler = route.handle?.[0]?.routes?.[0]?.handle?.[0];
+      if (handler?.handler === "reverse_proxy")
+        return handler.upstreams?.[0]?.dial;
+      if (handler?.handler === "static_response") return "withheld";
+    }
+  return undefined;
 }

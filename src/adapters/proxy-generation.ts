@@ -21,7 +21,7 @@ export interface PublishedGeneration {
   /** The proxy settings it was accepted with. A generation without them (none was ever released) is no last-good: what it
    * serves is described as before the first generation. */
   readonly proxy?: ProxySettings;
-  /** The owner's `proxy.routes` it serves. */
+  /** The owner's `proxy.routes` it serves, and the dashboard's route. */
   readonly customRoutes: readonly HostRoute[];
   /** Its adapted JSON: what a Caddy serving it reports at GET /config/; absent when unreadable. */
   readonly adapted?: unknown;
@@ -45,7 +45,7 @@ export async function currentGeneration(
     ? metadata.customRoutes.flatMap((entry: unknown) => {
         const route = entry as Partial<HostRoute> | null;
         return typeof route?.hostname === "string" &&
-          typeof route.upstream === "string"
+          (typeof route.upstream === "string" || route.upstream === null)
           ? [{ hostname: route.hostname, upstream: route.upstream }]
           : [];
       })

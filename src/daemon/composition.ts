@@ -90,6 +90,7 @@ import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
 import {
+  DASHBOARD,
   configuredDashboardRoute,
   dashboardCheck,
   dashboardServing,
@@ -97,10 +98,12 @@ import {
   dashboardDirectory,
   dashboardPublication,
   openDashboard,
+  takeOverDashboard,
   withDashboardRoute,
+  type Dashboard,
   type DashboardRoute,
-  stopLeftOverDashboard,
 } from "./dashboard";
+import type { PublishedDashboard } from "../domain/managed-proxy";
 import { waitForLogPoll } from "../adapters/log-follow-scheduler";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
 import { guardedUsageHistory } from "../adapters/guarded-usage-history";
@@ -175,10 +178,14 @@ export async function composeDaemon(
   // The published dashboard's route, read once as this rigd starts the dashboard it serves, so Caddy and the dashboard
   // agree until the next rigd: none when the dashboard is off, unpublished, or not installed.
   const dashboardRoute = await configuredDashboardRoute(root, host);
+  // Opened below; Caddy reads the route it asks for at every publication.
+  let dashboard: Dashboard | undefined;
   // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
   const managed =
     host.proxyMode === "managed"
-      ? composeManagedCaddy(root, mode, dashboardRoute)
+      ? composeManagedCaddy(root, mode, dashboardRoute, () =>
+          dashboard?.route(),
+        )
       : undefined;
   // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
   const external = managed
@@ -205,6 +212,7 @@ export async function composeDaemon(
             }
           : {}),
       });
+  const listeners = createListenerInspection(runCommand);
   const store = new FileStateStore(root);
   const recordedTargets = async () =>
     new Set((await store.read()).targets.map((target) => target.id));
@@ -221,7 +229,7 @@ export async function composeDaemon(
     supervisors,
     run: runCommand,
     connect: probeLocalPort,
-    listeners: createListenerInspection(runCommand),
+    listeners,
     installer: createArtifactInstaller({
       run: runCommand,
       bunExecutable: toolBun,
@@ -231,9 +239,9 @@ export async function composeDaemon(
     environment: executionBaseline(process.env),
   });
   const notices = createNoticeBoard(() => new Date().toISOString());
-  // The dashboard installed with this rigd's release, served on this Mac only; none from source or when Host config turns
-  // it off.
-  const dashboard =
+  // The dashboard installed with this rigd's release, served on this Mac, and through Rig's Caddy at its domain while it is
+  // found on its port; none from source or when Host config turns it off.
+  dashboard =
     host.dashboard === false
       ? undefined
       : await openDashboard({
@@ -246,6 +254,13 @@ export async function composeDaemon(
           executable: process.execPath,
           retention: logRetention,
           notices,
+          listeners,
+          ...(managed && dashboardRoute
+            ? {
+                publish: async () =>
+                  void (await managed.caddy.refreshDashboard()),
+              }
+            : {}),
           wait: waitForLogPoll,
           now: Date.now,
         });
@@ -280,7 +295,7 @@ export async function composeDaemon(
     notices: notices.list,
     readAdminActivity: adminActivity.read,
     inspectHost: async () => [
-      ...(await inspectHost(root, { dashboardRoute })),
+      ...(await inspectHost(root)),
       dashboardCheck(
         await readHostConfig(root).then(
           (current) => dashboardServing(root, current),
@@ -411,12 +426,13 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     env,
-    ...(dashboard ? { dashboard: dashboard.serving } : {}),
+    ...(dashboard
+      ? {
+          dashboard: dashboard.serving,
+          dashboardProblem: dashboard.problem,
+        }
+      : {}),
     async start() {
-      // One an earlier rigd left running is stopped whether or not this rigd serves one. This one only reads rigd, so it
-      // is served while the first pass still runs.
-      await stopLeftOverDashboard(root);
-      dashboard?.start();
       // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
       void (managed ? managed.caddy.republish() : external!.republish()).catch(
@@ -431,6 +447,26 @@ export async function composeDaemon(
               : {}),
           }),
       );
+      // One an earlier rigd left running is stopped whether or not this rigd serves one, once Caddy is confirmed to route no
+      // dashboard domain to a port; this rigd's is started after it. It only reads rigd, so it is served while the first
+      // pass still runs.
+      void takeOverDashboard({
+        root,
+        withheld: async () => {
+          if (managed && !(await managed.caddy.refreshDashboard()).known)
+            throw new Error(
+              "the configuration it serves is an older rigd's, which does not say which of proxy.routes is a dashboard's; it is replaced once rig proxy reload publishes Host config",
+            );
+        },
+        report: (message) =>
+          dashboard
+            ? dashboard.report(message)
+            : notices.note(DASHBOARD, message),
+        stopped: () => stopped,
+        wait: (ms) => waitForLogPoll(ms, shuttingDown.signal),
+      }).then((free) => {
+        if (free && !stopped) dashboard?.start();
+      });
       await runtime.reconcile();
       // Queued behind the republish, beside everything else: a route block no recorded Target owns (one an earlier rig
       // forget left, #336) is withdrawn so its hostnames can be published again, unless the route file lies outside the
@@ -466,6 +502,7 @@ export async function composeDaemon(
     },
     async shutdown() {
       stopped = true;
+      // Its domain is withheld, and Caddy confirmed to serve that, before it stops; until then rigd does not exit.
       await dashboard?.stop();
       stopMonitor?.();
       await stopHealth?.();
@@ -498,6 +535,7 @@ function composeManagedCaddy(
   root: string,
   mode: DaemonMode,
   dashboardRoute: DashboardRoute | undefined,
+  dashboard: () => PublishedDashboard | undefined,
 ): { caddy: ManagedCaddy; control: ProxyControl; job: CaddyJob } {
   const paths = proxyPaths(root);
   const admin = createCaddyAdmin(paths.socket);
@@ -515,6 +553,7 @@ function composeManagedCaddy(
   const caddy = createManagedCaddy({
     root,
     settings,
+    dashboard,
     run: runCommand,
     job,
     admin,

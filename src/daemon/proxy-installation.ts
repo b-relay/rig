@@ -11,7 +11,7 @@ import {
   type ProxyPaths,
 } from "../domain/managed-proxy";
 import { assertSingleOwners } from "../providers/route-file";
-import { configuredDashboardRoute, withDashboardRoute } from "./dashboard";
+import { configuredDashboardRoute } from "./dashboard";
 import {
   createCaddyAdmin,
   type CaddyAdminClient,
@@ -114,11 +114,7 @@ export function createProxyInstallation(
         "Host config has both a proxy section and providers.caddy.",
         "Delete providers.caddy from config.yaml under the Rig root: the proxy section replaces it.",
       );
-    // The dashboard's route as the rigd this install starts will publish it.
-    return withDashboardRoute(
-      host.proxy,
-      await configuredDashboardRoute(options.root, host),
-    );
+    return host.proxy;
   }
   return {
     mode: async () => (await readHostConfig(options.root)).proxyMode,
@@ -146,9 +142,16 @@ export function createProxyInstallation(
       const warnings: string[] = [];
       const job = await currentJob();
       const wasRunning = (await job.state()) === "running";
+      // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
+      // does.
+      const dashboard = await configuredDashboardRoute(
+        options.root,
+        await readHostConfig(options.root),
+      );
       const caddy = createManagedCaddy({
         root: options.root,
         settings,
+        dashboard: () => dashboard && { domain: dashboard.domain, port: null },
         run: options.run,
         job,
         admin,

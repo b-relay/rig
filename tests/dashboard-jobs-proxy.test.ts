@@ -237,6 +237,8 @@ test("with Rig's own Caddy, its proxy read names every hostname served, Targets'
         source: "custom" as const,
         upstream: "127.0.0.1:8080",
       },
+      // The dashboard's domain, while rigd has not found its dashboard on its port.
+      { hostname: "rig.test", source: "custom" as const, upstream: null },
     ],
   };
   const routes = managedProxyRoutes(report, fromStatus);
@@ -247,6 +249,14 @@ test("with Rig's own Caddy, its proxy read names every hostname served, Targets'
       prefix: "/",
       source: "custom",
       upstream: "127.0.0.1:8080",
+      published: true,
+    },
+    {
+      host: "rig.test",
+      url: "https://rig.test/",
+      prefix: "/",
+      source: "custom",
+      withheld: true,
       published: true,
     },
     expect.objectContaining({

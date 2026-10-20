@@ -1398,7 +1398,7 @@ export const hostConfigSchema = z.strictObject({
           )
           .optional()
           .describe(
-            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry while rigd runs the dashboard, so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Absent, the dashboard is reached on this Mac only. Either way every browser, this Mac's included, signs in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. A change applies when rigd next starts (rigd install).",
+            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry, reaching the dashboard's port only while rigd has found its own running dashboard listening there (otherwise Rig's not-running reply), so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Absent, the dashboard is reached on this Mac only. Either way every browser, this Mac's included, signs in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. A change applies when rigd next starts (rigd install).",
           ),
         trusted_clients: z
           .array(

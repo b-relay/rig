@@ -1,6 +1,6 @@
 import { open, type FileHandle } from "node:fs/promises";
 import { RigError } from "../domain/errors";
-import { holdsMarkers, type RecordMarkers } from "./log-records";
+import { holdsMarkers, recordTime, type RecordMarkers } from "./log-records";
 
 /** The most bytes the reader holds for one record, and reads from one file per follow poll. A longer run is reported as
  * one unreadable record without being held. Rig's own writers keep records far below it. */
@@ -21,6 +21,12 @@ export interface BackwardLine {
   readonly text?: string;
   readonly size: number;
   readonly atLeast?: true;
+}
+/** How `linesBackward` passes over records unread: those without `markers` (see `recordMarkers`). With `pass`, each is
+ * handed to it with its time, read from its bytes (see `recordTime`), and the walk ends where it returns true. */
+export interface LinePassing {
+  readonly markers: RecordMarkers;
+  readonly pass?: (size: number, timestamp: string) => boolean;
 }
 
 /** Opens a Target log for reading; undefined when it does not exist. Fails LOG_UNREADABLE naming the file when it
@@ -87,15 +93,16 @@ export async function completeEnd(
 /** The complete lines of `file` that end at or before `end` (0, an offset just past a newline, or the end of an
  * over-long unterminated run; see `completeEnd`), newest first, read back from `end` a chunk at a time so only the lines
  * the caller consumes are read. A line longer than the window is yielded without text, as soon as it has grown past the
- * window, and never held whole; a caller that stops there never reads the rest of it. With `markers`, a line within the
- * window that does not hold them is passed over without being decoded or yielded, and so is every complete line of a
- * chunk that holds none of them. */
+ * window, and never held whole; a caller that stops there never reads the rest of it. With `passing`, a line within the
+ * window that does not hold its markers is passed over without being decoded or yielded: handed to `pass` when there is
+ * one (a line whose time cannot be read from its bytes is yielded whole instead); without, every complete line of a
+ * chunk that holds none of the markers is passed over at once. */
 export async function* linesBackward(
   file: FileHandle,
   end: number,
   /** `end` is the end of an unterminated over-long run (`completeEnd`'s `midRecord`), not just past a newline. */
   unterminated = false,
-  markers?: RecordMarkers,
+  passing?: LinePassing,
 ): AsyncGenerator<BackwardLine> {
   let position = end;
   /** Bytes from `position` up to the newest line not yet yielded, whose start is still unread; ends with its newline
@@ -119,7 +126,7 @@ export async function* linesBackward(
     } else if (pending.length) bytes = Buffer.concat([bytes, pending]);
     let stop = bytes.length;
     // `bytes` ends in a newline; the line before its first newline began in an earlier chunk and stays pending.
-    if (markers && !holdsMarkers(bytes, markers)) {
+    if (passing && !passing.pass && !holdsMarkers(bytes, passing.markers)) {
       const first = bytes.indexOf(10);
       if (first !== -1) stop = first + 1;
     }
@@ -129,13 +136,19 @@ export async function* linesBackward(
       newline = lastNewline(bytes, stop - 2)
     ) {
       const text = bytes.subarray(newline + 1, stop - 1);
-      if (
-        !markers ||
-        text.length > LOG_WINDOW_BYTES ||
-        holdsMarkers(text, markers)
-      )
-        yield line(text);
       stop = newline + 1;
+      if (
+        !passing ||
+        text.length > LOG_WINDOW_BYTES ||
+        holdsMarkers(text, passing.markers)
+      ) {
+        yield line(text);
+        continue;
+      }
+      if (!passing.pass) continue;
+      const timestamp = recordTime(text);
+      if (timestamp === undefined) yield line(text);
+      else if (passing.pass(text.length, timestamp)) return;
     }
     pending = bytes.subarray(0, stop);
     if (pending.length > LOG_WINDOW_BYTES + 1 && position > 0) {

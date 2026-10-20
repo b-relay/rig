@@ -319,6 +319,17 @@ test("a filter for a quiet Service among noisy ones passes over their records un
     });
     expect(next.entries.map((entry) => entry.line)).toEqual(["later"]);
     expect(parse.mock.calls.length).toBeLessThan(10);
+    // With a since bound the noisy records are passed with the time read from their bytes, still unparsed.
+    parse.mockClear();
+    const since = await readTargetLogs(record, undefined, 50, {
+      services: ["s1"],
+      since: "2026-09-30T00:00:00Z",
+    });
+    expect(since.entries.map((entry) => entry.line)).toEqual([
+      "quiet",
+      "later",
+    ]);
+    expect(parse.mock.calls.length).toBeLessThan(10);
     // A component's name is matched whole, not as a prefix.
     expect(
       (await readTargetLogs(record, undefined, 50, { services: ["s"] }))
@@ -327,4 +338,32 @@ test("a filter for a quiet Service among noisy ones passes over their records un
   } finally {
     parse.mockRestore();
   }
+});
+
+test("a filtered read since a time still walks past late-written older records of its component while other components' current ones follow them", async () => {
+  const root = await tempRoot("since-filter");
+  const record = target(root);
+  await mkdir(record.logRoot, { recursive: true });
+  const at = (timestamp: string, component: string, text: string) =>
+    JSON.stringify({ timestamp, component, stream: "stdout", line: text }) +
+    "\n";
+  const since = "2026-10-01T12:00:00.000Z";
+  // A web record inside the window, then more than a window of web records timed an hour earlier (written late, as after
+  // a sleep), each followed by a current record of another component.
+  const late =
+    at("2026-10-01T11:00:00.000Z", "web", "x".repeat(1000)) +
+    at("2026-10-01T12:00:05.000Z", "worker", "busy");
+  await writeFile(
+    join(record.logRoot, "target.jsonl"),
+    at("2026-10-01T12:00:01.000Z", "web", "current") + late.repeat(5000),
+  );
+  const web = async (filter: LogFilter) =>
+    (await readTargetLogs(record, undefined, 10000, filter)).entries
+      .filter((entry) => entry.component === "web")
+      .map((entry) => entry.line);
+  expect(await web({ since })).toEqual(["current"]);
+  expect(await web({ since, services: ["web"] })).toEqual(["current"]);
+  expect(await web({ since, services: ["web"], stream: "stdout" })).toEqual([
+    "current",
+  ]);
 });

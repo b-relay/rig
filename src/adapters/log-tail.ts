@@ -66,9 +66,6 @@ export async function readFamilyTail(
   };
   // Lines launchd wrote have no time, so an unreadable one among them has none to take either: it is kept at once.
   const timeless = familyEvidence(family.family) !== undefined;
-  // A narrow filter passes over other components' records unparsed, so a quiet Service among noisy ones reads quickly;
-  // the walk past `since` then measures only the records it reads, which can only make it go further.
-  const markers = recordMarkers(family.family, filter);
   // An unreadable record names no component or stream, so a --service or --stream read never keeps one.
   const unreadableKept = !filter.services && !filter.stream;
   // Without a time bound every unreadable record is kept, so a full page of them ends the walk once the time they take
@@ -81,7 +78,25 @@ export async function readFamilyTail(
    * such record does not end the walk, a window's worth of them in a row does. Whether an older generation can hold a line
    * inside the window is decided by when it was last written instead (see `writtenBefore`). */
   let bytesPastSince = 0;
+  /** Counts a record of `size` bytes timed `timestamp` toward the walk past `since`; whether that walk is over. */
+  const walkedPastSince = (size: number, timestamp: string) => {
+    if (!precedesLogWindow({ timestamp }, stopBefore)) bytesPastSince = 0;
+    else bytesPastSince += size + 1;
+    return bytesPastSince > LOG_WINDOW_BYTES;
+  };
   let done = false;
+  // A narrow filter passes over other components' records unparsed, so a quiet Service among noisy ones reads quickly.
+  // Such a record is never kept, but with a since bound its time counts toward the walk past it as if it were read.
+  const markers = recordMarkers(family.family, filter);
+  const passing = markers && {
+    markers,
+    ...(stopBefore.since === undefined
+      ? {}
+      : {
+          pass: (size: number, timestamp: string) =>
+            (done = walkedPastSince(size, timestamp)),
+        }),
+  };
   /** Whether a rotated generation has been reached yet: the first is the one rotated last. */
   let rotatedReached = false;
   for (const member of [...family.members].reverse()) {
@@ -119,7 +134,7 @@ export async function readFamilyTail(
         log.handle,
         end,
         midRecord,
-        markers,
+        passing,
       )) {
         const parsed =
           line.text === undefined
@@ -148,14 +163,11 @@ export async function readFamilyTail(
           continue;
         }
         settle(parsed.timestamp);
-        if (precedesLogWindow(parsed, stopBefore)) {
-          if ((bytesPastSince += line.size + 1) > LOG_WINDOW_BYTES) {
-            done = true;
-            break;
-          }
-          continue;
+        if (walkedPastSince(line.size, parsed.timestamp)) {
+          done = true;
+          break;
         }
-        bytesPastSince = 0;
+        if (precedesLogWindow(parsed, stopBefore)) continue;
         keep(parsed);
         if (kept.length >= limit) {
           done = true;

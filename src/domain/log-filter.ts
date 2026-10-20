@@ -34,6 +34,11 @@ export function precedesLogWindow(
   filter: Pick<LogFilter, "since">,
 ): boolean {
   if (filter.since === undefined) return false;
+  // Rig writes every time in this one form, which a read walking a large log compares as text, without parsing it.
+  if (ISO_TIME.test(entry.timestamp) && ISO_TIME.test(filter.since))
+    return entry.timestamp < filter.since;
   const at = Date.parse(entry.timestamp);
   return Number.isFinite(at) && at < Date.parse(filter.since);
 }
+/** The form `Date.toISOString` writes (in UTC, to the millisecond), whose order as text is its order in time. */
+const ISO_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;

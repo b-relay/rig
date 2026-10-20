@@ -77,6 +77,27 @@ test("an entry precedes the window only when its known time is before since", ()
   ).toBe(false);
 });
 
+test("times Rig writes and other forms of the same instants precede since alike", () => {
+  const since = "2026-09-28T03:00:00.000Z";
+  for (const [timestamp, before] of [
+    ["2026-09-28T02:59:59.999Z", true],
+    ["2026-09-28T03:00:00.000Z", false],
+    ["2026-09-28T03:00:00.001Z", false],
+    ["2026-09-28T02:59:59.999+00:00", true],
+    ["2026-09-28T04:30:00+02:00", true],
+    ["2026-09-28T03:00:00.001-00:00", false],
+  ] as const)
+    expect([
+      timestamp,
+      precedesLogWindow(entry({ timestamp }), { since }),
+    ]).toEqual([timestamp, before]);
+  expect(
+    precedesLogWindow(entry({ timestamp: "2026-09-28T03:00:00.000Z" }), {
+      since: "2026-09-28T04:30:00+02:00",
+    }),
+  ).toBe(false);
+});
+
 const now = new Date("2026-09-28T12:00:00.000Z");
 
 test("durations count back from now and ISO times keep their instant", () => {

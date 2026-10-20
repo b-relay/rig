@@ -594,9 +594,11 @@ preview names each field's problem by path, so the dashboard shows it beside
 the field. The CLI does not expose it.
 
 _Relationship_: The control plane also has an env editor at `/v1/env` for the
-operator env files (`<RIG_ROOT>/env/<project>[/<service>]/{all,<role>}.env`):
-`read` names each file's keys without values, `reveal` answers one value, and
-`write` changes names atomically against the revision read, keeping the file 0600. It takes a Project and a scope, never a path. Each write is an Activity
+operator env files (`<RIG_ROOT>/env/<project>[/<service or job>]/{all,<role>}.env`):
+`read` names each file's keys and revision without values, `reveal` answers one
+value with the revision it was read from, and `write` changes names atomically
+only if the file still has the revision the changes were made against, keeping
+the file 0600; a file that moved is refused, naming what it assigns now. It takes a Project and a scope, never a path. Each write is an Activity
 entry (`env`, `updated`) naming who asked and which names changed, never a
 value. The CLI does not expose it; the dashboard's Environment tab uses it.
 

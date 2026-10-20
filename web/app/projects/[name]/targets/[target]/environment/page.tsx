@@ -20,16 +20,18 @@ export default async function TargetEnvironmentPage({
   const services = report.components
     .filter((component) => component.kind === "managed")
     .map((component) => component.name);
+  const jobs = (report.jobs ?? []).map((job) => job.name);
   const tools = report.components.some(
     (component) => component.kind === "installed",
   );
   return (
     <>
       <p className="max-w-3xl text-sm text-muted-foreground">
-        Each Service of {report.name} gets the Project&apos;s{" "}
+        Each Service and Job of {report.name} gets the Project&apos;s{" "}
         <code>all.env</code> and <code>{report.kind}.env</code>, then its own,
-        later files winning; a Tool gets the Project&apos;s alone. Processes
-        read them when they start, so restart {report.name} after a change.{" "}
+        later files winning; a Tool gets the Project&apos;s alone. Services read
+        them when they start, so restart {report.name} after a change; a Job
+        reads them at each run and restore.{" "}
         <Link href={editBase}>Edit the files</Link>.
       </p>
       <div className="grid gap-4">
@@ -38,7 +40,16 @@ export default async function TargetEnvironmentPage({
             key={service}
             project={project.name}
             title={`Service ${service}`}
-            keys={layeredKeys(files.value.files, report.kind, service)}
+            keys={layeredKeys(files.value.files, report.kind, { service })}
+            editBase={editBase}
+          />
+        ))}
+        {jobs.map((job) => (
+          <EnvLayers
+            key={`job:${job}`}
+            project={project.name}
+            title={`Job ${job}`}
+            keys={layeredKeys(files.value.files, report.kind, { job })}
             editBase={editBase}
           />
         ))}

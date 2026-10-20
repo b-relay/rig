@@ -21,13 +21,23 @@ const scopeSchema = z
   .strictObject({
     service: name
       .optional()
-      .describe("A Service in rig.yaml; absent for the Project's own files."),
+      .describe(
+        "A Service in rig.yaml; absent for the Project's own files and a Job's.",
+      ),
+    job: name
+      .optional()
+      .describe(
+        "A Job in rig.yaml, whose runs, backups and restores read its files; absent for the Project's own files and a Service's.",
+      ),
     role: z
       .enum(TARGET_ROLES)
       .optional()
       .describe(
         "The Target role whose file this is; absent for all.env, which every role reads.",
       ),
+  })
+  .refine((scope) => !(scope.service && scope.job), {
+    message: "A scope names a Service or a Job, not both.",
   })
   .describe("Which operator env file under <RIG_ROOT>/env/<project>.");
 const key = z
@@ -75,7 +85,9 @@ export const envEditorRequestSchema = z.discriminatedUnion("action", [
     expectedRevision: z
       .string()
       .regex(new RegExp(`^(?:[a-f0-9]{64}|${ABSENT_REVISION})$`))
-      .describe("The revision the last read returned for this file."),
+      .describe(
+        "The revision of the file the changes were made against; a file that has moved since is refused, never overwritten.",
+      ),
     changes: z.array(changeSchema).min(1).max(100).describe("Ordered changes."),
     actor: z
       .string()
@@ -104,9 +116,18 @@ export const envEditorReplySchemas = {
     project: name.describe("Registered Project name."),
     directory: z.string().min(1).describe("<RIG_ROOT>/env/<project>."),
     services: z.array(name).describe("The Services rig.yaml declares."),
+    jobs: z.array(name).describe("The Jobs rig.yaml declares."),
     files: z.array(envFileViewSchema).describe("Every operator env file."),
   }),
-  reveal: z.object({ value: z.string().describe("The value asked for.") }),
+  reveal: z.object({
+    value: z.string().describe("The value asked for."),
+    revision: z
+      .string()
+      .min(1)
+      .describe(
+        "The revision of the file the value was read from; once the file has another, the value is no longer current.",
+      ),
+  }),
   write: envFileViewSchema.extend({
     warning: z
       .string()
@@ -120,8 +141,8 @@ export interface EnvEditorDependencies {
   resolveProject(
     name: string,
   ): Promise<{ id: string; name: string; repoPath: string } | undefined>;
-  /** The Service names the Project's rig.yaml declares, sorted. */
-  services(repoPath: string): Promise<string[]>;
+  /** The Service and Job names the Project's rig.yaml declares, each sorted. */
+  declared(repoPath: string): Promise<{ services: string[]; jobs: string[] }>;
   /** Runs `operation` while no other mutation of the named Project runs. */
   exclusive<T>(project: string, operation: () => Promise<T>): Promise<T>;
   /** Appends one final Operation to Activity. */
@@ -135,17 +156,23 @@ export interface EnvFiles {
   /** `<RIG_ROOT>/env/<project>`. */
   directory: string;
   services: string[];
+  jobs: string[];
   files: EnvFileView[];
 }
-/** Pure: every scope a Project's operator env files cover: the Project's, then each Service's, each for all
- * roles and then for each role, in the order resolve.ts layers them. */
-export function envScopes(services: readonly string[]): EnvScope[] {
+/** Pure: every scope a Project's operator env files cover: the Project's, then each Service's, then each Job's,
+ * each for all roles and then for each role, in the order resolve.ts layers them. */
+export function envScopes(
+  services: readonly string[],
+  jobs: readonly string[] = [],
+): EnvScope[] {
   const roles = [undefined, ...TARGET_ROLES];
-  return [undefined, ...services].flatMap((service) =>
-    roles.map((role) => ({
-      ...(service ? { service } : {}),
-      ...(role ? { role } : {}),
-    })),
+  const owners: EnvScope[] = [
+    {},
+    ...services.map((service) => ({ service })),
+    ...jobs.map((job) => ({ job })),
+  ];
+  return owners.flatMap((owner) =>
+    roles.map((role) => ({ ...owner, ...(role ? { role } : {}) })),
   );
 }
 /** Pure: the Activity message for a write: who, which names, and which file, never a value. */
@@ -161,7 +188,8 @@ export function envChangeMessage(
   ];
   const set = names("set"),
     removed = names("remove");
-  const file = `${scope.service ? `${scope.service}/` : ""}${scope.role ?? "all"}.env`;
+  const owner = scope.service ?? scope.job;
+  const file = `${owner ? `${owner}/` : ""}${scope.role ?? "all"}.env`;
   return `${actor} ${[
     set.length ? `set ${set.join(", ")}` : "",
     removed.length ? `removed ${removed.join(", ")}` : "",
@@ -171,7 +199,8 @@ export function envChangeMessage(
 }
 /** Authenticated transport adapter for operator env files (secrets). It accepts a registered Project and a
  * scope, never a path, so it can only touch `<RIG_ROOT>/env/<project>/...`. Values leave only through
- * `reveal`; they are never logged, recorded in Activity, or named in an error. */
+ * `reveal`; they are never logged, recorded in Activity, or named in an error. Every answer carries the
+ * revision it was read from, and a write lands only on the revision it names. */
 export function createEnvEditor(dependencies: EnvEditorDependencies) {
   const registered = async (project: string) => {
     const found = await dependencies.resolveProject(project);
@@ -187,16 +216,23 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
     found: { repoPath: string; name: string },
     scope: EnvScope,
   ) => {
-    if (
-      scope.service &&
-      !(await dependencies.services(found.repoPath)).includes(scope.service)
-    )
-      throw new RigError(
-        "ENV_SCOPE",
-        `${found.name}'s rig.yaml has no Service named '${scope.service}'.`,
-        "Choose one of the Services rig.yaml declares, or the Project's own files.",
-        { service: scope.service },
-      );
+    if (scope.service || scope.job) {
+      const declared = await dependencies.declared(found.repoPath);
+      if (scope.service && !declared.services.includes(scope.service))
+        throw new RigError(
+          "ENV_SCOPE",
+          `${found.name}'s rig.yaml has no Service named '${scope.service}'.`,
+          "Choose one of the Services or Jobs rig.yaml declares, or the Project's own files.",
+          { service: scope.service },
+        );
+      if (scope.job && !declared.jobs.includes(scope.job))
+        throw new RigError(
+          "ENV_SCOPE",
+          `${found.name}'s rig.yaml has no Job named '${scope.job}'.`,
+          "Choose one of the Services or Jobs rig.yaml declares, or the Project's own files.",
+          { job: scope.job },
+        );
+    }
     const path = envScopeFile(dependencies.envRoot, found.name, scope);
     await assertNoSymlinkBelow(dependencies.envRoot, path);
     return path;
@@ -213,7 +249,7 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
     const request = parsed.data;
     const found = await registered(request.project);
     if (request.action === "read") {
-      const services = await dependencies.services(found.repoPath);
+      const { services, jobs } = await dependencies.declared(found.repoPath);
       return {
         project: found.name,
         directory: envScopeFile(dependencies.envRoot, found.name, {}).replace(
@@ -221,8 +257,9 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
           "",
         ),
         services,
+        jobs,
         files: await Promise.all(
-          envScopes(services).map(async (scope) => {
+          envScopes(services, jobs).map(async (scope) => {
             const path = envScopeFile(dependencies.envRoot, found.name, scope);
             await assertNoSymlinkBelow(dependencies.envRoot, path);
             return describeEnvFile(path, scope);
@@ -230,10 +267,23 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
         ),
       } satisfies EnvFiles;
     }
-    const path = await knownScope(found, request.scope);
     if (request.action === "reveal")
-      return { value: await revealEnvValue(path, request.key) };
+      return revealEnvValue(
+        await knownScope(found, request.scope),
+        request.key,
+      );
     return dependencies.exclusive(found.name, async () => {
+      // A rename, forget or repoint may have finished while this waited: the Project is read again here, and a name
+      // that now denotes another registration, or the same one at another checkout, is refused rather than written for.
+      const current = await registered(request.project);
+      if (current.id !== found.id || current.repoPath !== found.repoPath)
+        throw new RigError(
+          "PROJECT_CHANGED",
+          `Project '${request.project}' was registered anew or repointed while this change waited, so nothing was written.`,
+          "Read the env files again and make the change on the Project as it is now.",
+          { project: request.project },
+        );
+      const path = await knownScope(current, request.scope);
       const view = await writeEnvFile(
         path,
         request.scope,
@@ -244,8 +294,8 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
       try {
         await dependencies.record({
           id: dependencies.id(),
-          projectId: found.id,
-          project: found.name,
+          projectId: current.id,
+          project: current.name,
           // working and stable name their Target; preview.env is every Preview's, which the message names.
           ...(request.scope.role && request.scope.role !== "preview"
             ? { target: request.scope.role }

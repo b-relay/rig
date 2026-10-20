@@ -1,15 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
 import { scopeFile, scopeKey, type LayeredKey } from "@/lib/env";
+import {
+  currentReveals,
+  keepReveal,
+  revealedValue,
+  type Revealed,
+} from "@/lib/env-draft";
 import type { Failure as FailureShape } from "@/lib/outcome";
 import { transportFailure } from "@/lib/reconcile";
 import { runEnvEdit } from "@/server/actions";
 import { Failure, Mono } from "./bits";
 
-/** The names one Service of a Target gets from the operator env files, each with the file that wins
+/** The names one Service or Job of a Target gets from the operator env files, each with the file that wins
  * and the files it overrides. A value is masked until revealed, and fetched only then. */
 export function EnvLayers({
   project,
@@ -23,8 +30,17 @@ export function EnvLayers({
   /** The Project's Environment page; each file links to it with that file chosen. */
   editBase: string;
 }) {
-  const [revealed, setRevealed] = useState<Record<string, string>>({});
+  const router = useRouter();
+  // Each value is shown only while the file that wins still is the one, at the revision, it was read from.
+  const [revealed, setRevealed] = useState<Record<string, Revealed>>({});
   const [failure, setFailure] = useState<FailureShape>();
+  const shown = (entry: LayeredKey) =>
+    revealedValue(revealed, entry.key, entry.from, entry.revision);
+  // A value masked by a refresh is dropped from memory too; `layers` changes exactly when a key's file or revision does.
+  const layers = keys
+    .map((entry) => `${entry.key}=${scopeKey(entry.from)}@${entry.revision}`)
+    .join("\n");
+  useEffect(() => setRevealed((now) => currentReveals(now, keys)), [layers]);
   const reveal = async (entry: LayeredKey) => {
     setFailure(undefined);
     try {
@@ -34,12 +50,23 @@ export function EnvLayers({
         scope: entry.from,
         key: entry.key,
       });
-      if (outcome.ok)
-        setRevealed((now) => ({
-          ...now,
-          [entry.key]: (outcome.value as { value: string }).value,
-        }));
-      else setFailure(outcome.failure);
+      if (!outcome.ok) {
+        setFailure(outcome.failure);
+        return;
+      }
+      const reply = outcome.value as { value: string; revision: string };
+      if (reply.revision !== entry.revision) {
+        setFailure({
+          code: "ENV_FILE_CHANGED",
+          message: `${scopeFile(entry.from)} changed since this page read it, so ${entry.key} stays masked.`,
+          hint: "The page reads the files again now; reveal it again to see its current value and where it comes from.",
+        });
+        router.refresh();
+        return;
+      }
+      setRevealed((now) =>
+        keepReveal(now, entry.key, entry.from, entry.revision, reply),
+      );
     } catch (error) {
       setFailure(transportFailure(error));
     }
@@ -81,14 +108,14 @@ export function EnvLayers({
               </Mono>
               <Mono
                 className={
-                  revealed[entry.key] === undefined
+                  shown(entry) === undefined
                     ? "col-span-2 tracking-widest text-muted-foreground md:col-span-1"
                     : "col-span-2 break-all whitespace-pre-wrap text-foreground md:col-span-1"
                 }
               >
-                {revealed[entry.key] === undefined
+                {shown(entry) === undefined
                   ? "••••••••••••"
-                  : revealed[entry.key] || "(empty)"}
+                  : shown(entry) || "(empty)"}
               </Mono>
               <span className="text-xs text-muted-foreground">
                 from {fileLink(entry.from)}
@@ -108,22 +135,22 @@ export function EnvLayers({
                 type="button"
                 className="row-start-1 inline-flex size-7 items-center justify-center justify-self-end rounded-md text-muted-foreground hover:bg-muted hover:text-foreground md:col-start-4"
                 aria-label={
-                  revealed[entry.key] === undefined
+                  shown(entry) === undefined
                     ? `Reveal ${entry.key}`
                     : `Hide ${entry.key}`
                 }
                 title={
-                  revealed[entry.key] === undefined
+                  shown(entry) === undefined
                     ? `Reveal ${entry.key}`
                     : `Hide ${entry.key}`
                 }
                 onClick={() =>
-                  revealed[entry.key] === undefined
+                  shown(entry) === undefined
                     ? void reveal(entry)
                     : setRevealed(({ [entry.key]: _gone, ...kept }) => kept)
                 }
               >
-                {revealed[entry.key] === undefined ? (
+                {shown(entry) === undefined ? (
                   <Eye className="size-3.5" />
                 ) : (
                   <EyeOff className="size-3.5" />

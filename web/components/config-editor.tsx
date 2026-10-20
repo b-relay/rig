@@ -26,8 +26,10 @@ import type {
 import { transportFailure } from "@/lib/reconcile";
 import { runConfigEdit } from "@/server/actions";
 import {
-  applyPatch,
-  configPatch,
+  draftOf,
+  draftPatch,
+  followRead,
+  type ConfigDraft,
   fieldFor,
   getAt,
   isTree,
@@ -126,7 +128,7 @@ const shown = (value: unknown) =>
 
 /** The structured editor for one Project's rig.yaml. The server page reads the file and hands it
  * over; every refresh hands over the current revision, and the draft follows it unless edits
- * are pending, in which case they are replayed on top. */
+ * are pending, which are kept against the read they were made on until a review replays them on top. */
 export function ConfigEditor({
   project,
   source,
@@ -142,29 +144,33 @@ export function ConfigEditor({
     failure?: FailureShape;
     result?: ConfigChange;
   }>({ busy: false });
-  const [tree, setTree] = useState<Tree>(() =>
-    isTree(source.config) ? source.config : {},
+  const editable = isTree(source.config);
+  const read = useMemo(
+    () => ({
+      revision: source.revision,
+      config: isTree(source.config) ? source.config : {},
+    }),
+    [source.revision, source.config],
   );
+  // The draft keeps the read it was made against: a refresh with no edits pending follows the newer read, and one with
+  // edits keeps them, flagged as made against an older file, until a review replays them on top of the newer one.
+  const [state, setState] = useState<ConfigDraft>(() => draftOf(read));
   const [section, setSection] = useState<Section>("project");
   const [reviewing, setReviewing] = useState(false);
   const [rebased, setRebased] = useState(false);
-  const original = source.config;
-  const revision = source.revision;
-  // A read of another revision replaces the draft, so a refresh after apply shows what rigd wrote;
-  // after a revision conflict the outstanding edits are replayed onto the newer file instead.
-  const pendingEdits = useRef<ConfigPatch[] | undefined>(undefined);
-  const seen = useRef(revision);
+  const seen = useRef(read.revision);
   useEffect(() => {
-    if (seen.current === revision && pendingEdits.current === undefined) return;
-    seen.current = revision;
-    if (isTree(original))
-      setTree(applyPatch(original, pendingEdits.current ?? []));
-    pendingEdits.current = undefined;
-  }, [revision, original]);
+    if (seen.current === read.revision) return;
+    seen.current = read.revision;
+    setState((now) => followRead(now, read));
+  }, [read]);
+  const tree = state.tree;
+  const revision = state.base.revision;
   const patch = useMemo(
-    () => (isTree(original) ? configPatch(original, tree) : []),
-    [original, tree],
+    () => (editable ? draftPatch(state) : []),
+    [editable, state],
   );
+  const stale = patch.length > 0 && revision !== read.revision;
   // rigd checks the draft against the schema a moment after typing stops, so a field's problem shows
   // beneath it before anything is reviewed; a review's own answer takes over once there is one.
   const [checked, setChecked] = useState<{
@@ -217,21 +223,32 @@ export function ConfigEditor({
       tree,
       fields: source.fields,
       issues,
-      set: (path, value) => setTree((current) => setAt(current, path, value)),
-      remove: (path) => setTree((current) => removeAt(current, path)),
-      update: (change) => setTree(change),
+      set: (path, value) =>
+        setState((now) => ({ ...now, tree: setAt(now.tree, path, value) })),
+      remove: (path) =>
+        setState((now) => ({ ...now, tree: removeAt(now.tree, path) })),
+      update: (change) =>
+        setState((now) => ({ ...now, tree: change(now.tree) })),
     }),
     [tree, source.fields, issues],
   );
   const send = async (action: "preview" | "apply") => {
+    // A review of edits made against an older file replays them on top of the file as read now, and says so; the
+    // review then shows each field before and after against that file.
+    const sent =
+      action === "preview" && stale ? followRead(state, read, true) : state;
+    if (sent !== state) {
+      setState(sent);
+      setRebased(true);
+    }
     setChange({ busy: true });
     let outcome: Outcome<unknown>;
     try {
       outcome = await runConfigEdit({
         action,
         project,
-        expectedRevision: revision,
-        patch,
+        expectedRevision: sent.base.revision,
+        patch: draftPatch(sent),
       });
     } catch (error) {
       outcome = { ok: false, failure: transportFailure(error) };
@@ -241,16 +258,19 @@ export function ConfigEditor({
       setChange({ busy: false, result });
       if (action === "preview") setReviewing(true);
       if (result.applied) {
+        // What rigd wrote is the new base, so the refresh that reads it back finds no edits to keep.
+        if (isTree(result.config))
+          setState(
+            draftOf({ revision: result.nextRevision, config: result.config }),
+          );
         setRebased(false);
         setReviewing(false);
         router.refresh();
       }
       return;
     }
-    // rig.yaml changed under the draft: read it again without dropping the edits.
+    // rig.yaml changed after this page read it: the edits stay, and the refresh flags them until they are reviewed again.
     if (outcome.failure.code.toUpperCase() === "REVISION_CONFLICT") {
-      pendingEdits.current = patch;
-      setRebased(true);
       setReviewing(false);
       setChange({ busy: false });
       router.refresh();
@@ -259,7 +279,7 @@ export function ConfigEditor({
     setChange({ busy: false, failure: outcome.failure });
   };
   const discard = () => {
-    if (isTree(original)) setTree(original);
+    setState(draftOf(read));
     setRebased(false);
     setChange({ busy: false });
   };
@@ -304,7 +324,15 @@ export function ConfigEditor({
             your edits re-applied on top; review them before applying.
           </Notice>
         ) : null}
-        {checked.stale && checked.patch === patchText && !rebased ? (
+        {stale ? (
+          <Notice tone="warn">
+            rig.yaml changed on disk since you started editing. Your edits are
+            kept, made against the file as you read it, and nothing is applied
+            over the newer file until you review them: Review replays them on
+            top of it and shows each field before and after.
+          </Notice>
+        ) : null}
+        {checked.stale && checked.patch === patchText && !rebased && !stale ? (
           <Notice tone="warn">
             rig.yaml changed on disk since this page read it. Review your
             changes to read it again; your edits are kept and re-applied on top.

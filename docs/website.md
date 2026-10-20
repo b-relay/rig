@@ -180,29 +180,46 @@ a deploy that kept any.
 The Environment tab edits the operator env files `rigd` layers into each
 process ([ADR 0003](adr/0003-exclude-env-file-secrets-from-interpolation.md),
 the guide's Environment section): `<RIG_ROOT>/env/<project>/all.env` and
-`<role>.env`, and the same per Service under `<project>/<service>/`. `rig.yaml`'s
-own `env_file` entries are not edited here.
+`<role>.env`, and the same per Service under `<project>/<service>/` and per job
+under `<project>/<job>/`, which each run, backup and restore of the job loads.
+`rig.yaml`'s own `env_file` entries are not edited here.
 
 `rigd`'s env editor (`/v1/env`, `src/daemon/env-editor.ts`) takes a registered
-Project and a scope (a Service `rig.yaml` declares, and a role or all), never a
-path. Its `read` names each file's keys, revision and mode, never a value; a
-value leaves `rigd` only through `reveal`, one at a time, when an operator asks.
-So no value is part of a rendered page, the client cache or a URL; a revealed
-value lives in the page's memory until it is hidden or the page is left.
+Project and a scope (a Service or a job `rig.yaml` declares, and a role or all),
+never a path. Its `read` names each file's keys, revision and mode, never a
+value; a value leaves `rigd` only through `reveal`, one at a time, when an
+operator asks, with the revision it was read from. So no value is part of a
+rendered page, the client cache or a URL; a revealed value lives in the page's
+memory until it is hidden, the page is left, or a refresh shows the file at
+another revision (or another file winning the name, on a Target's
+Environment page): then it is masked again, and a reply for an older revision
+is never shown.
 
 A `write` applies set and remove changes line by line, keeping comments and
-order, only if the file still has the revision the page read (checked again
-just before the rename). The new content goes to a private temporary file
+order, only if the file still has the revision the changes were made against
+(checked again just before the rename, after the Project and scope are read
+again under the Project's lock, so a rename, forget, new registration under the
+name or repoint to another checkout that finished first refuses it as
+`PROJECT_MISSING` or `PROJECT_CHANGED`). The dashboard keeps that revision with
+its unsaved changes (`web/lib/env-draft.ts`), taken from the file shown when the
+typing of each change began: a live refresh shows the newer file and keeps the
+changes, naming the names added or removed since; saving them is refused as
+`ENV_REVISION_CONFLICT` until the operator reviews them against the current
+file. The config editor's draft does the same with `rig.yaml`
+(`followRead` in `web/lib/config-form.ts`). The new content goes to a private temporary file
 renamed over the old, so a reader never sees half of either; the file is 0600
-and every directory from `<RIG_ROOT>/env` down to it 0700. A symlinked file
-stays a symlink. Each value is quoted so the env-file reader reads it back
+and every directory from `<RIG_ROOT>/env` down to it 0700. A symlink below
+`<RIG_ROOT>/env`, to the file or a directory on the way to it, is refused for
+read, reveal and write (`ENV_SCOPE_SYMLINK`), so nothing outside the env tree
+is read or replaced. Each value is quoted so the env-file reader reads it back
 exactly, and refused by name when it cannot be. Each write records an Activity
 entry (`env`, `updated`) naming who asked and which names changed in which
 file, never a value. Every such request is signed in, so the server names where
 it came from, from the request itself and never from the browser:
 `dashboard (this Mac)` or `dashboard (<address>)`. Refusals
 never repeat the request. After a save, the running Targets that read the file
-are offered a restart, since processes read env files when they start.
+are offered a restart, since processes read env files when they start; a job's
+file needs none, since its next run or restore reads it.
 
 ## The matrix
 

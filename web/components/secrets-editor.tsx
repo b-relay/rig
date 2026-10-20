@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import {
   Eye,
@@ -13,10 +13,26 @@ import {
   Undo2,
 } from "lucide-react";
 import { own, scopeFile, scopeReaders } from "@/lib/env";
+import {
+  discard,
+  drift,
+  draftChanges,
+  EMPTY_DRAFT,
+  keepReveal,
+  rebase,
+  revealedValue,
+  saveRequest,
+  stage,
+  beginEdit,
+  keepEdit,
+  type EnvDraft,
+  type EnvEdit,
+  type Pending,
+} from "@/lib/env-draft";
 import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
 import { transportFailure } from "@/lib/reconcile";
 import { targetSelector } from "@/lib/target";
-import type { EnvChange, EnvFileView, TargetReport } from "@/lib/types";
+import type { EnvFileView, TargetReport } from "@/lib/types";
 import { runEnvEdit } from "@/server/actions";
 import { Failure, Mono, Notice } from "./bits";
 import { useRun } from "./operations";
@@ -37,7 +53,6 @@ import { cn } from "@/lib/utils";
 /** A name an env file may assign; names starting with _RIG_ are reserved for Rig. */
 const ENV_KEY = /^(?!_RIG_)[A-Za-z_][A-Za-z0-9_]*$/;
 const MASK = "••••••••••••";
-type Pending = { op: "set"; value: string } | { op: "remove" };
 async function call(input: unknown): Promise<Outcome<unknown>> {
   try {
     return await runEnvEdit(input);
@@ -59,10 +74,17 @@ export function SecretsEditor({
   readers: readonly Pick<TargetReport, "name" | "kind" | "state">[];
 }) {
   const router = useRouter();
-  const [revealed, setRevealed] = useState<Record<string, string>>({});
-  const [pending, setPending] = useState<Record<string, Pending>>({});
-  const [editing, setEditing] = useState<{ key: string; value: string }>();
-  const [adding, setAdding] = useState({ key: "", value: "", show: false });
+  // Staged changes keep the file they were made against, and revealed values the revision they were read from, so a
+  // refresh shows the current file without losing the draft or showing an old value as current.
+  const [draft, setDraft] = useState<EnvDraft>(EMPTY_DRAFT);
+  // An edit or a new name keeps the file shown when its typing began, which a Keep stages it against.
+  const [editing, setEditing] = useState<EnvEdit>();
+  const [adding, setAdding] = useState<{
+    key: string;
+    value: string;
+    show: boolean;
+    base?: EnvFileView;
+  }>({ key: "", value: "", show: false });
   const [failure, setFailure] = useState<FailureShape>();
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
@@ -70,16 +92,33 @@ export function SecretsEditor({
   // Staged values are masked like stored ones until shown; the edit field hides what is typed unless asked.
   const [visible, setVisible] = useState<Record<string, true>>({});
   const [editVisible, setEditVisible] = useState(false);
-  const locked = file.problem !== undefined;
-  const keys = [
-    ...file.keys,
-    ...Object.keys(pending).filter((key) => !file.keys.includes(key)),
-  ];
-  const changes: EnvChange[] = Object.entries(pending).map(([key, change]) =>
-    change.op === "set"
-      ? { op: "set", key, value: change.value }
-      : { op: "remove", key },
+  // A value read from an older revision is masked at once (revealedValue); this drops it from memory too.
+  useEffect(
+    () =>
+      setDraft((now) => ({
+        ...now,
+        revealed: Object.fromEntries(
+          Object.entries(now.revealed).filter(
+            ([, each]) => each.revision === file.revision,
+          ),
+        ),
+      })),
+    [file.revision],
   );
+  const pending = draft.pending;
+  const shownValue = (key: string) =>
+    revealedValue(draft.revealed, key, file.scope, file.revision);
+  const moved = drift(draft, file);
+  const locked = file.problem !== undefined;
+  // A name being edited stays until Keep or Cancel, even once another writer removed it, so what was typed is not lost.
+  const keys = [
+    ...new Set([
+      ...file.keys,
+      ...Object.keys(pending),
+      ...(editing ? [editing.key] : []),
+    ]),
+  ];
+  const changes = draftChanges(draft);
   const reveal = async (key: string) => {
     setFailure(undefined);
     const outcome = await call({
@@ -88,33 +127,43 @@ export function SecretsEditor({
       scope: file.scope,
       key,
     });
-    if (outcome.ok)
-      setRevealed((now) => ({
-        ...now,
-        [key]: (outcome.value as { value: string }).value,
-      }));
-    else setFailure(outcome.failure);
+    if (!outcome.ok) {
+      setFailure(outcome.failure);
+      return;
+    }
+    const reply = outcome.value as { value: string; revision: string };
+    if (reply.revision !== file.revision) {
+      // The file moved since this page read it: read it again rather than show a value beside names it no longer has.
+      setFailure({
+        code: "ENV_FILE_CHANGED",
+        message: `${scopeFile(file.scope)} changed since this page read it, so ${key} stays masked.`,
+        hint: "The page reads it again now; reveal it again to see its current value.",
+      });
+      router.refresh();
+      return;
+    }
+    setDraft((now) => ({
+      ...now,
+      revealed: keepReveal(now.revealed, key, file.scope, file.revision, reply),
+    }));
   };
   const hide = (key: string) =>
-    setRevealed(({ [key]: _gone, ...kept }) => kept);
-  const stage = (key: string, change: Pending | undefined) =>
-    setPending(({ [key]: _old, ...kept }) =>
-      change ? { ...kept, [key]: change } : kept,
-    );
+    setDraft(({ revealed: { [key]: _gone, ...kept }, ...now }) => ({
+      ...now,
+      revealed: kept,
+    }));
+  const stageChange = (key: string, change: Pending | undefined) =>
+    setDraft((now) => stage(now, file, key, change));
   const save = async () => {
     setBusy(true);
     setFailure(undefined);
-    const outcome = await call({
-      action: "write",
-      project,
-      scope: file.scope,
-      expectedRevision: file.revision,
-      changes,
-    });
+    const outcome = await call(saveRequest(project, draft, file));
     setBusy(false);
     setReviewing(false);
     if (!outcome.ok) {
+      // The draft stays: a conflict is shown with how the file differs once the page has read it again.
       setFailure(outcome.failure);
+      if (outcome.failure.code === "ENV_REVISION_CONFLICT") router.refresh();
       return;
     }
     const warning = (outcome.value as { warning?: unknown }).warning;
@@ -123,8 +172,7 @@ export function SecretsEditor({
       ...(typeof warning === "string" ? { warning } : {}),
     });
     setVisible({});
-    setPending({});
-    setRevealed({});
+    setDraft(EMPTY_DRAFT);
     router.refresh();
   };
   const newKeyValid = ENV_KEY.test(adding.key) && !keys.includes(adding.key);
@@ -165,14 +213,39 @@ export function SecretsEditor({
           <Notice tone="good" title="Saved">
             <p>
               {saved.keys.join(", ")} {saved.keys.length === 1 ? "was" : "were"}{" "}
-              written. Activity records the names, never the values. Processes
-              read env files when they start, so restart what reads this file to
-              apply it.
+              written. Activity records the names, never the values.{" "}
+              {file.scope.job
+                ? `The ${file.scope.job} Job's next run or restore reads it; nothing needs a restart.`
+                : "Processes read env files when they start, so restart what reads this file to apply it."}
             </p>
             {saved.warning ? (
               <p className="text-warn">{saved.warning}</p>
             ) : null}
-            <RestartReaders project={project} readers={readers} />
+            {file.scope.job ? null : (
+              <RestartReaders project={project} readers={readers} />
+            )}
+          </Notice>
+        </div>
+      ) : null}
+      {moved ? (
+        <div className="border-b p-4">
+          <Notice
+            tone="warn"
+            title={`${scopeFile(file.scope)} changed since you started editing`}
+          >
+            <p>
+              {moved.added.length
+                ? `It now also assigns ${moved.added.join(", ")}. `
+                : ""}
+              {moved.removed.length
+                ? `It no longer assigns ${moved.removed.join(", ")}. `
+                : ""}
+              Any other value may have changed too; reveal one to see it now.
+              Your {changes.length} unsaved{" "}
+              {changes.length === 1 ? "change is" : "changes are"} kept, and
+              nothing is saved over the newer file until you review{" "}
+              {changes.length === 1 ? "it" : "them"} against it.
+            </p>
           </Notice>
         </div>
       ) : null}
@@ -195,7 +268,7 @@ export function SecretsEditor({
               ? own(visible, key)
                 ? change.value
                 : undefined
-              : own(revealed, key);
+              : shownValue(key);
           const shown = editing?.key === key;
           return (
             <li
@@ -229,6 +302,10 @@ export function SecretsEditor({
                         ? "new"
                         : "edited"}
                   </span>
+                ) : isNew ? (
+                  <span className="text-[11px] font-medium text-bad">
+                    no longer in the file
+                  </span>
                 ) : null}
               </span>
               <div className="col-span-2 min-w-0 sm:order-none sm:col-span-1">
@@ -237,7 +314,7 @@ export function SecretsEditor({
                     className="flex gap-2"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      stage(key, { op: "set", value: editing.value });
+                      setDraft((now) => keepEdit(now, editing, file));
                       setEditing(undefined);
                     }}
                   >
@@ -246,11 +323,11 @@ export function SecretsEditor({
                       type={editVisible ? "text" : "password"}
                       value={editing.value}
                       onChange={(event) =>
-                        setEditing({ key, value: event.target.value })
+                        setEditing({ ...editing, value: event.target.value })
                       }
                       aria-label={`New value for ${key}`}
                       placeholder={
-                        own(revealed, key) === undefined
+                        shownValue(key) === undefined
                           ? "Type the new value"
                           : undefined
                       }
@@ -274,7 +351,7 @@ export function SecretsEditor({
                       className="h-8"
                       // An unrevealed value is never blanked by accident: keeping an empty field needs the old value seen.
                       disabled={
-                        editing.value === "" && own(revealed, key) === undefined
+                        editing.value === "" && shownValue(key) === undefined
                       }
                     >
                       Keep
@@ -330,14 +407,14 @@ export function SecretsEditor({
                     ) : null}
                     <IconButton
                       label={`Undo the change to ${key}`}
-                      onClick={() => stage(key, undefined)}
+                      onClick={() => stageChange(key, undefined)}
                     >
                       <Undo2 />
                     </IconButton>
                   </>
-                ) : (
+                ) : isNew ? null : (
                   <>
-                    {own(revealed, key) === undefined ? (
+                    {shownValue(key) === undefined ? (
                       <IconButton
                         label={`Reveal ${key}`}
                         disabled={locked}
@@ -357,8 +434,8 @@ export function SecretsEditor({
                       label={`Edit ${key}`}
                       disabled={locked}
                       onClick={() => {
-                        setEditVisible(own(revealed, key) !== undefined);
-                        setEditing({ key, value: own(revealed, key) ?? "" });
+                        setEditVisible(shownValue(key) !== undefined);
+                        setEditing(beginEdit(file, key, shownValue(key) ?? ""));
                       }}
                     >
                       <Pencil />
@@ -366,7 +443,7 @@ export function SecretsEditor({
                     <IconButton
                       label={`Remove ${key}`}
                       disabled={locked}
-                      onClick={() => stage(key, { op: "remove" })}
+                      onClick={() => stageChange(key, { op: "remove" })}
                     >
                       <Trash2 />
                     </IconButton>
@@ -383,14 +460,19 @@ export function SecretsEditor({
           onSubmit={(event) => {
             event.preventDefault();
             if (!newKeyValid) return;
-            stage(adding.key, { op: "set", value: adding.value });
+            const { key, value, base = file } = adding;
+            setDraft((now) => keepEdit(now, { key, value, base }, file));
             setAdding({ key: "", value: "", show: false });
           }}
         >
           <Input
             value={adding.key}
             onChange={(event) =>
-              setAdding((now) => ({ ...now, key: event.target.value }))
+              setAdding((now) => ({
+                ...now,
+                key: event.target.value,
+                base: now.base ?? file,
+              }))
             }
             placeholder="NAME"
             aria-label="New variable name"
@@ -403,7 +485,11 @@ export function SecretsEditor({
               value={adding.value}
               type={adding.show ? "text" : "password"}
               onChange={(event) =>
-                setAdding((now) => ({ ...now, value: event.target.value }))
+                setAdding((now) => ({
+                  ...now,
+                  value: event.target.value,
+                  base: now.base ?? file,
+                }))
               }
               placeholder="value"
               aria-label="New variable value"
@@ -450,12 +536,20 @@ export function SecretsEditor({
             variant="ghost"
             size="sm"
             className="ml-auto"
-            onClick={() => setPending({})}
+            onClick={() => setDraft(discard)}
           >
             Discard
           </Button>
-          <Button size="sm" disabled={busy} onClick={() => setReviewing(true)}>
-            Review and save
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              // Saving over a newer file is a choice made in this review, which lists the changes against it.
+              if (moved) setDraft((now) => rebase(now, file));
+              setReviewing(true);
+            }}
+          >
+            {moved ? "Review against the current file" : "Review and save"}
           </Button>
         </footer>
       ) : null}

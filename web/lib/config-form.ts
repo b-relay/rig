@@ -81,6 +81,36 @@ export function applyPatch(tree: Tree, patch: readonly ConfigPatch[]): Tree {
     tree,
   );
 }
+/** A draft of rig.yaml: the read it was made against, and the tree edited from it. */
+export interface ConfigDraft {
+  base: { revision: string; config: Tree };
+  tree: Tree;
+}
+/** Pure: a draft of `read`, as it is. */
+export const draftOf = (read: {
+  revision: string;
+  config: Tree;
+}): ConfigDraft => ({
+  base: { revision: read.revision, config: read.config },
+  tree: read.config,
+});
+/** Pure: the edits a draft holds, against the read it was made from. */
+export const draftPatch = (draft: ConfigDraft): ConfigPatch[] =>
+  configPatch(draft.base.config, draft.tree);
+/** Pure: what a draft becomes when a newer read arrives. Without edits it follows the read. With edits it keeps its
+ * base, so they are neither lost nor sent as if made to the newer file, until `rebase` replays them on top of it. */
+export function followRead(
+  draft: ConfigDraft,
+  read: { revision: string; config: Tree },
+  rebase = false,
+): ConfigDraft {
+  if (read.revision === draft.base.revision) return draft;
+  const patch = draftPatch(draft);
+  if (!patch.length) return draftOf(read);
+  return rebase
+    ? { base: draftOf(read).base, tree: applyPatch(read.config, patch) }
+    : draft;
+}
 /** The documented field for a concrete path, matching record keys against `*`; an exact segment wins over a wildcard. */
 export function fieldFor(
   fields: readonly ConfigField[],

@@ -17,6 +17,7 @@ import type {
   InstalledComponent,
   ManagedComponent,
   PlanJob,
+  TargetPlan,
   PlanComponent,
 } from "../config/types";
 import { isHealthUrl } from "../config/schema";
@@ -54,6 +55,34 @@ function healthOutput(
     lastOutputLine(redactValues(result.stderr, secrets)) ??
     lastOutputLine(redactValues(result.stdout, secrets));
   return line?.slice(0, 160);
+}
+/** The reference values the commands of one scope read, by variable name: a Service's command, health check and build, a
+ * job's command and restore, a Tool's build, or without a Component the shared build. Only these, so one Service's
+ * environment changes only with its own values. */
+function referenceValuesOf(
+  plan: TargetPlan,
+  component?: ManagedComponent | InstalledComponent | PlanJob,
+): Record<string, string> {
+  const values = plan.referenceValues ?? {};
+  const units = (plan.builds ?? []).filter((unit) =>
+    component === undefined
+      ? unit.component === undefined
+      : "kind" in component && unit.component === component.name,
+  );
+  const commands = [
+    ...units.map((unit) => unit.command),
+    ...(component && "command" in component ? [component.command] : []),
+    ...(component && "health" in component && component.health !== undefined
+      ? [component.health]
+      : []),
+    ...(component && "backup" in component && component.backup?.restore
+      ? [component.backup.restore]
+      : []),
+  ];
+  const names = commands.join("\n").match(/RIG_REF_[0-9a-f]{12}/g) ?? [];
+  return Object.fromEntries(
+    names.filter((name) => name in values).map((name) => [name, values[name]!]),
+  );
 }
 /** A probe transport failure named by its error code when it has one, else its message. */
 function failureReason(error: unknown): string {
@@ -153,7 +182,7 @@ export function createTargetEffects(
   };
   const ignored = gitIgnoreCheck(options.run, options.environment);
   const noted = new Set<string>();
-  /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, then its env files.
+  /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, its env files, then the plan's reference values.
    * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment and
    * `secrets`, the list of them to redact. */
   const invocationEnvironment = async (
@@ -189,7 +218,11 @@ export function createTargetEffects(
     for (const note of fresh) noted.add(`${target.id}:${note}`);
     if (fresh.length)
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
-    return { env: composed.env, secrets: composed.secrets };
+    // The values its commands read through RIG_REF_* variables come last, so no env file can change one.
+    return {
+      env: { ...composed.env, ...referenceValuesOf(target.plan, component) },
+      secrets: composed.secrets,
+    };
   };
   const environment = async (
     ...args: Parameters<typeof invocationEnvironment>

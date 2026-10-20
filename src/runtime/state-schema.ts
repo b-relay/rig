@@ -230,6 +230,12 @@ export const targetPlanSchema = z.object({
     .optional(),
   installTimeout: z.number().positive().optional(),
   envFiles,
+  referenceValues: z
+    .record(z.string().regex(/^RIG_REF_[0-9a-f]{12}$/), z.string())
+    .optional()
+    .describe(
+      "The values the plan's shell commands read through RIG_REF_* variables, by variable name; absent on plans recorded before them, whose commands hold their values.",
+    ),
 });
 const preparation = z
   .object({

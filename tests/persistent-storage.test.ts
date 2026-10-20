@@ -1,4 +1,5 @@
 import { localActivation } from "./support/activation-doubles";
+import { withValuesWritten } from "../src/config/plan-defaults";
 import { afterEach, expect, test } from "bun:test";
 import {
   mkdtemp,
@@ -21,8 +22,9 @@ import { runCommand } from "../src/providers/command-runner";
 import type { TargetRecord } from "../src/domain/runtime";
 import { noRoutes } from "./support/router-doubles";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
+/** Commands written with their values as they read (see withValuesWritten). */
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
-  resolvePlanWithHost(input, RESOLVE_HOST);
+  withValuesWritten(resolvePlanWithHost(input, RESOLVE_HOST));
 
 const roots: string[] = [];
 afterEach(async () => {

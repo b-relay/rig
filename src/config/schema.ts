@@ -67,14 +67,14 @@ const referencesIn = (scope: ReferenceScope) =>
   `References: ${scope === "service" ? "${port} (this Service's only port), ${ports.<port>} (one of its named ports), " : ""}\${environment.NAME}, \${services.<service>.port} (a Service's only port), \${services.<service>.ports.<port>}, \${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as \${services.api.stop_timeout}, \${rig.target}, \${rig.workspace}, \${rig.host}, \${rig.url}${scope === "service" ? ", ${rig.data}" : scope === "job" ? ", ${rig.data} (this job's own persistent directory)" : ""}. $\${VAR} writes a literal \${VAR}.`;
 /** Where a reference in a shell command is refused. */
 const SHELL_REFERENCES =
-  "A reference is accepted only in a plain word of a simple command, bare or quoted; in or after a heredoc, arithmetic, [[ ]], case, $'...', backquotes, a subscript or a comment it is refused: declare such a value in environment and read $NAME instead.";
+  "A referenced value reaches the command through a RIG_REF_* variable as one word, never as shell code. A reference in a command with arithmetic, [[ ]], a subscript or let, declare, read and the like, in or after a heredoc, or in $'...' is refused: declare such a value in environment and read $NAME instead.";
 const command = text
   .refine(
     (value) => localhostCommand(value.replace(/\$\{[^}]+\}/g, "1234")),
     "Explicit network bindings must use 127.0.0.1 or localhost.",
   )
   .describe(
-    `Shell command run with /bin/sh -c; explicit bindings must be localhost only. Interpolated values with spaces or shell characters are single-quoted unless the placeholder is already quoted. ${SHELL_REFERENCES}`,
+    `Shell command run with /bin/sh -c; explicit bindings must be localhost only. ${SHELL_REFERENCES}`,
   );
 export { isHealthUrl } from "./healthcheck";
 /** A health URL must parse as a whole, carry no userinfo, and address 127.0.0.1 or localhost; a shell health command follows the command rule. */
@@ -259,7 +259,7 @@ const healthcheckTest = z
     text
       .refine(localCheck, LOCAL_CHECK)
       .describe(
-        `A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. A failed shell command shows its last output line, with every env-file value replaced by [redacted]. Referenced values in a shell command are quoted as in command. ${SHELL_REFERENCES} ${referencesIn("service")}`,
+        `A shell command run with /bin/sh -c in working_dir that passes on exit 0, as in Compose; a string starting with / is a command too. Rig's one extension: a string starting with http:// or https:// is an HTTP GET of a local URL that passes with a status below 400, without following a redirect. A failed shell command shows its last output line, with every env-file value replaced by [redacted]. ${SHELL_REFERENCES} ${referencesIn("service")}`,
       ),
     z
       .array(z.string())
@@ -325,7 +325,7 @@ const healthcheck = z
   );
 const serviceFields = {
   command: command.describe(
-    `Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${SHELL_REFERENCES} ${referencesIn("service")}`,
+    `Foreground shell command run with /bin/sh -c in working_dir (default: the workspace root); explicit bindings must be localhost only. ${SHELL_REFERENCES} ${referencesIn("service")}`,
   ),
   build: command
     .describe(
@@ -367,7 +367,7 @@ export const DEFAULT_JOB_TARGETS: readonly (
 )[] = ["stable"];
 const jobFields = {
   command: command.describe(
-    `Shell command run with /bin/sh -c in working_dir (default: the workspace root) at each scheduled time, and by rig run. It runs from the same checkout as the Target's Services: the working copy for the working Target, the deployed Commit for the stable Target and Previews; a run a deploy finds going finishes on the checkout it started in, and the next run uses the new one. It has the Target's references, as a Service does: \${services.<service>.port} reaches a Service of the same Target, \${services.<service>.data} shares a Service's persistent directory, and \${rig.data} is the job's own. In a backup job (see backup), $RIG_BACKUP_DIR is the fresh directory this run writes its backup into. Its output goes to the Target logs under the job's name (rig logs --service <job>). Explicit bindings must be localhost only. Referenced values with spaces or shell characters are single-quoted unless the reference is already quoted. ${SHELL_REFERENCES} ${referencesIn("job")}`,
+    `Shell command run with /bin/sh -c in working_dir (default: the workspace root) at each scheduled time, and by rig run. It runs from the same checkout as the Target's Services: the working copy for the working Target, the deployed Commit for the stable Target and Previews; a run a deploy finds going finishes on the checkout it started in, and the next run uses the new one. It has the Target's references, as a Service does: \${services.<service>.port} reaches a Service of the same Target, \${services.<service>.data} shares a Service's persistent directory, and \${rig.data} is the job's own. In a backup job (see backup), $RIG_BACKUP_DIR is the fresh directory this run writes its backup into. Its output goes to the Target logs under the job's name (rig logs --service <job>). Explicit bindings must be localhost only. ${SHELL_REFERENCES} ${referencesIn("job")}`,
   ),
   schedule: text
     .superRefine((value, ctx) => {

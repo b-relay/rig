@@ -29,7 +29,8 @@ import {
   targetOn,
   TARGET_ROLES,
 } from "../src/config/index.js";
-import { referenceResolver } from "../src/config/references";
+import { referenceResolver, shellVariable } from "../src/config/references";
+import { withValuesWritten } from "../src/config/plan-defaults";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 /** The operator's optional convention files for one scope, in precedence order. */
 const conventionFiles = (role: string, ...scope: string[]) =>
@@ -37,8 +38,10 @@ const conventionFiles = (role: string, ...scope: string[]) =>
     path: ["/rig/env", ...scope, `${file}.env`].join("/"),
     required: false,
   }));
+/** A plan with its commands written with their values (see withValuesWritten); tests of how values reach a shell use the plan as
+ * resolved. */
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
-  resolvePlanWithHost(input, RESOLVE_HOST);
+  withValuesWritten(resolvePlanWithHost(input, RESOLVE_HOST));
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(
@@ -2743,7 +2746,7 @@ test("complete accepted plans are independent of process cwd with portable paths
   );
   const plan = resolveTargetPlan(input);
   expect(plans[0]).toEqual(plans[1]);
-  expect(plans[0]).toEqual(JSON.parse(JSON.stringify(plan)));
+  expect(withValuesWritten(plans[0])).toEqual(JSON.parse(JSON.stringify(plan)));
   expect(plan.components.map((component) => component.name)).toEqual([
     "db",
     "web",
@@ -2836,7 +2839,7 @@ test("Target resolution validates the actual substituted bind values of command 
   );
 });
 
-test("paths substituted into command, healthcheck and build commands are shell-quoted unless the author already quoted them", () => {
+test("values referenced in command, healthcheck and build commands reach the shell through variables, one word each, as the author quoted them", () => {
   const config = parseProjectConfig({
     name: "spaced",
     services: {
@@ -2861,39 +2864,65 @@ test("paths substituted into command, healthcheck and build commands are shell-q
       },
     },
   });
-  const plan = resolveTargetPlan({
-    config,
-    target: "working",
-    workspacePath: "/repos/my app",
-    dataRoot: "/state/it's data",
-  });
+  const plan = resolvePlanWithHost(
+    {
+      config,
+      target: "working",
+      workspacePath: "/repos/my app",
+      dataRoot: "/state/it's data",
+    },
+    RESOLVE_HOST,
+  );
+  const ref = (value: string) => `\${${shellVariable(value)}}`;
   const web = plan.components.find((component) => component.name === "web")!;
   expect(web).toMatchObject({
-    command: `node '/repos/my app'/server.js --db '/state/it'\\''s data/web'/db.sqlite --port 4000`,
-    health: "test -f '/repos/my app'/ready",
+    command: `node "${ref("/repos/my app")}"/server.js --db "${ref("/state/it's data/web")}"/db.sqlite --port "${ref("4000")}"`,
+    health: `test -f "${ref("/repos/my app")}"/ready`,
     // Environment values are data, not shell text.
     env: { DB: "/state/it's data/web/db.sqlite" },
   });
   expect(
     plan.components.find((component) => component.name === "api"),
   ).toMatchObject({
-    command: `node '/repos/my app/api.js' --log "/state/it's data/api/log" --port 4001`,
+    command: `node ''"${ref("/repos/my app")}"'/api.js' --log "${ref("/state/it's data/api")}/log" --port "${ref("4001")}"`,
     health: "http://127.0.0.1:4001/",
   });
   expect(plan.builds?.find((unit) => unit.id === "tool:tool")).toMatchObject({
-    command: "bun build '/repos/my app'/src/tool.ts",
+    command: `bun build "${ref("/repos/my app")}"/src/tool.ts`,
   });
-  const printed = Bun.spawnSync([
-    "/bin/sh",
-    "-c",
-    `printf '%s\\n' ${web.kind === "managed" ? web.command.replace(/^node /, "") : ""}`,
-  ]).stdout.toString();
-  expect(printed.split("\n").filter(Boolean)).toEqual([
+  expect(plan.referenceValues).toEqual(
+    Object.fromEntries(
+      [
+        "/repos/my app",
+        "/state/it's data/web",
+        "4000",
+        "/state/it's data/api",
+        "4001",
+      ].map((value) => [shellVariable(value), value]),
+    ),
+  );
+  const printed = (command: string) =>
+    Bun.spawnSync(
+      ["/bin/sh", "-c", `printf '%s\\n' ${command.replace(/^node /, "")}`],
+      { env: { ...plan.referenceValues } },
+    )
+      .stdout.toString()
+      .split("\n")
+      .filter(Boolean);
+  expect(printed(web.kind === "managed" ? web.command : "")).toEqual([
     "/repos/my app/server.js",
     "--db",
     "/state/it's data/web/db.sqlite",
     "--port",
     "4000",
+  ]);
+  const api = plan.components.find((component) => component.name === "api")!;
+  expect(printed(api.kind === "managed" ? api.command : "")).toEqual([
+    "/repos/my app/api.js",
+    "--log",
+    "/state/it's data/api/log",
+    "--port",
+    "4001",
   ]);
 });
 
@@ -3008,7 +3037,7 @@ test("env_file paths resolve against the operator home or the workspace, and the
     );
 });
 
-test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a backquoted reference is refused when the config is read", () => {
+test("a Project or Tool build cannot reach a Service's env or data, directly or through another value, and a reference beside arithmetic is refused when the config is read", () => {
   const issues = (extra: Record<string, unknown>) => {
     try {
       parseProjectConfig({
@@ -3057,11 +3086,14 @@ test("a Project or Tool build cannot reach a Service's env or data, directly or 
   expect(
     issues({
       services: {
-        web: { ...web().web, command: "echo `echo ${rig.target}`" },
+        web: {
+          ...web().web,
+          command: "echo $(( ${rig.target} ))",
+        },
       },
     }),
   ).toBe(
-    "Fix services.web.command: A reference sits in or after backquotes. Write the command substitution as $(...) instead of backquotes.",
+    'Fix services.web.command: A reference sits in a command with arithmetic. Read it from environment, such as NAME: ${...}, as "$NAME", and keep it out of arithmetic.',
   );
 });
 

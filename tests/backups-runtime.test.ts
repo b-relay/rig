@@ -18,6 +18,7 @@ import {
 import type { BackupStorage } from "../src/runtime/contracts";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import { runtimeWorld } from "./support/runtime-world";
+import { writtenCommand } from "../src/config/plan-defaults";
 import { localActivation } from "./support/activation-doubles";
 import { STATE_VERSION } from "../src/runtime/state-schema";
 import { revisionStanding } from "../src/runtime/revisions";
@@ -219,7 +220,11 @@ test("each run of a backup job gets a fresh, empty 0700 directory as $RIG_BACKUP
   expect(await mode(run.backup!.path)).toBe(0o700);
   const start = f.starts.at(-1)!;
   expect(start.env.RIG_BACKUP_DIR).toBe(run.backup!.path);
-  expect(start.command).toEqual([
+  // The port reaches the command through the variable its environment carries.
+  expect([
+    ...start.command.slice(0, 2),
+    writtenCommand(start.command[2]!, start.env),
+  ]).toEqual([
     "/bin/sh",
     "-c",
     'dump -p 5544 -f "$RIG_BACKUP_DIR/melody.dump"',
@@ -344,7 +349,11 @@ test("a restore runs the job's restore command once in the job's environment, wi
     backup: "20261011T030001Z-1",
   });
   const start = f.starts.at(-1)!;
-  expect(start.command).toEqual([
+  // The port reaches the command through the variable its environment carries.
+  expect([
+    ...start.command.slice(0, 2),
+    writtenCommand(start.command[2]!, start.env),
+  ]).toEqual([
     "/bin/sh",
     "-c",
     'restore -p 5544 "$RIG_BACKUP_DIR/melody.dump"',

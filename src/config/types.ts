@@ -173,6 +173,9 @@ export interface TargetPlan {
   installTimeout?: number;
   /** The Project-scope files a Project or Tool invocation loads, lowest to highest precedence. */
   envFiles?: EnvFileRef[];
+  /** The values the plan's shell commands read through `RIG_REF_*` variables, by variable name; every invocation of the
+   * Target gets them. Absent when no command references a value, as on every plan recorded before them. */
+  referenceValues?: Record<string, string>;
 }
 /** Host facts the pure resolver needs for env-file references; the composition root acquires them. */
 export interface ResolveHost {

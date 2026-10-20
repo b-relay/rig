@@ -2690,7 +2690,9 @@ applied), a port, or one of the `rig.*` values Rig generates:
   they are refused there (`invalid_context`); use the long forms. Each is
   still an explicit mapping you write, such as `PORT: ${port}`: Rig sets no
   variable the configuration does not name
-  ([ADR 0005](adr/0005-services-use-platform-independent-inputs.md)).
+  ([ADR 0005](adr/0005-services-use-platform-independent-inputs.md)), apart
+  from the `RIG_REF_*` variables that carry a shell command's references
+  (see below).
 
 - `${rig.target}`: the Target's name: `working`, `stable`, or the Preview's
   name. It is the only reference a `domain` may contain.
@@ -2724,8 +2726,8 @@ names the field that holds the reference, such as `services.web.command`:
   `${ports.<port>}` outside a Service, or a shared or Tool `build` that reaches
   a Service's `environment` or data (`${services.<service>.data}`), directly
   or through another value. Those builds run with Project inputs only.
-- `unsafe_reference`: a reference in a command sits where no quoting keeps
-  its value literal (see below). The message names the place and what to
+- `unsafe_reference`: a reference in a shell command sits where bash could
+  read its value as code (see below). The message names the place and what to
   write instead.
 
 Because the base config is checked by itself, a value that only a role patch
@@ -2734,50 +2736,50 @@ patch replace it. Env file contents are never referenceable. Write `$${VAR}`
 for a literal `${VAR}` the shell should expand; `$VAR` is always left to the
 shell.
 
-Because `command`, a shell `test`, and `build` run under `/bin/sh -c`, Rig
-substitutes every value as literal data, never as shell code. A bare
-reference is single-quoted when its value is empty or contains a space or
-other shell-special character, so a repository or `RIG_ROOT` under a path
-like `~/Projects/My App` still resolves to one argument. Inside the author's
-own double or single quotes the value is escaped for that quote (a `$(...)`
-inside them starts a command of its own and is quoted as such), so a `$`, a
-backquote, or a quote character in the value stays part of the argument. A
-string `test` that resolves to an HTTP URL is handed to the HTTP probe
-unquoted, and each argument of a `CMD` test is quoted whole. Values substituted into `environment`, `domain`, `env_file`, and
-`bin` are never quoted.
+Because `command`, a shell `test`, `build` and a backup `restore` run under
+`/bin/sh -c`, Rig never writes a referenced value into their text. Each
+reference becomes a quoted expansion of a variable, `"${RIG_REF_<hash>}"`
+(named by a hash of the value), and the value reaches the command in that
+variable through its environment. The shell expands a variable as data: the
+value is one word, and nothing in it, whether `$(...)`, a backquote, a
+quote, `$VAR`, a brace or a leading `~`, is read as shell syntax. So a
+repository under `~/Projects/My App` is still one argument. Inside the
+author's double quotes the variable is written as `${RIG_REF_<hash>}`, and
+inside single quotes the quote is closed around it, so the value lands where
+the author put the reference. Each invocation gets the variables of its own
+commands only (a Service's command, health check and build; a job's command
+and restore), after its env files, so no env file can change one. A string
+`test` that resolves to an HTTP URL is handed to the HTTP probe as text, and
+each argument of a `CMD` test is quoted whole. Values substituted into
+`environment`, `domain`, `env_file`, and `bin` are plain text.
 
-Rig accepts a reference only where it reads the command completely: a word
-of a simple command, bare or inside the author's `'...'` or `"..."`,
-including inside `$(...)` and `(...)`. It reads quotes, `$(...)`, `(...)`,
-`;`, `&`, `|`, redirections, a here-string (`<<< ${...}`), comments, simple
-expansions such as `$NAME`, `$${NAME}` and `$${NAME:-default}`, `[ ... ]`
-tests, `if`, `for` and `while`, and a line continued with a backslash after a
-blank. Anywhere else a reference is refused (`unsafe_reference`) when the
-config is read, before anything runs, because no quoting keeps a value
-literal there or Rig cannot be sure what the shell will read:
+A reference in a shell command is refused (`unsafe_reference`) when the config
+is read, before anything runs:
 
-- in or after a heredoc (`<<EOF`, `<<'EOF'`): in an unquoted one the shell
-  would expand `$(...)`, backquotes and `$VAR` in the value, and in a quoted
-  one Rig's quotes would become part of the text;
-- in or after arithmetic (`$((...))`, `((...))`, `$[...]`, `for ((...))`)
-  and `[[ ... ]]`, where bash evaluates a word as an expression whose array
-  subscripts run commands, even a word that only names a variable;
-- in an array subscript or pattern (`a[...]`, `file[...]`), or inside a
-  `$${...}` expansion, such as a substring offset; and after a `$${...}`
-  expansion other than a simple one;
-- in or after a `case` statement, `$'...'` quoting or backquotes (write
-  `$(...)`);
-- in a comment, right after a backslash (write `$${NAME}` for a literal
-  `${NAME}`), and after a line continued inside a word or quotes, where the
-  shell joins the lines into one token.
+- anywhere in a command that holds arithmetic or a construct that takes a
+  variable name: `((`, `$[`, `[[`, an array subscript (`[` right after a name,
+  such as `a[...]` or `${a[...]}`), an indirect or substring expansion
+  (`$${!name}`, `$${x:1}`), or `let`, `declare`, `typeset`, `local`, `read`,
+  `readarray`, `mapfile`, `unset` or `printf -v`. Bash evaluates a value there
+  as an expression or a name, and an array subscript in it runs commands, even
+  from a variable. The rule matches the text coarsely, so it may refuse a
+  command that only looks like one;
+- in or after a heredoc (`<<EOF`, `<<'EOF'`), whose body Rig does not read;
+- inside `$'...'` quoting, and right after a backslash (write `$${NAME}` for
+  a literal `${NAME}`).
 
-Pass such a value through the environment instead: declare it, such as
+Pass such a value through the environment yourself: declare it, such as
 `environment: { WORKSPACE: "${rig.workspace}" }`, and write `"$WORKSPACE"`
-in the command or `$WORKSPACE` in a heredoc; the shell expands a variable's
-value as data, never as code (outside arithmetic).
+in the command or `$WORKSPACE` in a heredoc. Keep a value you do not control
+out of arithmetic, where bash evaluates a variable too. A command that runs
+its own arguments as code, such as `eval`, `sh -c` or `trap`, still runs a
+value given to it.
 
-Rig makes each value one literal word; a command that runs its own
-arguments as code, such as `eval`, `sh -c` or `let`, still does so.
+A plan recorded by a Rig from before these variables holds its values in the
+command text and keeps running so; `rig doctor` compares it with today's plan
+as that Rig would have written it, so an upgrade alone is no drift. The next
+deploy records the new form, which restarts the Services whose commands
+reference a value.
 
 Not every config change needs a CLI command. Advanced or structured Project
 policy may be edited directly in config or through a future Rig UI, while

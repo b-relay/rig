@@ -20,6 +20,8 @@ import type { CommandRunner } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import { RigError } from "../src/domain/errors";
 import { noRoutes } from "./support/router-doubles";
+import { writtenCommand } from "../src/config/plan-defaults";
+import { shellVariable } from "../src/config/references";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -160,7 +162,9 @@ test("an equal file value is no conflict, and the resolved invocation runs an or
   const { adapter, record, api, plan, workspace } = await selected(
     `DB_NAME=app\nAPI_TOKEN="${SECRET}"\n`,
   );
-  expect(api.command).toBe("./serve.sh --db db://app/main");
+  expect(writtenCommand(api.command, plan.referenceValues)).toBe(
+    "./serve.sh --db db://app/main",
+  );
   const env = await adapter.environment(record, api);
   const result = await runCommand({
     command: ["/bin/sh", "-c", api.command],
@@ -254,6 +258,35 @@ async function layered(target: "working" | "stable" = "working") {
   await write(join(s.workspace, "env", "worker.env"), "WORKER_ONLY=1\n");
   return s;
 }
+
+test("each invocation carries the values its own commands reference, and no env file changes one", async () => {
+  const one = shellVariable("first value");
+  const workspace = (path: string) => shellVariable(path);
+  const { adapter, record, api, plan } = await selected(`${one}=changed\n`, {
+    name: "app",
+    environment: { ONE: "first value" },
+    services: {
+      api: {
+        command: "printf '%s' ${environment.ONE}",
+        ports: { http: "auto" },
+      },
+      worker: {
+        command: "ls ${rig.workspace}",
+        ports: { http: "auto" },
+      },
+    },
+  });
+  const worker = plan.components.find(
+    (c) => c.name === "worker",
+  ) as ManagedComponent;
+  const apiEnv = await adapter.environment(record, api);
+  const workerEnv = await adapter.environment(record, worker);
+  expect(apiEnv[one]).toBe("first value");
+  // worker references no such value, so that name is only the file's there.
+  expect(workerEnv[one]).toBe("changed");
+  expect(workerEnv[workspace(plan.workspacePath)]).toBe(plan.workspacePath);
+  expect(apiEnv).not.toHaveProperty(workspace(plan.workspacePath));
+});
 
 test("each invocation composes its own scope, lowest to highest: Project env, Service env, Project files, Project operator files, Service files, Service operator files", async () => {
   const { adapter, record, api, plan, root, home } = await layered();
@@ -376,7 +409,7 @@ test("a substituted value reaches the child as one literal argument whether the 
     EMPTY: "",
     SPACED: "a b",
   };
-  const { api, workspace } = await selected("", {
+  const { api, workspace, plan } = await selected("", {
     name: "app",
     environment: values,
     services: {
@@ -389,7 +422,11 @@ test("a substituted value reaches the child as one literal argument whether the 
   const result = await runCommand({
     command: ["/bin/sh", "-c", api.command],
     cwd: workspace,
-    env: { PATH: process.env.PATH!, HOME: "/shell/home" },
+    env: {
+      PATH: process.env.PATH!,
+      HOME: "/shell/home",
+      ...plan.referenceValues,
+    },
     timeoutMs: 5000,
   });
   const commented = await selected("", {
@@ -406,7 +443,7 @@ test("a substituted value reaches the child as one literal argument whether the 
   const afterComment = await runCommand({
     command: ["/bin/sh", "-c", commented.api.command],
     cwd: commented.workspace,
-    env: { PATH: process.env.PATH! },
+    env: { PATH: process.env.PATH!, ...commented.plan.referenceValues },
     timeoutMs: 5000,
   });
   expect(afterComment.stdout).toBe(`<${values.CODE}><a#a b>`);

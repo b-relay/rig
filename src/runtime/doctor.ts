@@ -11,7 +11,7 @@ import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { targetOn, usesRenamedKeys } from "../config/schema";
 import { roleLabel, turnOnInstruction } from "./targets";
-import { withPlanDefaults } from "../config/plan-defaults";
+import { withPlanDefaults, withValuesWritten } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
 import { routeOwnerToken } from "../domain/proxy-publication";
@@ -524,8 +524,13 @@ async function configCheck(
     (service) => !recorded.has(service),
   );
   try {
-    const current = replannedPolicy(target, config, deps.documents.resolve);
-    // A plan recorded before the planner wrote a field is compared as holding that field's default, so an upgrade alone is no drift.
+    const replanned = replannedPolicy(target, config, deps.documents.resolve);
+    // A plan recorded before the planner wrote a field is compared as holding that field's default, and one recorded before
+    // reference variables with today's plan as that rigd wrote it, so an upgrade alone is no drift.
+    const current =
+      target.plan.referenceValues === undefined
+        ? withValuesWritten(replanned)
+        : replanned;
     return isDeepStrictEqual(current, withPlanDefaults(target.plan))
       ? {
           name,

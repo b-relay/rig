@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import { ConfigError } from "./errors";
-import { shellPosition, type ShellPosition } from "./shell-position";
+import {
+  evaluatingConstruct,
+  shellPosition,
+  type ShellPosition,
+} from "./shell-position";
 
 /** A public env leaf a resolved string was built from, directly or through other leaves. */
 export interface PublicInput {
@@ -27,10 +32,17 @@ export interface GeneratedValues {
 export interface ReferenceResolver {
   /** Resolves `${...}` in the string declared at config path `at`; that path decides the Service scope. */
   text(value: string, at: string): ResolvedText;
-  /** The same for text /bin/sh -c will run. Every substituted value reaches the command as literal data: bare, it is single-quoted when it is empty or would
-   * split or expand; inside the author's double or single quotes it is escaped for that quote, so it never closes the quote or runs as shell code.
-   * Where no quoting keeps it literal, such as a heredoc body, a comment or `$'...'`, the reference is refused as `unsafe_reference`. */
+  /** The same for text /bin/sh -c will run, where no value is written into the text: each reference becomes a quoted
+   * expansion of a variable named by `shellVariable`, such as "${RIG_REF_...}", whose value the shell never reads as code,
+   * and `values` gathers what the variables hold. Refused as `unsafe_reference` in a command with arithmetic, where bash
+   * evaluates a variable's value too, and where `shellPosition` refuses. */
   shell(value: string, at: string): ResolvedText;
+  /** The variables every `shell` text resolved so far reads, by name. */
+  values(): Record<string, string>;
+}
+/** The variable that carries `value` into a command: named by the value, so a command's text changes only with its values. */
+export function shellVariable(value: string): string {
+  return `RIG_REF_${createHash("sha256").update(value).digest("hex").slice(0, 12)}`;
 }
 
 const REFERENCE = /\$\$\{|\$\{([^}]*)\}/g;
@@ -39,16 +51,8 @@ const HINT =
 /** A path through a Project's or Service's `env`, which is `environment` now (ADR 0011). */
 const RENAMED_ENV = /^((?:services\.[^.]+\.)?)env\.(.+)$/;
 const PROJECT_BUILD = /^(?:build|tools\.[^.]+\.build)$/;
-const shellSafe = /^[A-Za-z0-9_/.:@%+=,-]+$/;
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-/** A value as literal shell data at a position that is bare, inside double quotes, or inside single quotes. */
-function shellLiteral(value: string, quote: "'" | '"' | undefined): string {
-  if (quote === '"') return value.replace(/[\\"$`]/g, "\\$&");
-  const closed = value.replaceAll("'", "'\\''");
-  if (quote === "'") return closed;
-  return shellSafe.test(value) ? value : `'${closed}'`;
-}
 
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
  * `$${` escapes to a literal `${`. Inside a Service's own settings `${port}` is its only port and `${ports.<port>}` a named one;
@@ -281,23 +285,35 @@ export function referenceResolver(
     );
     return { value: text, inputs: [...inputs.values()] };
   };
+  const variables: Record<string, string> = {};
   return {
     text: (value, at) => substitute(value, at, [at], (result) => result),
-    shell: (value, at) =>
-      substitute(value, at, [at], (result, offset) =>
-        shellInsert(result, shellPosition(value.slice(0, offset)), at),
-      ),
+    shell: (value, at) => {
+      const evaluating = evaluatingConstruct(value);
+      return substitute(value, at, [at], (result, offset) => {
+        const position: ShellPosition = evaluating
+          ? {
+              kind: "refused",
+              place: `in a command with ${evaluating}`,
+              hint: 'Read it from environment, such as NAME: ${...}, as "$NAME", and keep it out of arithmetic.',
+            }
+          : shellPosition(value.slice(0, offset));
+        if (position.kind === "refused")
+          throw new ConfigError(
+            `A reference in ${at} sits ${position.place}, where Rig cannot keep its value literal.`,
+            "unsafe_reference",
+            { path: at, place: position.place },
+            position.hint,
+          );
+        const name = shellVariable(result);
+        variables[name] = result;
+        return position.quote === '"'
+          ? `\${${name}}`
+          : position.quote === "'"
+            ? `'"\${${name}}"'`
+            : `"\${${name}}"`;
+      });
+    },
+    values: () => ({ ...variables }),
   };
-}
-/** `value` as literal data at `position` in the command at config path `at`, or ConfigError `unsafe_reference` where Rig
- * cannot keep it literal, its context naming the `place`. */
-function shellInsert(value: string, position: ShellPosition, at: string) {
-  if (position.kind === "refused")
-    throw new ConfigError(
-      `A reference in ${at} sits ${position.place}, where Rig cannot keep its value literal.`,
-      "unsafe_reference",
-      { path: at, place: position.place },
-      position.hint,
-    );
-  return shellLiteral(value, position.quote);
 }

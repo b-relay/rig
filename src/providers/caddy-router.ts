@@ -26,65 +26,89 @@ export type {
   Router,
   WithheldPath,
 } from "./route-file";
-/** The router for a Caddy Rig does not run (`providers.caddy`, retiring after ADR 0014's rollback window). Only marked Rig
- * blocks are mutable; each change validates before publishing and rolls back on reload failure. */
-export function createCaddyRouter(options: {
+/** How routes are published for a Caddy Rig does not run: `providers.caddy` in Host config. */
+export interface ExternalCaddySettings {
+  /** The route file Rig writes its blocks to. */
   readonly caddyfile: string;
-  /** Runs caddy validate and the reload command; the daemon passes the platform runner, a test a fake. */
-  readonly run: CommandRunner;
-  readonly executable?: string;
+  /** Whether a change is followed by a reload; false leaves every reload to the owner. */
   readonly reload?: boolean;
   readonly reloadCommand?: readonly string[];
+  /** Lines every generated site block gets. */
   readonly extraConfig?: readonly string[];
-  /** The Host Caddyfile that imports the route file, asked on every change because the import can be added while rigd runs.
-   * With one, routes are checked through it, so they may use snippets it defines; without one, the route file is checked alone. */
-  readonly hostCaddyfile?: () => Promise<string | undefined>;
-}): Router & {
+}
+/** The router for a Caddy Rig does not run (`providers.caddy`, retiring after ADR 0014's rollback window). Only marked Rig
+ * blocks are mutable; each change validates before publishing and rolls back on reload failure. */
+export function createCaddyRouter(
+  options: {
+    /** Runs caddy validate and the reload command; the daemon passes the platform runner, a test a fake. */
+    readonly run: CommandRunner;
+    readonly executable?: string;
+    /** The Host Caddyfile that imports the route file, asked on every change because the import can be added while rigd
+     * runs. With one, routes are checked through it, so they may use snippets it defines; without one, the route file is
+     * checked alone. */
+    readonly hostCaddyfile?: () => Promise<string | undefined>;
+  } & (
+    | ExternalCaddySettings
+    | {
+        /** The settings as they are now, read as each change begins, so an edit to them applies from the next change on:
+         * rigd reads Host config's `providers.caddy` here. */
+        readonly settings: () => Promise<ExternalCaddySettings>;
+      }
+  ),
+): Router & {
   /** Rewrites every owned block with the current `extraConfig`, validating and reloading as a change does; a file whose
    * blocks already carry it is left alone. rigd runs it at startup, so an `extra_config` edit needs no redeploy. */
   republish(): Promise<void>;
 } {
   const { run } = options;
+  const settings = (): Promise<ExternalCaddySettings> =>
+    "settings" in options ? options.settings() : Promise.resolve(options);
   let pending: Promise<unknown> = Promise.resolve();
-  const readRoutes = (file: string = options.caddyfile) =>
+  const readRoutes = (file: string) =>
     readFile(file, "utf8").catch((error) => {
       if (error.code === "ENOENT") return "";
       throw error;
     });
   /** The file a change reads and writes: the route file's real path, resolved once, so a write goes through a symlinked
    * Caddyfile (the file Caddy reads changes and the link survives) and lands in the file that was read. */
-  const resolveRoutes = () => realPath(options.caddyfile);
+  const resolveRoutes = (config: ExternalCaddySettings) =>
+    realPath(config.caddyfile);
   /** Refuses, before anything is renamed into `file`, when the route file no longer resolves to it: replaced by a link
    * to another file since the change read it. A best-effort guard (ADR 0014, Threat model): the error claims nothing
    * about what was already applied. */
-  async function assertPinned(file: string): Promise<void> {
-    if ((await resolveRoutes()) !== file)
-      throw routeFileChanged(options.caddyfile, file);
+  async function assertPinned(
+    config: ExternalCaddySettings,
+    file: string,
+  ): Promise<void> {
+    if ((await resolveRoutes(config)) !== file)
+      throw routeFileChanged(config.caddyfile, file);
   }
   async function change(
+    config: ExternalCaddySettings,
     key: string,
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ): Promise<void> {
-    await mkdir(dirname(options.caddyfile), { recursive: true, mode: 0o700 });
-    const file = await resolveRoutes();
+    await mkdir(dirname(config.caddyfile), { recursive: true, mode: 0o700 });
+    const file = await resolveRoutes(config);
     const before = await readRoutes(file);
     const edit = editRouteFile({
       before,
       key,
       ...(route ? { route } : {}),
       ...(restoration ? { restoration } : {}),
-      siteConfig: options.extraConfig ?? [],
+      siteConfig: config.extraConfig ?? [],
     });
     // Nothing owned to remove and nothing to add leaves the file, and Caddy, untouched.
     if (!edit) return;
     const { after, withdrawing } = edit;
     if (after === before && !withdrawing) return;
-    await commit(file, before, after);
+    await commit(config, file, before, after);
   }
   /** Validates `after`, writes it into `file` (the route file's resolved path, read as `before`) and reloads Caddy, putting
    * `before` back when Caddy refuses it. Refused with ROUTE_CHANGED when the route file stops resolving to `file`. */
   async function commit(
+    config: ExternalCaddySettings,
     file: string,
     before: string,
     after: string,
@@ -94,11 +118,11 @@ export function createCaddyRouter(options: {
     const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${file}.${randomUUID()}.tmp`;
     const executable = options.executable ?? "caddy";
-    const reloadCommand = options.reloadCommand ?? [
+    const reloadCommand = config.reloadCommand ?? [
       executable,
       "reload",
       "--config",
-      options.caddyfile,
+      config.caddyfile,
       "--adapter",
       "caddyfile",
     ];
@@ -110,7 +134,7 @@ export function createCaddyRouter(options: {
       // what it last loaded, not the file, so a rejected change is put back before anything reloads. It is adapted rather than
       // validated: validating provisions TLS with Host secrets rigd does not hold, and the reload provisions it inside Caddy anyway.
       if (hostCaddyfile) {
-        await assertPinned(file);
+        await assertPinned(config, file);
         await writeFile(`${file}.rig-backup`, before, { mode });
         await rename(temporary, file);
       }
@@ -156,11 +180,11 @@ export function createCaddyRouter(options: {
         );
       }
       if (!hostCaddyfile) {
-        await assertPinned(file);
+        await assertPinned(config, file);
         await writeFile(`${file}.rig-backup`, before, { mode });
         await rename(temporary, file);
       }
-      if (options.reload !== false) {
+      if (config.reload !== false) {
         const reload = await runCaddy(reloadCommand).catch((error) => ({
           exitCode: 1,
           stdout: "",
@@ -207,7 +231,9 @@ export function createCaddyRouter(options: {
     }
   }
   function serialized(key: string, route?: RouteRequest): Promise<void> {
-    const operation = pending.catch(() => {}).then(() => change(key, route));
+    const operation = pending
+      .catch(() => {})
+      .then(async () => change(await settings(), key, route));
     pending = operation;
     return operation;
   }
@@ -217,10 +243,11 @@ export function createCaddyRouter(options: {
       const operation = pending
         .catch(() => {})
         .then(async () => {
-          const file = await resolveRoutes();
+          const config = await settings();
+          const file = await resolveRoutes(config);
           const before = await readRoutes(file);
-          const after = rerenderOwnedBlocks(before, options.extraConfig ?? []);
-          if (after !== before) await commit(file, before, after);
+          const after = rerenderOwnedBlocks(before, config.extraConfig ?? []);
+          if (after !== before) await commit(config, file, before, after);
         });
       pending = operation;
       return operation;
@@ -231,7 +258,8 @@ export function createCaddyRouter(options: {
         .catch(() => {})
         .then(async () => {
           // Resolved once and checked before anything is read: the sweep reads, and writes, only this file.
-          const file = await resolveRoutes();
+          const config = await settings();
+          const file = await resolveRoutes(config);
           if (confinement && !within(await realPath(confinement.within), file))
             return [];
           const before = await readRoutes(file);
@@ -240,7 +268,7 @@ export function createCaddyRouter(options: {
             await owners(),
           );
           if (after === before) return [];
-          await commit(file, before, after);
+          await commit(config, file, before, after);
           return hostnames;
         });
       pending = operation;
@@ -248,36 +276,33 @@ export function createCaddyRouter(options: {
     },
     async check(route) {
       await pending.catch(() => {});
-      const before = await readRoutes();
+      const config = await settings();
+      const before = await readRoutes(config.caddyfile);
       // The whole prospective file keeps one owner per site, as commit will require, before anything stops.
       const edit = editRouteFile({
         before,
         key: route.key,
         ...(route.sites.length ? { route } : {}),
-        siteConfig: options.extraConfig ?? [],
+        siteConfig: config.extraConfig ?? [],
       });
       assertSingleOwners(edit?.after ?? before, siteAddress);
     },
     async withheld(key) {
       await pending.catch(() => {});
-      const text = await readFile(options.caddyfile, "utf8").catch((error) => {
-        if (error.code === "ENOENT") return "";
-        throw error;
-      });
+      const text = await readRoutes((await settings()).caddyfile);
       return withheldPaths(ownedBlock(text, key) ?? "");
     },
     async checkpoint(key) {
       await pending.catch(() => {});
-      const text = await readFile(options.caddyfile, "utf8").catch((error) => {
-        if (error.code === "ENOENT") return "";
-        throw error;
-      });
+      const text = await readRoutes((await settings()).caddyfile);
       return { key, value: ownedBlock(text, key) };
     },
     restore(saved, expected) {
       const operation = pending
         .catch(() => {})
-        .then(() => change(saved.key, undefined, { saved, expected }));
+        .then(async () =>
+          change(await settings(), saved.key, undefined, { saved, expected }),
+        );
       pending = operation;
       return operation;
     },

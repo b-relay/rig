@@ -190,30 +190,37 @@ export async function composeDaemon(
           confirmed: async () => dashboard?.confirmedRoute(),
         })
       : undefined;
-  // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
+  // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring). Its settings are read
+  // from Host config as each change begins, so an edit applies from the next change on, as `rig doctor` reads them.
+  const externalHost = async () => ({
+    proxyMode: host.proxyMode,
+    providers: (await readHostConfig(root)).providers,
+  });
   const external = managed
     ? undefined
     : createCaddyRouter({
-        caddyfile:
-          host.providers.caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
         run: runCommand,
-        reload: host.providers.caddy.reload.mode === "command",
-        extraConfig: host.providers.caddy.extra_config,
+        settings: async () => {
+          const caddy = (await externalHost()).providers.caddy;
+          return {
+            caddyfile: caddy.caddyfile ?? join(root, "proxy", "Caddyfile"),
+            reload: caddy.reload.mode === "command",
+            extraConfig: caddy.extra_config,
+            ...(caddy.reload.command
+              ? { reloadCommand: ["/bin/sh", "-c", caddy.reload.command] }
+              : {}),
+          };
+        },
         hostCaddyfile: async () => {
-          const publication = await inspectHostProxy(root, host, environment);
+          const publication = await inspectHostProxy(
+            root,
+            await externalHost(),
+            environment,
+          );
           return publication.state === "imported"
             ? publication.hostCaddyfile
             : undefined;
         },
-        ...(host.providers.caddy.reload.command
-          ? {
-              reloadCommand: [
-                "/bin/sh",
-                "-c",
-                host.providers.caddy.reload.command,
-              ],
-            }
-          : {}),
       });
   const listeners = createListenerInspection(runCommand);
   const store = new FileStateStore(root);
@@ -309,8 +316,18 @@ export async function composeDaemon(
         dashboard?.serving,
       ),
     ],
-    inspectProxy: () => inspectHostProxy(root, host, environment),
-    routeFileInRoot: () => routeFileInRoot(root, host),
+    // What the router publishes with now; an unreadable Host config is its own finding, so these keep the one rigd started with.
+    inspectProxy: async () =>
+      inspectHostProxy(
+        root,
+        managed ? host : await externalHost().catch(() => host),
+        environment,
+      ),
+    routeFileInRoot: async () =>
+      routeFileInRoot(
+        root,
+        managed ? host : await externalHost().catch(() => host),
+      ),
     orphanedTools: (recorded) => effects.orphanedTools(recorded),
     ...(managed ? { proxy: managed.control } : {}),
     usage: usage.monitor,

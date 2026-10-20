@@ -602,8 +602,14 @@ providers:
       command: caddy reload --config /usr/local/etc/Caddyfile
 ```
 
-A changed `extra_config` reaches a route the next time that Target starts or
-deploys. `providers.caddy.reload.mode` is `manual` by
+Rig reads `providers.caddy` as each route change begins, so an edit needs no
+`rigd install`: a changed `extra_config` reaches a route the next time that
+Target starts or deploys (and every route when `rigd` next starts), and a
+changed reload mode or command, Host Caddyfile or route file applies from the
+next change on. Rig writes only to the route file `providers.caddy.caddyfile`
+names now, so to move it, move the file with its blocks and point the Host
+Caddyfile's import at it before you change the setting.
+`providers.caddy.reload.mode` is `manual` by
 default: Rig writes the route file and leaves every reload to you. With
 `mode: command` and a `reload.command`, Rig runs that command after each route
 change. The route file and

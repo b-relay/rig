@@ -3,9 +3,12 @@ import * as fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { TargetRecord } from "../src/domain/runtime";
 
 /** Every file flush, rename, copy, directory creation and removal, in the order it completed. */
 const trace: string[] = [];
+/** While set, flushing this path fails as a disk would. */
+let failingFlush: string | undefined;
 const real = { ...fs };
 mock.module("node:fs/promises", () => ({
   ...real,
@@ -15,6 +18,8 @@ mock.module("node:fs/promises", () => ({
     )(path, ...rest);
     const sync = handle.sync.bind(handle);
     handle.sync = async () => {
+      if (path === failingFlush)
+        throw Object.assign(new Error("flush failed"), { code: "EIO" });
       await sync();
       trace.push(`sync ${path}`);
     };
@@ -45,10 +50,21 @@ const { createEffectTransactions } =
   await import("../src/adapters/effect-transactions");
 const { createArtifactOwnership } =
   await import("../src/adapters/artifact-ownership");
-const { unreloadedCaddy } = await import("./support/router-doubles");
+const { createTargetEffects } = await import("../src/adapters/target-effects");
+const { createArtifactInstaller } =
+  await import("../src/providers/artifact-installer");
+const { createChildSupervisor } =
+  await import("../src/providers/child-supervisor");
+const { createProcessInspection, platformKill } =
+  await import("../src/providers/process-inspection");
+const { createProcessTiming } = await import("../src/providers/process-timing");
+const { runCommand } = await import("../src/providers/command-runner");
+const { unreloadedCaddy, noRoutes } = await import("./support/router-doubles");
+const { localActivation } = await import("./support/activation-doubles");
 
 const roots: string[] = [];
 afterEach(async () => {
+  failingFlush = undefined;
   for (const root of roots.splice(0))
     await real.rm(root, { recursive: true, force: true });
 });
@@ -168,4 +184,197 @@ test("a rollback puts each file back on disk before its journal records it resto
   expect(at(is(`sync ${dirname(f.tool.destination)}`), restored)).toBeLessThan(
     at(is(`rename ${journal}`), restored),
   );
+});
+
+test("a rollback removes a file its change created, the removal flushed, before its journal records it restored; a flush that fails keeps the checkpoint for the retry", async () => {
+  const f = await fixture();
+  const journal = join(f.directory, "journal.json");
+  const fresh = {
+    ...f.tool,
+    componentName: "fresh",
+    destination: join(f.root, "bin", "fresh"),
+    receiptPath: join(f.root, "installed", "fresh.json"),
+  };
+  const checkpoint = await f.transactions.checkpoint("target", [fresh]);
+  await f.transactions.withArtifactChange(
+    "target",
+    [fresh.destination],
+    async () => {
+      await real.writeFile(fresh.destination, "#!/bin/sh\necho new\n", {
+        mode: 0o755,
+      });
+    },
+  );
+  failingFlush = join(f.root, "bin");
+  await expect(checkpoint.rollback()).rejects.toMatchObject({
+    code: "FILE_NOT_DURABLE",
+  });
+  // Never recorded as restored, and the checkpoint stays for the next recovery, which takes the removal for its own.
+  expect(JSON.parse(await real.readFile(journal, "utf8"))).toMatchObject({
+    phase: "pending",
+    files: expect.arrayContaining([
+      expect.objectContaining({ path: fresh.destination, applying: true }),
+    ]),
+  });
+  failingFlush = undefined;
+  trace.length = 0;
+  await f.transactions.restore("target");
+  const removed = at(is(`rm ${fresh.destination}`));
+  expect(at(is(`sync ${join(f.root, "bin")}`), removed)).toBeLessThan(
+    at(is(`rename ${journal}`), removed),
+  );
+  await expect(real.stat(fresh.destination)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  await expect(real.stat(f.directory)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+test("retiring a Tool flushes each removal before the journal captures it", async () => {
+  const f = await fixture();
+  const workspace = join(f.root, "workspace");
+  await real.mkdir(workspace);
+  await real.writeFile(join(workspace, "cli"), "#!/bin/sh\necho cli\n", {
+    mode: 0o755,
+  });
+  const effects = createTargetEffects({
+    ...localActivation(),
+    root: f.root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map(),
+    run: runCommand,
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: undefined,
+    }),
+    router: noRoutes(),
+    environment: { PATH: process.env.PATH! },
+  });
+  const component = {
+    name: "cli",
+    kind: "installed" as const,
+    entrypoint: "cli",
+    env: {},
+    dependsOn: [],
+  };
+  const record: TargetRecord = {
+    id: "retiring",
+    projectId: "p",
+    name: "working",
+    kind: "working" as const,
+    desired: "stopped" as const,
+    createdAt: "now",
+    updatedAt: "now",
+    logRoot: join(f.root, "logs"),
+    plan: {
+      project: "demo",
+      target: "working",
+      workspacePath: workspace,
+      dataRoot: workspace,
+      deploymentName: "working",
+      branchSlug: "working",
+      subdomain: "working",
+      providers: { processSupervisor: "child" },
+      components: [component],
+      preparedComponents: [],
+    },
+  };
+  await effects.install(component, record);
+  const checkpoint = await effects.checkpoint(record);
+  trace.length = 0;
+  await effects.retireArtifacts(record);
+  const journal = join(
+    f.root,
+    "effect-checkpoints",
+    createHash("sha256").update("retiring").digest("hex"),
+    "journal.json",
+  );
+  const removals = trace.filter(
+    (seen) => seen.startsWith("rm ") && !seen.includes("effect-checkpoints"),
+  );
+  // The executable, its ownership record and its receipt.
+  expect(removals.length).toBe(3);
+  const captured = trace.lastIndexOf(`rename ${journal}`);
+  for (const removal of removals) {
+    const path = removal.slice("rm ".length);
+    expect(at(is(`sync ${dirname(path)}`), at(is(removal)))).toBeLessThan(
+      captured,
+    );
+  }
+  await checkpoint.commit();
+});
+
+test("a durable record in a fresh root flushes every directory from the root down to it, the new ones included", async () => {
+  const root = await real.realpath(
+    await real.mkdtemp(join(tmpdir(), "rig-durability-fresh-")),
+  );
+  roots.push(root);
+  const directories = (record: string) => {
+    const chain: string[] = [];
+    for (let at = dirname(record); at !== dirname(root); at = dirname(at))
+      chain.push(at);
+    return chain;
+  };
+  const flushedBefore = (record: string, end: number) => {
+    const renamed = at(is(`rename ${record}`));
+    for (const directory of directories(record))
+      expect(at(is(`sync ${directory}`), renamed)).toBeLessThan(end);
+  };
+
+  // An ownership record two new directories deep.
+  const ownership = createArtifactOwnership(root);
+  const tool = {
+    targetId: "target",
+    componentName: "tool",
+    destination: join(root, "bin", "tool"),
+  };
+  await real.mkdir(join(root, "bin"));
+  trace.length = 0;
+  await ownership.publish(tool, () =>
+    real.writeFile(tool.destination, "#!/bin/sh\n", { mode: 0o755 }),
+  );
+  flushedBefore(ownership.ownerPath(tool.destination), trace.length);
+
+  // A checkpoint's claim and journal, under a checkpoints directory made just now.
+  trace.length = 0;
+  const transactions = createEffectTransactions({
+    root,
+    ownership,
+    router: unreloadedCaddy(root),
+  });
+  const checkpoint = await transactions.checkpoint("target", []);
+  const directory = join(
+    root,
+    "effect-checkpoints",
+    createHash("sha256").update("target").digest("hex"),
+  );
+  flushedBefore(`${directory}.preparing.json`, at(is(`mkdir ${directory}`)));
+  flushedBefore(join(directory, "journal.json"), trace.length);
+  await checkpoint.commit();
+
+  // A process lease, its directory made by the first command recorded.
+  const supervisor = createChildSupervisor({
+    stateRoot: root,
+    timing: createProcessTiming(),
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
+  });
+  trace.length = 0;
+  let lease = "";
+  await runCommand({
+    command: ["/bin/sh", "-c", "exit 0"],
+    env: { PATH: process.env.PATH! },
+    started: async (pid) => {
+      await supervisor.own!("t:preparation:run", pid);
+      lease = trace
+        .find((seen) => seen.startsWith("rename "))!
+        .slice("rename ".length);
+      flushedBefore(lease, trace.length);
+    },
+  });
+  expect(dirname(lease)).toBe(join(root, "process-leases"));
+  await supervisor.disown!("t:preparation:run");
 });

@@ -23,6 +23,12 @@ export const processLeaseSchema = z.object({
     .describe(
       "The start that produced this process; absent on a lease written before starts were named.",
     ),
+  group: z
+    .literal(true)
+    .optional()
+    .describe(
+      "Set for a command rigd ran itself (a build): the lease names its process group, which runs while any member does, even once its leader has ended.",
+    ),
 });
 export type ProcessLease = z.infer<typeof processLeaseSchema>;
 

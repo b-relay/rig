@@ -22,7 +22,11 @@ import {
   ownerDetails,
 } from "./artifact-ownership";
 import { fileDigest } from "./file-digest";
-import { flushFile, replacePrivateFile } from "../providers/private-files";
+import {
+  flushFile,
+  removeFileDurably,
+  replacePrivateFile,
+} from "../providers/private-files";
 import type { ArtifactIdentity, ArtifactOwner } from "./artifact-ownership";
 const routeSchema = z
   .object({
@@ -529,13 +533,19 @@ export function createEffectTransactions(options: {
       throw error;
     }
     for (const file of journal.files) {
-      if (file.before === null) await rm(file.path, { force: true });
+      // Recorded as begun first, so a rollback cut short (by a crash, or a flush that failed) takes what it already put
+      // back for its own work when it runs again.
+      if (!file.applying) {
+        file.applying = true;
+        await save(journal);
+      }
+      // Each file is back on disk, its removal or replacement flushed, before the journal records it restored.
+      if (file.before === null) await removeFileDurably(file.path);
       else
         await replacePrivateFile(
           options.root,
           file.path,
           await readFile(join(directory(journal.targetId), file.backup)),
-          // On disk before the journal records it as restored.
           { mode: file.mode, durable: true },
         );
       file.expected = file.before;

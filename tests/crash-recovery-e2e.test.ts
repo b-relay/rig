@@ -30,12 +30,15 @@ async function until<T>(
 const state = async (f: Fixture) =>
   JSON.parse(await readFile(join(f.root, "runtime", "state.json"), "utf8"));
 
-/** A build that records its pid, then waits for a release that never comes while `hold` exists. */
+/** A build that starts a background child (its output redirected, so it outlives the build), records its own pid, then
+ * waits for a release while `hold` exists. */
 async function heldBuild(f: Fixture) {
   const gate = join(f.base, "gate.sh");
   await writeFile(
     gate,
     `[ -f '${f.base}/hold' ] || exit 0
+sleep 600 </dev/null >/dev/null 2>&1 &
+echo $! > '${f.base}/child.pid'
 echo $$ > '${f.base}/build.pid'
 while [ ! -f '${f.base}/release' ]; do sleep 0.1; done
 `,
@@ -52,7 +55,19 @@ while [ ! -f '${f.base}/release' ]; do sleep 0.1; done
           "the build to start",
         ),
       ),
+    /** The pid of the build's background child. */
+    child: async () =>
+      Number(await readFile(join(f.base, "child.pid"), "utf8")),
     release: () => writeFile(join(f.base, "release"), ""),
+    /** Releases the build and ends its child, whatever a failed test left. */
+    cleanup: async () => {
+      await writeFile(join(f.base, "release"), "");
+      const child = await readFile(join(f.base, "child.pid"), "utf8").catch(
+        () => "",
+      );
+      if (Number(child) > 0 && alive(Number(child)))
+        process.kill(Number(child), "SIGKILL");
+    },
   };
 }
 /** Kills this fixture's own rigd, as a crash would, and waits until it is gone. */
@@ -68,7 +83,7 @@ async function crash(f: Fixture) {
   );
 }
 
-test("a build a crashed rigd left running is stopped once rigd is back, before down and uninstall report success", async () => {
+test("a build a crashed rigd left running, its leader gone and its child still running, is stopped once rigd is back, before down and uninstall report success", async () => {
   const f = await rigFixture();
   const build = await heldBuild(f);
   try {
@@ -93,19 +108,28 @@ services:
     await crash(f);
     expect((await up).code).not.toBe(0);
     expect(alive(pid)).toBe(true);
+    // The build's own shell ends while no daemon runs; the child it left keeps its process group alive.
+    const child = await build.child();
+    await build.release();
+    await until(
+      async () => alive(pid),
+      (running) => !running,
+      "the build",
+    );
+    expect(alive(child)).toBe(true);
 
     expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
     expect(await f.rig(["down", "working", "--kill"])).toMatchObject({
       code: 0,
     });
     await until(
-      async () => alive(pid),
+      async () => alive(child),
       (running) => !running,
-      "the build",
+      "the child",
     );
     expect(await f.rigd(["uninstall"])).toMatchObject({ code: 0 });
   } finally {
-    await build.release();
+    await build.cleanup();
     await f.cleanup();
   }
 }, 90_000);
@@ -151,6 +175,7 @@ services:
       (running) => !running,
       "the build",
     );
+    expect(alive(await build.child())).toBe(false);
     const recovered = (await state(f)).targets[0];
     expect(recovered.plan.workspacePath).toBe(previous);
     expect(recovered.recovery).toBeUndefined();
@@ -178,7 +203,7 @@ services:
     expect(await f.rig(["down", "stable"])).toMatchObject({ code: 0 });
     expect(await f.rigd(["uninstall"])).toMatchObject({ code: 0 });
   } finally {
-    await build.release();
+    await build.cleanup();
     await f.cleanup();
   }
 }, 120_000);

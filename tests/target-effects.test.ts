@@ -16,6 +16,14 @@ import { join } from "node:path";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
+import { createChildSupervisor } from "../src/providers/child-supervisor";
+import {
+  createProcessInspection,
+  platformKill,
+} from "../src/providers/process-inspection";
+import { createProcessTiming } from "../src/providers/process-timing";
+import { processLeasePath } from "../src/providers/process-lease";
+import type { Supervisor } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { InstalledComponent } from "../src/config/types";
 import { RigError, userCorrectable } from "../src/domain/errors";
@@ -1088,6 +1096,72 @@ test("dependency installation runs once per deployed revision and its marker lea
   await scaffold();
   await adapter.prepare(record);
   expect(installs).toHaveLength(2);
+});
+
+test("a build that leaves a process running in the background, its output redirected, has it stopped before its record goes; one that cannot be stopped fails the build and keeps the record", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "rig-build-left-")));
+  roots.push(root);
+  const supervisor = createChildSupervisor({
+    stateRoot: root,
+    timing: createProcessTiming(),
+    processInspection: createProcessInspection({
+      run: runCommand,
+      kill: platformKill,
+    }),
+  });
+  const withSupervisor = (owner: Supervisor) =>
+    createTargetEffects({
+      ...localActivation(),
+      root,
+      recordingTime: () => new Date().toISOString(),
+      supervisors: new Map([["child", owner]]),
+      run: runCommand,
+      installer: createArtifactInstaller({
+        run: runCommand,
+        bunExecutable: process.execPath,
+      }),
+      router: noRoutes(),
+      environment: { PATH: process.env.PATH! },
+    });
+  const record = target(root);
+  const lease = processLeasePath(root, "t:preparation:run");
+  // The background sleep closes the output it inherited, so the command ends while it still runs.
+  const unit = {
+    id: "shared",
+    command: `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > '${root}/left.pid'`,
+    timeout: 60,
+  };
+  const left = async () =>
+    Number(await readFile(join(root, "left.pid"), "utf8"));
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  await withSupervisor(supervisor).build(unit, record);
+  expect(alive(await left())).toBe(false);
+  await expect(stat(lease)).rejects.toMatchObject({ code: "ENOENT" });
+
+  // A leftover that cannot be stopped keeps its record, so rig down still finds it.
+  const stuck = {
+    ...supervisor,
+    disown: async () => {
+      throw new Error("the group did not stop");
+    },
+  };
+  await expect(withSupervisor(stuck).build(unit, record)).rejects.toMatchObject(
+    { code: "PREPARATION_LEFTOVER" },
+  );
+  const pid = await left();
+  expect(alive(pid)).toBe(true);
+  expect((await supervisor.observe("t:preparation:run")).state).toBe("running");
+  expect(await supervisor.stop("t:preparation:run", { graceMs: 1000 })).toEqual(
+    { outcome: "stopped" },
+  );
+  expect(alive(pid)).toBe(false);
 });
 
 test("a build past its budget fails as BUILD_TIMEOUT and dependency installation past its budget as DEPENDENCIES_TIMEOUT", async () => {

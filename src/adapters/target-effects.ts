@@ -121,6 +121,7 @@ import { createEnvironmentDigest } from "./environment-digest";
 import { appendTargetLog } from "../providers/target-log";
 import {
   privateDirectory,
+  removeFileDurably,
   replacePrivateFile,
 } from "../providers/private-files";
 import type { LogRetention } from "../domain/log-retention";
@@ -265,7 +266,9 @@ export function createTargetEffects(
     return directory;
   };
   /** Runs a build or dependency installation of `target`. Its process group is recorded under the Target's preparation
-   * key before the command runs and forgotten once it ended, so a daemon that dies meanwhile leaves it to the next one. */
+   * key before the command runs, so a daemon that dies meanwhile leaves it to the next one, and forgotten once the command
+   * ended and nothing it started still runs: a process it left in the background is stopped then, and when that fails the
+   * command fails PREPARATION_LEFTOVER with the record kept. */
   const runTarget = async (
     command: string,
     target: TargetRecord,
@@ -290,10 +293,22 @@ export function createTargetEffects(
         onOutput: live.receive,
         ...(owner?.own ? { started: (pid) => owner.own!(key, pid) } : {}),
       });
-    } finally {
-      // A lease left behind names a group that is gone, which a later stop or observation takes as stopped.
+    } catch (error) {
+      // The command's own failure is the one reported; a record kept because its group could not be stopped keeps what
+      // still runs addressable for rig down.
       await owner?.disown?.(key).catch(() => {});
+      throw error;
     }
+    // What the command left running in its group is stopped before the record of the group goes.
+    await owner?.disown?.(key).catch((error: unknown) => {
+      throw new RigError(
+        "PREPARATION_LEFTOVER",
+        `A process the ${componentName} command of ${target.name} left running could not be stopped.`,
+        "Run rig down for this Target to stop it, then retry.",
+        { component: componentName },
+        failureCauses(error),
+      );
+    });
     // A runner that does not stream hands over its whole output at the end instead.
     if (!(await live.finish()))
       await recordOutput(result, target, componentName);
@@ -549,7 +564,7 @@ export function createTargetEffects(
         : [destination, ...ownership.ownedPaths(destination), receiptFile];
       // Only what it removes is journalled as changing, so a recovery never takes a released Tool for its own work.
       await transactions.withArtifactChange(target.id, retired, async () => {
-        for (const path of retired) await rm(path, { force: true });
+        for (const path of retired) await removeFileDurably(path);
       });
     }
   };

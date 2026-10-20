@@ -248,6 +248,41 @@ test("a command rigd ran itself and recorded with own is found and stopped by a 
     ),
   ).toBe("ENOENT");
 });
+test("a recorded command whose leader ended while a member of its group still runs is running to a replacement daemon, which stops the group and says so", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-own-group-"));
+  roots.push(root);
+  const first = createChildSupervisor({ ...platform(), stateRoot: root });
+  supervisors.push(first);
+  const inspection = createProcessInspection({
+    run: runCommand,
+    kill: platformKill,
+  });
+  let leader = 0;
+  // The daemon that ran it dies before it can forget it: the command ends, its background child runs on.
+  const ended = await runCommand({
+    command: ["/bin/sh", "-c", "sleep 30 </dev/null >/dev/null 2>&1 & exit 0"],
+    env: { PATH: process.env.PATH! },
+    started: async (pid) => {
+      leader = pid;
+      await first.own!("t1:preparation:run", pid);
+    },
+  });
+  expect(ended.exitCode).toBe(0);
+  expect(await inspection.groupExists(leader)).toBe(true);
+  const replacement = createChildSupervisor({ ...platform(), stateRoot: root });
+  supervisors.push(replacement);
+  expect(await replacement.observe("t1:preparation:run")).toEqual({
+    state: "running",
+    pid: leader,
+  });
+  expect(
+    await replacement.stop("t1:preparation:run", { graceMs: 1500 }),
+  ).toEqual({ outcome: "stopped" });
+  expect(await inspection.groupExists(leader)).toBe(false);
+  expect((await replacement.observe("t1:preparation:run")).state).toBe(
+    "stopped",
+  );
+});
 test("a stale lease cannot stop a process whose identity no longer matches", async () => {
   const { createHash } = await import("node:crypto");
   const { mkdir, writeFile } = await import("node:fs/promises");

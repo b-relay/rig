@@ -56,6 +56,8 @@ function world(
     activity: [],
   };
   const running = new Set<string>();
+  /** Every checkout given back to the mirror. */
+  const released: string[] = [];
   const held: HeldStop[] = [];
   const stops: { key: string; graceMs: number; kill: boolean }[] = [];
   let holding = false;
@@ -261,7 +263,9 @@ function world(
       async currentBranch() {
         return "main";
       },
-      async release() {},
+      async release(request) {
+        released.push(request.workspacePath);
+      },
       async changed() {
         return true;
       },
@@ -333,6 +337,7 @@ function world(
     state,
     stops,
     running,
+    released,
     failing,
     unconfirmed,
     detachedStarts,
@@ -1279,4 +1284,55 @@ test("a build an earlier rigd left running blocks uninstall until rig down stops
   expect(w.running.has(build)).toBe(false);
   expect(w.stops.filter((stop) => stop.key === build).length).toBe(2);
   await w.command({ action: "down", target: "working" });
+});
+
+test("rig down settling a deploy interrupted while committing reports the Services it stopped in its result and Activity, and holds the superseded checkout for the sweep", async () => {
+  const w = await registered();
+  await w.command({ action: "deploy", target: "stable", branch: "main" });
+  const previous = structuredClone(w.state.targets[0]!);
+  await w.command({
+    action: "deploy",
+    target: "stable",
+    branch: "main",
+    commit: "c2",
+  });
+  const deployed = w.state.targets[0]!;
+  expect(deployed.plan.workspacePath).not.toBe(previous.plan.workspacePath);
+  // As a daemon that died after saving its commit decision, before it finished the commit, leaves it.
+  deployed.recovery = {
+    plan: previous.plan,
+    branch: "main",
+    commit: previous.commit!,
+    desired: "running",
+    stage: "committing",
+  };
+  w.state.heldCheckouts = [];
+  w.released.length = 0;
+  expect(
+    await w.command({
+      action: "down",
+      target: "stable",
+      operationId: "settle",
+    }),
+  ).toMatchObject({ outcome: "stopped" });
+  expect(w.state.activity.at(-1)).toMatchObject({
+    id: "settle",
+    action: "down",
+    outcome: "stopped",
+  });
+  expect(w.state.targets[0]).toMatchObject({
+    commit: "c2",
+    desired: "stopped",
+  });
+  expect(w.state.targets[0]!.recovery).toBeUndefined();
+  // The superseded checkout is given back by this down; one the mirror could not give back would stay held for the sweep.
+  expect(w.state.heldCheckouts).toEqual([]);
+  expect(
+    w.state.targets.some(
+      (target) =>
+        target.plan.workspacePath === previous.plan.workspacePath ||
+        target.recovery?.plan.workspacePath === previous.plan.workspacePath,
+    ),
+  ).toBe(false);
+  expect(w.released).toContain(previous.plan.workspacePath);
 });

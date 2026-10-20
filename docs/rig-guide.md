@@ -2619,11 +2619,14 @@ runs that unit again under the same Deployment: `rig up`, `rig restart`, and a
 plain deploy of the same Commit are refused as `BUILD_UNKNOWN`, and
 `rig deploy <target> --force` (or a new Commit) is the way through. Each build
 and dependency installation is recorded with its process group (pid and birth
-time) before its command runs, so a build that outlives a `rigd` that died is
-never lost: the next daemon's startup pass stops it on a Target meant to be
-stopped, `rig down` stops it (and says `stopped`), the next build of the Target
-stops it before it begins, and `rigd uninstall` refuses with `TARGETS_RUNNING`
-while one may still run. A
+time) before its command runs. The group counts as running while any process
+in it does, even after the command's own shell has ended, and a process a build
+leaves running in the background is stopped when the build ends (the build
+fails `PREPARATION_LEFTOVER`, its record kept, when it cannot be). So a build
+that outlives a `rigd` that died is never lost: the next daemon's startup pass
+stops it on a Target meant to be stopped, `rig down` stops it (and says
+`stopped`), the next build of the Target stops it before it begins, and
+`rigd uninstall` refuses with `TARGETS_RUNNING` while one may still run. A
 Deployment with a failed or missing unit is refused as
 `PREPARATION_INCOMPLETE` the same way. Builds see `env_file` values when they
 run, but a changed value never reruns a completed build; it reaches the next

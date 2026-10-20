@@ -81,6 +81,8 @@ interface OwnedProcess {
   identity?: string;
   child?: ChildProcess;
   incarnation?: string;
+  /** A command's process group (see `Supervisor.own`), which runs while any member does. */
+  group?: true;
   /** The grace its start asked for, which `shutdown` gives it; absent for a process recovered from its lease. */
   graceMs?: number;
   /** Settles once the child's exit is on disk, or could not be put there. */
@@ -230,6 +232,7 @@ export function createChildSupervisor(
       ...(parsed.data.incarnation
         ? { incarnation: parsed.data.incarnation }
         : {}),
+      ...(parsed.data.group ? { group: true as const } : {}),
       drains: [],
       writes: Promise.resolve(),
     };
@@ -274,7 +277,15 @@ export function createChildSupervisor(
         ...(owned.outputFailure ? { reason: owned.outputFailure } : {}),
       };
     try {
-      if ((await inspect(owned.pid)) === owned.identity) return running;
+      const identity = await inspect(owned.pid);
+      if (identity === owned.identity) return running;
+      // A command's group runs while any member does, its leader gone or not; a pid reused by another process never counts.
+      if (
+        owned.group &&
+        identity === undefined &&
+        (await inspection.groupExists(owned.pid))
+      )
+        return running;
       return await stoppedObservation(key, survivors);
     } catch {
       return {
@@ -643,11 +654,14 @@ export function createChildSupervisor(
           );
         // Whatever this supervisor knew under the key is an earlier process: the lease is the one owner from now on.
         processes.delete(key);
-        await writeLease({ key, pid, identity });
+        await writeLease({ key, pid, identity, group: true });
       }),
     disown: (key) =>
       serialized(key, async () => {
+        // What the command left running in its group is stopped first; the lease goes only with the last of it.
+        await stop(key, { graceMs: serviceGraceMs(undefined) });
         processes.delete(key);
+        // A stop that finds the group already gone leaves its lease behind.
         await rm(leasePath(key), { force: true });
       }),
     async detach() {

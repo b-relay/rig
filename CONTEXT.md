@@ -64,10 +64,13 @@ can finish recovery before uninstall is retried.
 
 _Relationship_: Every process Rig starts is recorded durably (pid and birth
 time) before it runs: Services, job runs, and builds and dependency
-installation alike. A build that outlives a `rigd` that died is stopped by the
-next daemon's startup pass (on a Target meant to be stopped), by `rig down`, or
-by the next build of its Target,
-and blocks uninstall with `TARGETS_RUNNING` while it may still run.
+installation alike. A build is its whole process group: it runs while any
+member does, and its record goes only once the group is gone. A build that
+outlives a `rigd` that died is stopped by the next daemon's startup pass (on a
+Target meant to be stopped), by `rig down`, or by the next build of its Target,
+and blocks uninstall with `TARGETS_RUNNING` while it may still run. Every record
+directory on the way to such a record, and every removal an effect journal
+counts on, is flushed to disk before the journal moves on.
 
 _Relationship_: There is no `rigd uninstall --force`. Bulk stop/delete cleanup semantics require separate design.
 

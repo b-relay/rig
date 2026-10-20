@@ -86,10 +86,12 @@ export interface Supervisor {
   /** Releases in-memory ownership and leaves processes running; recorded leases let the next daemon adopt them. */
   detach(): Promise<void>;
   /** Records `pid`, the process group of a command rigd runs itself under `key` (a build), as a lease before it resolves,
-   * so `observe` and `stop` find the group even after the daemon that ran it died. Rejects, recording nothing, when the
-   * group is already gone. Absent: such a command is not recorded. */
+   * so `observe` and `stop` find the group even after the daemon that ran it died. The group counts as running while any
+   * of its members does, its leader gone or not. Rejects, recording nothing, when the group is already gone. Absent: such a
+   * command is not recorded. */
   own?(key: string, pid: number): Promise<void>;
-  /** Forgets what `own` recorded for `key`, once its command has ended. */
+  /** Once its command has ended, stops what is left of the group `own` recorded for `key` (a process the command started in
+   * the background) within the default grace, then forgets it. Fails, keeping the record, when the group cannot be stopped. */
   disown?(key: string): Promise<void>;
 }
 export interface CommandRequest {

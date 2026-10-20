@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
-import { readFile, readdir, rm } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { replacePrivateFile } from "../providers/private-files";
+import {
+  removeFileDurably,
+  replacePrivateFile,
+} from "../providers/private-files";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 import { fileDigest, type FileDigest } from "./file-digest";
@@ -330,7 +333,7 @@ export function createArtifactOwnership(
   ) => {
     if (!rigItself.has(identity.destination)) return;
     const path = provenancePath(identity.destination);
-    if (repository.kind !== "known") await rm(path, { force: true });
+    if (repository.kind !== "known") await removeFileDurably(path);
     else
       await replacePrivateFile(
         root,

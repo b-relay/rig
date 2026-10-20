@@ -61,7 +61,7 @@ rig
 │    --project <name>   --deployment <name>
 │
 ├─ backup
-│  ├─ list [job] [target] [branch]  kept backups, newest first: time, size, the run that made them;
+│  ├─ list [job] [target] [branch]  kept backups, each job's newest first: time, size, the run that made them;
 │  │                                every Target's unless one is named
 │  │    --project <name>   --deployment <name>   --json
 │  └─ restore <job> <id|latest> [target] [branch]

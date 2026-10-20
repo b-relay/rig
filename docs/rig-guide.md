@@ -2377,14 +2377,21 @@ jobs:
   can change it. The directory's name, its backup id, ends in a number that
   only grows per `<project>/<target>/<job>`, and is never reset: not when
   backups are deleted, a Preview is destroyed and made again under the same
-  name, or a Project is forgotten and registered again. An id is never issued
-  twice, so an id you name can only mean that one backup.
+  name, or a Project is forgotten and registered again. Names that differ only
+  in case share one number, as they share one directory on the Mac's disk. An
+  id is never issued twice, so an id you name can only mean that one backup.
+  The number also says which backup is newest: `latest`, `keep` and every
+  list go by it, never by the time, so a clock set back or forward cannot
+  make Rig restore or keep older data.
 - **A run that fails leaves nothing.** A non-zero exit, a timeout, a stop by
-  Rig (`rig down`, a Preview destroy) or a start that failed deletes the run's
-  directory. A run that exits 0 becomes a backup and its size is recorded;
-  its directory stays as the run left it (Rig changes no modes, and the
-  backups root is yours alone). A run that exits 0 but deleted or replaced
-  its directory keeps no backup.
+  Rig (`rig down`, a Preview destroy) or a start that failed deletes the
+  directory the run made. Rig records that it made the directory before the
+  command starts: a directory already at the run's path (the start then fails
+  with `BACKUP_DIRECTORY`), or one a rigd that stopped mid-start cannot show
+  the run made, is left in place, and the run's summary says so. A run that
+  exits 0 becomes a backup and its size is recorded; its directory stays as
+  the run left it (Rig changes no modes, and the backups root is yours alone).
+  A run that exits 0 but deleted or replaced its directory keeps no backup.
 - **`keep`** (1 to 1000) is how many successful backups of the job each
   Target keeps. After each successful run only the newest `keep` stay, the
   one that just finished always among them. A failed run never deletes a
@@ -2401,10 +2408,15 @@ jobs:
 - Rig deletes only what it recorded, and never through a symlink: a deletion
   never follows one inside a backup, and a backup reached through a symlinked
   directory under `<RIG_ROOT>/backups` is neither written, read nor deleted
-  (a run of the job fails with `BACKUP_PATH` instead). A deletion that fails
-  (a busy disk, or a directory the job made unwritable) is retried every 30
-  seconds, by this rigd or the next. A backup deleted by hand shows as
-  missing in `rig backup list`.
+  (a run of the job fails with `BACKUP_PATH` instead). A directory inside a
+  backup that you may not write in (one the job made unwritable, or a backup
+  an earlier Rig sealed read-only) is made writable again for you before it
+  is deleted; only the backup's own directories are changed, never a file or
+  anything a symlink points at. A deletion that still fails (a busy disk, or
+  a directory another user owns) is retried every 30 seconds, by this rigd or
+  the next; until it succeeds the run's summary says its directory was queued
+  for deletion. A backup deleted by hand shows as missing in
+  `rig backup list`.
 
 **Making a backup now.** `rig run db-backup` makes one exactly as the schedule
 does (in the stable Target unless you name another), and the dashboard's Jobs
@@ -2413,7 +2425,7 @@ tab has **Back up now**.
 **Listing them.** `rig backup list [job] [target]` shows every Target's
 backups, one job's (`rig backup list db-backup`), one job's in one Target
 (`rig backup list db-backup stable`), or one Target's (`rig backup list
-stable`), newest first:
+stable`), by Target and job, each job's newest first:
 
 ```
 stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB  schedule  run 4f1c2b3a

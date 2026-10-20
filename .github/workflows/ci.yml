@@ -1,19 +1,158 @@
 name: CI
 
+# Every pull request and push to main, and the release workflow for the tagged commit before it publishes anything:
+# formatting and types on Linux; the whole test suite, the builds, and the packaged release tried on an Apple Silicon
+# and an Intel Mac. Third-party actions are pinned to a reviewed commit; update them through a pull request.
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to package (v<RIG_VERSION>); empty packages v<RIG_VERSION> of the checked-out commit.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run of its previous push; runs on main and for a release each keep their own.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     name: Prettier and typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run format:check
       - run: bun run typecheck
+
+  test:
+    name: Tests (macOS)
+    # The tests drive real processes and read them with ps and lsof, and use hdiutil and lockf: macOS only.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+      # The live Caddy tests run a real Caddy from /usr/local/bin or /opt/homebrew/bin, and fail without one. Rig's Caddy
+      # needs the Cloudflare DNS module, which Caddy's own release builds lack, so it is built here from the pinned module
+      # versions, which Go checks against its checksum database.
+      - name: Build Caddy 2.10.2 with the Cloudflare DNS module
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir caddy-build && cd caddy-build
+          cat >main.go <<'EOF'
+          package main
+
+          import (
+          	caddycmd "github.com/caddyserver/caddy/v2/cmd"
+
+          	_ "github.com/caddy-dns/cloudflare"
+          	_ "github.com/caddyserver/caddy/v2/modules/standard"
+          )
+
+          func main() { caddycmd.Main() }
+          EOF
+          go mod init rig-ci-caddy
+          go get github.com/caddyserver/caddy/v2@v2.10.2 github.com/caddy-dns/cloudflare@v0.2.4
+          go mod tidy
+          go build -trimpath -o caddy .
+          sudo install -m 755 caddy /usr/local/bin/caddy
+          /usr/local/bin/caddy version
+          /usr/local/bin/caddy list-modules | grep -qx dns.providers.cloudflare
+      # The system tools the tests run; a missing one fails here by name rather than as a confusing test failure.
+      - name: Check the tests' tools
+        run: |
+          for tool in /usr/bin/lockf /usr/bin/hdiutil /usr/sbin/lsof /bin/ps /usr/bin/shasum git; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is missing"; exit 1; }
+          done
+      # The tests assume Git names a new repository's first branch main, as Rig's default Production Branch is. It goes in
+      # ~/.gitconfig because rigd runs git with the operator's HOME but not the rest of its environment.
+      - run: git config --global init.defaultBranch main
+      - run: bun install --frozen-lockfile
+      # Two test files at a time, each running at most four of its concurrent tests at once. RIG_ROOT is a root no test is
+      # meant to use: a test that forgot its own temporary root would land there, never in ~/.rig.
+      - run: bun run test:ci
+        env:
+          RIG_ROOT: ${{ runner.temp }}/rig-root
+
+  package:
+    name: Build, package and smoke test (Apple Silicon)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - id: release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [ -n "$TAG" ] || TAG="v$(bun -e 'import { RIG_VERSION } from "./src/domain/version"; process.stdout.write(RIG_VERSION)')"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=12 HEAD)" >>"$GITHUB_OUTPUT"
+      # Packaging needs a clean tree, so it goes first; it builds the dashboard and rig and rigd for both architectures.
+      - run: scripts/package-release.sh "$TAG" "$RUNNER_TEMP/dist"
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+      - run: bun run build
+      - run: scripts/smoke-release.sh "$TAG" "$COMMIT" "$RUNNER_TEMP/dist"
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          COMMIT: ${{ steps.release.outputs.commit }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ steps.release.outputs.tag }}
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  smoke-intel:
+    name: Smoke test (Intel)
+    needs: package
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The smoke test picks a free port with bun.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ needs.package.outputs.tag }}
+          path: ${{ runner.temp }}/dist
+      - run: scripts/smoke-release.sh "$TAG" "$COMMIT" "$RUNNER_TEMP/dist"
+        env:
+          TAG: ${{ needs.package.outputs.tag }}
+          COMMIT: ${{ needs.package.outputs.commit }}

@@ -168,6 +168,21 @@ first on the script `PATH`. After adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 
+CI (`.github/workflows/ci.yml`) runs on every pull request and push to main.
+A Linux job runs the format check and the typecheck. On an Apple Silicon Mac,
+one job runs the whole suite as `bun run test:ci` (two files at a time, and at
+most four of a file's concurrent tests at once), with `RIG_ROOT` set to a
+directory no test uses, so a test that forgot its own root never reaches
+`~/.rig`. It first builds Caddy 2.10.2 with the Cloudflare DNS module Rig's
+Caddy needs, from pinned module versions, for the live Caddy tests, and fails
+by name if a system tool the tests run is missing (`lockf`, `hdiutil`, `lsof`,
+`ps`, `shasum`, `git`); nothing is skipped there. Git there names a new
+repository's first branch `main`, as the tests assume. Only the
+`hdiutil` volume test and the native process-usage reader skip, and only off
+macOS. Another job packages the release with `scripts/package-release.sh`, runs
+`bun run build`, and tries the package with `scripts/smoke-release.sh`; an Intel
+Mac then tries the same files.
+
 The build produces `rig` and `rigd`. Keep tests and development
 isolated from the installed Host with `RIG_ROOT`:
 
@@ -183,14 +198,49 @@ A release is a tag. Releases follow semantic versioning: bump `RIG_VERSION` in
 `src/domain/version.ts` (major for a breaking change to a command, config or the
 control plane; minor for a new one; patch for a fix), merge it, then tag that
 commit `v<version>` and push the tag. The release workflow
-(`.github/workflows/release.yml`) runs `scripts/package-release.sh`, which
-compiles `rig` and `rigd` for Apple Silicon and Intel Macs, builds the
-dashboard once (`scripts/build-dashboard.sh`; it runs on either), packs each
-architecture's `rig`, `rigd` and `dashboard/` into
+(`.github/workflows/release.yml`) refuses a tag on a commit that is not on
+main, then runs all of CI on the tagged commit. CI's package job runs
+`scripts/package-release.sh`, which compiles `rig` and `rigd` for Apple Silicon
+and Intel Macs, builds the dashboard once (`scripts/build-dashboard.sh`; it runs
+on either), packs each architecture's `rig`, `rigd` and `dashboard/` into
 `rig-<tag>-darwin-<arch>.tar.gz`, writes the tag into the `install` script, and
-lists every file in `SHA256SUMS`. It then attests each file's build provenance
-and publishes the GitHub Release. Run `scripts/package-release.sh <tag> dist`
-from a clean checkout to try one locally.
+lists every file in `SHA256SUMS`. `scripts/smoke-release.sh` then tries those
+files on an Apple Silicon and an Intel Mac: every executable is built for its
+architecture, `rig --version` and `rigd --version` exit 0 printing exactly
+`<version>+<commit>`, and the release's `install` script installs it into a
+throwaway `RIG_ROOT` where `rigd status` shows that build serving and the
+packaged dashboard answers `/healthz`. Only when every CI job passes does the
+release attest each file's build provenance and publish the files CI tried as
+the GitHub Release. Run `scripts/package-release.sh <tag> dist` from a clean
+checkout to try one locally, and `scripts/smoke-release.sh <tag> <commit> dist`
+to smoke test it.
+
+Publishing (`scripts/publish-release.ts`) uploads the files into a new draft,
+which stays private, checks the draft holds exactly those files, each with this
+run's SHA-256 (downloading any file GitHub reports no digest for), and only
+then publishes it. Nothing is read as published or published unless the tag
+still names the commit the run built. A release counts as already published
+only when it holds exactly the release's files, each matching its published
+`SHA256SUMS`, and that `SHA256SUMS` carries the release workflow's provenance
+for the tag at that commit (`gh attestation verify`). A rebuild produces
+different bytes, so a re-run never compares against its own. Drafts of a `v*`
+tag belong to the release workflow. A release run can end in four ways:
+
+- It fails before publishing (a failing check, packaging, the smoke test,
+  attestation, or an upload): nothing is public, though a draft may be left.
+  Re-run the workflow after a transient failure; it deletes the tag's drafts and
+  uploads fresh files. When the tagged commit itself is wrong, delete the tag
+  (`git push --delete origin v<version>`), fix main, and tag the fixed commit.
+- It is interrupted while uploading: a private draft is left, and the next run
+  of the tag replaces it.
+- It fails after publishing, during cleanup say: the release is public and
+  complete. A re-run finds it published with every file, changes nothing, and
+  succeeds.
+- A published release is not complete (a file missing, not matching its
+  `SHA256SUMS`, or without provenance; publishing is never expected to leave
+  one): the run fails and changes nothing. A published release is never
+  replaced; compare its files with its `SHA256SUMS` and attestations by hand,
+  and release a new version to change it.
 
 The `install` script downloads one release's archive for the Mac it runs on,
 checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin` and

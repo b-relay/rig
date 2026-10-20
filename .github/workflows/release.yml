@@ -1,43 +1,85 @@
 name: Release
 
-# Pushing a tag vX.Y.Z (matching RIG_VERSION) publishes that release: rig and rigd for Apple Silicon and Intel Macs,
-# the install script, SHA256SUMS, and a build provenance attestation for each file.
+# Pushing a tag vX.Y.Z (matching RIG_VERSION) on a commit of main publishes that release: rig and rigd for Apple Silicon
+# and Intel Macs, the install script, SHA256SUMS, and a build provenance attestation for each file. Nothing is published
+# unless the tagged commit passes all of CI, which also builds the release and tries it on both architectures; the files
+# published are the ones CI tried. Re-running a tag is safe: a draft an interrupted run left is replaced, and a release
+# already published is left as it is. See "Releasing" in README.md.
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+
+# One run per tag at a time, so two runs never publish the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish
-    runs-on: macos-latest
+  source:
+    name: Tagged commit is on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: |
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "::error::$GITHUB_REF_NAME tags $(git rev-parse HEAD), which is not on main. Tag a commit of main."
+            exit 1
+          }
+
+  checks:
+    name: CI
+    needs: source
+    uses: ./.github/workflows/ci.yml
+    with:
+      tag: ${{ github.ref_name }}
+
+  publish:
+    name: Attest and publish
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Only this job can write: attestations, and the release.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
-      - run: bun run typecheck
-      - run: scripts/package-release.sh "$GITHUB_REF_NAME" dist
-      # The runner is Apple Silicon: the arm64 build must start and report the tagged release before anything is published.
-      - name: Smoke test
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: dist
+      # The commit CI built; the tag must still name it when anything is read as published or published.
+      - run: echo "COMMIT=$(git rev-parse HEAD)" >>"$GITHUB_ENV"
+      # `published` when a run before this one already published the tag completely, its files matching its SHA256SUMS
+      # and that carrying this workflow's provenance for the commit: nothing more is done, and nothing is replaced.
+      - id: state
         run: |
-          mkdir smoke
-          tar -xzf "dist/rig-$GITHUB_REF_NAME-darwin-arm64.tar.gz" -C smoke
-          for name in rig rigd; do
-            "smoke/rig-$GITHUB_REF_NAME-darwin-arm64/$name" --version | grep -q "^${GITHUB_REF_NAME#v}+"
-          done
-      - uses: actions/attest-build-provenance@v2
+          state="$(bun scripts/publish-release.ts status "$TAG" "$COMMIT" dist)"
+          echo "state=$state" >>"$GITHUB_OUTPUT"
+          [ "$state" = publish ] || echo "::notice::$TAG is already published; it was left as it is."
+      - if: steps.state.outputs.state == 'publish'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             dist/*.tar.gz
             dist/install
             dist/SHA256SUMS
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --title "Rig $GITHUB_REF_NAME" --generate-notes --verify-tag
+      - if: steps.state.outputs.state == 'publish'
+        run: bun scripts/publish-release.ts publish "$TAG" "$COMMIT" dist

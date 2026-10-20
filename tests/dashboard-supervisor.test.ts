@@ -219,7 +219,7 @@ test("a port another program holds is never routed: the dashboard is withheld, a
   expect(f.serving).toEqual([true, false]);
 });
 
-test("a dashboard that answers somewhere other than 127.0.0.1 is never routed, while another program holds 127.0.0.1 at its port", async () => {
+test("a dashboard that answers somewhere other than 127.0.0.1 is never routed while another program holds 127.0.0.1 at its port, and rigd reports it", async () => {
   const f = await installed(`
 Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Response("dashboard") });
 `);
@@ -229,10 +229,21 @@ Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Re
     fetch: () => new Response("another program"),
   });
   try {
-    const dashboard = (await openDashboard(f.deps))!;
+    const dashboard = (await openDashboard({
+      ...f.deps,
+      unconfirmedNoticeMs: 3000,
+    }))!;
     dashboard.start();
     expect(await answer(`http://[::1]:${f.deps.port}`)).toBe("dashboard");
-    await Bun.sleep(1500);
+    await Bun.sleep(1000);
+    expect(f.serving).toEqual([]);
+    expect(f.notes).toEqual([]);
+    // Still unconfirmed past the notice time: doctor and rigd status hear why it is not served.
+    expect(await until(() => f.notes.length > 0)).toBe(true);
+    expect(f.notes).toEqual([
+      `${DASHBOARD.name}: The dashboard runs, but rigd has not confirmed that it listens on 127.0.0.1:${f.deps.port} (it listens elsewhere), so it is not served.`,
+    ]);
+    expect(dashboard.problem()).toBe(f.notes[0]!.slice("dashboard: ".length));
     expect(f.serving).toEqual([]);
     await dashboard.stop();
     expect(f.serving).toEqual([]);

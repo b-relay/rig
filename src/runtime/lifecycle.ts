@@ -265,6 +265,9 @@ export interface TargetLifecycle {
     service: string,
     stops?: StopControl,
   ): Promise<{ outcome: "stopped" | "unchanged" }>;
+  /** Withholds every path the Target's route publishes to one of the ports its plan routes to its Services, as `down` does
+   * before it stops them; asks nothing of the proxy when none is published. */
+  withhold(target: TargetRecord): Promise<void>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout. First every path the route publishes to
    * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without
    * some Services (a deploy keeping them) leaves their paths as they are. Every Service is attempted, and STOP_INCOMPLETE
@@ -380,6 +383,7 @@ export function withStops(
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
+    withhold: (target) => lifecycle.withhold(target),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
     startJob: (target, job, incarnation, rigEnv) =>
@@ -846,6 +850,10 @@ export function createTargetLifecycle(
     observeJob: (target, job, signal) =>
       effects.supervisor(target).observe(jobProcessKey(target, job), signal),
     stopJob: (target, job, stops) => stopJob(target, job, stops),
+    async withhold(target) {
+      const ports = routedPorts(target, managedServices(target));
+      if (ports.size) await effects.withhold(target, ports);
+    },
     async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
@@ -854,16 +862,10 @@ export function createTargetLifecycle(
           component.kind === "managed",
       );
       // Withheld before anything stops: once a process ends, any program may bind its port. A stop is never refused for it.
-      const ports = routedPorts(
-        target,
-        services.map((service) => service.name),
+      const unwithheld = await lifecycle.withhold(target).then(
+        () => undefined,
+        (error: unknown) => ({ error }),
       );
-      const unwithheld = ports.size
-        ? await effects.withhold(target, ports).then(
-            () => undefined,
-            (error: unknown) => ({ error }),
-          )
-        : undefined;
       for (const component of [...services].reverse()) {
         try {
           const result = await stopService(target, component, stops);
@@ -1140,6 +1142,12 @@ function hasReadiness(component: ManagedComponent): boolean {
   return (
     component.health !== undefined ||
     Object.keys(declaredPorts(component)).length > 0
+  );
+}
+/** The names of the Services of the Target's plan. */
+function managedServices(target: TargetRecord): string[] {
+  return target.plan.components.flatMap((component) =>
+    component.kind === "managed" ? [component.name] : [],
   );
 }
 /** The ports the plan routes to the Services named `services`: what a route reaches them at. */

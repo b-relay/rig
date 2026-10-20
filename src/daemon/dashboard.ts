@@ -36,6 +36,8 @@ const STOP_GRACE_MS = 5_000;
 /** The first wait between looks at what a starting dashboard listens on; each look doubles it, up to MAX_CONFIRM_MS. */
 const FIRST_CONFIRM_MS = 100;
 const MAX_CONFIRM_MS = 2_000;
+/** How long a running dashboard may go unconfirmed before rigd reports it, by default. */
+const UNCONFIRMED_NOTICE_MS = 30_000;
 
 export const DASHBOARD: NoticeChannel = {
   name: "dashboard",
@@ -230,6 +232,8 @@ export interface DashboardDependencies {
   /** Told, and awaited, when rigd confirms its own dashboard holds its address, and again when that ends, before a stop
    * signals the process: Rig's Caddy routes the dashboard's domain to its port only in between. Never rejects. */
   serving(listening: boolean): Promise<void>;
+  /** How long a running dashboard may go unconfirmed before rigd reports it; 30 s when absent. */
+  readonly unconfirmedNoticeMs?: number;
   /** Resolves after `ms`, or early once `signal` aborts. */
   wait(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
@@ -281,8 +285,16 @@ export async function openDashboard(
     if (pid === undefined) return false;
     let ended = false;
     void run.ended.then(() => (ended = true));
+    const reportAt =
+      Date.now() + (deps.unconfirmedNoticeMs ?? UNCONFIRMED_NOTICE_MS);
+    let reported = false;
     for (let wait = FIRST_CONFIRM_MS; !ended && !stopping.signal.aborted;) {
       const evidence = await deps.listeners.inspect(pid, stopping.signal);
+      if (!reported && Date.now() >= reportAt) {
+        reported = true;
+        problem = `The dashboard runs, but rigd has not confirmed that it listens on 127.0.0.1:${deps.port} (${evidence.state === "unknown" ? evidence.reason : "it listens elsewhere"}), so it is not served.`;
+        deps.notices.note(DASHBOARD, problem);
+      }
       if (
         evidence.state === "observed" &&
         evidence.listeners.some(

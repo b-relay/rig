@@ -184,8 +184,9 @@ status` takes no Target.
   still stops the Services first, and `--destroy` changes nothing. `down` withholds
   the Target's routed paths before it stops anything, so its hostnames answer
   `503` and never reach a program that takes a freed port; when that cannot be
-  done it still stops every Service and fails `ROUTE_WITHHOLD`, and `down`
-  again withholds them once the proxy answers. `status` lists each
+  done it still stops every Service and fails `ROUTE_WITHHOLD` (or
+  `STOP_INCOMPLETE`, with `routeFailure`, when a Service did not stop too), and
+  `down` again withholds them once the proxy answers. `status` lists each
   Target's jobs with their last and next run, `activity` has one `job` entry
   per ended run, and `logs --service <job>` reads a job's output.
 - `backup list` and `backup restore` work on backup jobs (`backup:` under a

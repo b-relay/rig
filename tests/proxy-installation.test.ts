@@ -19,7 +19,9 @@ import {
   type ProxyInstallation,
 } from "../src/daemon/proxy-installation";
 import { processExists } from "../src/daemon/host";
-import { dashboardDirectory } from "../src/daemon/dashboard";
+import { dashboardDirectory, dashboardServing } from "../src/daemon/dashboard";
+import { readHostConfig } from "../src/config";
+import { createProcessCaddyJob } from "../src/providers/caddy-job";
 import { currentGeneration } from "../src/adapters/proxy-generation";
 import { RigError } from "../src/domain/errors";
 import { rigFixture } from "./support/rig-fixture";
@@ -341,12 +343,9 @@ test("a dashboard address Caddy could not take is published by the next rigd ins
     hostnames: ["dash-a.example.test"],
     https: w.ports.https,
   });
-  // The rigd it started is told so: its dashboard keeps the address Caddy accepted.
-  expect(existsSync(w.paths.installFailed)).toBe(true);
   // Once the port is free, the same command publishes the new address and withdraws the old one.
   blocker.stop(true);
   expect(await w.admin.install()).toMatchObject({ outcome: "installed" });
-  expect(existsSync(w.paths.installFailed)).toBe(false);
   expect(await served()).toEqual({
     hostnames: ["dash-b.example.test"],
     https,
@@ -454,4 +453,196 @@ test("after a rigd install whose new dashboard address Caddy refused, the runnin
   expect(await eventually(() => through(b.domain, b.https), atB)).toBe(atB);
   expect(await through(a.domain, a.https)).toBeUndefined();
   expect((await f.rigd(["install"])).stdout).toContain("unchanged");
+}, 180_000);
+
+/** A source Rig root whose dashboard answers with the address it admits, configured by `configure(domain, https)`. */
+async function dashboardRoot(
+  setup: (root: string) => Promise<void> = async () => {},
+) {
+  const f = await rigFixture();
+  cleanups.push(() => f.cleanup());
+  await setup(f.root);
+  const server = join(dashboardDirectory(f.root), "web", "server.js");
+  await mkdir(join(server, ".."), { recursive: true });
+  await writeFile(
+    server,
+    `Bun.serve({ port: Number(process.env.PORT), hostname: process.env.HOSTNAME, fetch: () => new Response(process.env.RIG_WEB_DASHBOARD_HOST ?? "unpublished") });`,
+  );
+  const http = freePort();
+  const port = freePort();
+  return {
+    f,
+    configure: (domain: string, https: number, extra = "") =>
+      writeFile(
+        join(f.root, "config.yaml"),
+        `${extra}proxy:\n  caddy: ${caddy}\n  ports: { http: ${http}, https: ${https} }\n  tls: { ca: internal }\ndashboard:\n  domain: ${domain}\n  port: ${port}\n`,
+      ),
+    local: () =>
+      fetch(`http://127.0.0.1:${port}/`)
+        .then((response) => response.text())
+        .catch(() => undefined),
+  };
+}
+/** Holds `port` the way another program would, until the test ends or `stop`. */
+function hold(port: number) {
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    fetch: () => new Response("another program"),
+  });
+  cleanups.push(async () => server.stop(true));
+  return server;
+}
+
+test("a dashboard address Host config moved to while rigd was stopped is published by rigd's start, however an earlier install failed", async () => {
+  if (!caddy)
+    throw new Error("Proxy installation tests require a local caddy.");
+  const w = await dashboardRoot();
+  const a = { domain: "dash-a.example.test", https: freePort() };
+  await w.configure(a.domain, a.https);
+  expect(await w.f.rigd(["install"])).toMatchObject({ code: 0 });
+  const atA = `${a.domain}:${a.https}`;
+  expect(await eventually(w.local, atA)).toBe(atA);
+  // A failed move, then Host config back as it was: install has nothing to do.
+  const b = { domain: "dash-b.example.test", https: freePort() };
+  const blocker = hold(b.https);
+  await w.configure(b.domain, b.https);
+  expect((await w.f.rigd(["install"])).code).not.toBe(0);
+  blocker.stop(true);
+  await w.configure(a.domain, a.https);
+  expect(await w.f.rigd(["install"])).toMatchObject({ code: 0 });
+  expect(await eventually(w.local, atA)).toBe(atA);
+  // rigd stops, Host config moves to a free address, and rigd starts on its own (a reboot): it publishes the new address,
+  // and its dashboard admits it, rather than anything an earlier failure left.
+  await stopRigd(w.f.root);
+  const c = { domain: "dash-c.example.test", https: freePort() };
+  await w.configure(c.domain, c.https);
+  const rigd = Bun.spawn(
+    [process.execPath, join(import.meta.dir, "..", "src", "rigd.ts")],
+    {
+      env: { ...process.env, RIG_ROOT: w.f.root, RIG_DAEMON_CHILD: "1" },
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+  cleanups.push(async () => {
+    rigd.kill();
+    await rigd.exited;
+  });
+  const atC = `${c.domain}:${c.https}`;
+  expect(await eventually(w.local, atC)).toBe(atC);
+  expect(await eventually(() => through(c.domain, c.https), atC)).toBe(atC);
+}, 180_000);
+
+test("after a boot-mode rigd install whose new dashboard address Caddy refused, the system rigd's dashboard keeps the address Caddy serves; the next install moves both", async () => {
+  if (!caddy)
+    throw new Error("Proxy installation tests require a local caddy.");
+  // launchd is faked: the system jobs' plists go to a temporary directory, and their program is started here as launchd
+  // would, again whenever it exits. Rig's Caddy runs as a detached process (tests/support/system-rigd.ts).
+  const places = { staging: "", daemons: "" };
+  const w = await dashboardRoot(async (root) => {
+    places.staging = join(root, "staging");
+    places.daemons = join(root, "LaunchDaemons");
+    await mkdir(places.daemons, { recursive: true });
+  });
+  const root = w.f.root;
+  const home = join(w.f.base, "home");
+  await mkdir(home, { recursive: true });
+  const program = join(import.meta.dir, "support", "system-rigd.ts");
+  let loaded = false;
+  const proxy = createProxyInstallation({
+    root,
+    userHome: home,
+    uid: process.getuid!(),
+    userName: "test",
+    mode: "process",
+    run: runCommand,
+    startDeadlineMs: 8000,
+  });
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, program],
+    mode: "launchd",
+    userHome: home,
+    uid: process.getuid!(),
+    userName: "test",
+    start: async () => "boot",
+    dashboard: async () => dashboardServing(root, await readHostConfig(root)),
+    systemPlaces: places,
+    proxy,
+    launchctl: async (args) => ({
+      code: args[0] === "print" && !loaded ? 113 : 0,
+      stderr: "",
+    }),
+  });
+  let running: ReturnType<typeof Bun.spawn> | undefined;
+  let keepAlive = true;
+  cleanups.push(async () => {
+    keepAlive = false;
+    running?.kill();
+    await running?.exited;
+    await proxy.remove();
+  });
+  const a = { domain: "dash-a.example.test", https: freePort() };
+  await w.configure(a.domain, a.https, "daemon: { start: boot }\n");
+  const pending = await admin.install().catch((error) => error);
+  expect(pending).toMatchObject({ code: "DAEMON_SYSTEM_INSTALL" });
+  // The owner's sudo lines: both plists installed, and launchd runs them.
+  for (const line of pending.details.commands as string[]) {
+    const label =
+      /bootstrap system '.*\/(com\.b-relay\.[a-z-]+\.[0-9a-f]+)\.plist'/.exec(
+        line,
+      )![1]!;
+    await writeFile(
+      join(places.daemons, `${label}.plist`),
+      await readFile(join(root, "daemon", "launchd", `${label}.plist`)),
+    );
+  }
+  loaded = true;
+  await createProcessCaddyJob({
+    root,
+    paths: proxyPaths(root),
+    userHome: home,
+    admin: createCaddyAdmin(proxyPaths(root).socket),
+  }).install();
+  void (async () => {
+    while (keepAlive) {
+      running = Bun.spawn([process.execPath, program], {
+        env: {
+          ...process.env,
+          RIG_ROOT: root,
+          RIG_DAEMON_CHILD: "1",
+          RIG_DAEMON_MODE: "system",
+        },
+        stdout: "ignore",
+        stderr: "ignore",
+      });
+      await running.exited;
+      await Bun.sleep(100);
+    }
+  })();
+  expect(
+    await eventually(async () => (await admin.status()).reachable, true),
+  ).toBe(true);
+  expect(await admin.install()).toMatchObject({ reachable: true });
+  const atA = `${a.domain}:${a.https}`;
+  expect(await eventually(() => through(a.domain, a.https), atA)).toBe(atA);
+
+  // Another program holds the new HTTPS port: the install fails, and the system rigd it restarted admits the address
+  // Caddy still serves it at.
+  const b = { domain: "dash-b.example.test", https: freePort() };
+  const blocker = hold(b.https);
+  await w.configure(b.domain, b.https, "daemon: { start: boot }\n");
+  await expect(admin.install()).rejects.toBeDefined();
+  expect(await eventually(w.local, atA)).toBe(atA);
+  expect(await eventually(() => through(a.domain, a.https), atA)).toBe(atA);
+  expect(await through(b.domain, a.https)).toBeUndefined();
+
+  // Once the port is free, the next install moves both.
+  blocker.stop(true);
+  await admin.install();
+  const atB = `${b.domain}:${b.https}`;
+  expect(await eventually(w.local, atB)).toBe(atB);
+  expect(await eventually(() => through(b.domain, b.https), atB)).toBe(atB);
+  expect(await admin.install()).toMatchObject({ outcome: "unchanged" });
 }, 180_000);

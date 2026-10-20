@@ -123,11 +123,12 @@ export async function configuredDashboardRoute(
     https: host.proxy?.ports.https ?? 443,
   };
 }
-/** Pure: where a starting rigd serves the dashboard: its route through Rig's Caddy and the publication the dashboard admits.
- * Host config's (`configured`, and dashboardPublication), unless Caddy's current generation (`accepted`: the dashboard
- * route it records and its HTTPS port) was accepted with another domain or HTTPS port, as after an install whose
- * publication Caddy refused. Then the dashboard keeps the address Caddy serves, or none when Caddy serves none, until
- * rigd install publishes the new one. `accepted` is undefined before the first generation, or for one an older rigd made. */
+/** Pure: where rigd serves the dashboard: its route through Rig's Caddy and the publication the dashboard admits. The
+ * domain and HTTPS port of Caddy's current generation (`accepted`: the dashboard route it records and its HTTPS port), with
+ * Host config's local port and trusted clients; none when Caddy serves none. That is Host config's (`configured`, and
+ * dashboardPublication) once Caddy accepted it, and the address Caddy kept when it refused it (a new HTTPS port another
+ * program held), so the two never disagree. `accepted` is undefined before the first generation, or for one an older rigd
+ * made, which recorded no dashboard: then Host config's. */
 export function servedDashboard(
   host: Pick<HostConfig, "dashboard" | "proxy">,
   configured: DashboardRoute | undefined,
@@ -334,7 +335,7 @@ export interface DashboardDependencies {
   readonly directory: string;
   /** rigd's own executable, which runs the server as Bun (BUN_BE_BUN=1); from source, Bun itself. */
   readonly executable: string;
-  /** Where Rig's Caddy publishes it, when Host config names a domain. */
+  /** Where Rig's Caddy publishes it, when Host config names a domain, until `Dashboard.publishAt` says otherwise. */
   readonly published?: DashboardPublication;
   /** The Host's Target log sizes, which the dashboard's log follows too. */
   retention(): Promise<LogRetention>;
@@ -359,6 +360,9 @@ export interface Dashboard {
   readonly url: string;
   /** How it is served, with where it is published (see describeDashboard). */
   readonly serving: string;
+  /** Sets where it is published, before it starts: the address rigd found Rig's Caddy accepted for it (see servedDashboard),
+   * none for none. */
+  publishAt(published: DashboardPublication | undefined): void;
   /** Whether a stop has stopped it for good (see `stop`). */
   stopped(): boolean;
   /** The route Rig's Caddy serves for it as rigd asks now: its domain to its port only while rigd has found its own running
@@ -410,7 +414,8 @@ export async function openDashboard(
     return log(`[rigd] ${message}\n`);
   };
   const where = `${UPSTREAM_HOST}:${deps.port}`;
-  const domain = deps.published?.domain;
+  let published = deps.published;
+  const domain = () => published?.domain;
   /** Whether `run`'s own process listens on 127.0.0.1:<port> now; with what rigd could read when it cannot tell. */
   const listening = async (run: Run, signal?: AbortSignal) => {
     const evidence = await deps.listeners.inspect(run.child.pid!, signal);
@@ -424,11 +429,12 @@ export async function openDashboard(
         ),
     };
   };
-  const route = (): PublishedDashboard | undefined =>
-    domain === undefined
+  const route = (): PublishedDashboard | undefined => {
+    const name = domain();
+    return name === undefined
       ? undefined
       : {
-          domain,
+          domain: name,
           port:
             routed !== undefined &&
             !halting &&
@@ -437,6 +443,7 @@ export async function openDashboard(
               ? routed
               : null,
         };
+  };
   /** Has Caddy withhold the domain: tried until Caddy confirms it, or until `signal` aborts (rigd is stopping, and its stop
    * withholds it, within its own bound). A publication still under way then goes on unawaited: it can only withhold. */
   const withhold = async (signal: AbortSignal) => {
@@ -448,7 +455,7 @@ export async function openDashboard(
       } catch (error) {
         const delay = lookDelay(attempt);
         await report(
-          `Rig's Caddy has not confirmed that it withholds ${domain} from ${where} (${failure(error)}); rigd tries again in ${seconds(delay)}.`,
+          `Rig's Caddy has not confirmed that it withholds ${domain()} from ${where} (${failure(error)}); rigd tries again in ${seconds(delay)}.`,
         );
         if (signal.aborted) return;
         await pause(delay, signal);
@@ -477,7 +484,7 @@ export async function openDashboard(
         } catch (error) {
           routed = undefined;
           await report(
-            `Rig's Caddy could not be made to route ${domain} to the dashboard (${failure(error)}); rigd tries again in ${seconds(lookDelay(attempt))}.`,
+            `Rig's Caddy could not be made to route ${domain()} to the dashboard (${failure(error)}); rigd tries again in ${seconds(lookDelay(attempt))}.`,
           );
         }
       } else if (!found && Date.now() >= reportAt) {
@@ -496,7 +503,7 @@ export async function openDashboard(
       ]);
     }
   };
-  const env = {
+  const environment = () => ({
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     ...(process.env.HOME ? { HOME: process.env.HOME } : {}),
     BUN_BE_BUN: "1",
@@ -507,18 +514,18 @@ export async function openDashboard(
     // Every browser signs in with this key, on this Mac too.
     RIG_WEB_KEY_FILE: join(deps.root, "auth", "dashboard.key"),
     // Published, it is the dashboard at that host; a non-empty trusted list limits who may reach it there.
-    ...(deps.published
+    ...(published
       ? {
-          RIG_WEB_HOST: deps.published.authority,
-          RIG_WEB_DASHBOARD_HOST: deps.published.authority,
-          RIG_WEB_TRUSTED_CLIENTS: deps.published.trustedClients.join(","),
+          RIG_WEB_HOST: published.authority,
+          RIG_WEB_DASHBOARD_HOST: published.authority,
+          RIG_WEB_TRUSTED_CLIENTS: published.trustedClients.join(","),
         }
       : {}),
-  };
+  });
   const launch = (): Run => {
     const child = spawn(deps.executable, ["server.js"], {
       cwd: join(deps.directory, "web"),
-      env,
+      env: environment(),
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout?.on("data", (chunk) => void log(String(chunk)));
@@ -621,13 +628,13 @@ export async function openDashboard(
         const why = outcome.error
           ? failure(outcome.error)
           : `it did not confirm within ${seconds(deps.stopConfirmMs ?? STOP_CONFIRM_MS)}`;
-        const message = `rigd was asked to stop, but Rig's Caddy has not confirmed that it withholds ${domain} from ${where} (${why}), so the dashboard, and rigd, keep running.`;
+        const message = `rigd was asked to stop, but Rig's Caddy has not confirmed that it withholds ${domain()} from ${where} (${why}), so the dashboard, and rigd, keep running.`;
         await report(message);
         throw new RigError(
           "DASHBOARD_WITHHOLD",
           message,
           "Run rig doctor to see why Caddy does not take the change, fix it, then stop rigd again.",
-          { domain, port: deps.port },
+          { domain: domain(), port: deps.port },
         );
       }
     } else if (deps.publish)
@@ -645,7 +652,12 @@ export async function openDashboard(
   };
   return {
     url: `http://127.0.0.1:${deps.port}`,
-    serving: describeDashboard(deps.port, deps.published),
+    get serving() {
+      return describeDashboard(deps.port, published);
+    },
+    publishAt(next) {
+      published = next;
+    },
     stopped: () => halted,
     route,
     async confirmedRoute() {

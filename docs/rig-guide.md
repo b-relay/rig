@@ -129,7 +129,7 @@ Caddy accepts Host config (`rig proxy reload`). A Target or
 domain a Target already serves before it restarts anything). The route follows
 the dashboard `rigd` started with, so an edit to the domain, port or trusted
 clients applies when
-`rigd install` restarts `rigd` (`rig proxy reload` leaves the route as it was);
+`rigd install` restarts `rigd`, once Caddy accepts it (`rig proxy reload` leaves the route as it was);
 until then `rig doctor`'s `dashboard` check names the difference. With Caddy's
 HTTPS port other than 443 (`proxy.ports.https`), the dashboard is addressed as
 `https://rig.example.com:<port>`; while it is published, `rig proxy reload`
@@ -335,8 +335,10 @@ within 30 seconds is replaced by the previous one again (`PROXY_BINARY_START`).
 whenever the configuration Caddy serves was accepted with other ones, so after
 an install whose publication failed (a new HTTPS port another program held, for
 example), running it again finishes the change rather than reporting
-`unchanged`. Until then the dashboard keeps the domain and HTTPS port Caddy
-still serves it at, and `rig doctor`'s `dashboard` check names the difference.
+`unchanged`. The dashboard always admits the domain and HTTPS port Caddy
+accepted for it: as `rigd` starts, it first asks Caddy for Host config's, so
+until Caddy takes them both stay on the address Caddy still serves, and
+`rig doctor`'s `dashboard` check names the difference.
 A `proxy.routes` hostname a Target already serves is refused before `rigd` is
 restarted. A new definition of the LaunchAgent is loaded only once launchd has
 let the old job go. `rigd uninstall` stops the job and keeps the certificates

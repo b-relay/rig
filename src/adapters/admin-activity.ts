@@ -1,10 +1,10 @@
-import { open, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { openPrivateFile, privateDirectory } from "../providers/private-files";
 import { join } from "node:path";
 import { z } from "zod";
 import type { OperationRecord } from "../domain/runtime";
 import { RigError } from "../domain/errors";
-import { acquireProcessLock } from "./process-lock";
+import { acquireProcessLock, type ProcessLock } from "./process-lock";
 
 /** How long an append waits for another live administration to finish its own append. */
 export interface LockWait {
@@ -17,7 +17,7 @@ export const DEFAULT_LOCK_WAIT: LockWait = { attempts: 50, pauseMs: 100 };
 async function acquireLock(
   lockPath: string,
   wait: LockWait,
-): Promise<Awaited<ReturnType<typeof open>>> {
+): Promise<ProcessLock> {
   let acquired = await acquireProcessLock(lockPath);
   for (
     let attempt = 0;
@@ -29,12 +29,7 @@ async function acquireLock(
   }
   if ("lock" in acquired) return acquired.lock;
   const { held } = acquired;
-  const cause =
-    held.reason === "alive"
-      ? `is held by pid ${held.pid}, which is alive. Wait for it; if no rigd administration is running, remove ${lockPath} and retry.`
-      : held.reason === "fresh"
-        ? `was taken less than a minute ago by a writer that recorded no pid. Wait for it; if no rigd administration is running, remove ${lockPath} and retry.`
-        : "was taken again while it was being reclaimed. Retry.";
+  const cause = `is held by ${held.pid ? `pid ${held.pid}` : "another process"}, which is still running. Wait for it, then retry.`;
   throw new RigError(
     "ADMIN_ACTIVITY_LOCKED",
     "Another daemon administration is recording activity.",
@@ -126,7 +121,7 @@ export function createAdminActivityJournal(options: {
   return {
     read,
     async append(input) {
-      let lock: Awaited<ReturnType<typeof open>> | undefined;
+      let lock: ProcessLock | undefined;
       const lockPath = `${path}.lock`;
       try {
         const entry = entrySchema.parse({
@@ -157,10 +152,7 @@ export function createAdminActivityJournal(options: {
           }`,
         };
       } finally {
-        if (lock) {
-          await lock.close().catch(() => {});
-          await rm(lockPath, { force: true }).catch(() => {});
-        }
+        await lock?.release().catch(() => {});
       }
     },
   };

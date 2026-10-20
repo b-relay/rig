@@ -1,15 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-  utimes,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createAdminActivityJournal } from "../src/adapters/admin-activity";
+import { acquireProcessLock } from "../src/adapters/process-lock";
 import { DaemonAdmin } from "../src/daemon/admin";
 const roots: string[] = [];
 afterEach(async () => {
@@ -169,7 +163,7 @@ test("verified daemon installation and shutdown persist activity after the daemo
   }
 }, 15000);
 
-test("a journal lock left by a dead or replaced writer is reclaimed; a live holder or a fresh unreadable lock is reported by path", async () => {
+test("a journal lock left by a crashed writer is taken; one a live writer holds is reported by path and pid", async () => {
   const root = await fixture(),
     lock = join(root, "runtime", "admin-activity.jsonl.lock"),
     journal = createAdminActivityJournal({
@@ -184,36 +178,23 @@ test("a journal lock left by a dead or replaced writer is reclaimed; a live hold
     };
   await mkdir(join(root, "runtime"), { recursive: true });
 
-  await writeFile(lock, JSON.stringify({ pid: 2147483647 }));
-  expect(await journal.append(entry)).toEqual({});
-  await writeFile(
-    lock,
-    JSON.stringify({ pid: process.pid, startedAt: "Thu Jan  1 00:00:00 1970" }),
-  );
-  expect(await journal.append(entry)).toEqual({});
-  await writeFile(lock, "{torn");
-  await utimes(
-    lock,
-    new Date(Date.now() - 300_000),
-    new Date(Date.now() - 300_000),
-  );
-  expect(await journal.append(entry)).toEqual({});
-  expect((await journal.read()).map((record) => record.outcome)).toEqual([
-    "installed",
-    "installed",
-    "installed",
-  ]);
+  // A crashed writer holds no lock, whatever its file says.
+  for (const left of [JSON.stringify({ pid: 2147483647 }), "{torn"]) {
+    await writeFile(lock, left);
+    expect(await journal.append(entry)).toEqual({});
+  }
   await expect(readFile(lock)).rejects.toMatchObject({ code: "ENOENT" });
 
-  await writeFile(lock, JSON.stringify({ pid: process.pid }));
+  const acquired = await acquireProcessLock(lock);
+  if (!("lock" in acquired)) throw new Error("refused");
   const live = await journal.append(entry);
   expect(live.warning).toContain(lock);
   expect(live.warning).toContain(`pid ${process.pid}`);
-  await writeFile(lock, "{torn");
-  const fresh = await journal.append(entry);
-  expect(fresh.warning).toContain(lock);
-  expect(await readFile(lock, "utf8")).toBe("{torn");
-  expect(await journal.read()).toHaveLength(3);
+  await acquired.lock.release();
+  expect((await journal.read()).map((record) => record.outcome)).toEqual([
+    "installed",
+    "installed",
+  ]);
 });
 
 test("a journal lock held by a live writer is waited for, so two concurrent administrations both record", async () => {
@@ -229,8 +210,9 @@ test("a journal lock held by a live writer is waited for, so two concurrent admi
       outcome: "installed" as const,
     };
   await mkdir(join(root, "runtime"), { recursive: true });
-  await writeFile(lock, JSON.stringify({ pid: process.pid }));
-  setTimeout(() => void rm(lock, { force: true }), 250);
+  const acquired = await acquireProcessLock(lock);
+  if (!("lock" in acquired)) throw new Error("refused");
+  setTimeout(() => void acquired.lock.release(), 250);
   expect(await journal.append(entry)).toEqual({});
   expect((await journal.read()).map((record) => record.outcome)).toEqual([
     "installed",

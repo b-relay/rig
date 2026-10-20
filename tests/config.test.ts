@@ -8,7 +8,6 @@ import {
   realpath,
   rm,
   symlink,
-  utimes,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -29,6 +28,7 @@ import {
   targetOn,
   TARGET_ROLES,
 } from "../src/config/index.js";
+import { acquireProcessLock } from "../src/adapters/process-lock";
 import { referenceResolver, shellVariable } from "../src/config/references";
 import { withValuesWritten } from "../src/config/plan-defaults";
 import { serviceDefinition } from "../src/domain/service-definition";
@@ -490,7 +490,7 @@ test("editing a Project whose rig.yaml is a symlink writes through to the linked
   expect(await readFile(result.backupPath, "utf8")).toBe(MINIMAL);
 });
 
-test("a config lock left by a crashed edit is reclaimed; one held by a live process is refused by path", async () => {
+test("a config lock left by a crashed edit is taken; one an edit holds is refused by path and pid", async () => {
   const root = await fixture(),
     path = join(root, "rig.yaml");
   await writeFile(path, MINIMAL);
@@ -501,30 +501,23 @@ test("a config lock left by a crashed edit is reclaimed; one held by a live proc
       expectedRevision: (await readProjectConfig(root)).revision,
       edits: [],
     });
-  // A lock with no readable holder that is older than a minute belongs to a dead edit.
-  await writeFile(lock, "");
-  const old = new Date(Date.now() - 120_000);
-  await utimes(lock, old, old);
-  await edit();
-  await expect(lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
-  // So does one whose recorded pid has exited.
-  await writeFile(lock, JSON.stringify({ pid: 2147483647 }));
-  await edit();
-  // A fresh unreadable lock, or one whose holder is alive, is refused with the path.
-  await writeFile(lock, "");
-  const fresh = await edit().catch((error) => error);
-  expect(fresh).toMatchObject({ code: "config_locked" });
-  expect(fresh.hint).toContain(lock);
-  await writeFile(lock, JSON.stringify({ pid: process.pid }));
+  // A crashed edit holds no lock, whatever its file says.
+  for (const left of ["", JSON.stringify({ pid: 2147483647 })]) {
+    await writeFile(lock, left);
+    await edit();
+    await expect(lstat(lock)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const acquired = await acquireProcessLock(lock);
+  if (!("lock" in acquired)) throw new Error("refused");
   const held = await edit().catch((error) => error);
   expect(held).toMatchObject({
     code: "config_locked",
     context: { lockPath: lock, pid: process.pid },
   });
   expect(held.hint).toContain(`held by pid ${process.pid}`);
-  expect(await readFile(lock, "utf8")).toBe(
-    JSON.stringify({ pid: process.pid }),
-  );
+  expect(held.hint).toContain(lock);
+  await acquired.lock.release();
+  await edit();
 });
 
 test("config edits keep one .bak beside the file, holding the text before the latest edit", async () => {

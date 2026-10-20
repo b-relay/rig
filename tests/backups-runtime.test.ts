@@ -4,6 +4,7 @@ import {
   link,
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   rm,
   stat,
@@ -1191,8 +1192,15 @@ test("after an upgrade, latest and retention take the backups an older Rig recor
       bytes: 0,
     }));
   });
+  // Saved as the rigd before backup sequences saves it: version 9, read as it is.
+  const file = join(f.world.root, "runtime", "state.json");
+  const saved = JSON.parse(await readFile(file, "utf8"));
+  await writeFile(file, JSON.stringify({ ...saved, version: 9 }));
   await f.restore("latest");
   expect((await f.running())!.restore!.path).toBe(newer);
+  // Its next write saves version 10, which that rigd refuses (STATE_VERSION), so it never appends a backup without a
+  // sequence after one with it.
+  expect(JSON.parse(await readFile(file, "utf8")).version).toBe(10);
   await f.finish(0);
   // The first backup this Rig makes continues past the numbers kept, and keep: 2 lets the oldest legacy one go.
   const made = await f.backUp();

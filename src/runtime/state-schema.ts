@@ -684,13 +684,16 @@ const operation = z.object({
  * Version 8 (ADR 0016) added where each Service's process runs (`source`), the Services a deploy kept, `watch`, and held
  * checkouts: an older rigd would drop them and release a checkout a kept process still runs in. Version 9 keeps health
  * output only with env-file values redacted: an older rigd would record a failed check's output as printed, and Activity
- * from before it is read with that output withheld (see state-store). */
-export const STATE_VERSION = 9;
+ * from before it is read with that output withheld (see state-store). Version 10 orders backups by `sequence` (on a run's
+ * `backup` and on a backup): an older rigd would record backups without it, which a later rigd would then rank as older
+ * than every backup it made. */
+export const STATE_VERSION = 10;
 /** The older state versions this rigd still reads. Version 4 named the working and stable Targets local and live, or what
  * rig.yaml renamed them to, and is normalized as it is read (see state-store). Version 5 is version 6 without jobs,
- * version 6 is version 7 without backups, version 7 is version 8 before ADR 0016, and version 8 is version 9 with health
- * output unredacted; they are read so. The next write saves STATE_VERSION. */
-export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7, 8];
+ * version 6 is version 7 without backups, version 7 is version 8 before ADR 0016, version 8 is version 9 with health
+ * output unredacted, and version 9 is version 10 with no backup's `sequence`; they are read so. The next write saves
+ * STATE_VERSION. */
+export const MIGRATED_STATE_VERSIONS: readonly number[] = [4, 5, 6, 7, 8, 9];
 /** The first version whose Activity holds health output only redacted. */
 export const REDACTED_HEALTH_STATE_VERSION = 9;
 /** The version whose Target names are normalized as they are read. */

@@ -997,9 +997,11 @@ Version 4, written before Target names were fixed, is read with the working
 and stable Targets taking their role's name and a Preview holding a reserved
 name renamed; version 5, written before scheduled jobs, version 6, written
 before backups, version 7, written before Kept Services, and version 8,
-written before health output was redacted, are read as they are, the
-checkouts job runs kept (`jobCheckouts`) as held checkouts and a health
-check's output in Activity withheld. The next write saves version 9. CLI and future UI views are derived
+written before health output was redacted, and version 9, written before
+backups recorded their `sequence`, are read as they are, the
+checkouts job runs kept (`jobCheckouts`) as held checkouts, a health
+check's output in Activity withheld, and version 9's backups ranked older than
+every backup since. The next write saves version 10. CLI and future UI views are derived
 from it through `rigd`, so they agree. Daemon administration activity is
 journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
 

@@ -322,7 +322,7 @@ export interface HeldCheckout {
 }
 
 export interface RuntimeState {
-  version: 9;
+  version: 10;
   projects: ProjectRecord[];
   targets: TargetRecord[];
   activity: OperationRecord[];

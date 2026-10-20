@@ -1338,11 +1338,12 @@ malformed record rather than resolved against the daemon's working directory,
 and a command that sends a relative path is refused as an invalid request
 (`rig` resolves paths against your directory before sending).
 
-The state file carries a format version (currently 9). This `rigd` also reads
-versions 4 to 8 and saves them as version 9 on its next write; version 4, the
-format before fixed Target names, is read with the names fixed, and a failed
+The state file carries a format version (currently 10). This `rigd` also reads
+versions 4 to 9 and saves them as version 10 on its next write; version 4, the
+format before fixed Target names, is read with the names fixed, a failed
 health check's output that a version before 9 recorded in Activity, before
-Rig redacted it, is withheld. A file written by a newer `rigd`, or by one older than version 4, is
+Rig redacted it, is withheld, and backups a version before 10 recorded count
+as older than every backup since. A file written by a newer `rigd`, or by one older than version 4, is
 refused as `STATE_VERSION`, naming both versions, rather than loaded with fields
 dropped or misread.
 Keys this `rigd` does not know are kept through every read and write, so a
@@ -2416,7 +2417,8 @@ jobs:
   anything a symlink points at. A backup with another volume mounted inside
   it (a disk image the job left attached, say) is not deleted at all, so
   nothing on that volume is touched; unmount it and the next pass deletes the
-  backup. A deletion that still fails (a busy disk, a directory another user
+  backup. Rig looks for mounts just before it deletes, so do not mount
+  anything inside a backup while Rig may be deleting it. A deletion that still fails (a busy disk, a directory another user
   owns, or that mounted volume) is retried every 30 seconds, by this rigd or
   the next; until it succeeds the run's summary says its directory was queued
   for deletion. A backup deleted by hand shows as missing in

@@ -53,13 +53,14 @@ export async function renameProject(
         from.some((name) => nameKey(name) === nameKey(p.name)),
     )
     .map((p) => p.name);
+  // The name rig.yaml has now, which a failed rename puts back.
+  const configName = (await deps.documents.read(project.repoPath)).config.name;
   await deps.store.update((state) => {
     // Checked again in the write itself: an init running beside this rename may have taken the name since.
     const taken = holder(state.projects);
     if (taken) throw nameTaken(taken.name, newName);
     current(state).renaming = newName;
   });
-  const configName = (await deps.documents.read(project.repoPath)).config.name;
   let configPath: string | undefined;
   let carry: EnvCarry = { kind: "none" };
   /** Puts back what this rename changed before the registration was saved, then fails with `error`; RENAME_ROLLBACK when

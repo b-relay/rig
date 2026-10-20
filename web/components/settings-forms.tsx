@@ -23,7 +23,10 @@ export function SettingsForms({
   const [newPath, setNewPath] = useState("");
   return (
     <>
-      <Section title="Rename" description="Every Target must be stopped first.">
+      <Section
+        title="Rename"
+        description="Every Target must be stopped first. The operator env files move to the new name."
+      >
         <form
           className="flex max-w-xl flex-col gap-3 sm:flex-row sm:items-end"
           onSubmit={(event) => {
@@ -42,6 +45,7 @@ export function SettingsForms({
             <Input
               id="rename"
               value={newName}
+              maxLength={128}
               required
               onChange={(event) => setNewName(event.target.value)}
             />

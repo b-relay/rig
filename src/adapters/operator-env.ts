@@ -29,28 +29,47 @@ export function createOperatorEnvFiles(root: string): OperatorEnvFiles {
           `Nothing was renamed. Move ${directory(to)} aside (it may be left from a forgotten Project, or from a rename that was interrupted), then retry.`,
           { path: directory(to), from: directory(source.name) },
         );
+      const origin = directory(source.name);
+      const failed = (error: unknown) =>
+        error instanceof RigError
+          ? error
+          : new RigError(
+              "ENV_MOVE",
+              `The operator env files at ${origin} could not be given the name '${to}': ${failureReason(error)}`,
+              `Nothing was renamed. Check that ${envRoot} is writable by this user, then retry.`,
+              { path: origin },
+            );
       const shared = await sharedName(source.info, sharedWith);
-      try {
-        if (shared === undefined) {
-          await rename(directory(source.name), directory(to));
-          await syncDirectory(envRoot);
-          return { kind: "moved", from: source.name, to };
-        }
-        await copyTree(root, directory(source.name), directory(to));
-        return { kind: "copied", from: source.name, to, sharedWith: shared };
-      } catch (error) {
-        if (shared !== undefined)
+      if (shared !== undefined) {
+        try {
+          await copyTree(root, origin, directory(to));
+        } catch (error) {
           await rm(directory(to), { recursive: true, force: true }).catch(
             () => {},
           );
-        if (error instanceof RigError) throw error;
-        throw new RigError(
-          "ENV_MOVE",
-          `The operator env files at ${directory(source.name)} could not be given the name '${to}': ${failureReason(error)}`,
-          `Nothing was renamed. Check that ${envRoot} is writable by this user, then retry.`,
-          { path: directory(source.name) },
-        );
+          throw failed(error);
+        }
+        return { kind: "copied", from: source.name, to, sharedWith: shared };
       }
+      try {
+        await rename(origin, directory(to));
+      } catch (error) {
+        throw failed(error);
+      }
+      try {
+        await syncDirectory(envRoot);
+      } catch (error) {
+        // Not on disk for sure: put back, so nothing saved names the new place. Should that fail too, the files are where
+        // the rename put them, and the caller records them there.
+        if (
+          await rename(directory(to), origin).then(
+            () => true,
+            () => false,
+          )
+        )
+          throw failed(error);
+      }
+      return { kind: "moved", from: source.name, to };
     },
     async undo(carry) {
       if (carry.kind === "moved") {

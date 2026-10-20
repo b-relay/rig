@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -285,4 +286,44 @@ test("a rigd whose dashboard has already exited is replaced within the stop's bo
     replaced: { pid: rigd },
   });
   expect(Date.now() - began).toBeLessThan(10_000);
+}, 90_000);
+
+test("a reload command still running as rigd stops is cancelled before rigd lets go of its records: the replacement starts, and nothing of the old rigd reaches Caddy after it", async () => {
+  const f = await rigRoot();
+  const admin = (...extra: string[]) =>
+    new DaemonAdmin({
+      root: f.root,
+      command: [process.execPath, script, ...extra],
+      mode: "process",
+      userHome: f.root,
+    });
+  const held = join(f.root, "reload-hold");
+  cleanups.push(async () => {
+    await rm(held, { force: true });
+    await admin().uninstall();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  expect(await admin().install()).toMatchObject({ reachable: true });
+  await f.served();
+  const rigd = (await readDaemonAddress(f.root))!.pid;
+  // The dashboard dies; Caddy loads its withholding, and the reload command that did it is held, a real process.
+  await writeFile(held, "");
+  process.kill(await f.dashboardPid(), "SIGKILL");
+  await until(() => existsSync(join(f.root, "reload-held")));
+  const began = Date.now();
+  expect(await admin("again").install()).toMatchObject({
+    outcome: "installed",
+    replaced: { pid: rigd },
+  });
+  expect(Date.now() - began).toBeLessThan(10_000);
+  expect(processExists(rigd)).toBe(false);
+  // The new rigd routes its own dashboard; releasing the old command changes nothing.
+  await f.served();
+  const loads = await f.loads();
+  await rm(held);
+  await Bun.sleep(500);
+  expect(await f.loads()).toEqual(loads);
+  expect(await fetch(`http://${f.live}/`).then((r) => r.text())).toBe(
+    String(await f.dashboardPid()),
+  );
 }, 90_000);

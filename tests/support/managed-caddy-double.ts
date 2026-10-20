@@ -141,13 +141,17 @@ export async function managedCaddyWorld(
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
     beforeSettings: undefined as undefined | (() => Promise<void>),
+    /** Runs on each reload once Caddy has loaded the configuration, before the reload command ends; `signal` is the one the
+     * command was given. */
+    afterLoad: undefined as
+      undefined | ((signal?: AbortSignal) => Promise<unknown>),
     /** Runs each time Caddy's admin API is asked what it runs, before it answers. */
     beforeConfig: undefined as undefined | (() => Promise<void>),
     /** Runs each time the fake Caddy loads a configuration, with it, before the load is reported done. */
     onLoad: undefined as undefined | ((config: unknown) => Promise<void>),
     loaded: {} as unknown,
   };
-  const run: CommandRunner = async ({ command }) => {
+  const run: CommandRunner = async ({ command, signal }) => {
     commands.push([...command]);
     const verb = command[1]!;
     if (verb === "adapt")
@@ -163,6 +167,7 @@ export async function managedCaddyWorld(
         ? JSON.parse(await readFile(command[3]!, "utf8"))
         : await fakeAdapt(command[3]!);
       await control.onLoad?.(control.loaded);
+      await control.afterLoad?.(signal);
     }
     return { exitCode: 0, stdout: "", stderr: "" };
   };

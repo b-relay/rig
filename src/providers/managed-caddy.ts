@@ -157,6 +157,10 @@ export interface ManagedCaddy {
    * whether its routes are known to hold no other dashboard route: false while it serves `proxy.routes` an older rigd
    * recorded (see GenerationMetadata.ownerRoutesOnly). */
   refreshDashboard(): Promise<{ known: boolean }>;
+  /** Ends publishing, for a rigd that stops: the Caddy command under way is cancelled (its process killed), every change
+   * queued or asked for later fails PROXY_CLOSED, and this resolves once nothing of the queue runs, so no work of this rigd
+   * reaches Caddy after it. What Caddy serves then is confirmed by the next rigd as it starts. */
+  close(): Promise<void>;
   readonly paths: ProxyPaths;
 }
 export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
@@ -170,8 +174,21 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   let pending: Promise<unknown> = Promise.resolve();
   /** Hostnames a deploy checked and is about to publish, by route key, held in this process only. */
   const reservations = new Map<string, string[]>();
+  /** Aborted by `close`: commands under way are killed, and nothing more is published. */
+  const closing = new AbortController();
+  const closed = () =>
+    new RigError(
+      "PROXY_CLOSED",
+      "rigd is stopping, so Rig's Caddy takes no more changes from it.",
+      "The next rigd confirms what Caddy serves as it starts.",
+    );
   function queued<T>(work: () => Promise<T>): Promise<T> {
-    const operation = pending.catch(() => {}).then(work);
+    const operation = pending
+      .catch(() => {})
+      .then(() => {
+        if (closing.signal.aborted) throw closed();
+        return work();
+      });
     pending = operation;
     return operation;
   }
@@ -295,11 +312,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     command: readonly string[],
     secret: string | undefined,
   ): Promise<{ exitCode: number; stderr: string }> {
-    const result = await options.run({ command }).catch((error: unknown) => ({
-      exitCode: 1,
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    }));
+    const result = await options
+      .run({ command, signal: closing.signal })
+      .catch((error: unknown) => ({
+        exitCode: 1,
+        stdout: "",
+        stderr: error instanceof Error ? error.message : String(error),
+      }));
     return {
       exitCode: result.exitCode,
       stderr: redactSecrets(result.stderr, secret ? [secret] : []),
@@ -314,6 +333,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   ): Promise<{ config?: unknown; reason?: string }> {
     const result = await options
       .run({
+        signal: closing.signal,
         command: [
           executable,
           "adapt",
@@ -551,6 +571,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         loaded === undefined && state !== "stopped" && Date.now() < deadline;
       ) {
         await new Promise((resolve) => setTimeout(resolve, 250));
+        if (closing.signal.aborted) throw closed();
         loaded = await options.admin.config();
         if (loaded === undefined) state = await options.job.state();
       }
@@ -573,6 +594,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       !Bun.deepEquals(options.dashboard?.current(), dashboard)
     )
       throw new DashboardRouteChanged();
+    if (closing.signal.aborted) throw closed();
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
     // Any change in which CA issues which subjects restarts, conservatively: a Caddy with no issuer yet holds no certificates.
     if (
@@ -850,6 +872,10 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   }
   return {
     paths,
+    async close() {
+      closing.abort();
+      await pending.catch(() => {});
+    },
     refreshDashboard: () =>
       queued(async () => {
         const current = await currentGeneration();

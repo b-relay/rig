@@ -527,6 +527,9 @@ export async function composeDaemon(
       // With the runtime's own stops, which its drain detaches as it begins.
       shuttingDown.abort();
       await runtime.drain();
+      // Nothing of this rigd's reaches Caddy once it has released its records: a publication still under way (a dashboard
+      // withholding a stop stopped waiting for) is cancelled, and the queue drained.
+      await managed?.caddy.close();
       // Reads are not drained with the runtime's Operations: closing the history waits for every one in progress.
       await usage.close();
       await health;

@@ -800,3 +800,29 @@ test("ownership is checked on the prospective file before any write: a refused r
   });
   expect(await w.generations()).toEqual(generations);
 });
+
+test("close cancels the Caddy command under way, refuses every change after it, and resolves once nothing of the queue runs", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  // The next reload is held until its command is cancelled.
+  let cancelled = false;
+  w.control.afterLoad = (signal) =>
+    new Promise<void>((_, reject) => {
+      signal?.addEventListener("abort", () => {
+        cancelled = true;
+        reject(new Error("cancelled"));
+      });
+    });
+  const reloads = () => w.verbs().filter((verb) => verb === "reload").length;
+  const before = reloads();
+  const held = w.caddy.router.apply(app("127.0.0.1:3002"));
+  const queued = w.caddy.router.apply(app("127.0.0.1:3003"));
+  for (let i = 0; i < 200 && reloads() === before; i++) await Bun.sleep(10);
+  await w.caddy.close();
+  expect(cancelled).toBe(true);
+  await expect(held).rejects.toBeDefined();
+  await expect(queued).rejects.toMatchObject({ code: "PROXY_CLOSED" });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_CLOSED",
+  });
+});

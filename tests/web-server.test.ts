@@ -2,7 +2,9 @@ import { test, expect } from "bun:test";
 import {
   accessPolicy,
   admit,
+  basicPassword,
   keyMatches,
+  loopbackHost,
   sessionCookie,
   sessionValue,
   signedIn,
@@ -20,11 +22,16 @@ import {
 } from "../web/server/seed";
 import { readProjectConfig, targetOn } from "../src/config";
 
+const KEY = "k".repeat(43);
+const NOW = 1_800_000_000_000;
 const policy = accessPolicy({
   publicHost: "rig.b-relay.com",
   port: 4100,
   trustedClients: parseTrustedClients("100.64.0.0/10, FD7A::1"),
+  accessKey: KEY,
 });
+/** A Cookie header holding a session `policy`'s key signed, valid at NOW. */
+const signedInCookie = `rig_session=${sessionValue(KEY, NOW / 1000 + 60)}`;
 const request = (method: string, headers: Record<string, string>) => ({
   method,
   headers: new Headers(headers),
@@ -36,21 +43,69 @@ const post = (headers: Record<string, string>) =>
     "content-type": "application/json",
     ...headers,
   });
+const at = { now: NOW };
 
-test("the site's own page is admitted under its published name and on loopback", () => {
-  expect(admit(post({ "x-forwarded-for": "127.0.0.1" }), policy)).toEqual({
-    admitted: true,
-    by: "client",
-  });
+/** An Authorization header presenting `password` the way a browser answers the loopback address's key challenge. */
+const basic = (password: string, user = "rig") =>
+  `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
+const loopback = { host: "127.0.0.1:4100", origin: "http://127.0.0.1:4100" };
+
+test("the site's own page is admitted with a session under its published name, and with the key on loopback", () => {
+  const cookie = signedInCookie;
+  expect(
+    admit(post({ "x-forwarded-for": "127.0.0.1", cookie }), policy, at),
+  ).toEqual({ admitted: true, by: "session" });
+  expect(
+    admit(post({ ...loopback, authorization: basic(KEY) }), policy, at),
+  ).toEqual({ admitted: true, by: "key" });
   expect(
     admit(
-      post({ host: "127.0.0.1:4100", origin: "http://127.0.0.1:4100" }),
+      request("GET", { host: "localhost:4100", authorization: basic(KEY, "") }),
       policy,
-    ),
-  ).toEqual({ admitted: true, by: "client" });
-  expect(
-    admit(request("GET", { host: "localhost:4100" }), policy).admitted,
+      at,
+    ).admitted,
   ).toBe(true);
+});
+
+test("on loopback no cookie counts, since a browser sends it to every port there; only the key itself does", () => {
+  for (const headers of [
+    { cookie: signedInCookie },
+    { authorization: basic("wrong") },
+    { authorization: `Bearer ${KEY}` },
+    { authorization: basic(KEY).replace("Basic", "Digest") },
+  ] as Record<string, string>[])
+    expect(admit(post({ ...loopback, ...headers }), policy, at)).toMatchObject({
+      status: 401,
+      code: "KEY_REQUIRED",
+    });
+  // Nor does presenting the key to signIn: on loopback there is nothing for it to hand out.
+  expect(
+    admit(post(loopback), policy, { ...at, signingIn: true }),
+  ).toMatchObject({ code: "KEY_REQUIRED" });
+  // The key works only on loopback; under the published name it takes the session cookie.
+  expect(admit(post({ authorization: basic(KEY) }), policy, at)).toMatchObject({
+    code: "KEY_REQUIRED",
+  });
+  expect(basicPassword(basic("a:b:c"))).toBe("a:b:c");
+  expect(basicPassword("Basic !!!")).toBeUndefined();
+  expect(basicPassword(null)).toBeUndefined();
+});
+
+test("being on this Mac or a trusted address is no sign-in: without a session it is sent to sign in", () => {
+  for (const headers of [
+    loopback,
+    { "x-forwarded-for": "127.0.0.1" },
+    { "x-forwarded-for": "100.101.102.103" },
+  ] as Record<string, string>[])
+    expect(admit(post(headers), policy, at)).toMatchObject({
+      status: 401,
+      code: "KEY_REQUIRED",
+    });
+  // Without an access key no browser can sign in, so none is admitted.
+  const keyless = accessPolicy({ port: 4100 });
+  expect(
+    admit(request("GET", { host: "127.0.0.1:4100" }), keyless, at),
+  ).toMatchObject({ status: 403, code: "NO_ACCESS_KEY" });
 });
 
 test("a foreign host name, origin, or fetch site is refused", () => {
@@ -82,9 +137,13 @@ test("a change needs a browser origin; a link from elsewhere opens a page but ca
       "sec-fetch-site": "cross-site",
       ...headers,
     });
-  expect(admit(page({ "sec-fetch-mode": "navigate" }), policy).admitted).toBe(
-    true,
-  );
+  expect(
+    admit(
+      page({ "sec-fetch-mode": "navigate", cookie: signedInCookie }),
+      policy,
+      at,
+    ).admitted,
+  ).toBe(true);
   expect(admit(page({ "sec-fetch-mode": "cors" }), policy)).toMatchObject({
     code: "ORIGIN",
   });
@@ -101,15 +160,43 @@ test("a change needs a browser origin; a link from elsewhere opens a page but ca
   ).toMatchObject({ code: "ORIGIN" });
 });
 
-test("only loopback and trusted client addresses pass, and every forwarded hop must", () => {
+test("a trusted list limits the site to loopback and its addresses, session or not, and every forwarded hop must be in it", () => {
+  const cookie = signedInCookie;
+  // An empty list limits nothing: any address signs in with the key, and still needs it.
+  const open = accessPolicy({
+    publicHost: "rig.b-relay.com",
+    port: 4100,
+    accessKey: KEY,
+  });
   expect(
-    admit(post({ "x-forwarded-for": "203.0.113.9" }), policy),
-  ).toMatchObject({ status: 403, code: "CLIENT" });
+    admit(post({ "x-forwarded-for": "203.0.113.9" }), open, at),
+  ).toMatchObject({ status: 401, code: "KEY_REQUIRED" });
   expect(
-    admit(post({ "x-forwarded-for": "100.101.102.103" }), policy).admitted,
+    admit(post({ "x-forwarded-for": "203.0.113.9" }), open, {
+      ...at,
+      signingIn: true,
+    }),
+  ).toEqual({ admitted: true, by: "signingIn" });
+  expect(
+    admit(post({ "x-forwarded-for": "203.0.113.9", cookie }), open, at),
+  ).toEqual({ admitted: true, by: "session" });
+  for (const signedIn of [{}, { cookie }] as Record<string, string>[])
+    expect(
+      admit(post({ "x-forwarded-for": "203.0.113.9", ...signedIn }), policy, {
+        ...at,
+        signingIn: true,
+      }),
+    ).toMatchObject({ status: 403, code: "CLIENT" });
+  expect(
+    admit(post({ "x-forwarded-for": "100.101.102.103", cookie }), policy, at)
+      .admitted,
   ).toBe(true);
   expect(
-    admit(post({ "x-forwarded-for": "127.0.0.1, 203.0.113.9" }), policy),
+    admit(
+      post({ "x-forwarded-for": "127.0.0.1, 203.0.113.9", cookie }),
+      policy,
+      at,
+    ),
   ).toMatchObject({ code: "CLIENT" });
   expect(trustedClient("::1", [])).toBe(true);
   expect(trustedClient("::ffff:127.0.0.1", [])).toBe(true);
@@ -186,6 +273,8 @@ test("a sandboxed Preview relays, since it only reaches its own rigd", () => {
     dashboardHost: "rig.b-relay.com",
     port: 4100,
     sandboxed: true,
+    accessKey: KEY,
+    trustedClients: parseTrustedClients("100.64.0.0/10"),
   });
   expect(sandboxed.relaysAt).toBeUndefined();
   expect(
@@ -194,10 +283,12 @@ test("a sandboxed Preview relays, since it only reaches its own rigd", () => {
         host: "feature.rig.b-relay.com",
         origin: "https://feature.rig.b-relay.com",
         "x-forwarded-for": "127.0.0.1",
+        cookie: signedInCookie,
       }),
       sandboxed,
+      at,
     ),
-  ).toEqual({ admitted: true, by: "client" });
+  ).toEqual({ admitted: true, by: "session" });
   // Sandboxing lifts only the Preview rule; strangers are still refused.
   expect(
     admit(
@@ -315,48 +406,38 @@ test("shutdown stops every started Target, naming a Preview by its deployment an
   ]);
 });
 
-test("a client beyond the trusted addresses signs in with the access key", () => {
-  const keyed = accessPolicy({
-    publicHost: "rig.b-relay.com",
-    port: 4100,
-    accessKey: "k".repeat(43),
-  });
-  const now = 1_800_000_000_000;
-  const stranger = { "x-forwarded-for": "100.85.72.39" };
-  expect(admit(post(stranger), keyed, { now })).toMatchObject({
-    status: 401,
-    code: "KEY_REQUIRED",
-  });
-  // Presenting the key is allowed from anywhere, but still only from the site's own page.
-  expect(admit(post(stranger), keyed, { now, signingIn: true })).toEqual({
-    admitted: true,
-    by: "signingIn",
-  });
-  expect(
-    admit(post({ ...stranger, origin: "https://evil.test" }), keyed, {
-      now,
-      signingIn: true,
-    }),
-  ).toMatchObject({ code: "ORIGIN" });
-  const cookie = `other=1; rig_session=${sessionValue(keyed.accessKey!, now / 1000 + 60)}`;
-  expect(admit(post({ ...stranger, cookie }), keyed, { now })).toEqual({
-    admitted: true,
-    by: "session",
-  });
-  // Loopback needs no key, and a tunnel is refused even with a session.
-  expect(
-    admit(post({ "x-forwarded-for": "127.0.0.1" }), keyed, { now }),
-  ).toEqual({ admitted: true, by: "client" });
-  expect(
-    admit(post({ ...stranger, cookie, "cf-ray": "1" }), keyed, { now }),
-  ).toMatchObject({ code: "CLIENT" });
-  // Without a key configured, the old refusal stands.
-  expect(
-    admit(post({ "x-forwarded-for": "203.0.113.9" }), policy, { now }),
-  ).toMatchObject({
-    status: 403,
-    code: "CLIENT",
-  });
+test("this Mac and a trusted client sign in with the access key", () => {
+  const now = NOW;
+  const cookie = `other=1; ${signedInCookie}`;
+  for (const client of [
+    {},
+    { "x-forwarded-for": "127.0.0.1" },
+    { "x-forwarded-for": "100.85.72.39" },
+  ] as Record<string, string>[]) {
+    expect(admit(post(client), policy, { now })).toMatchObject({
+      status: 401,
+      code: "KEY_REQUIRED",
+    });
+    // Presenting the key is allowed, but only from the site's own page.
+    expect(admit(post(client), policy, { now, signingIn: true })).toEqual({
+      admitted: true,
+      by: "signingIn",
+    });
+    expect(
+      admit(post({ ...client, origin: "https://evil.test" }), policy, {
+        now,
+        signingIn: true,
+      }),
+    ).toMatchObject({ code: "ORIGIN" });
+    expect(admit(post({ ...client, cookie }), policy, { now })).toEqual({
+      admitted: true,
+      by: "session",
+    });
+    // A tunnel is refused even with a session.
+    expect(
+      admit(post({ ...client, cookie, "cf-ray": "1" }), policy, { now }),
+    ).toMatchObject({ code: "CLIENT" });
+  }
 });
 
 test("a session is refused once expired, forged, or signed with a replaced key", () => {
@@ -389,10 +470,7 @@ test("a session is refused once expired, forged, or signed with a replaced key",
   // A caller that forgets the clock gets no session at all.
   expect(
     admit(
-      post({
-        "x-forwarded-for": "100.85.72.39",
-        cookie: cookie(sessionValue("key-a", expires)),
-      }),
+      post({ cookie: cookie(sessionValue("key-a", expires)) }),
       accessPolicy({
         publicHost: "rig.b-relay.com",
         port: 4100,
@@ -424,6 +502,11 @@ test("a sign-in cookie lasts 400 days from its issue and is renewable", () => {
     secure: true,
     sameSite: "lax",
   });
+  expect(loopbackHost("127.0.0.1:4100")).toBe(true);
+  expect(loopbackHost("localhost:4100")).toBe(true);
+  expect(loopbackHost("rig.b-relay.com")).toBe(false);
+  expect(loopbackHost("127.0.0.1.evil.test:4100")).toBe(false);
+  expect(loopbackHost(null)).toBe(false);
   // A visit on day 399 issues a cookie that outlives the first.
   const later = sessionCookie("key-a", now + days(399));
   const renewed = `${later.name}=${later.value}`;

@@ -25,7 +25,7 @@ services:
       # The name this Target is published under; empty for the working Target, which is loopback only.
       RIG_WEB_HOST: ${rig.host}
       RIG_WEB_DASHBOARD_HOST: rig.b-relay.com
-      # Browsers beyond this Mac sign in with the key in this file; the Service creates it on first start.
+      # Every browser, on this Mac too, signs in with the key in this file; the Service creates it on first start.
       RIG_WEB_KEY_FILE: ${rig.data}/access.key
     healthcheck:
       test: http://127.0.0.1:${port}/healthz
@@ -41,7 +41,8 @@ targets:
           # A Preview's dashboard drives a throwaway rigd of its own, kept in the Preview's data
           # directory and destroyed with it, so an unreviewed Branch never holds the Host's rigd.
           RIG_WEB_SANDBOX_ROOT: ${rig.data}/rigd
-          # rig.b-relay.com resolves to this Mac's Tailscale address, so browsers reach Caddy from the tailnet.
+          # rig.b-relay.com resolves to this Mac's Tailscale address, so browsers reach Caddy from the tailnet; tailnet
+          # addresses may reach the Preview and sign in with its key, and every other address is refused.
           RIG_WEB_TRUSTED_CLIENTS: 100.64.0.0/10
 
 tools:

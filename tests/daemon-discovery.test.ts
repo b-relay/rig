@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { basic, local } from "./support/dashboard-site";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +13,13 @@ import { connectDaemon } from "../src/daemon/connection";
 import { createEnvEditor } from "../src/daemon/env-editor";
 import { processStartTime } from "../src/daemon/process-identity";
 import { startControlPlane } from "../src/daemon/server";
-import { daemon, editConfig, editEnv } from "../web/server/daemon";
+
+// The dashboard reaches rigd only for a signed-in request: these calls run as one from a page on this Mac.
+mock.module("next/headers", () => ({
+  headers: async () => new Headers({ ...local(), authorization: basic() }),
+  cookies: async () => ({ get: () => undefined, set() {} }),
+}));
+const { daemon, editConfig, editEnv } = await import("../web/server/daemon");
 
 /** rig and the dashboard reach rigd through one discovery: the control-plane token goes only to the port of a recorded
  * process verified to still be the one that wrote the record. A loopback listener stands in for whatever holds the

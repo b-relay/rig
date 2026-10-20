@@ -207,13 +207,10 @@ describe("project icon route", () => {
     ]);
   });
   test("sits behind the site's admission", async () => {
-    const source = await Bun.file(
-      new URL("../web/proxy.ts", import.meta.url),
-    ).text();
-    const matcher = source.match(/matcher: \["(.+)"\]/)?.[1];
-    expect(matcher).toBeDefined();
-    const pattern = new RegExp(`^${matcher!}$`);
-    expect(pattern.test("/project-icon")).toBe(true);
-    expect(pattern.test("/healthz")).toBe(false);
+    // The proxy runs on every path; only its public paths go without a session.
+    const proxy = await import("../web/proxy");
+    expect("config" in proxy).toBe(false);
+    expect(proxy.publicPath("/project-icon")).toBe(false);
+    expect(proxy.publicPath("/healthz")).toBe(true);
   });
 });

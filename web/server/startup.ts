@@ -38,9 +38,7 @@ export async function startSite(settings: SiteSettings): Promise<void> {
   const log = (line: string) => process.stdout.write(`${line}\n`);
   await sitePolicy();
   if (settings.keyFile)
-    log(
-      `Clients beyond this Mac sign in with the access key in ${settings.keyFile}`,
-    );
+    log(`Browsers sign in with the access key in ${settings.keyFile}`);
   const sandboxRoot = settings.sandboxRoot;
   let stopSandbox = async () => {};
   if (sandboxRoot) {

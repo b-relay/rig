@@ -1369,7 +1369,7 @@ export const hostConfigSchema = z.strictObject({
           )
           .optional()
           .describe(
-            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry while rigd runs the dashboard, so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Browsers reaching it sign in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. Absent, the dashboard is reached on this Mac only. A change applies when rigd next starts (rigd install).",
+            "A hostname Rig's Caddy publishes the dashboard at, such as rig.example.com, with a certificate like a Target's. Needs a proxy section (Rig's own Caddy), and is served like a proxy.routes entry while rigd runs the dashboard, so a Target or proxy.routes naming it is refused (rigd install refuses one a Target serves before restarting anything). Absent, the dashboard is reached on this Mac only. Either way every browser, this Mac's included, signs in with the access key in auth/dashboard.key under the Rig root, which the dashboard creates on first start. A change applies when rigd next starts (rigd install).",
           ),
         trusted_clients: z
           .array(
@@ -1384,13 +1384,13 @@ export const hostConfigSchema = z.strictObject({
           )
           .default([])
           .describe(
-            "Addresses that reach the published dashboard without the access key: IP addresses, or IPv4 blocks such as 100.64.0.0/10 for a tailnet. Everyone else signs in with the key. A change applies when rigd next starts (rigd install).",
+            "Which addresses may reach the published dashboard and sign in with its access key. Empty (the default): any address may. Listed (IP addresses, or IPv4 blocks such as 100.64.0.0/10 for a tailnet): only this Mac and those addresses; every other address is refused outright. Either way every browser signs in with the key; a listed address never skips it. A change applies when rigd next starts (rigd install).",
           ),
       }),
     ])
     .prefault({})
     .describe(
-      "The dashboard that comes with Rig: rigd starts it and keeps it running at http://127.0.0.1:<port>, and with domain Rig's Caddy publishes it. false turns it off.",
+      "The dashboard that comes with Rig: rigd starts it and keeps it running at http://127.0.0.1:<port>, and with domain Rig's Caddy publishes it. Every browser signs in with the access key in auth/dashboard.key under the Rig root. false turns it off.",
     ),
   // Retired, not refused: rigd reads this file as it starts, so a refusal would keep it from starting at all.
   alerts: z.unknown().optional().meta({

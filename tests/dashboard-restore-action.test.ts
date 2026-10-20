@@ -1,18 +1,14 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { basic, local } from "./support/dashboard-site";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";
 
 /** The dashboard's Restore through its Server Actions (ADR 0017): the server, not the dialog, decides whether what was typed
  * confirms the restore, and the generic command action refuses a restore outright. Next's request headers and rigd's
- * control plane are stood in for; admission is the real one, for a request from this Mac. */
+ * control plane are stood in for; admission is the real one, for a signed-in browser on this Mac. */
 
-const PORT = "48173";
-/** Headers a dashboard page on this Mac sends with a Server Action. */
-let requestHeaders = new Headers({
-  host: `127.0.0.1:${PORT}`,
-  origin: `http://127.0.0.1:${PORT}`,
-  "sec-fetch-site": "same-origin",
-});
+/** Headers a signed-in dashboard page on this Mac sends with a Server Action. */
+let requestHeaders = new Headers({ ...local(), authorization: basic() });
 mock.module("next/headers", () => ({
   headers: async () => requestHeaders,
   cookies: async () => ({ get: () => undefined, set() {} }),
@@ -30,16 +26,11 @@ mock.module("../web/server/daemon", () => ({
     return { outcome: "started", action: command.action };
   },
 }));
-const previousPort = process.env.PORT;
 beforeAll(() => {
-  // The site reads its port on first use; this file's actions are its first and only use in the process.
-  process.env.PORT = PORT;
   capturing = true;
 });
 afterAll(() => {
   capturing = false;
-  if (previousPort === undefined) delete process.env.PORT;
-  else process.env.PORT = previousPort;
 });
 const { runCommand, runRestore } = await import("../web/server/actions");
 
@@ -105,7 +96,8 @@ test("the restore action refuses what is not one restore of a named backup, and 
   // A page from another site cannot drive it, whatever it typed.
   const own = requestHeaders;
   requestHeaders = new Headers({
-    host: `127.0.0.1:${PORT}`,
+    ...local(),
+    authorization: basic(),
     origin: "https://elsewhere.example",
   });
   try {

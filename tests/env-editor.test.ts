@@ -223,7 +223,7 @@ describe("the env editor", () => {
         { op: "set", key: "API_KEY", value: "very-secret-value" },
         { op: "remove", key: "OLD" },
       ],
-      actor: "dashboard (signed in)",
+      actor: "dashboard (100.64.1.2)",
     });
     expect(JSON.stringify(written)).not.toContain("very-secret-value");
     expect(recorded).toEqual([
@@ -236,7 +236,7 @@ describe("the env editor", () => {
         outcome: "updated",
         occurredAt: "2026-10-10T00:00:00.000Z",
         message:
-          "dashboard (signed in) set API_KEY; removed OLD in web/stable.env",
+          "dashboard (100.64.1.2) set API_KEY; removed OLD in web/stable.env",
       },
     ]);
     expect(JSON.stringify(recorded)).not.toContain("very-secret-value");

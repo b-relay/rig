@@ -1,15 +1,35 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { randomBytes } from "node:crypto";
-import { admit, sessionCookie } from "./server/guard";
-import { SIGNING_IN_HEADER } from "./server/signing-in";
-import { sitePolicy } from "./server/site";
+import {
+  admit,
+  KEY_CHALLENGE,
+  loopbackHost,
+  sessionCookie,
+  type AccessPolicy,
+} from "./server/guard";
+import { site, sitePolicy } from "./server/site";
 import { returnPath } from "./lib/return-path";
-/** Decides every page and action before Next renders anything, and gives each page the nonce
- * its scripts run under. Static assets and the readiness probe are excluded by the matcher. */
+/** Runs for every request (there is no matcher): decides every page, action and route before Next renders anything. */
 export async function proxy(request: NextRequest) {
-  const policy = await sitePolicy();
-  const now = Date.now();
-  const admission = admit(request, policy, { now });
+  return guard(request, await sitePolicy(), Date.now(), site().keyFile);
+}
+/** Pure: whether a path is served without a session: the readiness probe, the icon a browser asks for, and the
+ * build's own scripts, styles and fonts, which the sign-in page needs and which hold nothing about rigd. Exact, so a
+ * path that only starts like one is decided like any page. */
+export const publicPath = (pathname: string): boolean =>
+  pathname === "/healthz" ||
+  pathname === "/favicon.ico" ||
+  pathname.startsWith("/_next/static/");
+/** Decides one request under `policy` at `now` (epoch milliseconds). `keyFile` is named to a browser on the loopback
+ * address that has to sign in. Every response carries the
+ * Content-Security-Policy, public and not-found ones included, and each page gets the nonce its
+ * scripts run under. */
+export function guard(
+  request: NextRequest,
+  policy: AccessPolicy,
+  now: number,
+  keyFile?: string,
+): NextResponse {
   const nonce = randomBytes(16).toString("base64");
   const csp = [
     "default-src 'none'",
@@ -24,8 +44,13 @@ export async function proxy(request: NextRequest) {
   ].join("; ");
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("content-security-policy", csp);
-  requestHeaders.delete(SIGNING_IN_HEADER);
-  const answer = decide(request, admission, requestHeaders);
+  if (publicPath(request.nextUrl.pathname)) {
+    const answer = NextResponse.next({ request: { headers: requestHeaders } });
+    answer.headers.set("content-security-policy", csp);
+    return answer;
+  }
+  const admission = admit(request, policy, { now });
+  const answer = decide(request, admission, requestHeaders, keyFile);
   answer.headers.set("content-security-policy", csp);
   answer.headers.set("cache-control", "no-store");
   // A browser in use never reaches its session's expiry: each admitted visit renews it.
@@ -36,14 +61,15 @@ export async function proxy(request: NextRequest) {
     );
   return answer;
 }
-/** An admitted request proceeds. A browser that only lacks a session is sent to the sign-in
- * page, which is served to it with none of the site's frame, and its Server Actions reach Next
- * so that `signIn` can accept the key; every other action refuses again by itself. Anything
+/** An admitted request proceeds. A browser that only lacks the key is sent to the sign-in
+ * page. Under the published name that page and its own Server Action reach Next so that `signIn`
+ * can accept the key; on the loopback address the page asks the browser for the key itself. Anything
  * else is refused here. */
 export function decide(
   request: NextRequest,
   admission: ReturnType<typeof admit>,
   requestHeaders: Headers,
+  keyFile?: string,
 ): NextResponse {
   if (admission.admitted) {
     // A browser that is already signed in has nothing to do on the sign-in page: send it on to where it was going.
@@ -63,9 +89,16 @@ export function decide(
     return NextResponse.next({ request: { headers: requestHeaders } });
   }
   if (admission.code === "KEY_REQUIRED") {
-    requestHeaders.set(SIGNING_IN_HEADER, "1");
     const { pathname, search } = request.nextUrl;
-    if (request.method === "GET" && pathname === "/sign-in")
+    const signInPage = pathname === "/sign-in";
+    if (loopbackHost(request.headers.get("host"))) {
+      // Asked at /sign-in, the browser keeps the key for the whole origin, since that page sits at its root.
+      if (signInPage && request.method === "GET") return keyChallenge(keyFile);
+    } else if (
+      signInPage &&
+      (request.method === "GET" ||
+        (request.method === "POST" && request.headers.has("next-action")))
+    )
       return NextResponse.next({ request: { headers: requestHeaders } });
     if (request.method === "GET") {
       // A redirect rather than a rewrite: Next spells 127.0.0.1 as localhost in a rewrite's
@@ -75,14 +108,28 @@ export function decide(
       if (pathname !== "/") signIn.searchParams.set("next", pathname + search);
       return NextResponse.redirect(signIn, 303);
     }
-    if (request.method === "POST" && request.headers.has("next-action"))
-      return NextResponse.next({ request: { headers: requestHeaders } });
   }
   return NextResponse.json(
     { error: { code: admission.code, message: admission.message } },
     { status: admission.status },
   );
 }
-export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|healthz).*)"],
-};
+const escape = (text: string) =>
+  text.replace(/[&<>"']/g, (each) => `&#${each.codePointAt(0)};`);
+/** Asks a browser on the loopback address for the key: it prompts for a user name and password and keeps them for
+ * this origin alone. The page shown if the prompt is dismissed says where the key is. */
+function keyChallenge(keyFile: string | undefined): NextResponse {
+  const where = keyFile
+    ? `<p>Read it on this Mac with <code>cat ${escape(keyFile)}</code>.</p>`
+    : "";
+  return new NextResponse(
+    `<!doctype html><meta charset="utf-8"><title>Sign in · Rig</title><h1>Sign in</h1><p>This dashboard controls this Mac. Your browser asks for its access key: enter any user name, such as rig, and the key as the password.</p>${where}<p><a href="">Try again</a></p>`,
+    {
+      status: 401,
+      headers: {
+        "www-authenticate": KEY_CHALLENGE,
+        "content-type": "text/html; charset=utf-8",
+      },
+    },
+  );
+}

@@ -46,8 +46,8 @@ export function dashboardDirectory(
 ): string {
   return join(root, "dashboard", `v${release}`);
 }
-/** Where the dashboard is published beyond this Mac: Rig's Caddy serves `domain` at `authority`, and `trustedClients`
- * reach it without the access key. */
+/** Where the dashboard is published beyond this Mac: Rig's Caddy serves `domain` at `authority`, and `trustedClients`,
+ * when listed, are the only addresses besides this Mac that may reach it there and sign in with the access key. */
 export interface DashboardPublication {
   readonly domain: string;
   /** What browsers address it as, `host[:port]`: the domain, with Caddy's HTTPS port when that is not 443. */
@@ -275,12 +275,13 @@ export async function openDashboard(
     HOSTNAME: "127.0.0.1",
     PORT: String(deps.port),
     RIG_ROOT: deps.root,
-    // Published, it is the dashboard at that host: browsers beyond this Mac sign in with the key, unless trusted.
+    // Every browser signs in with this key, on this Mac too.
+    RIG_WEB_KEY_FILE: join(deps.root, "auth", "dashboard.key"),
+    // Published, it is the dashboard at that host; a non-empty trusted list limits who may reach it there.
     ...(deps.published
       ? {
           RIG_WEB_HOST: deps.published.authority,
           RIG_WEB_DASHBOARD_HOST: deps.published.authority,
-          RIG_WEB_KEY_FILE: join(deps.root, "auth", "dashboard.key"),
           RIG_WEB_TRUSTED_CLIENTS: deps.published.trustedClients.join(","),
         }
       : {}),

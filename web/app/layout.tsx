@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import localFont from "next/font/local";
 import type { ReactNode } from "react";
 import "./globals.css";
@@ -7,7 +7,7 @@ import { TopBar } from "@/components/top-bar";
 import { BottomTabs } from "@/components/nav";
 import { Sidebar } from "@/components/shell/sidebar";
 import { parseTheme, THEME_COOKIE } from "@/lib/theme";
-import { SIGNING_IN_HEADER } from "@/server/signing-in";
+import { sessionHeld } from "@/server/session";
 import { site } from "@/server/site";
 
 /* Fonts ship with the site (next/font/local over the fontsource files), so no page asks another
@@ -51,8 +51,9 @@ export default async function RootLayout({
 }: {
   children: ReactNode;
 }) {
-  // A browser that has yet to sign in gets the frame without the sections and without rigd's state.
-  const signingIn = (await headers()).get(SIGNING_IN_HEADER) === "1";
+  // A request without a session gets the frame without the sections and without rigd's state: the sign-in page, or a
+  // not-found page for a path the proxy lets through without one.
+  const signingIn = !(await sessionHeld());
   const theme = parseTheme((await cookies()).get(THEME_COOKIE)?.value);
   const sandbox = site().sandboxRoot !== undefined;
   return (

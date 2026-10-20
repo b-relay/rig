@@ -225,6 +225,7 @@ export async function composeDaemon(
     installer: createArtifactInstaller({
       run: runCommand,
       bunExecutable: toolBun,
+      root,
     }),
     router: managed?.caddy.router ?? external!,
     environment: executionBaseline(process.env),

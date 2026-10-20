@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import {
   chmod,
   lstat,
@@ -153,10 +153,59 @@ test("a directory only others can read is made the owner's alone; what the owner
   await chmod(join(root, "auth"), 0o500);
   await privateDirectory(root, join(root, "daemon"));
   await privateDirectory(root, join(root, "auth"));
-  expect(await mode(root)).toBe(0o700);
+  // The root is only checked on the way down, so a write never changes a directory it was merely handed as its anchor.
+  expect(await mode(root)).toBe(0o755);
   expect(await mode(join(root, "daemon"))).toBe(0o700);
   expect(await mode(join(root, "auth"))).toBe(0o500);
+  await privateDirectory(root, root);
+  expect(await mode(root)).toBe(0o700);
   await chmod(join(root, "auth"), 0o700);
+});
+
+test("the root may itself be a link: what lies below it is checked and written where the link leads", async () => {
+  const { root, outside } = await layout();
+  const linked = join(outside, "..", "linked-root");
+  await symlink(root, linked);
+  await replacePrivateFile(linked, join(linked, "runtime", "state.json"), "{}");
+  expect(await readFile(join(root, "runtime", "state.json"), "utf8")).toBe(
+    "{}",
+  );
+  expect(await mode(join(root, "runtime"))).toBe(0o700);
+  expect(
+    await readPrivateFile(linked, join(linked, "runtime", "state.json")),
+  ).toBe("{}");
+});
+
+test("an append makes an existing log readable by others the owner's alone", async () => {
+  const { root } = await layout();
+  const log = join(root, "logs", "rigd.jsonl");
+  await mkdir(join(root, "logs"), { mode: 0o700 });
+  await writeFile(log, "old\n", { mode: 0o644 });
+  await chmod(log, 0o644);
+  await appendPrivateFile(root, log, "new\n");
+  expect(await readFile(log, "utf8")).toBe("old\nnew\n");
+  expect(await mode(log)).toBe(0o600);
+});
+
+test("a private read refuses a file another user owns", async () => {
+  const { root } = await layout();
+  await mkdir(join(root, "capture"), { mode: 0o700 });
+  const path = join(root, "capture", "request.json");
+  await writeFile(path, "{}", { mode: 0o600 });
+  // The root and capture directory are judged as the user's; the file, the third ownership asked about, as another's.
+  const uid = process.getuid!();
+  let asked = 0;
+  const owner = spyOn(process, "getuid").mockImplementation(() =>
+    ++asked > 2 ? uid + 1 : uid,
+  );
+  try {
+    await expect(readPrivateFile(root, path)).rejects.toMatchObject({
+      code: "RIG_FILE_UNTRUSTED",
+      details: { problem: `is owned by uid ${uid}, not by you` },
+    });
+  } finally {
+    owner.mockRestore();
+  }
 });
 
 test("a path outside the root is never written", async () => {

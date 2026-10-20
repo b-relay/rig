@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { link, open, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { appendPrivateFile, privateDirectory } from "./private-files";
+import { appendInPrivateDirectory, privateDirectory } from "./private-files";
 import {
   DEFAULT_LOG_RETENTION,
   type LogRetention,
@@ -9,8 +9,10 @@ import {
 /** A rotation lock older than this was left by a writer that died mid-rotation and is reclaimed. */
 const STALE_ROTATION_MS = 30_000;
 
-/** Appends to a Target's `target.jsonl` in `logRoot`, a private directory under the Rig root `root`, rotating a full file
- * first (see `rotateLogFile`), and bringing back a log directory that was removed underneath the running component. */
+/** Appends to a Target's `target.jsonl` in `logRoot`, rotating a full file first (see `rotateLogFile`), and bringing back a
+ * log directory that was removed underneath the running component. `logRoot` is a directory under the Rig root `root` that
+ * the caller has made with `privateDirectory`: the supervisor as the component starts, the Target effects before they
+ * record. */
 export async function appendTargetLog(
   root: string,
   logRoot: string,
@@ -18,10 +20,16 @@ export async function appendTargetLog(
   retention: LogRetention = DEFAULT_LOG_RETENTION,
 ): Promise<void> {
   const file = join(logRoot, "target.jsonl");
-  // Checked before the rotation renames anything in it.
-  await privateDirectory(root, logRoot);
   await rotateLogFile(file, retention);
-  await appendPrivateFile(root, file, text);
+  // The directory was checked as the component started (and is checked again whenever it has to be made), so each line
+  // costs one open that refuses a link at the file.
+  try {
+    await appendInPrivateDirectory(file, text);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await privateDirectory(root, logRoot);
+    await appendInPrivateDirectory(file, text);
+  }
 }
 
 /** Rotates `file` once it holds `retention.maxBytes`: each kept generation moves one number up (`file` becomes `file.1`),

@@ -24,7 +24,8 @@ const writableByOthers = (mode: number) => (mode & 0o022) !== 0;
 
 /** Makes `directory` (the root or a directory below it) and every missing directory on the way, each 0700, and checks every
  * existing one: a symbolic link, a file, another user's directory, or one others can write fails RIG_ROOT_UNSAFE naming it.
- * A directory others can only read or search is made the owner's alone. */
+ * A directory below the root that others can only read or search is made the owner's alone; the root is, only when it is
+ * `directory` itself. */
 export async function privateDirectory(
   root: string,
   directory: string,
@@ -34,7 +35,7 @@ export async function privateDirectory(
 
 /** Replaces `path` whole: the bytes go to a new private file beside it (created exclusively, never through a link), which is
  * then renamed over whatever `path` was, so a reader sees the old file or the new one and a link at `path` is replaced, not
- * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file and then its directory entry. `confirm`
+ * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename and its directory after it. `confirm`
  * runs once the new file is written, just before the rename; what it throws abandons the replacement. A failed replacement
  * leaves `path` as it was and removes the temporary file. */
 export async function replacePrivateFile(
@@ -63,7 +64,8 @@ export async function replacePrivateFile(
   } finally {
     await rm(temporary, { force: true });
   }
-  if (options.durable) await syncDirectory(directory);
+  // The file is replaced by now; a directory that cannot be flushed does not make that a failed write.
+  if (options.durable) await syncDirectory(directory).catch(() => {});
 }
 
 /** Opens `path` in a private directory for writing, refusing a link there: `append` adds to it (creating it when missing),
@@ -74,6 +76,27 @@ export async function openPrivateFile(
   how: "append" | "create",
 ): Promise<FileHandle> {
   await privateDirectory(root, dirname(path));
+  return await openInPrivateDirectory(path, how);
+}
+
+/** Appends `text` to `path` in a directory the caller has already made with `privateDirectory`, refusing a link at `path`:
+ * a writer that appends often checks its directory once and then appends with this. */
+export async function appendInPrivateDirectory(
+  path: string,
+  text: string,
+): Promise<void> {
+  const file = await openInPrivateDirectory(path, "append");
+  try {
+    await file.writeFile(text);
+  } finally {
+    await file.close();
+  }
+}
+
+async function openInPrivateDirectory(
+  path: string,
+  how: "append" | "create",
+): Promise<FileHandle> {
   if (how === "create") return await openNew(path, 0o600);
   const file = await open(
     path,
@@ -102,12 +125,8 @@ export async function appendPrivateFile(
   path: string,
   text: string,
 ): Promise<void> {
-  const file = await openPrivateFile(root, path, "append");
-  try {
-    await file.writeFile(text);
-  } finally {
-    await file.close();
-  }
+  await privateDirectory(root, dirname(path));
+  await appendInPrivateDirectory(path, text);
 }
 
 /** The text of `path`, read only when every directory from `root` to it passes `privateDirectory`'s checks (none is made or
@@ -186,7 +205,8 @@ async function walk(
   // The root itself may be a link (to another volume, say): it is judged where it leads.
   if (how === "make")
     await mkdir(base, { recursive: true, mode: PRIVATE_DIRECTORY });
-  await checkDirectory(base, await stat(base), how);
+  // The root is only checked on the way to a directory below it: it is tightened when it is the directory asked for.
+  await checkDirectory(base, await stat(base), target === base ? how : "check");
   let current = base;
   for (const part of relative(base, target).split(sep).filter(Boolean)) {
     current = join(current, part);

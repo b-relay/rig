@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { chmod, open, readdir, rm, link, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  appendPrivateFile,
+  appendInPrivateDirectory,
   privateDirectory,
 } from "../providers/private-files";
 import type { DiagnosticEntry, DiagnosticLog } from "./types";
@@ -101,7 +101,6 @@ export function createFileDiagnosticLog(
           timestamp.slice(0, 10),
         );
         await appendRecord(
-          options.root,
           path,
           JSON.stringify(diagnosticRecord(entry, options.source, timestamp)),
         );
@@ -127,9 +126,10 @@ export function createFileDiagnosticLog(
 
 /** SQLite owns a kernel-released write lock; a killed writer leaves no stale lease to reclaim. */
 async function acquireLock(path: string): Promise<() => void> {
+  // Made (0600) or opened first without following a link, so SQLite never creates its file where a planted link leads.
+  await appendInPrivateDirectory(path, "");
   const database = new Database(path, { create: true });
   try {
-    await chmod(path, 0o600);
     database.exec("PRAGMA busy_timeout=0");
     for (let attempt = 0; attempt < 200; attempt++) {
       try {
@@ -154,13 +154,9 @@ async function acquireLock(path: string): Promise<() => void> {
   }
 }
 /** A record killed mid-write leaves a line without its newline; the next record starts on its own line rather than gluing onto it. */
-async function appendRecord(
-  root: string,
-  path: string,
-  record: string,
-): Promise<void> {
+async function appendRecord(path: string, record: string): Promise<void> {
   const separator = (await endsWithNewline(path)) ? "" : "\n";
-  await appendPrivateFile(root, path, `${separator}${record}\n`);
+  await appendInPrivateDirectory(path, `${separator}${record}\n`);
 }
 async function endsWithNewline(path: string): Promise<boolean> {
   let file;

@@ -1,6 +1,5 @@
 import { readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { captureRequestRoot } from "./capture-request";
 import { replacePrivateFile } from "./private-files";
 import { z } from "zod";
 import type { ProcessObservation } from "./contracts";
@@ -61,11 +60,12 @@ export type CaptureObservation = z.infer<typeof observationSchema>;
 
 /** Capture's existing observation loop publishes a complete, atomic child snapshot. */
 export async function writeCaptureObservation(
+  root: string,
   requestPath: string,
   evidence: CaptureObservation,
 ): Promise<void> {
   await replacePrivateFile(
-    captureRequestRoot(requestPath),
+    root,
     `${requestPath}.observation.json`,
     JSON.stringify(evidence),
   );

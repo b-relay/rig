@@ -280,6 +280,7 @@ export function createTargetEffects(
     lines: readonly string[],
   ) => {
     if (!lines.length) return;
+    await privateDirectory(options.root, target.logRoot);
     await appendTargetLog(
       options.root,
       target.logRoot,

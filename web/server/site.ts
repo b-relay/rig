@@ -68,7 +68,9 @@ let policy: Promise<AccessPolicy> | undefined;
 export function sitePolicy(): Promise<AccessPolicy> {
   policy ??= (async () => {
     const current = site();
-    const key = current.keyFile ? await accessKey(current.keyFile) : undefined;
+    const key = current.keyFile
+      ? await accessKey(current.keyFile, current.root)
+      : undefined;
     return accessPolicy({
       ...(key ? { accessKey: key } : {}),
       port: current.port,

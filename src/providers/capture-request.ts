@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { z } from "zod";
 import { readPrivateFile, replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
@@ -30,18 +30,25 @@ function captureDocument(
     ...(configRoot ? { configRoot } : {}),
   };
 }
-/** The Rig root a capture request and the files written beside it live under: requests sit in its `capture` directory. */
+/** The Rig root of the request at `requestPath`, for the capture wrapper, which is handed nothing but that path: rigd writes
+ * requests only in its root's `capture` directory, so a path anywhere else is refused (CAPTURE_REQUEST) rather than taken
+ * to name a root. */
 export function captureRequestRoot(requestPath: string): string {
-  return dirname(dirname(requestPath));
+  const directory = dirname(resolve(requestPath));
+  if (basename(directory) !== "capture")
+    throw invalid(requestPath, "not in a capture directory");
+  return dirname(directory);
 }
-/** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document, never a partial one. */
+/** The wrapper reads the request on its own schedule, so it is replaced whole: a reader sees the previous or the new document,
+ * never a partial one. `root` is the Rig root whose capture directory holds `requestPath`. */
 export async function writeCaptureRequest(
+  root: string,
   requestPath: string,
   request: ManagedProcess,
   configRoot?: string,
 ): Promise<void> {
   await replacePrivateFile(
-    captureRequestRoot(requestPath),
+    root,
     requestPath,
     JSON.stringify(captureDocument(request, configRoot)),
   );
@@ -51,11 +58,12 @@ export async function writeCaptureRequest(
  * (RIG_FILE_UNTRUSTED or RIG_ROOT_UNSAFE otherwise). Fails as CAPTURE_REQUEST naming the path when the document is absent,
  * unreadable, or not a capture request. */
 export async function readCaptureRequest(
+  root: string,
   requestPath: string,
 ): Promise<CaptureRequest> {
   let raw: string;
   try {
-    raw = await readPrivateFile(captureRequestRoot(requestPath), requestPath);
+    raw = await readPrivateFile(root, requestPath);
   } catch (error) {
     if (error instanceof RigError) throw error;
     throw invalid(requestPath, (error as NodeJS.ErrnoException).code ?? "read");

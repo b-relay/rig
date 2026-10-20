@@ -166,8 +166,9 @@ A computer that can run `rigd` and own Rig runtime state.
 
 The directory that holds one Host's Rig: `~/.rig`, or `RIG_ROOT`. It is the
 user's alone: every directory Rig keeps there is a real directory the user owns
-that no one else can write, and every file Rig writes there is a private file
-it renamed into place, never a link it followed. `rigd install` and `rigd`'s
+that no one else can write, and Rig never writes there through a link: a
+record is a new private file renamed into place, and a log is appended only
+when it is not a link. `rigd install` and `rigd`'s
 start refuse a root that is not (`RIG_ROOT_UNSAFE`), and the capture wrapper
 runs only a request that is private to the user (`RIG_FILE_UNTRUSTED`).
 

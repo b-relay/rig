@@ -293,7 +293,7 @@ test("the capture wrapper refuses a request others can write, or one reached thr
 
   await request(path);
   await chmod(path, 0o620);
-  await expect(readCaptureRequest(path)).rejects.toMatchObject({
+  await expect(readCaptureRequest(root, path)).rejects.toMatchObject({
     code: "RIG_FILE_UNTRUSTED",
   });
   const swapped = await runCommand({
@@ -305,7 +305,7 @@ test("the capture wrapper refuses a request others can write, or one reached thr
   await rm(path);
   await request(join(outside, "request.json"));
   await symlink(join(outside, "request.json"), path);
-  await expect(readCaptureRequest(path)).rejects.toMatchObject({
+  await expect(readCaptureRequest(root, path)).rejects.toMatchObject({
     code: "RIG_FILE_UNTRUSTED",
   });
   const linked = await runCommand({
@@ -316,9 +316,17 @@ test("the capture wrapper refuses a request others can write, or one reached thr
   await rm(path);
   await request(path);
   await chmod(join(root, "capture"), 0o770);
-  await expect(readCaptureRequest(path)).rejects.toMatchObject({
+  await expect(readCaptureRequest(root, path)).rejects.toMatchObject({
     code: "RIG_ROOT_UNSAFE",
   });
+
+  // A request outside a capture directory names no Rig root the wrapper could check, so it is refused too.
+  await request(join(base, "request.json"));
+  const elsewhere = await runCommand({
+    command: [process.execPath, wrapper, join(base, "request.json")],
+  });
+  expect(elsewhere.exitCode).not.toBe(0);
+  expect(elsewhere.stderr).toContain("not in a capture directory");
 
   await expect(stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
 }, 20000);
@@ -331,7 +339,7 @@ test("the dashboard's access key is never read from or written through a link pl
   await writeFile(known, `${"k".repeat(43)}\n`, { mode: 0o644 });
   await symlink(known, file);
   const before = await snapshot(outside);
-  await expect(accessKey(file)).rejects.toMatchObject({
+  await expect(accessKey(file, root)).rejects.toMatchObject({
     code: "RIG_FILE_UNTRUSTED",
   });
   expect(await snapshot(outside)).toEqual(before);
@@ -340,11 +348,11 @@ test("the dashboard's access key is never read from or written through a link pl
   const previous = process.umask(0o002);
   let key: string;
   try {
-    key = await accessKey(file);
+    key = await accessKey(file, root);
   } finally {
     process.umask(previous);
   }
   expect(key).toHaveLength(43);
   expect(await mode(file)).toBe(0o600);
-  expect(await accessKey(file)).toBe(key);
+  expect(await accessKey(file, root)).toBe(key);
 });

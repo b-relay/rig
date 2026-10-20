@@ -1,9 +1,6 @@
 import { access, link, readFile, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import {
-  privateDirectory,
-  replacePrivateFile,
-} from "../providers/private-files";
+import { join } from "node:path";
+import { replacePrivateFile } from "../providers/private-files";
 import { z } from "zod";
 import {
   MIGRATED_STATE_VERSIONS,
@@ -108,13 +105,15 @@ export class FileStateStore implements StateStore {
       const state = await this.read();
       await change(state);
       schema.parse(state);
-      await privateDirectory(this.root, dirname(this.path));
-      await keepPreviousGeneration(this.path, this.backupPath);
       await replacePrivateFile(
         this.root,
         this.path,
         `${JSON.stringify(state, null, 2)}\n`,
-        { durable: true },
+        {
+          durable: true,
+          // Once the new state is safely on disk, just before it replaces the current one.
+          confirm: () => keepPreviousGeneration(this.path, this.backupPath),
+        },
       );
     });
     this.queue = operation.catch(() => {});

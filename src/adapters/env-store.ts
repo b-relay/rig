@@ -1,4 +1,4 @@
-import { chmod, lstat, mkdir, readFile, stat } from "node:fs/promises";
+import { chmod, lstat, readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { RigError } from "../domain/errors";
 import { replacePrivateFile } from "../providers/private-files";
@@ -140,8 +140,8 @@ export async function writeEnvFile(
       );
   }
   const next = editEnvText(current ?? "", changes);
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  // A directory that existed before keeps whatever mode it had; the env tree is the operator's alone.
+  // The env tree is the operator's alone: directories they made by hand are made private here, as they always were, before
+  // the replacement below checks them and makes what is missing.
   for (const directory of privateDirectories(privateRoot, dirname(path)))
     await chmod(directory, 0o700).catch(() => {});
   // The caller refused symlinks below the env root (assertNoSymlinkBelow), so this replaces the file the scope names.

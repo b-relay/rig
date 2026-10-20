@@ -1,6 +1,5 @@
 import { readFile, rm } from "node:fs/promises";
 import { z } from "zod";
-import { captureRequestRoot } from "./capture-request";
 import { replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 const statusSchema = z.discriminatedUnion("state", [
@@ -35,11 +34,12 @@ export async function clearCaptureStatus(requestPath: string): Promise<void> {
   await rm(`${requestPath}.status.json`, { force: true });
 }
 export async function writeCaptureStatus(
+  root: string,
   requestPath: string,
   status: CaptureStatus,
 ): Promise<void> {
   await replacePrivateFile(
-    captureRequestRoot(requestPath),
+    root,
     `${requestPath}.status.json`,
     JSON.stringify(status),
   );

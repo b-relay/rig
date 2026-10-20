@@ -161,10 +161,10 @@ test("rigd capture with a missing request file reports the failure in one line e
     ]);
     return { code, stderr };
   };
-  const missing = await rigd("capture", join(cwd, "absent.json"));
+  const missing = await rigd("capture", join(cwd, "capture", "absent.json"));
   expect(missing.code).toBe(1);
   expect(missing.stderr).toBe(
-    `The capture request ${join(cwd, "absent.json")} is missing or not a capture request (ENOENT).\nStart the Target again so rigd rewrites its capture request.\n`,
+    `The capture request ${join(cwd, "capture", "absent.json")} is missing or not a capture request (ENOENT).\nStart the Target again so rigd rewrites its capture request.\n`,
   );
   expect(await readdir(cwd)).toEqual([]);
   // Without its file the command is a person's mistake, so the documented CLI answers it.

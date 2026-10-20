@@ -37,10 +37,14 @@ the user, that no other user can write. One that fails is refused by path as
 checked nothing in it was changed, `sudo chown -R <you> <path>`, or replacing a
 link with a real directory). A directory an earlier Rig left readable by
 others (`drwxr-xr-x`) is made `0700`; Rig makes every directory it creates
-`0700` and every record `0600`, whatever the umask. Rig never writes through a
-link under its root: a record is written to a new file beside it and renamed
-into place, so a link planted at its path is replaced and whatever it led to is
-left alone. The root itself may be a link, for example to another volume. The
+`0700` and its records and logs `0600`, whatever the umask. Rig never writes
+through a link under its root: a record is written to a new file beside it and
+renamed into place, so a link planted at its path is replaced and whatever it
+led to is left alone, and a log is appended only when it is not a link. Two
+kinds of files there follow their own rules: a Service's data (its database
+files and data directories) is the application's, and the route file another
+Caddy imports is written through its link on purpose, at the real path Rig
+read. The root itself may be a link, for example to another volume. The
 capture wrapper (`rigd capture`) runs only a request that is a regular file the
 user owns and no one else can write, in a capture directory that is the user's
 alone.

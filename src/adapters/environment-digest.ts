@@ -1,9 +1,8 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RigError } from "../domain/errors";
 import { environmentText } from "../domain/service-definition";
-import { openPrivateFile } from "../providers/private-files";
+import { openPrivateFile, readPrivateFile } from "../providers/private-files";
 
 /** `<RIG_ROOT>/auth/environment-digest.key`: the random key rigd takes environment digests with, readable by the user only. */
 export function environmentKeyPath(root: string): string {
@@ -36,7 +35,7 @@ export function createEnvironmentDigest(root: string): EnvironmentDigest {
 async function loadKey(root: string): Promise<Buffer> {
   const path = environmentKeyPath(root);
   try {
-    return parseKey(await readFile(path, "utf8"), path);
+    return parseKey(await readPrivateFile(root, path), path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       throw keyFailure(path, error);
@@ -55,7 +54,7 @@ async function loadKey(root: string): Promise<Buffer> {
   // Another operation may have created it a moment ago and still be writing it: read again briefly before refusing it.
   for (let attempt = 0; ; attempt++) {
     try {
-      return parseKey(await readFile(path, "utf8"), path);
+      return parseKey(await readPrivateFile(root, path), path);
     } catch (error) {
       if (attempt >= 20) throw keyFailure(path, error);
       await new Promise((resolve) => setTimeout(resolve, 10));

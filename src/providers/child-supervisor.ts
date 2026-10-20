@@ -297,7 +297,7 @@ export function createChildSupervisor(
     // A wrapper holds the grace its start was given, which may be longer than the one asked for now (a plan changed in
     // between): it is never cut off before that grace can finish.
     const captured = options.captureCommand
-      ? await readCaptureRequest(capturePath(key)).catch(() => undefined)
+      ? await readCaptureRequest(root, capturePath(key)).catch(() => undefined)
       : undefined;
     const budget = stopBudget(
       Math.max(request.graceMs, captured?.stopGraceMs ?? 0),
@@ -399,7 +399,7 @@ export function createChildSupervisor(
     await rm(leasePath(key), { force: true });
     if (options.captureCommand) {
       // A wrapper that had to kill its application said so before it ended.
-      killed ??= await readCaptureStop(capturePath(key));
+      killed ??= await readCaptureStop(root, capturePath(key));
       await removeCaptureStop(capturePath(key));
       await rm(capturePath(key), { force: true });
     }
@@ -493,6 +493,7 @@ export function createChildSupervisor(
       await privateDirectory(root, captureRoot);
       await clearCaptureStatus(capturePath(request.key));
       await writeCaptureRequest(
+        root,
         capturePath(request.key),
         request,
         options.configRoot,

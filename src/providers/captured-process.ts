@@ -59,7 +59,8 @@ async function runUntilStopped(
     processInspection?: ProcessInspection;
   },
 ): Promise<{ exitCode: number; signal?: NodeJS.Signals }> {
-  const request = await readCaptureRequest(requestPath);
+  const root = captureRequestRoot(requestPath);
+  const request = await readCaptureRequest(root, requestPath);
   // The wrapper is the effect owner: it names the platform runner once and shares it with its supervisor.
   const processInspection =
     dependencies.processInspection ??
@@ -69,7 +70,7 @@ async function runUntilStopped(
     });
   const supervisor = createChildSupervisor({
     stateRoot: dirname(requestPath),
-    root: captureRequestRoot(requestPath),
+    root,
     timing: createProcessTiming(),
     processInspection,
     // The wrapper reads the Host's logs settings as rigd does, so every writer of the Target log rotates it alike.
@@ -94,7 +95,7 @@ async function runUntilStopped(
       .then(async (result) => {
         // Said before the wrapper ends, so whoever stopped it can tell the application needed SIGKILL.
         if (result.killed)
-          await writeCaptureStop(requestPath, {
+          await writeCaptureStop(root, requestPath, {
             incarnation: request.incarnation,
             killed: result.killed,
           }).catch(() => {});
@@ -134,7 +135,7 @@ async function runUntilStopped(
       );
     const started = await supervisor.ensureRunning(request);
     applicationPid = started.pid!;
-    await writeCaptureStatus(requestPath, {
+    await writeCaptureStatus(root, requestPath, {
       state: "running",
       pid: applicationPid,
     });
@@ -144,7 +145,7 @@ async function runUntilStopped(
         observation: CaptureObservation["observation"],
         applicationIdentity?: string,
       ) =>
-        writeCaptureObservation(requestPath, {
+        writeCaptureObservation(root, requestPath, {
           wrapperPid: process.pid,
           wrapperIdentity,
           observedAt: Date.now(),
@@ -169,7 +170,7 @@ async function runUntilStopped(
       await stopping;
       const message = `The capture wrapper could no longer observe the running component (${describe(error)}) and stopped it.`;
       await publish({ state: "stopped", reason: message });
-      await writeCaptureStatus(requestPath, {
+      await writeCaptureStatus(root, requestPath, {
         state: "stopped",
         pid: applicationPid,
         message,
@@ -178,7 +179,7 @@ async function runUntilStopped(
     }
   } catch (error) {
     if (applicationPid === undefined)
-      await writeCaptureStatus(requestPath, {
+      await writeCaptureStatus(root, requestPath, {
         state: "failed",
         message: `The managed component could not start (${describe(error)}).`,
       });

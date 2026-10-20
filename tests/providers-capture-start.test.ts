@@ -37,7 +37,7 @@ test("waitForCaptureStart expires on the injected clock without real time passin
     expect(expired.pauses).toEqual([20, 20, 20, 20, 20]);
     expect(performance.now() - started).toBeLessThan(100);
 
-    await writeCaptureStatus(requestPath, {
+    await writeCaptureStatus(root, requestPath, {
       state: "failed",
       message: "The command exited before it listened.",
     });
@@ -50,7 +50,10 @@ test("waitForCaptureStart expires on the injected clock without real time passin
     });
     expect(failed.pauses).toEqual([]);
 
-    await writeCaptureStatus(requestPath, { state: "running", pid: 4242 });
+    await writeCaptureStatus(root, requestPath, {
+      state: "running",
+      pid: 4242,
+    });
     expect(await waitForCaptureStart(requestPath, failed.wait)).toBe(4242);
   } finally {
     await rm(root, { recursive: true, force: true });

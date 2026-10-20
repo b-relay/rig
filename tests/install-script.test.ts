@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -82,8 +83,11 @@ async function release(
     if (options.rigd !== false)
       await writeFile(
         join(dir, "rigd"),
-        // rigd status reports the release it serves: this one, unless the test says another.
-        `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\necho "rigd $*"\n`,
+        // rigd status reports the release it serves: this one, unless the test says another. With RIG_TEST_LOCK set,
+        // rigd install records its parent's pid, what the installation lock records, and whether lockf finds it held.
+        `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\n` +
+          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; printf '%s %s ' "$PPID" "$(cat "$lock")" > "$RIG_TEST_LOCK"; /usr/bin/lockf -s -t 0 "$lock" true; echo $? >> "$RIG_TEST_LOCK"; fi\n` +
+          `echo "rigd $*"\n`,
       );
     await run([
       "tar",
@@ -235,18 +239,155 @@ test("a release that cannot be downloaded installs nothing and names the address
 test("installing a release removes earlier releases' dashboards once rigd install succeeds, and keeps this release's own", async () => {
   const f = await release();
   await mkdir(join(f.root, "dashboard", "v0.0.9", "web"), { recursive: true });
-  // The same release already installed may be serving: its files stay as they are.
-  await mkdir(join(f.root, "dashboard", TAG, "web"), { recursive: true });
+  // The same release already installed, every file as released, may be serving: it stays, with what it wrote.
+  await mkdir(join(f.root, "dashboard", TAG, "web", ".next", "cache"), {
+    recursive: true,
+  });
   await writeFile(
     join(f.root, "dashboard", TAG, "web", "server.js"),
-    "// serving",
+    "// served",
+  );
+  await writeFile(
+    join(f.root, "dashboard", TAG, "web", ".next", "cache", "entry"),
+    "written while serving",
   );
   const result = await f.install();
   expect(result.code).toBe(0);
   expect((await readdir(join(f.root, "dashboard"))).sort()).toEqual([TAG]);
   expect(
-    await readFile(join(f.root, "dashboard", TAG, "web", "server.js"), "utf8"),
-  ).toBe("// serving");
+    await readFile(
+      join(f.root, "dashboard", TAG, "web", ".next", "cache", "entry"),
+      "utf8",
+    ),
+  ).toBe("written while serving");
+});
+
+test("a dashboard of this release that lacks or differs from the release's files is replaced by the release's", async () => {
+  const shapes: Record<string, (path: string) => Promise<void>> = {
+    // A copy cut short: a stray file and no server.
+    incomplete: async (path) => {
+      await mkdir(path, { recursive: true });
+      await writeFile(join(path, "keep"), "incomplete");
+    },
+    empty: async (path) => {
+      await mkdir(path, { recursive: true });
+    },
+    file: (path) => writeFile(path, "not a directory"),
+    changed: async (path) => {
+      await mkdir(join(path, "web"), { recursive: true });
+      await writeFile(join(path, "web", "server.js"), "// changed");
+    },
+    link: async (path) => {
+      const elsewhere = join(path, "..", "..", "..", "elsewhere");
+      await mkdir(join(elsewhere, "web"), { recursive: true });
+      await writeFile(join(elsewhere, "web", "server.js"), "// served");
+      await symlink(elsewhere, path);
+    },
+  };
+  for (const [shape, make] of Object.entries(shapes)) {
+    const f = await release();
+    const dashboard = join(f.root, "dashboard", TAG);
+    await mkdir(join(f.root, "dashboard"), { recursive: true });
+    await make(dashboard);
+    const result = await f.install();
+    expect({ shape, code: result.code }).toEqual({ shape, code: 0 });
+    expect((await lstat(dashboard)).isDirectory()).toBe(true);
+    expect(await readdir(dashboard)).toEqual(["web"]);
+    expect(await readFile(join(dashboard, "web", "server.js"), "utf8")).toBe(
+      "// served",
+    );
+    // Nothing set aside or staged is left behind.
+    expect(
+      (await readdir(join(f.root, "dashboard"))).filter((name) =>
+        name.startsWith("."),
+      ),
+    ).toEqual([]);
+  }
+});
+
+test("two installs at once never nest a staged dashboard inside the release's: one installs, and one waiting its turn is refused", async () => {
+  const f = await release();
+  // mv of a staged dashboard waits (up to 3 s) until both installers have reached it; the first through then publishes,
+  // and the other moves only after it.
+  const gate = join(f.home, "gate");
+  const wrappers = join(f.home, "wrappers");
+  await mkdir(gate);
+  await mkdir(wrappers);
+  await writeFile(
+    join(wrappers, "mv"),
+    `#!/bin/sh
+case "$1" in
+"$RIG_ROOT"/dashboard/.install.*)
+  touch "${gate}/arrived.$$"
+  waited=0
+  until [ "$(find "${gate}" -name 'arrived.*' | wc -l | tr -d ' ')" -ge 2 ] || [ "$waited" -ge 60 ]; do sleep .05; waited=$((waited + 1)); done
+  if mkdir "${gate}/first" 2>/dev/null; then
+    /bin/mv "$@"; code=$?; touch "${gate}/done"; exit "$code"
+  fi
+  until [ -e "${gate}/done" ]; do sleep .05; done
+  ;;
+esac
+exec /bin/mv "$@"
+`,
+  );
+  await chmod(join(wrappers, "mv"), 0o755);
+  const env = { PATH: `${wrappers}:${join(f.home, "fakes")}:${SYSTEM_PATH}` };
+  const results = await Promise.all([f.install(env), f.install(env)]);
+  const dashboard = join(f.root, "dashboard", TAG);
+  expect(await readdir(dashboard)).toEqual(["web"]);
+  expect(await readdir(join(f.root, "dashboard"))).toEqual([TAG]);
+  expect(results.filter((result) => result.code === 0).length).toBeGreaterThan(
+    0,
+  );
+  for (const result of results)
+    if (result.code !== 0)
+      expect(result.stderr).toContain(
+        `another rigd install, upgrade or uninstall is changing ${f.root}.`,
+      );
+});
+
+test("install holds the installation lock to the end of the rigd install it runs, recording its own pid for that rigd", async () => {
+  const f = await release();
+  const seen = join(f.home, "lock-seen");
+  const result = await f.install({ RIG_TEST_LOCK: seen });
+  expect(result.code).toBe(0);
+  // rigd install's parent is the installer, the lock names it, and lockf finds the lock held (EX_TEMPFAIL).
+  const [parent, recorded, held] = (await readFile(seen, "utf8"))
+    .trim()
+    .split(" ");
+  expect(JSON.parse(recorded!)).toEqual({ pid: Number(parent) });
+  expect(held).toBe("75");
+  // Released once the installer exits.
+  expect(
+    await run([
+      "/usr/bin/lockf",
+      "-s",
+      "-t",
+      "0",
+      join(f.root, "daemon", "install.lock"),
+      "true",
+    ]),
+  ).toMatchObject({ code: 0 });
+  // Held by another, install changes nothing.
+  const holder = Bun.spawn([
+    "/usr/bin/lockf",
+    "-k",
+    join(f.root, "daemon", "install.lock"),
+    "/bin/sleep",
+    "30",
+  ]);
+  try {
+    await Bun.sleep(200);
+    const refused = await f.install();
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      `another rigd install, upgrade or uninstall is changing ${f.root}. Wait for it to finish, then install again. Nothing was installed.`,
+    );
+    expect(await readFile(f.ran, "utf8")).toBe("install\nstatus\n");
+  } finally {
+    holder.kill();
+    await holder.exited;
+  }
 });
 
 test("when rigd install left another release serving (it adopted a running rigd), earlier dashboards are kept and the install says so", async () => {
@@ -481,8 +622,12 @@ test("a RIG_ROOT spelled with //, . or .. parts, or relative, is refused, so the
 test("a script cut short anywhere before its end runs nothing, even within its last line", async () => {
   const f = await release();
   const whole = await readFile(f.script, "utf8");
-  const last = whole.lastIndexOf('(main "$@")');
-  for (const end of [last, last + "(main".length, last + '(main "$@"'.length]) {
+  const last = whole.lastIndexOf('{ main "$@"; }');
+  for (const end of [
+    last,
+    last + "{ main".length,
+    last + '{ main "$@";'.length,
+  ]) {
     const cut = join(f.home, "install-cut");
     await writeFile(cut, whole.slice(0, end));
     const result = await f.install({}, cut);

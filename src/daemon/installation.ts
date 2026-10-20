@@ -38,6 +38,11 @@ export type DaemonMode = InstallationRecord["mode"];
 export function installationPath(root: string): string {
   return join(root, "daemon", "install.json");
 }
+/** `<RIG_ROOT>/daemon/install.lock`: held by `rigd install` and `rigd uninstall`, and by the release installer from
+ * publishing a release to the end of the rigd install it runs, so one changes the Rig root at a time. */
+export function installLockPath(root: string): string {
+  return join(root, "daemon", "install.lock");
+}
 
 /** Undefined when rigd was never installed under this root; a record that cannot be read or parsed is a DAEMON_INSTALL_STATE error. */
 export async function readInstallationRecord(

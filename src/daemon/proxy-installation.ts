@@ -144,14 +144,18 @@ export function createProxyInstallation(
       const wasRunning = (await job.state()) === "running";
       // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
       // does.
-      const dashboard = await configuredDashboardRoute(
+      const configured = await configuredDashboardRoute(
         options.root,
         await readHostConfig(options.root),
       );
+      const withheld = configured && {
+        domain: configured.domain,
+        port: null,
+      };
       const caddy = createManagedCaddy({
         root: options.root,
         settings,
-        dashboard: () => dashboard && { domain: dashboard.domain, port: null },
+        dashboard: { current: () => withheld, confirmed: async () => withheld },
         run: options.run,
         job,
         admin,

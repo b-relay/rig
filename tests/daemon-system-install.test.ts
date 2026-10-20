@@ -14,16 +14,17 @@ afterEach(async () => {
 });
 /** A Rig root asking for `daemon.start: boot`, with launchd faked: `print` answers as `loaded` says, and every call is
  * recorded. System plists go to temporary directories, never /Library. */
-async function world() {
+async function world(daemon?: string) {
   const root = await mkdtemp(join(tmpdir(), "rig-boot-"));
   const home = join(root, "home");
   await mkdir(home, { recursive: true });
-  const script = join(root, "child.ts");
+  const script = daemon ?? join(root, "child.ts");
   const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
-  await writeFile(
-    script,
-    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
-  );
+  if (!daemon)
+    await writeFile(
+      script,
+      `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
+    );
   const places = {
     staging: join(root, "staging"),
     daemons: join(root, "LaunchDaemons"),
@@ -49,12 +50,12 @@ async function world() {
           : { code: 0, stderr: "" };
     },
   });
-  let daemon: ReturnType<typeof Bun.spawn> | undefined;
+  let running: ReturnType<typeof Bun.spawn> | undefined;
   let keepAlive = false;
   const stopDaemon = async () => {
     keepAlive = false;
-    daemon?.kill();
-    await daemon?.exited;
+    running?.kill();
+    await running?.exited;
   };
   cleanups.push(async () => {
     await stopDaemon();
@@ -72,7 +73,7 @@ async function world() {
       keepAlive = true;
       void (async () => {
         while (keepAlive) {
-          daemon = Bun.spawn([process.execPath, script], {
+          running = Bun.spawn([process.execPath, script], {
             env: {
               ...process.env,
               RIG_ROOT: root,
@@ -82,13 +83,13 @@ async function world() {
             stdout: "ignore",
             stderr: "ignore",
           });
-          await daemon.exited;
+          await running.exited;
           await Bun.sleep(100);
         }
       })();
       for (let i = 0; i < 100 && !(await admin.status()).reachable; i++)
         await Bun.sleep(50);
-      return daemon!.pid;
+      return running!.pid;
     },
     stopDaemon,
     /** The owner's pasted lines, as far as this root can tell: the rendered plists installed and loaded. */
@@ -234,3 +235,45 @@ test("uninstall of a system job prints the removal and keeps rigd serving; once 
   expect(await w.admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
   expect(await readInstallationRecord(w.root)).toBeUndefined();
 });
+
+test("a system rigd is not restarted while Rig's Caddy cannot confirm it withholds the dashboard's domain; once it can, it is", async () => {
+  // The real host and dashboard supervisor, published through the scripted Caddy (tests/support/dashboard-daemon.ts).
+  const w = await world(
+    join(import.meta.dir, "support", "dashboard-daemon.ts"),
+  );
+  const probe = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response(),
+  });
+  const port = probe.port!;
+  probe.stop(true);
+  await writeFile(join(w.root, "dashboard-port"), String(port));
+  const error = await w.admin.install().catch((caught) => caught);
+  await w.paste((error.details.commands as string[]).map(labelOf));
+  const first = await w.startAsLaunchd();
+  const loads = async () =>
+    (await readFile(join(w.root, "caddy-loads"), "utf8").catch(() => ""))
+      .trim()
+      .split("\n");
+  for (
+    let i = 0;
+    i < 400 && (await loads()).at(-1) !== `127.0.0.1:${port}`;
+    i++
+  )
+    await Bun.sleep(25);
+  expect((await loads()).at(-1)).toBe(`127.0.0.1:${port}`);
+  await writeFile(join(w.root, "caddy-unreachable"), "");
+  await expect(w.admin.install()).rejects.toMatchObject({
+    code: "DAEMON_STOP",
+    message: expect.stringContaining("keeps serving"),
+  });
+  expect(processExists(first)).toBe(true);
+  expect(await w.admin.status()).toMatchObject({ reachable: true });
+  await rm(join(w.root, "caddy-unreachable"));
+  expect(await w.admin.install()).toMatchObject({
+    outcome: "installed",
+    replaced: { pid: first },
+  });
+  await w.stopDaemon();
+}, 90_000);

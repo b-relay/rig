@@ -68,6 +68,7 @@ import type { DaemonMode } from "./installation";
 import {
   createManagedCaddy,
   type CaddyJob,
+  type DashboardRouteSource,
   type ManagedCaddy,
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
@@ -90,7 +91,6 @@ import { createBackupStorage } from "../adapters/backup-storage";
 import { createTargetEffects } from "../adapters/target-effects";
 import { configuredDiagnosticLog } from "../diagnostics/host-log";
 import {
-  DASHBOARD,
   configuredDashboardRoute,
   dashboardCheck,
   dashboardServing,
@@ -102,8 +102,8 @@ import {
   withDashboardRoute,
   type Dashboard,
   type DashboardRoute,
+  type DashboardTakeover,
 } from "./dashboard";
-import type { PublishedDashboard } from "../domain/managed-proxy";
 import { waitForLogPoll } from "../adapters/log-follow-scheduler";
 import { openSqliteUsageHistory } from "../adapters/sqlite-usage-history";
 import { guardedUsageHistory } from "../adapters/guarded-usage-history";
@@ -183,9 +183,10 @@ export async function composeDaemon(
   // A written proxy section makes routes go to Rig's own Caddy (ADR 0014); rigd install set it up before rigd started.
   const managed =
     host.proxyMode === "managed"
-      ? composeManagedCaddy(root, mode, dashboardRoute, () =>
-          dashboard?.route(),
-        )
+      ? composeManagedCaddy(root, mode, dashboardRoute, {
+          current: () => dashboard?.route(),
+          confirmed: async () => dashboard?.confirmedRoute(),
+        })
       : undefined;
   // Otherwise the route file is published for a Caddy Rig does not run (providers.caddy, retiring).
   const external = managed
@@ -418,6 +419,7 @@ export async function composeDaemon(
     id: randomUUID,
   });
   let stopped = false;
+  let takeover: DashboardTakeover | undefined;
   let stopMonitor: (() => Promise<void>) | undefined;
   let stopHealth: (() => Promise<void>) | undefined;
   let stopJobs: (() => Promise<void>) | undefined;
@@ -426,12 +428,13 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     env,
-    ...(dashboard
-      ? {
-          dashboard: dashboard.serving,
-          dashboardProblem: dashboard.problem,
-        }
-      : {}),
+    ...(dashboard ? { dashboard: dashboard.serving } : {}),
+    dashboardProblem: () => dashboard?.problem() ?? takeover?.problem(),
+    // Its domain is withheld, and Caddy confirmed to serve that, before it stops; when Caddy does not confirm it, rigd keeps
+    // serving, with the dashboard, and says why.
+    prepareStop: async () => {
+      await dashboard?.stop();
+    },
     async start() {
       // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
@@ -450,7 +453,7 @@ export async function composeDaemon(
       // One an earlier rigd left running is stopped whether or not this rigd serves one, once Caddy is confirmed to route no
       // dashboard domain to a port; this rigd's is started after it. It only reads rigd, so it is served while the first
       // pass still runs.
-      void takeOverDashboard({
+      takeover = takeOverDashboard({
         root,
         withheld: async () => {
           if (managed && !(await managed.caddy.refreshDashboard()).known)
@@ -458,13 +461,12 @@ export async function composeDaemon(
               "the configuration it serves is an older rigd's, which does not say which of proxy.routes is a dashboard's; it is replaced once rig proxy reload publishes Host config",
             );
         },
-        report: (message) =>
-          dashboard
-            ? dashboard.report(message)
-            : notices.note(DASHBOARD, message),
+        notices,
+        retention: logRetention,
         stopped: () => stopped,
         wait: (ms) => waitForLogPoll(ms, shuttingDown.signal),
-      }).then((free) => {
+      });
+      void takeover.done.then((free) => {
         if (free && !stopped) dashboard?.start();
       });
       await runtime.reconcile();
@@ -502,7 +504,7 @@ export async function composeDaemon(
     },
     async shutdown() {
       stopped = true;
-      // Its domain is withheld, and Caddy confirmed to serve that, before it stops; until then rigd does not exit.
+      // Stopped already, by prepareStop.
       await dashboard?.stop();
       stopMonitor?.();
       await stopHealth?.();
@@ -535,7 +537,7 @@ function composeManagedCaddy(
   root: string,
   mode: DaemonMode,
   dashboardRoute: DashboardRoute | undefined,
-  dashboard: () => PublishedDashboard | undefined,
+  dashboard: DashboardRouteSource,
 ): { caddy: ManagedCaddy; control: ProxyControl; job: CaddyJob } {
   const paths = proxyPaths(root);
   const admin = createCaddyAdmin(paths.socket);

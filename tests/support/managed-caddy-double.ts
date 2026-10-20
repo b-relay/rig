@@ -14,6 +14,7 @@ import type { ProxySettings } from "../../src/config/proxy-schema";
 import {
   createManagedCaddy,
   type CaddyJobState,
+  type DashboardRouteSource,
 } from "../../src/providers/managed-caddy";
 import {
   bareHostname,
@@ -113,8 +114,9 @@ export async function fakeAdapt(file: string): Promise<unknown> {
 export async function managedCaddyWorld(
   proxy: Record<string, unknown> = {},
   token: string | null = TOKEN,
-  /** The dashboard's route as a rigd would ask for it (ManagedCaddyOptions.dashboard). */
-  dashboard?: () => PublishedDashboard | undefined,
+  /** The dashboard's route as a rigd would ask for it (ManagedCaddyOptions.dashboard); a function stands for a route
+   * rigd confirms as it asks for it. */
+  dashboard?: (() => PublishedDashboard | undefined) | DashboardRouteSource,
 ) {
   const root = await mkdtemp(join(tmpdir(), "rig-managed-"));
   await mkdir(join(root, "caddy", "bin"), { recursive: true });
@@ -187,7 +189,14 @@ export async function managedCaddyWorld(
       reachable: async () => control.reachable,
       config: async () => (control.reachable ? control.loaded : undefined),
     },
-    ...(dashboard ? { dashboard } : {}),
+    ...(dashboard
+      ? {
+          dashboard:
+            typeof dashboard === "function"
+              ? { current: dashboard, confirmed: async () => dashboard() }
+              : dashboard,
+        }
+      : {}),
     generationId: () => `g${String(++id).padStart(3, "0")}`,
     reachableWaitMs: 300,
     now: () => new Date("2026-10-10T00:00:00.000Z"),

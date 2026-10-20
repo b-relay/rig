@@ -217,6 +217,8 @@ test("rigd's health reply names where it serves the dashboard and why it is not 
   for (const [dashboard, problem] of [
     ["http://127.0.0.1:4280", "another program holds 127.0.0.1:4280"],
     ["http://127.0.0.1:4280", undefined],
+    // One an earlier rigd left running, while this rigd serves none.
+    [undefined, "A dashboard an earlier rigd left running keeps running"],
     [undefined, undefined],
   ]) {
     const server = startControlPlane({
@@ -224,7 +226,8 @@ test("rigd's health reply names where it serves the dashboard and why it is not 
       token: "test",
       instanceId: "dashboard",
       handle: async () => ({}),
-      ...(dashboard ? { dashboard, dashboardProblem: () => problem } : {}),
+      ...(dashboard ? { dashboard } : {}),
+      dashboardProblem: () => problem,
     });
     try {
       const health = await new DaemonClient({

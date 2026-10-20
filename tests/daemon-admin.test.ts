@@ -1375,7 +1375,7 @@ test("rigd status warns while the dashboard rigd runs is not served, saying why"
     expect(await admin.status()).toMatchObject({
       reachable: true,
       dashboard: "http://127.0.0.1:4280",
-      warnings: [`The dashboard is not served now. ${problem}`],
+      warnings: [`Dashboard: ${problem}`],
     });
   } finally {
     await admin.uninstall().catch(() => {});

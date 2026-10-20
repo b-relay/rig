@@ -30,6 +30,10 @@ export interface DaemonHostOptions {
   root: string;
   port: number;
   handle(command: RuntimeCommand): Promise<unknown>;
+  /** Readies rigd to stop while it still serves: what must be confirmed before anything stops (the dashboard's domain
+   * withheld by Rig's Caddy) is done, or this rejects saying why, and rigd keeps serving. Asked before every stop, and by
+   * `rigd install` and `rigd uninstall` (the `prepare-stop` command) before they stop rigd. */
+  prepareStop?(): Promise<void>;
   shutdown(): Promise<void>;
   start?(): Promise<void>;
   editor?(input: unknown): Promise<unknown>;
@@ -196,7 +200,11 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       port: options.port,
       token: await readDaemonToken(options.root),
       instanceId: owner.instanceId,
-      handle: options.handle,
+      handle: async (command) => {
+        if (command.action !== "prepare-stop") return options.handle(command);
+        await options.prepareStop?.();
+        return { ready: true };
+      },
       ...(options.editor ? { editor: options.editor } : {}),
       ...(options.env ? { env: options.env } : {}),
       ...(options.dashboard ? { dashboard: options.dashboard } : {}),
@@ -220,6 +228,14 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
     if (stopping) return;
     stopping = true;
     void (async () => {
+      // While rigd still serves, so a stop it cannot make safely leaves it serving and reachable, saying why; a later
+      // signal tries again.
+      try {
+        await options.prepareStop?.();
+      } catch {
+        stopping = false;
+        return;
+      }
       // Stop accepting connections but let in-flight commands answer: the runtime
       // drains them during shutdown, so their callers learn the recorded outcome.
       const closed = server!.stop(false);
@@ -241,8 +257,8 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       },
     );
   };
-  process.once("SIGTERM", () => stop());
-  process.once("SIGINT", () => stop());
+  process.on("SIGTERM", () => stop());
+  process.on("SIGINT", () => stop());
   // Listening is daemon readiness. Target reconciliation owns its own outcomes and may be slow.
   // Invoke synchronously so runtime serialization queues reconciliation before new commands.
   try {

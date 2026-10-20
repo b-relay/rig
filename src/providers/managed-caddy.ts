@@ -75,6 +75,14 @@ export interface CaddyAdmin {
   /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. */
   config(): Promise<unknown>;
 }
+/** The dashboard's route as rigd asks for it (see PublishedDashboard). */
+export interface DashboardRouteSource {
+  /** The route as rigd asks for it now; undefined when it serves none. */
+  current(): PublishedDashboard | undefined;
+  /** `current()`, its port kept only once rigd has found its own dashboard's process still listening there: what a
+   * publication renders. */
+  confirmed(): Promise<PublishedDashboard | undefined>;
+}
 /** What one generation was built from, recorded beside it. */
 interface GenerationMetadata {
   id: string;
@@ -118,9 +126,9 @@ export interface ManagedCaddyOptions {
   readonly root: string;
   /** The `proxy` settings as Host config says now; read at every publication. */
   readonly settings: () => Promise<ProxySettings>;
-  /** The dashboard's route as rigd asks for it now, served beside `proxy.routes`; read at every publication, and recorded
-   * with it. None when absent or undefined. */
-  readonly dashboard?: () => PublishedDashboard | undefined;
+  /** The dashboard's route, served beside `proxy.routes`: confirmed at every publication, and recorded with it. None when
+   * absent. */
+  readonly dashboard?: DashboardRouteSource;
   /** Runs Rig's Caddy binary for validate and reload. */
   readonly run: CommandRunner;
   readonly job: CaddyJob;
@@ -212,7 +220,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   function servesDashboard(metadata: GenerationMetadata | undefined): boolean {
     return (
       metadata?.dashboard !== undefined &&
-      Bun.deepEquals(metadata.dashboard, options.dashboard?.() ?? null)
+      Bun.deepEquals(metadata.dashboard, options.dashboard?.current() ?? null)
     );
   }
   async function recordRejection(
@@ -342,18 +350,21 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
 
   /** Builds, validates and switches to a generation of `routes`, `settings` and the dashboard's route as rigd asks for it now,
    * then makes Caddy serve it, and confirms that it does. A failure at any step leaves the previous generation current and
-   * served. `ownerRoutesOnly` says whether `settings`' routes are known to be the owner's alone. */
+   * served. `ownerRoutesOnly` says whether `settings`' routes are known to be the owner's alone. Without `rollBack`, a
+   * failure leaves the new generation current, for a caller that must never serve the previous one again. */
   async function publish(
     routes: string,
     kind: PublicationKind,
     settings: ProxySettings,
     ownerRoutesOnly: boolean,
+    rollBack = true,
   ): Promise<void> {
     // Only what Rig renders from its owned blocks is ever published, whatever a caller passed.
     routes = canonicalRouteFile(routes).text;
     const rigHosts = routeFileHostnames(routes);
-    // Read once, so what is rendered and what is recorded agree.
-    const dashboard = options.dashboard?.();
+    // Confirmed as the publication is built, not when it was queued, and read once, so what is rendered and what is
+    // recorded agree.
+    const dashboard = await options.dashboard?.confirmed();
     const customRoutes = hostRoutes(settings, dashboard);
     // The invariant, at the one point every publication passes (apply, restore, a recovery stop, a republish, a reload): a
     // hostname has one owner, a Target's block or a proxy.routes entry. One name is one site to a client, whatever scheme or
@@ -465,14 +476,25 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         lastOutputLine(validation.stderr),
         validation.stderr,
       );
+    // A route to the dashboard that rigd stopped asking for while the generation was built (its dashboard ended, or rigd
+    // began to stop it) is built again, as rigd asks now.
+    if (
+      dashboard?.port != null &&
+      !Bun.deepEquals(options.dashboard?.current(), dashboard)
+    ) {
+      await rm(directory, { recursive: true, force: true });
+      return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
+    }
     await switchTo(directory);
     try {
       await activate(directory, executable, secret, kind, "publish");
     } catch (error) {
+      if (!rollBack) throw error;
       await switchTo(previous);
-      // Put back what was served, and say whether that worked: the error alone cannot tell.
+      // Put back what was served, and say whether that worked: the error alone cannot tell. Reconciling never serves a
+      // dashboard route rigd no longer confirms.
       const restored = previous
-        ? await activate(previous, executable, secret, kind, "reconcile").then(
+        ? await reconcile(kind).then(
             () => true,
             () => false,
           )
@@ -585,10 +607,33 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   async function reconcile(kind: PublicationKind): Promise<void> {
     const current = await currentGeneration();
     if (!current) return;
-    const secret = await token((await accepted()).settings).catch(
-      () => undefined,
-    );
+    const { settings, ownerRoutesOnly } = await accepted();
+    if (await unconfirmedDashboard(current)) {
+      // Never activated: Caddy is made to serve the same routes and settings with the dashboard's route as rigd confirms it
+      // now, and that generation stays current even when Caddy does not take it.
+      await publish(
+        (await readText(generationFiles(current).routes)) ?? "",
+        kind,
+        settings,
+        ownerRoutesOnly,
+        false,
+      );
+      return;
+    }
+    const secret = await token(settings).catch(() => undefined);
     await activate(current, await binary(), secret, kind, "reconcile");
+  }
+  /** Whether generation `directory` routes the dashboard's domain to a port rigd does not confirm now, and Caddy does not
+   * serve it already: activating it would send the domain to whatever holds that port. */
+  async function unconfirmedDashboard(directory: string): Promise<boolean> {
+    const recorded = (await metadataOf(directory))?.dashboard;
+    if (recorded?.port == null) return false;
+    if (Bun.deepEquals(recorded, await options.dashboard?.confirmed()))
+      return false;
+    return !Bun.deepEquals(
+      await options.admin.config(),
+      await adaptedOf(directory),
+    );
   }
 
   /** Writes the route file whole, through a symlink and keeping its mode, as the external router does: the emergency
@@ -648,7 +693,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   }
   /** The hostnames `proxy.routes` and the dashboard's route serve beside Rig's route file. */
   function hostnames(settings: ProxySettings): string[] {
-    return hostRoutes(settings, options.dashboard?.()).map(
+    return hostRoutes(settings, options.dashboard?.current()).map(
       (route) => route.hostname,
     );
   }

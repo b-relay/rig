@@ -116,6 +116,7 @@ export const commandSchema = z
       "destroy",
       "prepare-uninstall",
       "cancel-uninstall",
+      "prepare-stop",
       "queue",
       "deployments",
       "run",

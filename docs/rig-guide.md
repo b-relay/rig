@@ -113,9 +113,11 @@ runs, and only while `rigd` has found its own dashboard listening on
 `127.0.0.1:<port>`. Before that, while it restarts, and once it has stopped,
 Caddy answers the hostname with Rig's not-running reply, so a program that takes
 the port never receives its requests. When `rigd` stops, Caddy confirms it
-withholds the hostname before the dashboard is stopped; while Caddy cannot
-confirm that, `rigd` keeps the dashboard running and tries again, and does not
-exit. A dashboard an earlier `rigd` left running (one that was killed) is
+withholds the hostname before the dashboard is stopped. When Caddy cannot
+confirm that within 15 s, `rigd` does not stop: it keeps serving, with its
+dashboard, `rigd status` says why, and `rigd install`, `rigd upgrade` and
+`rigd uninstall` fail with that reason (`DAEMON_STOP`) instead of stopping it;
+run them again once `rig doctor` shows Caddy answering. A dashboard an earlier `rigd` left running (one that was killed) is
 stopped once Caddy is confirmed to withhold its hostname; after an upgrade from
 a Rig that did not record which route was the dashboard's, that waits until
 Caddy accepts Host config (`rig proxy reload`). A Target or

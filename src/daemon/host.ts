@@ -38,8 +38,9 @@ export interface DaemonHostOptions {
   start?(): Promise<void>;
   editor?(input: unknown): Promise<unknown>;
   env?(input: unknown): Promise<unknown>;
-  /** Where rigd serves the dashboard, reported by /health; absent when it runs none. */
-  dashboard?: string;
+  /** Where rigd serves the dashboard, reported by /health; absent when it runs none, or (a function answering undefined)
+   * once it has stopped it. */
+  dashboard?: string | (() => string | undefined);
   /** Why the dashboard it runs is not served now (see Dashboard.problem), reported by /health. */
   dashboardProblem?: () => string | undefined;
 }

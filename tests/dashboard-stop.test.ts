@@ -4,7 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DaemonAdmin } from "../src/daemon/admin";
-import { readDaemonAddress } from "../src/daemon/files";
+import { readDaemonAddress, readDaemonToken } from "../src/daemon/files";
+import { DaemonClient } from "../src/daemon/client";
 import { processExists } from "../src/daemon/process-identity";
 
 // The real daemon host and administration, with the real dashboard supervisor published through the scripted Caddy
@@ -54,10 +55,16 @@ async function rigRoot() {
     loads,
     dashboardPid,
     /** Waits until Caddy routes the domain to rigd's dashboard. */
-    served: () =>
-      until(async () => (await loads()).at(-1) === `127.0.0.1:${port}`),
+    served: async () => {
+      await until(async () => (await loads()).at(-1) === `127.0.0.1:${port}`);
+      // Time for the publication that loaded it to confirm what Caddy serves.
+      await Bun.sleep(300);
+    },
     unreachable: () => writeFile(join(root, "caddy-unreachable"), ""),
     reachable: () => rm(join(root, "caddy-unreachable"), { force: true }),
+    hold: () => writeFile(join(root, "caddy-hold"), ""),
+    answer: () => rm(join(root, "caddy-hold"), { force: true }),
+    serving: `https://rig.example.test via http://127.0.0.1:${port}`,
   };
 }
 const refused = expect.objectContaining({
@@ -167,4 +174,85 @@ test("a launchd rigd is not booted out while Caddy cannot confirm the dashboard'
   expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
   expect(launchd.calls.at(-1)?.[0]).toBe("bootout");
   expect((await f.loads()).at(-1)).toBe("withheld");
+}, 90_000);
+
+test("a stop whose withholding waits on Caddy is refused within its bound, through rigd install, and rigd keeps serving", async () => {
+  const f = await rigRoot();
+  const admin = (...extra: string[]) =>
+    new DaemonAdmin({
+      root: f.root,
+      command: [process.execPath, script, ...extra],
+      mode: "process",
+      userHome: f.root,
+    });
+  cleanups.push(async () => {
+    await f.answer();
+    await f.reachable();
+    await admin().uninstall();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  expect(await admin().install()).toMatchObject({ reachable: true });
+  await f.served();
+  const dashboard = await f.dashboardPid();
+  // Caddy holds every publication: the withholding waits in its queue.
+  await f.hold();
+  const began = Date.now();
+  await expect(admin("again").install()).rejects.toEqual(
+    expect.objectContaining({
+      code: "DAEMON_STOP",
+      message: expect.stringContaining("it did not confirm within"),
+    }),
+  );
+  expect(Date.now() - began).toBeLessThan(10_000);
+  await f.answer();
+  expect(await admin().status()).toMatchObject({ reachable: true });
+  expect(processExists(dashboard)).toBe(true);
+  await until(async () => (await f.loads()).at(-1) === f.live);
+  expect(await admin().uninstall()).toMatchObject({ outcome: "uninstalled" });
+  expect((await f.loads()).at(-1)).toBe("withheld");
+}, 90_000);
+
+test("a rigd readied to stop but never stopped says so, and rigd install of the same build starts it again with its dashboard", async () => {
+  const f = await rigRoot();
+  const admin = () =>
+    new DaemonAdmin({
+      root: f.root,
+      command: [process.execPath, script],
+      mode: "process",
+      userHome: f.root,
+      dashboard: async () => f.serving,
+    });
+  cleanups.push(async () => {
+    await admin().uninstall();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  expect(await admin().install()).toMatchObject({ dashboard: f.serving });
+  await f.served();
+  const dashboard = await f.dashboardPid();
+  // Two administrations ready it to stop; neither goes on to stop it.
+  const address = (await readDaemonAddress(f.root))!;
+  const client = new DaemonClient({
+    port: address.port,
+    token: await readDaemonToken(f.root),
+  });
+  expect(
+    await Promise.all([
+      client.command({ action: "prepare-stop" }),
+      client.command({ action: "prepare-stop" }),
+    ]),
+  ).toEqual([{ ready: true }, { ready: true }]);
+  expect(processExists(dashboard)).toBe(false);
+  expect((await f.loads()).at(-1)).toBe("withheld");
+  const status = await admin().status();
+  expect(status.dashboard).toBeUndefined();
+  expect(status.warnings).toContainEqual(
+    "Dashboard: The dashboard was stopped so that rigd could stop. rigd install starts rigd again, and the dashboard with it.",
+  );
+  // The same build's install sees a rigd serving no dashboard, and starts it again.
+  expect(await admin().install()).toMatchObject({
+    outcome: "installed",
+    replaced: { pid: address.pid },
+    dashboard: f.serving,
+  });
+  await f.served();
 }, 90_000);

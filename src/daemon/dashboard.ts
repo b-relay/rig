@@ -327,6 +327,8 @@ export interface Dashboard {
   readonly url: string;
   /** How it is served, with where it is published (see describeDashboard). */
   readonly serving: string;
+  /** Whether a stop has stopped it for good (see `stop`). */
+  stopped(): boolean;
   /** The route Rig's Caddy serves for it as rigd asks now: its domain to its port only while rigd has found its own running
    * dashboard listening there, and withheld otherwise; undefined when it is not published. */
   route(): PublishedDashboard | undefined;
@@ -366,14 +368,14 @@ export async function openDashboard(
   /** Set while a stop waits for Caddy: nothing is routed or started meanwhile. */
   let halting = false;
   let stopped: Promise<void> | undefined;
+  /** Set once a stop has stopped it for good. */
+  let halted = false;
   let problem: string | undefined;
   const log = dashboardLog(deps.root, deps.retention);
-  /** The last write to its log, which settles after every earlier one. */
-  let writing: Promise<void> = Promise.resolve();
   const report = (message: string) => {
     problem = message;
     deps.notices.note(DASHBOARD, message);
-    return (writing = log(`[rigd] ${message}\n`));
+    return log(`[rigd] ${message}\n`);
   };
   const where = `${UPSTREAM_HOST}:${deps.port}`;
   const domain = deps.published?.domain;
@@ -485,8 +487,8 @@ export async function openDashboard(
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    child.stdout?.on("data", (chunk) => void (writing = log(String(chunk))));
-    child.stderr?.on("data", (chunk) => void (writing = log(String(chunk))));
+    child.stdout?.on("data", (chunk) => void log(String(chunk)));
+    child.stderr?.on("data", (chunk) => void log(String(chunk)));
     // A process that could not start emits error and never exit, so either settles the run. Its route ends with it, before
     // anything else runs: a publication queued meanwhile renders it withheld.
     const ended = new Promise<string>((resolve) => {
@@ -566,44 +568,51 @@ export async function openDashboard(
     const run = current;
     const alive = run !== undefined && !ended(run);
     halting = true;
+    // The whole withholding is bounded, time queued behind other publications and Caddy's own waits included.
+    const until = Date.now() + (deps.stopConfirmMs ?? STOP_CONFIRM_MS);
     if (alive && deps.publish) {
       // Confirmed withheld before the process is signalled, so the port it frees is never routed. A publication under way
       // runs first, and reads the route as it is by then: withheld.
-      const until = Date.now() + (deps.stopConfirmMs ?? STOP_CONFIRM_MS);
       for (let attempt = 1; ; attempt++) {
-        try {
-          await deps.publish();
-          break;
-        } catch (error) {
-          if (Date.now() + lookDelay(attempt) < until) {
-            await pause(lookDelay(attempt));
-            continue;
-          }
-          halting = false;
-          // Routed again as before, since it still holds its port; the next publication says so.
-          void deps.publish().catch(() => {});
-          const message = `rigd was asked to stop, but Rig's Caddy has not confirmed that it withholds ${domain} from ${where} (${failure(error)}), so the dashboard, and rigd, keep running.`;
-          await report(message);
-          throw new RigError(
-            "DASHBOARD_WITHHOLD",
-            message,
-            "Run rig doctor to see why Caddy does not take the change, fix it, then stop rigd again.",
-            { domain, port: deps.port },
-          );
+        const outcome = await settled(deps.publish(), until - Date.now());
+        if (outcome.done) break;
+        if (outcome.error && Date.now() + lookDelay(attempt) < until) {
+          await pause(lookDelay(attempt));
+          continue;
         }
+        halting = false;
+        // Routed again as before, since it still holds its port. Queued behind any withholding still under way, which may
+        // yet be served late, so Caddy ends with the route as rigd asks for it.
+        void deps.publish().catch(() => {});
+        const why = outcome.error
+          ? failure(outcome.error)
+          : `it did not confirm within ${seconds(deps.stopConfirmMs ?? STOP_CONFIRM_MS)}`;
+        const message = `rigd was asked to stop, but Rig's Caddy has not confirmed that it withholds ${domain} from ${where} (${why}), so the dashboard, and rigd, keep running.`;
+        await report(message);
+        throw new RigError(
+          "DASHBOARD_WITHHOLD",
+          message,
+          "Run rig doctor to see why Caddy does not take the change, fix it, then stop rigd again.",
+          { domain, port: deps.port },
+        );
       }
     } else if (deps.publish)
       // With no process running, nothing of rigd's holds the port to keep another program from it, so the withholding is
       // asked once and the stop goes on either way.
-      await deps.publish().catch(() => {});
+      await settled(deps.publish(), until - Date.now());
     stopping.abort();
     if (run) await terminate(run);
     await running;
-    await writing;
+    // Until rigd stops, or another takes its place, it serves no dashboard, and rigd status says so.
+    halted = true;
+    problem =
+      "The dashboard was stopped so that rigd could stop. rigd install starts rigd again, and the dashboard with it.";
+    await log(`[rigd] ${problem}\n`);
   };
   return {
     url: `http://127.0.0.1:${deps.port}`,
     serving: describeDashboard(deps.port, deps.published),
+    stopped: () => halted,
     route,
     async confirmedRoute() {
       const asked = route();
@@ -628,6 +637,25 @@ export async function openDashboard(
   };
 }
 
+/** How `work` settled within `ms`: done, failed with its error, or neither yet (it goes on, unawaited). */
+async function settled(
+  work: Promise<unknown>,
+  ms: number,
+): Promise<{ done: boolean; error?: unknown }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<{ done: boolean }>((resolve) => {
+    timer = setTimeout(() => resolve({ done: false }), Math.max(0, ms));
+  });
+  const outcome = await Promise.race([
+    work.then(
+      () => ({ done: true }),
+      (error: unknown) => ({ done: false, error }),
+    ),
+    late,
+  ]);
+  clearTimeout(timer);
+  return outcome;
+}
 /** Whether a program accepts a connection on 127.0.0.1:`port` now, to name a port another program holds. */
 function answers(port: number): Promise<boolean> {
   return new Promise((resolve) => {

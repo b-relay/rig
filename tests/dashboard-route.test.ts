@@ -151,7 +151,12 @@ async function served(
     readFile(join(w.root, "logs", "dashboard", "dashboard.log"), "utf8").catch(
       () => "",
     );
-  return { w, dashboard, port, live, notes, violations, check, log };
+  /** Waits until Caddy routes the domain to the dashboard, and the publication that did so has finished. */
+  const routed = async () => {
+    await until(() => w.servedHost(DOMAIN) === live);
+    await w.caddy.refreshDashboard();
+  };
+  return { w, dashboard, port, live, notes, violations, check, log, routed };
 }
 
 test("the dashboard's domain reaches only rigd's own dashboard: not before it is found on its port, not while another program holds the port, and not once it has exited", async () => {
@@ -167,7 +172,7 @@ test("the dashboard's domain reaches only rigd's own dashboard: not before it is
   await until(async () => (await f.log()).includes(held));
   // Once it is free, the dashboard binds it, is found there, and only then is routed.
   first.stop(true);
-  await until(() => f.w.servedHost(DOMAIN) === f.live);
+  await f.routed();
   const pid = (await recordedPid(f.w.root))!;
   expect(await whoAnswers(f.live)).toBe(String(pid));
   expect(f.dashboard.problem()).toBeUndefined();
@@ -182,7 +187,7 @@ test("the dashboard's domain reaches only rigd's own dashboard: not before it is
   );
   expect(f.w.servedHost(DOMAIN)).toBe("withheld");
   second.stop(true);
-  await until(() => f.w.servedHost(DOMAIN) === f.live);
+  await f.routed();
   expect(await whoAnswers(f.live)).not.toBe(String(pid));
   await f.dashboard.stop();
   expect(f.w.servedHost(DOMAIN)).toBe("withheld");
@@ -214,7 +219,7 @@ Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Re
 test("a stop withholds the domain, confirmed by Caddy, before it stops the dashboard; one Caddy does not confirm fails and leaves the dashboard running and routed", async () => {
   const f = await served(SERVER, { stopConfirmMs: 1000 });
   f.dashboard.start();
-  await until(() => f.w.servedHost(DOMAIN) === f.live);
+  await f.routed();
   const pid = (await recordedPid(f.w.root))!;
   let aliveWhenWithheld: boolean | undefined;
   f.w.control.onLoad = async (config) => {
@@ -351,6 +356,75 @@ test("a route publication queued while the dashboard was routed publishes nothin
   expect(f.violations).toEqual([]);
   other.stop(true);
   await f.dashboard.stop();
+  expect(f.violations).toEqual([]);
+}, 30_000);
+
+test("a route to the dashboard whose activation waits on Caddy is not loaded once the dashboard has exited", async () => {
+  const f = await served();
+  // Caddy's admin API holds its answer while it is asked to activate a generation routing the domain to the dashboard.
+  let release = () => {};
+  const answer = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holding = false;
+  f.w.control.beforeConfig = async () => {
+    const current = await readFile(
+      join(f.w.root, "caddy", "current", "generation.json"),
+      "utf8",
+    ).catch(() => "{}");
+    if (
+      holding ||
+      (JSON.parse(current) as { dashboard?: PublishedDashboard }).dashboard
+        ?.port != null
+    ) {
+      holding = true;
+      await answer;
+    }
+  };
+  f.dashboard.start();
+  await until(() => holding);
+  const pid = (await recordedPid(f.w.root))!;
+  // It dies, and another program takes the port, while the activation waits.
+  process.kill(pid, "SIGKILL");
+  await until(() => f.dashboard.route()?.port === null);
+  const other = foreign(f.port);
+  f.w.control.beforeConfig = undefined;
+  release();
+  await until(() => f.w.servedHost(DOMAIN) === "withheld");
+  await Bun.sleep(300);
+  expect(f.w.servedHost(DOMAIN)).toBe("withheld");
+  expect(f.violations).toEqual([]);
+  other.stop(true);
+  await f.dashboard.stop();
+  expect(f.violations).toEqual([]);
+}, 30_000);
+
+test("a stop whose withholding waits behind Caddy gives up at its bound, and the dashboard stays routed once Caddy answers", async () => {
+  const f = await served(SERVER, { stopConfirmMs: 300 });
+  f.dashboard.start();
+  await f.routed();
+  const pid = (await recordedPid(f.w.root))!;
+  // Every publication waits on Caddy's admin API.
+  let release = () => {};
+  const answer = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.w.control.beforeConfig = () => answer;
+  const began = Date.now();
+  await expect(f.dashboard.stop()).rejects.toMatchObject({
+    code: "DASHBOARD_WITHHOLD",
+    message: expect.stringContaining("it did not confirm within 1 s"),
+  });
+  expect(Date.now() - began).toBeLessThan(2000);
+  expect(processExists(pid)).toBe(true);
+  // The publication that waited is served late; Caddy ends with the route rigd asks for again.
+  f.w.control.beforeConfig = undefined;
+  release();
+  await Bun.sleep(500);
+  expect(f.w.servedHost(DOMAIN)).toBe(f.live);
+  expect(f.dashboard.route()).toEqual({ domain: DOMAIN, port: f.port });
+  await f.dashboard.stop();
+  expect(f.w.servedHost(DOMAIN)).toBe("withheld");
   expect(f.violations).toEqual([]);
 }, 30_000);
 

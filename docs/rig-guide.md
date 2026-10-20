@@ -117,7 +117,9 @@ withholds the hostname before the dashboard is stopped. When Caddy cannot
 confirm that within 15 s, `rigd` does not stop: it keeps serving, with its
 dashboard, `rigd status` says why, and `rigd install`, `rigd upgrade` and
 `rigd uninstall` fail with that reason (`DAEMON_STOP`) instead of stopping it;
-run them again once `rig doctor` shows Caddy answering. A dashboard an earlier `rigd` left running (one that was killed) is
+run them again once `rig doctor` shows Caddy answering. A `rigd` whose
+dashboard was stopped for a stop that then did not happen serves no dashboard;
+`rigd status` says so, and `rigd install` starts it again. A dashboard an earlier `rigd` left running (one that was killed) is
 stopped once Caddy is confirmed to withhold its hostname; after an upgrade from
 a Rig that did not record which route was the dashboard's, that waits until
 Caddy accepts Host config (`rig proxy reload`). A Target or

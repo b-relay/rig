@@ -11,8 +11,9 @@ export interface ControlPlaneOptions {
   editor?(input: unknown): Promise<unknown>;
   /** Operator env files (secrets): read names, reveal one value, or write. Its body is never logged. */
   env?(input: unknown): Promise<unknown>;
-  /** Where rigd serves the dashboard, reported by /health; absent when it runs none. */
-  dashboard?: string;
+  /** Where rigd serves the dashboard, reported by /health; absent when it runs none, or (a function answering undefined)
+   * once it has stopped it. */
+  dashboard?: string | (() => string | undefined);
   /** Why the dashboard it runs is not served now (see Dashboard.problem), reported by /health. */
   dashboardProblem?: () => string | undefined;
 }
@@ -148,7 +149,11 @@ export function startControlPlane(options: ControlPlaneOptions) {
         pid: process.pid,
         running: true,
         version: RIG_BUILD,
-        ...(options.dashboard ? { dashboard: options.dashboard } : {}),
+        ...((dashboard) => (dashboard ? { dashboard } : {}))(
+          typeof options.dashboard === "function"
+            ? options.dashboard()
+            : options.dashboard,
+        ),
         ...((problem) => (problem ? { dashboardProblem: problem } : {}))(
           options.dashboardProblem?.(),
         ),

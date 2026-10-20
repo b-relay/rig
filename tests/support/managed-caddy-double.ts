@@ -141,6 +141,8 @@ export async function managedCaddyWorld(
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
     beforeSettings: undefined as undefined | (() => Promise<void>),
+    /** Runs each time Caddy's admin API is asked what it runs, before it answers. */
+    beforeConfig: undefined as undefined | (() => Promise<void>),
     /** Runs each time the fake Caddy loads a configuration, with it, before the load is reported done. */
     onLoad: undefined as undefined | ((config: unknown) => Promise<void>),
     loaded: {} as unknown,
@@ -187,7 +189,10 @@ export async function managedCaddyWorld(
     },
     admin: {
       reachable: async () => control.reachable,
-      config: async () => (control.reachable ? control.loaded : undefined),
+      config: async () => {
+        await control.beforeConfig?.();
+        return control.reachable ? control.loaded : undefined;
+      },
     },
     ...(dashboard
       ? {

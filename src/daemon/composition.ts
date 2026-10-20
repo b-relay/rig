@@ -428,7 +428,13 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     env,
-    ...(dashboard ? { dashboard: dashboard.serving } : {}),
+    // Not once a stop has stopped it: rigd install then sees a rigd that serves no dashboard, and starts it anew.
+    ...((opened) =>
+      opened
+        ? {
+            dashboard: () => (opened.stopped() ? undefined : opened.serving),
+          }
+        : {})(dashboard),
     dashboardProblem: () => dashboard?.problem() ?? takeover?.problem(),
     // Its domain is withheld, and Caddy confirmed to serve that, before it stops; when Caddy does not confirm it, rigd keeps
     // serving, with the dashboard, and says why.

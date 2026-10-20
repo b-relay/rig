@@ -1,6 +1,7 @@
 /** A rigd for administration tests: the real daemon host, serving the real dashboard supervisor published through the
  * scripted Rig's Caddy. Caddy's admin socket stops answering while `<RIG_ROOT>/caddy-unreachable` exists, and every
- * configuration Caddy loads appends what it does with the dashboard's domain to `<RIG_ROOT>/caddy-loads`. The dashboard's
+ * configuration Caddy loads appends what it does with the dashboard's domain to `<RIG_ROOT>/caddy-loads`. While
+ * `<RIG_ROOT>/caddy-hold` exists, Caddy's admin API holds its answers, so every publication waits. The dashboard's
  * port is the number in `<RIG_ROOT>/dashboard-port`. */
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -31,6 +32,10 @@ caddy.control.onLoad = async (config) => {
   );
 };
 const unreachable = join(root, "caddy-unreachable");
+const hold = join(root, "caddy-hold");
+caddy.control.beforeConfig = async () => {
+  while (existsSync(hold)) await Bun.sleep(20);
+};
 Object.defineProperty(caddy.control, "reachable", {
   get: () => !existsSync(unreachable),
 });
@@ -65,7 +70,7 @@ await runDaemonHost({
   root,
   port: 0,
   handle: async () => ({ ready: true }),
-  dashboard: opened.serving,
+  dashboard: () => (opened.stopped() ? undefined : opened.serving),
   dashboardProblem: () => opened.problem(),
   prepareStop: () => opened.stop(),
   shutdown: async () => {

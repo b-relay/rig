@@ -75,6 +75,9 @@ export interface CaddyAdmin {
   /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. */
   config(): Promise<unknown>;
 }
+/** Thrown by activation, before anything is loaded, when the generation routes the dashboard to a port rigd no longer
+ * asks for: its callers build the generation again instead. */
+class DashboardRouteChanged extends Error {}
 /** The dashboard's route as rigd asks for it (see PublishedDashboard). */
 export interface DashboardRouteSource {
   /** The route as rigd asks for it now; undefined when it serves none. */
@@ -489,6 +492,11 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     try {
       await activate(directory, executable, secret, kind, "publish");
     } catch (error) {
+      if (error instanceof DashboardRouteChanged) {
+        await switchTo(previous);
+        await rm(directory, { recursive: true, force: true });
+        return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
+      }
       if (!rollBack) throw error;
       await switchTo(previous);
       // Put back what was served, and say whether that worked: the error alone cannot tell. Reconciling never serves a
@@ -532,6 +540,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         ? "; the previous configuration was restored."
         : "; Caddy still serves another configuration, so nothing was changed.";
     const expected = await adaptedOf(directory);
+    const dashboard = (await metadataOf(directory))?.dashboard;
     let loaded = await options.admin.config();
     if (loaded === undefined) {
       let state = await options.job.state();
@@ -557,6 +566,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         );
     }
     if (expected !== undefined && Bun.deepEquals(loaded, expected)) return;
+    // Checked after every wait, with nothing awaited between it and the load: a route to the dashboard that rigd stopped
+    // asking for meanwhile (its dashboard ended, or a stop began) is never loaded.
+    if (
+      dashboard?.port != null &&
+      !Bun.deepEquals(options.dashboard?.current(), dashboard)
+    )
+      throw new DashboardRouteChanged();
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
     // Any change in which CA issues which subjects restarts, conservatively: a Caddy with no issuer yet holds no certificates.
     if (
@@ -608,20 +624,21 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     const current = await currentGeneration();
     if (!current) return;
     const { settings, ownerRoutesOnly } = await accepted();
-    if (await unconfirmedDashboard(current)) {
-      // Never activated: Caddy is made to serve the same routes and settings with the dashboard's route as rigd confirms it
-      // now, and that generation stays current even when Caddy does not take it.
-      await publish(
-        (await readText(generationFiles(current).routes)) ?? "",
-        kind,
-        settings,
-        ownerRoutesOnly,
-        false,
+    // Never activated with a dashboard route rigd does not confirm: Caddy is made to serve the same routes and settings
+    // with the dashboard's route as rigd confirms it now, and that generation stays current even when Caddy does not take
+    // it.
+    const confirmed = () =>
+      readText(generationFiles(current).routes).then((routes) =>
+        publish(routes ?? "", kind, settings, ownerRoutesOnly, false),
       );
-      return;
-    }
+    if (await unconfirmedDashboard(current)) return confirmed();
     const secret = await token(settings).catch(() => undefined);
-    await activate(current, await binary(), secret, kind, "reconcile");
+    await activate(current, await binary(), secret, kind, "reconcile").catch(
+      (error: unknown) => {
+        if (!(error instanceof DashboardRouteChanged)) throw error;
+        return confirmed();
+      },
+    );
   }
   /** Whether generation `directory` routes the dashboard's domain to a port rigd does not confirm now, and Caddy does not
    * serve it already: activating it would send the domain to whatever holds that port. */

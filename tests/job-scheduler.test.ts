@@ -128,6 +128,9 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
   const requests: ScheduledRunRequest[] = [];
   let ids = 0;
   let busy = false;
+  /** While set, a start waits for the Target to be free, as a start queued behind a deploy does. */
+  let startsWait = false;
+  const freed: (() => void)[] = [];
   let deferring = false;
   let releasing = true;
   const now = () => new Date(clock.ms).toISOString();
@@ -176,6 +179,8 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       busy: () => busy,
       async start(request): Promise<ScheduledRunResult> {
         requests.push(request);
+        if (startsWait && busy)
+          await new Promise<void>((resolve) => freed.push(resolve));
         if (deferring) return "deferred";
         const target = await recorded();
         const planned = target.plan.jobs!.find((j) => j.name === request.job)!;
@@ -275,6 +280,17 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     },
     setBusy(value: boolean) {
       busy = value;
+      if (!busy) for (const free of freed.splice(0)) free();
+    },
+    setStartsWait(value: boolean) {
+      startsWait = value;
+    },
+    /** One pass, without waiting for the work it dispatched, which may wait for the Target. */
+    async passOnly(iso: string) {
+      clock.ms = at(iso);
+      await current.pass();
+      for (let round = 0; round < 10; round++)
+        await new Promise((resolve) => setImmediate(resolve));
     },
     setDeferring(value: boolean) {
       deferring = value;
@@ -571,6 +587,47 @@ test("a run's timeout is enforced while an Operation holds its Target; its end i
   expect(w.store.state.activity.at(-1)).toMatchObject({
     occurredAt: "2026-10-14T12:01:03.000Z",
     message: "tick: timed out in 3s and was stopped",
+  });
+});
+
+test("a run's deadline is enforced even while its job's next scheduled start waits behind the Operation holding the Target", async () => {
+  const w = world(
+    stableTarget([job("tick", "* * * * *", { timeout: 3, stopTimeout: 1 })]),
+    [
+      {
+        target: "t1",
+        job: "tick",
+        watchedFrom: "2026-10-14T11:59:00.000Z",
+        running: {
+          id: "manual",
+          trigger: "manual",
+          startedAt: "2026-10-14T11:59:58.000Z",
+          timeout: 3,
+          stopTimeout: 1,
+        },
+      },
+    ],
+  );
+  w.processes.set("tick", { state: "running", incarnation: "manual" });
+  w.setStartsWait(true);
+  w.setBusy(true);
+  // 12:00 comes due before the run's deadline (12:00:01); its start waits for the Target.
+  await w.passOnly("2026-10-14T12:00:00Z");
+  expect(w.requests).toHaveLength(1);
+  expect(w.stops).toEqual([]);
+  await w.passOnly("2026-10-14T12:00:01Z");
+  expect(w.stops).toEqual(["tick"]);
+  expect(w.record("tick")!.running?.stopping).toMatchObject({
+    cause: "timed-out",
+    endedAt: "2026-10-14T12:00:01.000Z",
+  });
+  // Once the Target is free, the waiting start records the run's end, then starts the next run.
+  w.setBusy(false);
+  await w.pass("2026-10-14T12:00:20Z");
+  expect(w.record("tick")!.last).toMatchObject({
+    id: "manual",
+    outcome: "timed-out",
+    finishedAt: "2026-10-14T12:00:01.000Z",
   });
 });
 

@@ -16,7 +16,6 @@ import {
 import type { ServiceHealth } from "../domain/project-status";
 import type {
   OperationRecord,
-  RuntimeState,
   ServiceRun,
   StateStore,
   TargetRecord,
@@ -123,7 +122,8 @@ export interface HealthMonitor {
    * begins and on every state write that changes a Target's plan, desired state, recovery or destruction, removes it, or
    * records another process for a Service. */
   invalidate(targetId: string, service?: string): void;
-  /** How many entries the monitor keeps: cached results, policies and epoch marks. Zero once nothing is monitored. */
+  /** How many entries the monitor keeps: cached results, policies, epoch marks and changes of health not written yet. Zero
+   * once nothing is monitored. */
   retained(): number;
   /** Ends the monitor: no pass starts anything after it, every probe in flight is aborted (a command probe's process group
    * is killed), nothing is written to state any more, and it resolves once the work in flight settled or `boundMs`
@@ -244,7 +244,7 @@ export function createHealthMonitor(
   const report = trackedWorkReport(deps.report);
   /** Writes about a change of health not made yet, oldest first, by Service. Each is made by a later pass while the epoch
    * rule still allows it (see `recordChange`), so a transition is recorded once, never about another process. */
-  const unwritten = new Map<string, UnwrittenRecord[]>();
+  const unwritten = new Map<string, UnwrittenQueue>();
   /** Reports `work` of the Service as failed, and records it in the diagnostic log. */
   const failed = async (
     work: string,
@@ -318,7 +318,14 @@ export function createHealthMonitor(
       };
     },
     retained: () =>
-      states.size + policies.size + serviceMarks.size + targetMarks.size,
+      states.size +
+      policies.size +
+      serviceMarks.size +
+      targetMarks.size +
+      [...unwritten.values()].reduce(
+        (count, queue) => count + queue.records.length,
+        0,
+      ),
     idle,
     invalidate,
     async stop(boundMs = HEALTH_MONITOR_STOP_MS) {
@@ -924,12 +931,9 @@ export function createHealthMonitor(
     since: number,
     incarnation: string | undefined,
   ): Promise<void> {
-    await recordChange(target, service, since, (state) => {
-      const run = state.targets.find((t) => t.id === target.id)?.services?.[
-        service
-      ];
-      if (run?.healthStretch && run.incarnation === incarnation)
-        delete run.healthStretch;
+    await recordChange(target, service, since, {
+      kind: "stretch-ended",
+      ...(incarnation !== undefined ? { incarnation } : {}),
     });
   }
 
@@ -940,50 +944,116 @@ export function createHealthMonitor(
     since: number,
     entry: Pick<OperationRecord, "action" | "outcome" | "message">,
   ): Promise<void> {
-    const id = deps.id(),
-      occurredAt = new Date(deps.now()).toISOString();
-    await recordChange(target, service, since, (state) =>
-      recordActivity(state, {
-        id,
-        projectId: target.projectId,
-        project: state.projects.find((p) => p.id === target.projectId)?.name,
-        target: target.name,
-        component: { kind: "service", name: service },
-        occurredAt,
+    await recordChange(target, service, since, {
+      kind: "activity",
+      entry: {
         ...entry,
-      }),
-    );
+        id: deps.id(),
+        occurredAt: new Date(deps.now()).toISOString(),
+      },
+    });
   }
-  /** Queues a write of a change of the Service's health behind any not written yet, then writes the queue. */
+  /** Queues a write about a change of the Service's health behind those not written yet, then writes the queue. The queue
+   * is bounded: the end of a stretch is queued once per process, and past UNWRITTEN_HEALTH_LIMIT the oldest Activity entry
+   * is dropped and counted, so a Service that flaps through a long storage outage holds a few small entries, never one
+   * per check. */
   async function recordChange(
     target: TargetRecord,
     service: string,
     since: number,
-    apply: (state: RuntimeState) => void,
+    change: HealthChange,
   ): Promise<void> {
     if (!current(target.id, service, since)) return;
     const key = keyOf(target.id, service);
-    unwritten.set(key, [
-      ...(unwritten.get(key) ?? []),
-      { target, service, since, apply },
-    ]);
+    const queue = unwritten.get(key) ?? { records: [], dropped: 0 };
+    unwritten.set(key, queue);
+    const queued = queue.records;
+    if (
+      change.kind === "activity" ||
+      !queued.some(
+        (other) =>
+          other.change.kind === "stretch-ended" &&
+          other.change.incarnation === change.incarnation,
+      )
+    )
+      queued.push({
+        target: {
+          id: target.id,
+          projectId: target.projectId,
+          name: target.name,
+          project: target.plan.project,
+        },
+        service,
+        since,
+        change,
+      });
+    while (queued.length > UNWRITTEN_HEALTH_LIMIT) {
+      const oldest = queued.findIndex(
+        (other) => other.change.kind === "activity",
+      );
+      queued.splice(oldest === -1 ? 0 : oldest, 1);
+      queue.dropped++;
+    }
     await writeRecords(key);
   }
-  /** Writes the Service's queued changes of health in order, each only while the epoch rule still allows it; one that fails
-   * is reported and kept, with those after it, for the next pass. */
+  /** Writes the Service's queued changes of health in order, each only while the epoch rule still allows it, led by an
+   * Activity entry that says how many were dropped; one that fails is reported, with how many wait, and kept, with those
+   * after it, for the next pass. */
   async function writeRecords(key: string): Promise<void> {
-    const queued = unwritten.get(key) ?? [];
+    const queue = unwritten.get(key);
+    if (!queue) return;
+    const queued = queue.records;
     while (queued.length) {
-      const { target, service, since, apply } = queued[0]!;
+      const { target, service, since, change } = queued[0]!;
       if (current(target.id, service, since))
         try {
           await deps.store.update((state) => {
-            if (current(target.id, service, since)) apply(state);
+            if (!current(target.id, service, since)) return;
+            const activity = (
+              entry: Pick<
+                OperationRecord,
+                "id" | "occurredAt" | "action" | "outcome" | "message"
+              >,
+            ) =>
+              recordActivity(state, {
+                projectId: target.projectId,
+                project: state.projects.find((p) => p.id === target.projectId)
+                  ?.name,
+                target: target.name,
+                component: { kind: "service", name: service },
+                ...entry,
+              });
+            // Said at the oldest change kept, which the dropped ones came before.
+            if (queue.dropped)
+              activity({
+                id: deps.id(),
+                occurredAt:
+                  queued.find(
+                    (
+                      other,
+                    ): other is UnwrittenRecord & {
+                      change: { kind: "activity" };
+                    } => other.change.kind === "activity",
+                  )?.change.entry.occurredAt ??
+                  new Date(deps.now()).toISOString(),
+                action: "health",
+                outcome: "unchanged",
+                message: `${service}: ${queue.dropped} earlier ${queue.dropped === 1 ? "change" : "changes"} of health ${queue.dropped === 1 ? "was" : "were"} not recorded, as Rig could not write its state.`,
+              });
+            if (change.kind === "activity") activity(change.entry);
+            else {
+              const run = state.targets.find((t) => t.id === target.id)
+                ?.services?.[service];
+              if (run?.healthStretch && run.incarnation === change.incarnation)
+                delete run.healthStretch;
+            }
           });
+          queue.dropped = 0;
         } catch (error) {
+          const waiting = `${queued.length} ${queued.length === 1 ? "change" : "changes"} waiting${queue.dropped ? `, ${queue.dropped} older dropped` : ""}`;
           await failed(
             `${key}/record`,
-            `Recording a change of health of ${named(target, service)}`,
+            `Recording the changes of health of ${service} on ${target.name} of ${target.project} (${waiting})`,
             target,
             error,
           );
@@ -995,13 +1065,31 @@ export function createHealthMonitor(
     report.succeeded(`${key}/record`);
   }
 }
-/** A write about a change of a Service's health (its Activity entry, the end of its unhealthy stretch) not made yet: made
- * only while the epoch rule allows a write derived from `since`. */
+/** How many writes about one Service's changes of health are kept while the state cannot be written. Each is one bounded
+ * line (its check's output is cut to 200 characters), so this bounds their bytes too. */
+export const UNWRITTEN_HEALTH_LIMIT = 8;
+/** A write about a change of a Service's health not made yet: its Activity entry, or the end of its unhealthy stretch. */
+type HealthChange =
+  | {
+      kind: "activity";
+      entry: Pick<
+        OperationRecord,
+        "action" | "outcome" | "message" | "id" | "occurredAt"
+      >;
+    }
+  | { kind: "stretch-ended"; incarnation?: string };
+/** A write about a change of a Service's health not made yet, made only while the epoch rule allows a write derived from
+ * `since`; it names its Target by what the write needs. */
 interface UnwrittenRecord {
-  target: TargetRecord;
+  target: { id: string; projectId: string; name: string; project: string };
   service: string;
   since: number;
-  apply(state: RuntimeState): void;
+  change: HealthChange;
+}
+/** A Service's unwritten changes of health, oldest first, and how many older ones were dropped past the limit. */
+interface UnwrittenQueue {
+  records: UnwrittenRecord[];
+  dropped: number;
 }
 /** How a Service is named to the operator: `web on stable of demo`. */
 function named(

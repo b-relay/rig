@@ -375,6 +375,20 @@ test("a deletion that fails stays queued and is carried out by a later pass", as
   expect((await f.world.store.read()).backupRemovals).toBeUndefined();
 });
 
+test("the scheduler's backup clean-up rejects while a queued deletion fails, so its notice stays until the deletion is done", async () => {
+  const f = await fixture({ keep: 1, failRemovals: 2 });
+  const first = await f.backUp();
+  await f.backUp();
+  // The run's own deletion failed, and so does the next offer: it says so, and the deletion stays queued.
+  await expect(f.runtime.tidyBackups()).rejects.toThrow("disk busy");
+  expect((await f.world.store.read()).backupRemovals).toEqual([
+    expect.objectContaining({ path: first }),
+  ]);
+  await f.runtime.tidyBackups();
+  expect(await exists(first)).toBe(false);
+  expect((await f.world.store.read()).backupRemovals).toBeUndefined();
+});
+
 test("a restore runs the job's restore command once in the job's environment, with the chosen backup as $RIG_BACKUP_DIR", async () => {
   const f = await fixture();
   const older = await f.backUp("old");
@@ -1407,7 +1421,10 @@ test.skipIf(process.platform !== "darwin")(
       expect((await f.world.store.read()).backupRemovals).toEqual([
         expect.objectContaining({ path: first }),
       ]);
-      await f.runtime.tidyBackups();
+      // The offer says it could not, which keeps the jobs notice up.
+      await expect(f.runtime.tidyBackups()).rejects.toMatchObject({
+        code: "BACKUP_REMOVE",
+      });
       await untouched(atFirst);
       expect(await exists(join(first, "melody.dump"))).toBe(true);
       // Unmounted, the next pass deletes the backup.
@@ -1422,7 +1439,9 @@ test.skipIf(process.platform !== "darwin")(
       await mount(atSecond);
       await chmod(hidden, 0o100);
       await f.backUp("third");
-      await f.runtime.tidyBackups();
+      await expect(f.runtime.tidyBackups()).rejects.toMatchObject({
+        code: "BACKUP_REMOVE",
+      });
       await untouched(atSecond);
       expect((await f.world.store.read()).backupRemovals).toEqual([
         expect.objectContaining({ path: second }),

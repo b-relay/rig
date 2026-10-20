@@ -2023,12 +2023,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // Observed without the Target's lease, as the scheduler observes job runs: only a checkout nothing runs in any
         // more, or that is a plan's again, is worth taking the lease for, so a Service that keeps running in one costs
         // its Target nothing.
+        // One whose standing cannot be read is tried under the lease too, where that failure is the offer's.
         let due = false;
         for (const held of state.heldCheckouts ?? [])
           if (
             held.target === targetId &&
             (await revisionStanding(held.workspace, state, deps).catch(
-              () => "held" as const,
+              () => "unknown" as const,
             )) !== "held"
           ) {
             due = true;
@@ -2038,16 +2039,20 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         return await onTarget(
           targetId,
           "held-checkout",
-          (target) => releaseHeldCheckouts(target, deps),
+          async (target) => {
+            const [failure] = await releaseHeldCheckouts(target, deps);
+            if (failure) throw failure;
+          },
           "supervising",
         );
       }
       // A Target removed meanwhile (a destroy) took its storage with it: only the mirror's registration is left to drop. Only
       // what was given back is forgotten; a failure stays for the scheduler's next offer.
-      await forgetReleasedCheckouts(
+      const [failure] = await forgetReleasedCheckouts(
         (state.heldCheckouts ?? []).filter((kept) => kept.target === targetId),
         deps,
       );
+      if (failure) throw failure;
     },
     settleJob: (request) =>
       onTarget(request.targetId, "job", async (target, lifecycle) => {
@@ -2878,12 +2883,13 @@ async function destroyPreview(
   ).catch(() => {});
 }
 /** Drops the mirror registration of each checkout in `kept`, whose Target is gone, and forgets the records of those it
- * dropped; one that fails stays recorded. */
+ * dropped; one that fails stays recorded for the next offer, and its failure is resolved. */
 async function forgetReleasedCheckouts(
   kept: readonly HeldCheckout[],
   deps: Pick<RuntimeDependencies, "sources" | "store">,
-): Promise<void> {
+): Promise<unknown[]> {
   const released: HeldCheckout[] = [];
+  const failures: unknown[] = [];
   for (const checkout of kept)
     try {
       await deps.sources.release({
@@ -2891,10 +2897,10 @@ async function forgetReleasedCheckouts(
         workspacePath: checkout.workspace,
       });
       released.push(checkout);
-    } catch {
-      /* Kept for the next offer. */
+    } catch (error) {
+      failures.push(error);
     }
-  if (!released.length) return;
+  if (!released.length) return failures;
   await deps.store.update((state) => {
     state.heldCheckouts = state.heldCheckouts?.filter(
       (other) =>
@@ -2904,18 +2910,21 @@ async function forgetReleasedCheckouts(
         ),
     );
   });
+  return failures;
 }
 /** Gives back the checkouts held for `target` (one a job run kept, recorded with the run's end, one a kept Service ran
- * in, recorded by its deploy, or one a recovery dropped) once no job run or Service process runs in them, and forgets each one given back or that
- * is a plan's checkout again. One still run in stays recorded for the next offer. The caller holds the Target. One that
- * cannot be removed stays recorded too, and is a diagnostic, never an Operation's failure. */
+ * in, recorded by its deploy, or one a recovery dropped) once no job run or Service process runs in them, and forgets each
+ * one given back or that is a plan's checkout again. One still run in stays recorded for the next offer, and is no
+ * failure. The caller holds the Target. One that cannot be removed stays recorded too, and is a diagnostic, never an
+ * Operation's failure: it is resolved, for the scheduler's offer to report (CHECKOUT_RELEASE). */
 async function releaseHeldCheckouts(
   target: TargetRecord,
   deps: RuntimeDependencies,
-): Promise<void> {
+): Promise<RigError[]> {
   const held = ((await deps.store.read()).heldCheckouts ?? []).filter(
     (checkout) => checkout.target === target.id,
   );
+  const failures: RigError[] = [];
   for (const checkout of held) {
     const [result] = await releaseRevisions(
       [
@@ -2926,7 +2935,7 @@ async function releaseHeldCheckouts(
       ],
       deps,
     );
-    if (result?.outcome === "failed")
+    if (result?.outcome === "failed") {
       await deps
         .diagnostic({
           operationId: deps.id(),
@@ -2937,6 +2946,16 @@ async function releaseHeldCheckouts(
           ...result.causes,
         })
         .catch(() => {});
+      failures.push(
+        new RigError(
+          "CHECKOUT_RELEASE",
+          result.warning,
+          "Rig offers it again every 30 seconds; check that the checkout's directory under the Rig root can be removed.",
+          { path: result.workspacePath },
+          result.causes,
+        ),
+      );
+    }
     // Given back, or a plan's own checkout again (which the deploy that supersedes it gives back), or nothing Rig owns.
     if (
       result === undefined ||
@@ -2951,6 +2970,7 @@ async function releaseHeldCheckouts(
         );
       });
   }
+  return failures;
 }
 /** Previews leave in this order at the limit: ones whose deploy never completed, then stopped ones, then running ones. */
 function evictionRank(target: TargetRecord): number {

@@ -1385,8 +1385,11 @@ Service's checks, a job) and cleared only when that same work succeeds again,
 or is no longer needed: another Target's or job's success, or a pass that
 skipped the work because an Operation held its Target, never clears it. `rigd`
 retries every second, and a health change Activity could not take is written
-once it can, at the time it happened. The notices live in memory and reset
-when `rigd` restarts.
+once it can, at the time it happened: the newest 8 per Service are kept, and
+Activity and the notice say how many older ones were dropped. A clean-up (a
+backup deletion, a checkout given back) counts as done only once it is done;
+a checkout a run or Service still uses is not a failure. The notices live in
+memory and reset when `rigd` restarts.
 
 An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
 or a malformed record) never makes `rigd` exit: startup records the failure in

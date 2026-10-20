@@ -3,6 +3,7 @@ import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import {
+  UNWRITTEN_HEALTH_LIMIT,
   checkIdentity,
   createHealthMonitor,
   type HealthMonitorDependencies,
@@ -995,7 +996,7 @@ test("a change of health Activity could not take is reported, written once when 
     expect.objectContaining({
       channel: "health",
       message:
-        "Recording a change of health of web on stable of demo failed: ENOSPC: no space left on device",
+        "Recording the changes of health of web on stable of demo (1 change waiting) failed: ENOSPC: no space left on device",
     }),
   ]);
   // Later checks fail the same way, which is no new change: the one entry is all that is owed.
@@ -1080,4 +1081,40 @@ test("a check that cannot run is reported under its Service, and only a check of
   await f.runUntil(32 * SECOND);
   expect(f.checks.map((check) => check.at / SECOND)).toEqual([1, 32]);
   expect(f.notices()).toEqual([]);
+});
+
+test("a Service that flaps through a long storage outage keeps a bounded queue of health changes, says how many it dropped, and writes the rest in order once storage recovers", async () => {
+  const f = fixture({ interval: 5, retries: 1 });
+  await f.runUntil(1 * SECOND);
+  const retained = f.monitor.retained();
+  let checks = 0;
+  f.answer = () => checks++ % 2 === 1;
+  f.writeFailure = new Error("ENOSPC: no space left on device");
+  // About two hundred checks, each a change of health.
+  await f.runUntil(1000 * SECOND);
+  expect(f.activity()).toEqual([]);
+  expect(f.monitor.retained()).toBeLessThanOrEqual(
+    retained + UNWRITTEN_HEALTH_LIMIT,
+  );
+  expect(f.notices()).toEqual([
+    expect.objectContaining({
+      channel: "health",
+      message: expect.stringMatching(
+        /^Recording the changes of health of web on stable of demo \(8 changes waiting, \d+ older dropped\) failed: ENOSPC/,
+      ),
+    }),
+  ]);
+  f.writeFailure = undefined;
+  f.answer = () => true;
+  await f.runUntil(1002 * SECOND);
+  const activity = f.activity();
+  expect(activity[0]).toMatch(
+    /^web: \d+ earlier changes of health were not recorded, as Rig could not write its state\.$/,
+  );
+  expect(activity.length).toBeLessThanOrEqual(UNWRITTEN_HEALTH_LIMIT + 2);
+  // What was kept is the newest, in the order it happened.
+  const times = f.records().map((entry) => Date.parse(entry.occurredAt));
+  expect(times).toEqual([...times].sort((a, b) => a - b));
+  expect(f.notices()).toEqual([]);
+  expect(f.monitor.retained()).toBe(retained);
 });

@@ -216,6 +216,7 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
     release(port: number) {
       hold.delete(port);
       held.get(port)?.({ ready: true });
+      held.delete(port);
     },
     async held(port: number) {
       for (let turn = 0; turn < 200 && !held.has(port); turn++)
@@ -363,6 +364,27 @@ test("a start fails, publishing nothing, when a Service it verified exits while 
   // What it started is stopped again.
   expect(await f.running("api")).toBe(false);
   expect(f.stops).toContain("api");
+});
+
+test("a start fails, publishing nothing, when its last Service exits while an earlier one is verified again", async () => {
+  const f = await fixture();
+  f.hold.add(WEB);
+  const starting = f.up();
+  expect(await f.held(WEB)).toBe(true);
+  // web's first check passes; its second, once api has started, waits.
+  f.release(WEB);
+  f.hold.add(WEB);
+  expect(await f.held(WEB)).toBe(true);
+  expect(await f.running("api")).toBe(true);
+  await f.exit("api", 23);
+  f.release(WEB);
+  await expect(starting).rejects.toMatchObject({
+    code: "PROCESS_EXITED",
+    message:
+      "api was ready, then exited with code 23 before working finished starting.",
+  });
+  expect(await f.routed()).toBe(false);
+  expect(await f.running("web")).toBe(false);
 });
 
 test("a Service already running that a start relies on is verified again once the start is done", async () => {

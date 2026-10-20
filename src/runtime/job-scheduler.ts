@@ -86,7 +86,7 @@ export interface JobSchedulerDependencies {
    * keeps backups. Rejects when the state cannot be read. */
   tidyBackups?(): Promise<void>;
   diagnostic: RuntimeDependencies["diagnostic"];
-  /** Where each piece of the scheduler's work (by its key: `<target id>:<job>`, `off:<target id>`, `checkout:<target id>`,
+  /** Where each piece of the scheduler's work (by its key: `<target id>:<job>`, `deadline:<target id>:<job>`, `off:<target id>`, `checkout:<target id>`,
    * `backups`) says it failed, and later that it succeeded or is no longer needed. */
   report: WorkReport;
 }
@@ -254,28 +254,20 @@ export function createJobScheduler(
       const planned = new Set<string>();
       const facts: SchedulingFact[] = [];
       /** Hands a run that may have ended, or is past its timeout, to the runtime; the process is observed first, unlocked,
-       * so a run that simply goes on costs no lease. While an Operation holds the Target, only a run past its timeout is
-       * handed over, to be stopped then. */
+       * so a run that simply goes on costs no lease. Never while an Operation holds the Target: the deadline watch below
+       * stops a run past its timeout then. */
       const settle = (target: TargetRecord, job: string, run: JobRun) => {
-        const key = `${target.id}:${job}`;
-        const busy = deps.busy(target);
-        if (busy && !pastTimeout(run, now)) return;
+        if (deps.busy(target)) return;
         dispatch(
-          key,
+          `${target.id}:${job}`,
           "job",
           target.name,
-          `${busy ? "Stopping the run past its timeout" : "Recording the end of the run"} of ${job} on ${target.name} of ${target.plan.project}`,
+          `Recording the end of the run of ${job} on ${target.name} of ${target.plan.project}`,
           async () => {
             const seen = await deps.lifecycle.observeJob(target, job);
-            const request = { targetId: target.id, job, runId: run.id };
-            if (busy && seen.state === "running")
-              await deps.enforceDeadline(request);
-            else if (
-              !busy &&
-              (seen.state !== "running" || pastTimeout(run, deps.clock.now()))
-            )
-              await deps.settle(request);
-            else return "skipped";
+            if (seen.state === "running" && !pastTimeout(run, deps.clock.now()))
+              return "skipped";
+            await deps.settle({ targetId: target.id, job, runId: run.id });
           },
         );
       };
@@ -334,6 +326,37 @@ export function createJobScheduler(
         if (!record.running || planned.has(key) || inFlight.has(key)) continue;
         const target = state.targets.find((t) => t.id === record.target);
         if (target) settle(target, record.job, record.running);
+      }
+      // The deadline watch: a run past its timeout while an Operation holds its Target is stopped now, whatever else of its
+      // job is in flight (a start or settlement waiting for that Operation), so nothing queued on the Target extends its
+      // limit. Its own key, so it never waits behind that work either.
+      for (const record of state.jobs ?? []) {
+        const run = record.running;
+        const key = `deadline:${record.target}:${record.job}`;
+        const target = state.targets.find((t) => t.id === record.target);
+        if (
+          !run ||
+          !target ||
+          inFlight.has(key) ||
+          !deps.busy(target) ||
+          !pastTimeout(run, now)
+        )
+          continue;
+        dispatch(
+          key,
+          "job",
+          target.name,
+          `Stopping the run of ${record.job} on ${target.name} of ${target.plan.project} past its timeout`,
+          async () => {
+            const seen = await deps.lifecycle.observeJob(target, record.job);
+            if (seen.state !== "running") return "skipped";
+            await deps.enforceDeadline({
+              targetId: target.id,
+              job: record.job,
+              runId: run.id,
+            });
+          },
+        );
       }
       // rig.yaml turning a Target's role off stops its runs, as rig down would; checked every JOB_OFF_CHECK_MS.
       const withRuns = new Set(
@@ -408,7 +431,9 @@ export function createJobScheduler(
           inFlight.has(key) ||
           state.jobs?.some(
             (record) =>
-              record.running && `${record.target}:${record.job}` === key,
+              record.running &&
+              (`${record.target}:${record.job}` === key ||
+                `deadline:${record.target}:${record.job}` === key),
           ) ||
           (key.startsWith("off:") && withRuns.has(key.slice(4))) ||
           (key.startsWith("checkout:") && keeping.has(key.slice(9))) ||

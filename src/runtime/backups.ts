@@ -224,14 +224,14 @@ export async function settleBackupFiles(
   if (fresh) await measureBackup(fresh, target.name, deps);
   await removeQueuedBackups(deps, target.id);
 }
-/** Records the size of `backup`. Never rejects: a failure is a diagnostic, and a backup whose size is not recorded is
- * offered again by `tidyBackups`. */
+/** Records the size of `backup`. Never rejects: a failure is a diagnostic, returned, and a backup whose size is not recorded
+ * is offered again by `tidyBackups`. */
 async function measureBackup(
   backup: Pick<BackupRecord, "path">,
   target: string,
   deps: BackupDependencies,
-): Promise<void> {
-  if (!deps.backups) return;
+): Promise<unknown[]> {
+  if (!deps.backups) return [];
   try {
     const bytes = await deps.backups.measure(backup.path);
     if (bytes !== undefined)
@@ -241,8 +241,10 @@ async function measureBackup(
         );
         if (recorded) recorded.bytes = bytes;
       });
+    return [];
   } catch (error) {
     await report(deps, target, "backup-measure", error, backup.path);
+    return [error];
   }
 }
 /** Whether the state holds backup work left to do: directories queued for deletion, or a backup whose size a rigd that
@@ -255,33 +257,38 @@ export function backupWorkPending(
     state.backups?.some((backup) => backup.bytes === undefined),
   );
 }
-/** The scheduler's offer: measures every backup left without a size, then deletes every queued directory. Rejects only when
- * the state cannot be read; each backup's own failure is a diagnostic, and offered again. */
+/** The scheduler's offer: measures every backup left without a size, then deletes every queued directory. Every one is
+ * tried; then the first failure (a measurement, a deletion, or recording either) rejects it, and what failed is offered
+ * again. */
 export async function tidyBackups(deps: BackupDependencies): Promise<void> {
   if (!deps.backups) return;
   const unsized = ((await deps.store.read()).backups ?? []).filter(
     (backup) => backup.bytes === undefined,
   );
+  const failures: unknown[] = [];
   for (const backup of unsized)
-    await measureBackup(backup, backup.target, deps);
-  await removeQueuedBackups(deps);
+    failures.push(...(await measureBackup(backup, backup.target, deps)));
+  failures.push(...(await removeQueuedBackups(deps)));
+  if (failures.length) throw failures[0];
 }
 /** Deletes the queued directories (of the Target `targetId` only, when given) and forgets each one that is gone. One below a
  * symlinked directory is skipped, never followed, and forgotten with a diagnostic; one that cannot be deleted stays
- * queued, and is a diagnostic. Never rejects. */
+ * queued, and is a diagnostic. Never rejects: resolves the failures, each also a diagnostic, for a caller that reports
+ * them. */
 export async function removeQueuedBackups(
   deps: BackupDependencies,
   targetId?: string,
-): Promise<void> {
-  if (!deps.backups) return;
+): Promise<unknown[]> {
+  if (!deps.backups) return [];
   let queued;
   try {
     queued = ((await deps.store.read()).backupRemovals ?? []).filter(
       (removal) => targetId === undefined || removal.target === targetId,
     );
-  } catch {
-    return;
+  } catch (error) {
+    return [error];
   }
+  const failures: unknown[] = [];
   const removed: string[] = [];
   for (const removal of queued)
     try {
@@ -297,6 +304,7 @@ export async function removeQueuedBackups(
       removed.push(removal.path);
     } catch (error) {
       await report(deps, removal.target, "backup-remove", error, removal.path);
+      failures.push(error);
     }
   if (removed.length)
     await deps.store
@@ -306,7 +314,8 @@ export async function removeQueuedBackups(
         );
         if (!state.backupRemovals?.length) delete state.backupRemovals;
       })
-      .catch(() => {});
+      .catch((error: unknown) => failures.push(error));
+  return failures;
 }
 async function report(
   deps: BackupDependencies,

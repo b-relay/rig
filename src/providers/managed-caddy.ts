@@ -383,13 +383,15 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   /** Builds, validates and switches to a generation of `routes`, `settings` and the dashboard's route as rigd asks for it now,
    * then makes Caddy serve it, and confirms that it does. A failure at any step leaves the previous generation current and
    * served. `ownerRoutesOnly` says whether `settings`' routes are known to be the owner's alone. Without `rollBack`, a
-   * failure leaves the new generation current, for a caller that must never serve the previous one again. */
+   * failure leaves the new generation current, for a caller that must never serve the previous one again. With `start`, a
+   * Caddy that does not answer is started on the new generation (see activate). */
   async function publish(
     routes: string,
     kind: PublicationKind,
     settings: ProxySettings,
     ownerRoutesOnly: boolean,
     rollBack = true,
+    start = false,
   ): Promise<void> {
     // Only what Rig renders from its owned blocks is ever published, whatever a caller passed.
     routes = canonicalRouteFile(routes).text;
@@ -515,19 +517,26 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       !Bun.deepEquals(options.dashboard?.current(), dashboard)
     ) {
       await rm(directory, { recursive: true, force: true });
-      return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
+      return publish(routes, kind, settings, ownerRoutesOnly, rollBack, start);
     }
     // A Caddy that ran before this publication must run after a failed one too, even when the publication stopped it (a
     // restart whose new process never answered); one that was stopped stays stopped.
     const ran = (await options.job.state()) !== "stopped";
     await switchTo(directory);
     try {
-      await activate(directory, executable, secret, kind, "publish");
+      await activate(directory, executable, secret, kind, "publish", start);
     } catch (error) {
       if (error instanceof DashboardRouteChanged) {
         await switchTo(previous);
         await rm(directory, { recursive: true, force: true });
-        return publish(routes, kind, settings, ownerRoutesOnly, rollBack);
+        return publish(
+          routes,
+          kind,
+          settings,
+          ownerRoutesOnly,
+          rollBack,
+          start,
+        );
       }
       if (!rollBack) throw error;
       await switchTo(previous);
@@ -588,9 +597,19 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           { generation: basename(directory) },
         );
     };
+    /** Checked after every wait, with nothing awaited between it and the load or start: a route to the dashboard that
+     * rigd stopped asking for meanwhile (its dashboard ended, or a stop began) is never served. */
+    const assertDashboardUnchanged = () => {
+      if (
+        dashboard?.port != null &&
+        !Bun.deepEquals(options.dashboard?.current(), dashboard)
+      )
+        throw new DashboardRouteChanged();
+      if (closing.signal.aborted) throw closed();
+    };
     let loaded = await options.admin.config();
     if (loaded === undefined && start) {
-      if (closing.signal.aborted) throw closed();
+      assertDashboardUnchanged();
       // Its job starts it from the current generation, which is `directory`.
       await options.job.restart();
       return confirm();
@@ -620,14 +639,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         );
     }
     if (expected !== undefined && Bun.deepEquals(loaded, expected)) return;
-    // Checked after every wait, with nothing awaited between it and the load: a route to the dashboard that rigd stopped
-    // asking for meanwhile (its dashboard ended, or a stop began) is never loaded.
-    if (
-      dashboard?.port != null &&
-      !Bun.deepEquals(options.dashboard?.current(), dashboard)
-    )
-      throw new DashboardRouteChanged();
-    if (closing.signal.aborted) throw closed();
+    assertDashboardUnchanged();
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
     // Any change in which CA issues which subjects restarts, conservatively: a Caddy with no issuer yet holds no certificates.
     if (
@@ -690,7 +702,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     // it.
     const confirmed = () =>
       readText(generationFiles(current).routes).then((routes) =>
-        publish(routes ?? "", kind, settings, ownerRoutesOnly, false),
+        publish(routes ?? "", kind, settings, ownerRoutesOnly, false, start),
       );
     if (await unconfirmedDashboard(current)) return confirmed();
     const secret = await token(settings).catch(() => undefined);

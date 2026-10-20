@@ -141,6 +141,8 @@ export async function managedCaddyWorld(
     /** How many restarts to come stop Caddy and then fail, as a new process that exits at once does; the one after starts
      * it again. */
     failingRestarts: 0,
+    /** How the job stands after such a restart: `stopped` for a process, `unknown` or `running` for launchd backing off. */
+    afterFailedRestart: "stopped" as CaddyJobState,
     /** Set to make a reload succeed without Caddy loading anything. */
     ignoreReload: false,
     /** Runs each time the router reads Host config's proxy settings, before it gets them. */
@@ -185,7 +187,7 @@ export async function managedCaddyWorld(
         control.restarts++;
         if (control.failingRestarts > 0) {
           control.failingRestarts--;
-          control.state = "stopped";
+          control.state = control.afterFailedRestart;
           control.reachable = false;
           throw new RigError(
             "PROXY_START",

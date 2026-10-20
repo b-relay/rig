@@ -22,6 +22,7 @@ import {
   dashboardServing,
   openDashboard,
   stopLeftOverDashboard,
+  takeOverDashboard,
   type DashboardDependencies,
 } from "../src/daemon/dashboard";
 import { waitForLogPoll } from "../src/adapters/log-follow-scheduler";
@@ -40,6 +41,7 @@ import {
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
+import { managedCaddyWorld } from "./support/managed-caddy-double";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -784,3 +786,184 @@ test("while rigd serves a published dashboard, settings that move Caddy's HTTPS 
     8444,
   );
 });
+
+test("an enable Caddy refused is tried again only for a process found on the address again: one that ended during the back-off, its port taken by another program, is never published", async () => {
+  const f = await installed(SERVER);
+  let refused = false;
+  let backOff: (() => void) | undefined;
+  /** What answered on the dashboard's port each time Caddy took an enable. */
+  const enabledFor: (string | undefined)[] = [];
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    serving: async (listening) => {
+      if (listening && !refused) {
+        refused = true;
+        throw new Error("caddy is unreachable");
+      }
+      if (listening)
+        enabledFor.push(await answer(`http://127.0.0.1:${f.deps.port}`, 1));
+      f.serving.push(listening);
+    },
+    wait: (ms, signal) => {
+      f.waits.push(ms);
+      // The first back-off is held until the test has replaced the dashboard.
+      if (backOff === undefined)
+        return new Promise((resolve) => {
+          backOff = resolve;
+        });
+      return waitForLogPoll(100, signal);
+    },
+  }))!;
+  dashboard.start();
+  const pid = Number(await answer(dashboard.url));
+  expect(await until(() => backOff !== undefined)).toBe(true);
+  process.kill(pid, "SIGKILL");
+  expect(await until(() => !processExists(pid))).toBe(true);
+  const other = Bun.serve({
+    hostname: "127.0.0.1",
+    port: f.deps.port,
+    fetch: () => new Response("another program"),
+  });
+  try {
+    backOff!();
+    await Bun.sleep(1500);
+    await dashboard.stop();
+  } finally {
+    other.stop(true);
+  }
+  expect(enabledFor).toEqual([]);
+  expect(f.serving.filter(Boolean)).toEqual([]);
+});
+
+test("a stop while an enable is under way waits for it, withholds the domain, and only then signals the process", async () => {
+  const f = await installed(SERVER);
+  let asked = false;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let pid = 0;
+  /** Whether the dashboard's process was alive as each change reached Caddy. */
+  const alive: boolean[] = [];
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    serving: async (listening) => {
+      if (listening) {
+        asked = true;
+        await held;
+      }
+      alive.push(processExists(pid));
+      f.serving.push(listening);
+    },
+  }))!;
+  dashboard.start();
+  pid = Number(await answer(dashboard.url));
+  expect(await until(() => asked)).toBe(true);
+  const stopping = dashboard.stop();
+  await Bun.sleep(300);
+  expect(processExists(pid)).toBe(true);
+  release();
+  await stopping;
+  expect(f.serving).toEqual([true, false]);
+  expect(alive).toEqual([true, true]);
+  expect(processExists(pid)).toBe(false);
+});
+
+/** Whether Caddy's loaded configuration reaches `port`. */
+const reaches = (loaded: unknown, port: number) =>
+  JSON.stringify(loaded).includes(`127.0.0.1:${port}`);
+
+test("a dashboard left running is stopped only once Caddy is confirmed to withhold its domain, not when Rig's files say so", async () => {
+  const caddy = await managedCaddyWorld({
+    tls: { ca: "internal" },
+    routes: { "rig.example.test": 4280 },
+  });
+  roots.push(caddy.root);
+  caddy.control.dashboard = { domain: "rig.example.test", listening: true };
+  await caddy.caddy.republish();
+  expect(reaches(caddy.control.loaded, 4280)).toBe(true);
+  const routed = caddy.control.loaded;
+  // The next rigd withheld the domain, then died after switching to that generation and before Caddy loaded it.
+  caddy.control.dashboard = { domain: "rig.example.test", listening: false };
+  await caddy.caddy.refresh();
+  expect(reaches(caddy.control.loaded, 4280)).toBe(false);
+  caddy.control.loaded = routed;
+  caddy.control.reachable = false;
+  // What the dashboard it left running holds: its record names it.
+  const f = await installed(SERVER);
+  const left = Bun.spawn([process.execPath, "server.js"], {
+    cwd: join(f.directory, "web"),
+    env: { ...process.env, PORT: String(f.deps.port), HOSTNAME: "127.0.0.1" },
+    stdout: "ignore",
+  });
+  expect(await answer(`http://127.0.0.1:${f.deps.port}`)).toBe(
+    String(left.pid),
+  );
+  await writeFile(
+    join(f.root, "dashboard", "process.json"),
+    JSON.stringify({
+      pid: left.pid,
+      startedAt: await processStartTime(left.pid),
+    }),
+  );
+  let started = false;
+  const takingOver = takeOverDashboard({
+    confirm: () =>
+      caddy.caddy.refresh().then(
+        () => true,
+        () => false,
+      ),
+    stopLeftOver: () => stopLeftOverDashboard(f.root),
+    start: () => void (started = true),
+    stopped: () => false,
+    wait: () => Bun.sleep(100),
+  });
+  await Bun.sleep(1000);
+  expect(processExists(left.pid)).toBe(true);
+  expect(started).toBe(false);
+  caddy.control.reachable = true;
+  await takingOver;
+  expect(reaches(caddy.control.loaded, 4280)).toBe(false);
+  expect(processExists(left.pid)).toBe(false);
+  expect(started).toBe(true);
+});
+
+test.each([
+  ["moved to another domain", { domain: "new.example.test", listening: false }],
+  ["turned off", undefined],
+] as const)(
+  "a dashboard domain an earlier rigd published stays withheld when the dashboard is %s and Host config is refused",
+  async (_label, dashboard) => {
+    const caddy = await managedCaddyWorld({
+      tls: { ca: "internal" },
+      routes: { "old.example.test": 4280 },
+    });
+    roots.push(caddy.root);
+    caddy.control.dashboard = { domain: "old.example.test", listening: true };
+    await caddy.caddy.router.apply({
+      key: "app",
+      sites: [
+        {
+          hostname: "app.example.test",
+          routes: [{ prefix: "/", upstream: "127.0.0.1:3000" }],
+        },
+      ],
+    });
+    expect(reaches(caddy.control.loaded, 4280)).toBe(true);
+    // The next rigd: Host config names a hostname a Target serves, so Rig refuses it and goes on with the accepted settings.
+    caddy.control.dashboard = dashboard;
+    caddy.setSettings({
+      tls: { ca: "internal" },
+      routes: {
+        ...(dashboard ? { [dashboard.domain]: 4281 } : {}),
+        "app.example.test": 3001,
+      },
+    });
+    await expect(caddy.caddy.republish()).rejects.toMatchObject({
+      code: "ROUTE_CONFLICT",
+    });
+    await caddy.caddy.refresh();
+    expect(reaches(caddy.control.loaded, 4280)).toBe(false);
+    expect(reaches(caddy.control.loaded, 3000)).toBe(true);
+  },
+);

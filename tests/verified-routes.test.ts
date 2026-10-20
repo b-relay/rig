@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseProjectConfig } from "../src/config";
 import type { ProjectConfig } from "../src/config/types";
@@ -11,6 +11,12 @@ import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import { stopDetached } from "../src/domain/stop-budget";
 import { runtimeWorld } from "./support/runtime-world";
+import { managedCaddyWorld } from "./support/managed-caddy-double";
+import { localActivation } from "./support/activation-doubles";
+import { createTargetEffects } from "../src/adapters/target-effects";
+import { createArtifactInstaller } from "../src/providers/artifact-installer";
+import { runCommand } from "../src/providers/command-runner";
+import { createTargetLifecycle } from "../src/runtime/lifecycle";
 
 /** The rule every route change keeps, checked through the real runtime, lifecycle, effects and route file over a scripted
  * supervisor: a path reaches a port only while the Service process that owns the port runs and listens there on
@@ -344,4 +350,92 @@ test("rig down of a deploy rigd died in, whose new plan moved a Service's port, 
   await f.command({ action: "down", project: "shop", target: "stable" });
   expect(f.events.slice(-2).sort()).toEqual(["stop api", "stop web"]);
   expect(f.breaches).toEqual([]);
+});
+
+test("a route file that already withholds a path is no proof Caddy does: rig down confirms what Caddy serves, and stops nothing until it can", async () => {
+  const caddy = await managedCaddyWorld({ tls: { ca: "internal" } });
+  roots.push(caddy.root);
+  let running = true;
+  /** Whether Caddy's loaded configuration reached the Service's port as its process stopped. */
+  const liveAtStop: boolean[] = [];
+  const supervisor: Supervisor = {
+    observe: async () =>
+      running ? { state: "running", pid: 1 } : { state: "stopped" },
+    ensureRunning: async () => ({ outcome: "unchanged" }),
+    async stop() {
+      liveAtStop.push(caddy.servedRoutes().includes(`127.0.0.1:${WEB}`));
+      running = false;
+      return { outcome: "stopped" };
+    },
+    shutdown: async () => {},
+    detach: async () => {},
+  };
+  const effects = createTargetEffects({
+    ...localActivation([WEB]),
+    root: caddy.root,
+    recordingTime: () => "2026-10-20T00:00:00.000Z",
+    environment: {},
+    supervisors: new Map([["child", supervisor]]),
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: caddy.caddy.router,
+    run: runCommand,
+  });
+  const target = {
+    id: "target",
+    projectId: "project",
+    name: "stable",
+    kind: "stable",
+    desired: "running",
+    createdAt: "now",
+    updatedAt: "now",
+    logRoot: join(caddy.root, "logs"),
+    plan: {
+      project: "shop",
+      target: "stable",
+      workspacePath: caddy.root,
+      dataRoot: join(caddy.root, "data"),
+      deploymentName: "stable",
+      branchSlug: "main",
+      subdomain: "stable",
+      providers: { processSupervisor: "child" },
+      preparedComponents: [],
+      domain: "shop.test",
+      proxy: { upstream: "web" },
+      components: [
+        {
+          name: "web",
+          kind: "managed",
+          command: "serve",
+          port: WEB,
+          readyTimeout: 1,
+          env: {},
+          dependsOn: [],
+        },
+      ],
+    },
+  } as TargetRecord;
+  await effects.route(target, { verified: new Set([WEB]) });
+  expect(caddy.servedRoutes()).toContain(`reverse_proxy 127.0.0.1:${WEB}`);
+  // rigd died after writing a withholding route file and before Caddy took it; Caddy still serves the live route.
+  const file = join(caddy.root, "proxy", "Caddyfile");
+  await writeFile(
+    file,
+    (await readFile(file, "utf8")).replace(
+      `reverse_proxy 127.0.0.1:${WEB}`,
+      "respond 503",
+    ),
+  );
+  caddy.control.reachable = false;
+  const lifecycle = createTargetLifecycle(effects);
+  await expect(lifecycle.down(target)).rejects.toMatchObject({
+    code: "ROUTE_WITHHOLD",
+  });
+  expect(liveAtStop).toEqual([]);
+  expect(running).toBe(true);
+  caddy.control.reachable = true;
+  await lifecycle.down(target);
+  expect(liveAtStop).toEqual([false]);
 });

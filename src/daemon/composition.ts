@@ -121,6 +121,7 @@ import {
 } from "../runtime/usage-sampler";
 import { usageReport, type UsageMonitor } from "../runtime/usage-report";
 import type { Supervisor } from "../providers/contracts";
+import { createOperatorEnvFiles } from "../adapters/operator-env";
 import {
   hostLogRetention,
   LOG_RETENTION_REFRESH_MS,
@@ -235,6 +236,16 @@ export async function composeDaemon(
   const effects = createTargetEffects({
     // A Tool whose owner Target state no longer records is released to the next Target that publishes there (#343).
     recordedTargets,
+    // An ownership conflict names the owner as it is registered now, after a rename too (#590).
+    currentNames: async (targetId) => {
+      const state = await store.read();
+      const target = state.targets.find((each) => each.id === targetId);
+      const project =
+        target && state.projects.find((each) => each.id === target.projectId);
+      return target && project
+        ? { project: project.name, target: target.name }
+        : undefined;
+    },
     // Rig's own Tools are identified by the history of the Project's registered repository (ADR 0019).
     projectRepository: async (projectId) =>
       (await store.read()).projects.find((project) => project.id === projectId)
@@ -356,6 +367,7 @@ export async function composeDaemon(
     }),
     store,
     documents: createProjectDocuments(root, runCommand, environment, homedir()),
+    operatorEnv: createOperatorEnvFiles(root),
     sources: createDeploymentSources(
       createGitSourceStore({ root: join(root, "sources"), run: runCommand }),
       runCommand,

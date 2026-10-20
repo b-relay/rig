@@ -2668,18 +2668,24 @@ test.each(["commit", "restore", "rename", "activation", "pending"] as const)(
       },
     });
     const update = deps.store.update;
-    let failPersistence = phase === "rename" || phase === "pending";
+    // A rename marks itself on the registration first; the write that saves the new name is its second.
+    let failAt = phase === "rename" ? 2 : phase === "pending" ? 1 : 0;
     deps.store.update = async (change) => {
-      if (failPersistence) {
-        failPersistence = false;
-        throw primary;
-      }
+      if (--failAt === 0) throw primary;
       await update(change);
     };
     let renameCalls = 0;
-    deps.documents.rename = async () => {
+    // rig.yaml's name as the renames write it, so putting it back is needed.
+    let written = "demo";
+    const read = deps.documents.read.bind(deps.documents);
+    deps.documents.read = async (path) => {
+      const document = await read(path);
+      return { ...document, config: { ...document.config, name: written } };
+    };
+    deps.documents.rename = async (_project, name) => {
       events.push("rename");
       if (++renameCalls === 2) throw recovery;
+      written = name;
       return deps.documents.read("/tmp/developer");
     };
     const command =
@@ -5083,4 +5089,104 @@ test("a first logs page says when older entries match than it kept, even at 1000
   await logs({ lines: 2, after: "c" });
   await logs({ lines: 10000 });
   expect(reads.map((args) => args[2])).toEqual([3, 5, 2, 10001]);
+});
+test("names registered before the name rule keep working, and doctor reports each with the rename or redeploy that fixes it", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  // As state from before the rule may hold them: a Project whose name differs only in case, and Previews named all and DEV.
+  state.projects.push({
+    ...state.projects[0]!,
+    id: "upper",
+    name: "DEMO",
+    repoPath: "/tmp/upper",
+    configPath: "/tmp/upper/rig.yaml",
+  });
+  for (const name of ["all", "DEV"]) {
+    await runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature",
+      deployment: `legacy-${name}`,
+    });
+    const target = state.targets.at(-1)!;
+    target.name = name;
+    target.plan.deploymentName = name;
+  }
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as { checks: { name: string; ok: boolean; hint?: string }[] };
+  expect(
+    report.checks.find((check) => check.name === "project-names"),
+  ).toMatchObject({
+    ok: false,
+    hint: expect.stringContaining("rig rename <new name> --project DEMO"),
+  });
+  expect(
+    report.checks.find((check) => check.name === "all/name"),
+  ).toMatchObject({
+    ok: false,
+    hint: expect.stringContaining(
+      "rig deploy preview feature --deployment <new name> --project demo, then rig down preview --deployment all --project demo --destroy",
+    ),
+  });
+  expect(report.checks.find((check) => check.name === "DEV/name")?.ok).toBe(
+    false,
+  );
+  // They are still selected, started and stopped by their recorded names.
+  for (const name of ["all", "DEV"])
+    for (const action of ["up", "down"] as const)
+      await runtime.command({
+        action,
+        project: "demo",
+        target: "preview",
+        deployment: name,
+      });
+  expect(
+    state.targets.filter((t) => t.kind === "preview").map((t) => t.desired),
+  ).toEqual(["stopped", "stopped"]);
+});
+test("doctor reports an unfinished rename with the commands that finish and undo it", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  state.projects[0]!.renaming = { to: "after", env: "move", config: "demo" };
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as { checks: { name: string; ok: boolean; hint?: string }[] };
+  expect(
+    report.checks.find((check) => check.name === "project-rename"),
+  ).toMatchObject({
+    ok: false,
+    hint: "Run rig rename after --project demo to finish the rename, or rig rename demo --project demo to undo it.",
+  });
+});
+
+test("doctor tells how to separate two Projects whose names differ only in case and are both too long to select", async () => {
+  const { runtime, state } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  for (const [id, name] of [
+    ["lower", "a".repeat(129)],
+    ["upper", "A".repeat(129)],
+  ] as const)
+    state.projects.push({
+      ...state.projects[0]!,
+      id,
+      name,
+      repoPath: `/tmp/${id}`,
+      configPath: `/tmp/${id}/rig.yaml`,
+    });
+  const report = (await runtime.command({
+    action: "doctor",
+    project: "demo",
+  })) as { checks: { name: string; hint?: string }[] };
+  const hint = report.checks.find(
+    (check) => check.name === "project-names",
+  )!.hint!;
+  // --project selects at most 128 characters: each is renamed from its repository.
+  expect(hint).not.toContain("--project");
+  expect(hint).toContain(
+    "Rename all but one of 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...' and 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...': in /tmp/upper, change name in rig.yaml to at most 128 characters, then run rig rename <that name> there.",
+  );
 });

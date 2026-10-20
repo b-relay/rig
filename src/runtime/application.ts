@@ -75,6 +75,7 @@ import {
   registeredDirectoryMissing,
 } from "./projects";
 import {
+  assertNewPreviewName,
   assertTargetOn,
   persistTarget,
   planTarget,
@@ -988,7 +989,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           deps,
         );
         project = updated.project;
-        return await finish(updated.outcome, { repoPath: project.repoPath });
+        return await finish(updated.outcome, {
+          repoPath: project.repoPath,
+          ...(updated.warnings?.length ? { warnings: updated.warnings } : {}),
+        });
       }
       if (
         command.action === "deploy" &&
@@ -1711,6 +1715,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         if (reservations.endedPreviewClaims(project!.id) === ended) break;
       }
+      // Its scope is held, and every name that differs only in case shares it, so no case variant is created meanwhile.
+      assertNewPreviewName(name, [
+        ...recorded.filter((t) => t.kind === "preview").map((t) => t.name),
+        ...reservations.claimedPreviews(project!.id, operationId),
+      ]);
       const replacements = previewsToReplace(
         recorded,
         reservations.claimedPreviews(project!.id, operationId),

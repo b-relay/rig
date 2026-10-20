@@ -9,8 +9,23 @@ export interface ProjectRecord {
   repoPath: string;
   configPath: string;
   createdAt: string;
+  /** The names `rig rename` replaced, oldest first: a deployed Commit whose rig.yaml still names one is this Project's. */
+  formerNames?: string[];
+  /** A `rig rename` that began and has not finished or been undone: its rig.yaml or operator env files may already have
+   * the new name, which no other Project may take meanwhile. `rig rename <to>` finishes it, and `rig rename <name>` undoes
+   * it; no other rename starts until then. */
+  renaming?: PendingRename;
 }
 
+/** What an unfinished rename began, recorded before it changed anything. */
+export interface PendingRename {
+  /** The name it gives the Project. */
+  to: string;
+  /** How it carries the operator env directory, decided before anything moved. */
+  env: "none" | "move" | "copy";
+  /** The name rig.yaml had before it, which undoing it puts back. */
+  config: string;
+}
 /** The recorded outcome of one build unit. `started` read by anything but the operation that wrote it means the
  * command may or may not have finished: the outcome is unknown and the unit is never rerun under this identity. */
 export interface BuildOutcome {

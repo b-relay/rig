@@ -23,7 +23,10 @@ export function SettingsForms({
   const [newPath, setNewPath] = useState("");
   return (
     <>
-      <Section title="Rename" description="Every Target must be stopped first.">
+      <Section
+        title="Rename"
+        description="Every Target must be stopped first. The operator env files move to the new name."
+      >
         <form
           className="flex max-w-xl flex-col gap-3 sm:flex-row sm:items-end"
           onSubmit={(event) => {
@@ -31,7 +34,8 @@ export function SettingsForms({
             void rename
               .run({ action: "rename", project, newName })
               .then((result) => {
-                if (result)
+                // A rename with warnings (env files copied, a save not confirmed on disk) stays here until they are read.
+                if (result && !result.warnings?.length)
                   router.push(
                     `/projects/${encodeURIComponent(newName)}/settings`,
                   );
@@ -42,6 +46,7 @@ export function SettingsForms({
             <Input
               id="rename"
               value={newName}
+              maxLength={128}
               required
               onChange={(event) => setNewName(event.target.value)}
             />
@@ -51,6 +56,17 @@ export function SettingsForms({
           </Button>
         </form>
         <Failure failure={rename.failure} />
+        {rename.result?.warnings?.length ? (
+          <>
+            <OperationNotice result={rename.result} />
+            <a
+              href={`/projects/${encodeURIComponent(rename.result.project ?? newName)}/settings`}
+              className="text-sm underline"
+            >
+              Go to {rename.result.project ?? newName}
+            </a>
+          </>
+        ) : null}
       </Section>
       <Section
         title="Repoint"

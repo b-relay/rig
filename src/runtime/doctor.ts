@@ -1,15 +1,29 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ProjectRecord, TargetRecord } from "../domain/runtime";
+import { shellWord } from "../domain/target-selector";
+import {
+  MAX_NAME_LENGTH,
+  caseVariantOf,
+  nameKey,
+  nameProblem,
+  reservedPreviewName,
+} from "../domain/names";
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { OrphanedTool, RuntimeDependencies } from "./contracts";
 import { join } from "node:path";
 import { RigError } from "../domain/errors";
 import { observeTargets, OBSERVATION_EXPIRED } from "./status";
+import { pendingRenameAdvice } from "./rename";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
 import { targetOn, usesRenamedKeys } from "../config/schema";
-import { roleLabel, turnOnInstruction } from "./targets";
+import {
+  formerName,
+  reservedBecause,
+  roleLabel,
+  turnOnInstruction,
+} from "./targets";
 import { withPlanDefaults, withValuesWritten } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
@@ -86,6 +100,8 @@ async function inspectRuntimeHost(
   if (orphans) checks.push(orphans);
   const tools = await orphanedToolsCheck(deps);
   if (tools) checks.push(tools);
+  const names = await projectNamesCheck(deps);
+  if (names) checks.push(names);
   checks.unshift({ name: "rigd", ok: true, message: "Daemon is reachable." });
   for (const notice of deps.notices?.() ?? [])
     checks.push({
@@ -227,6 +243,112 @@ async function orphanedToolsCheck(
       .join(" "),
   };
 }
+/** A failing `project-names` check for registered Projects the name rule refuses now but registered before it: names that
+ * differ only in case, which share one operator env directory and their Tools' paths on a Mac's disk, and names too long
+ * for a selector. They keep working; a rename gives each its own name. Undefined when there is none or the state cannot be
+ * read (another check reports that). */
+async function projectNamesCheck(
+  deps: Pick<RuntimeDependencies, "store" | "root">,
+): Promise<DoctorCheck | undefined> {
+  let projects: readonly ProjectRecord[];
+  try {
+    projects = (await deps.store.read()).projects;
+  } catch {
+    return undefined;
+  }
+  const groups = new Map<string, ProjectRecord[]>();
+  for (const project of projects)
+    groups.set(nameKey(project.name), [
+      ...(groups.get(nameKey(project.name)) ?? []),
+      project,
+    ]);
+  const shared = [...groups.values()].filter((group) => group.length > 1);
+  const selectable = (project: ProjectRecord) =>
+    project.name.length <= MAX_NAME_LENGTH;
+  /** How to rename `project`: by --project, or from its repository when its name is too long to select. */
+  const renameOne = (project: ProjectRecord) =>
+    selectable(project)
+      ? `run rig rename <new name> --project ${shellWord(project.name)}`
+      : `in ${project.repoPath}, change name in rig.yaml to at most ${MAX_NAME_LENGTH} characters, then run rig rename <that name> there`;
+  const long = projects.filter(
+    (project) => project.name.length > MAX_NAME_LENGTH,
+  );
+  if (!shared.length && !long.length) return undefined;
+  const shorten = (project: ProjectRecord) => `${project.name.slice(0, 40)}...`;
+  const quoted = (group: readonly ProjectRecord[]) =>
+    group
+      .map((project) =>
+        selectable(project) ? `'${project.name}'` : `'${shorten(project)}'`,
+      )
+      .join(" and ");
+  return {
+    name: "project-names",
+    ok: false,
+    message: [
+      ...shared.map(
+        (group) =>
+          `Projects ${quoted(group)} have names that differ only in case, which a Mac's disk does not tell apart: they share the operator env files under ${join(deps.root, "env", group[0]!.name)} and their Tools' paths.`,
+      ),
+      ...long.map(
+        (project) =>
+          `Project '${shorten(project)}' has a name of ${project.name.length} characters, but --project and the dashboard select names of at most ${MAX_NAME_LENGTH}.`,
+      ),
+    ].join(" "),
+    reason: "project-name",
+    hint: [
+      ...shared.map(
+        (group) =>
+          `Rename all but one of ${quoted(group)}: ${renameOne(group.findLast(selectable) ?? group[group.length - 1]!)}. The renamed Project keeps a copy of the env files; remove from each copy what belongs to the other Project.`,
+      ),
+      ...long.map(
+        (project) =>
+          `In ${project.repoPath}, change name in rig.yaml to at most ${MAX_NAME_LENGTH} characters, then run rig rename <that name> there.`,
+      ),
+    ].join(" "),
+  };
+}
+/** A failing `<preview>/name` check for a Preview recorded under a name the rule for new Previews refuses: a spelling of a
+ * reserved name, one that differs only in case from another of the Project's Previews, or one too long for a selector.
+ * It keeps working; deploying its Branch under another name and destroying it replaces it. Undefined for any other Target. */
+function previewNameCheck(
+  target: TargetRecord,
+  targets: readonly TargetRecord[],
+): DoctorCheck | undefined {
+  if (target.kind !== "preview") return undefined;
+  const reserved = reservedPreviewName(target.name);
+  const variant = caseVariantOf(
+    target.name,
+    targets.filter((t) => t.kind === "preview").map((t) => t.name),
+  );
+  const problem = nameProblem(target.name);
+  const why = reserved
+    ? `its name is reserved: ${reservedBecause(reserved)}${reserved === target.name ? "" : ", and a Mac's disk does not tell case apart"}.`
+    : variant !== undefined
+      ? `its name differs only in case from Preview '${variant}', which a Mac's disk does not tell apart: they share their Tools' paths.`
+      : problem
+        ? `its name ${problem}.`
+        : undefined;
+  if (!why) return undefined;
+  return {
+    name: `${target.name}/name`,
+    ok: false,
+    message: `Preview '${target.name}' was deployed before Rig refused such names, and ${why}`,
+    reason: "preview-name",
+    hint: `It keeps working. To replace it, run ${previewReplacement(target).join(", then ")}, which deletes its data.`,
+  };
+}
+/** The commands that replace a recorded Preview by one under `<new name>`: a deploy of its Branch under that name, then
+ * the destroy of the old one, each with the Preview's own Project, since doctor's advice is read from anywhere. */
+export function previewReplacement(
+  target: Pick<TargetRecord, "kind" | "name" | "branch" | "plan">,
+): [deploy: string, destroy: string] {
+  return [
+    rigCommand("deploy", {
+      target: { ...target, name: "<new name>" },
+    }),
+    rigCommand("down", { target }, "--destroy"),
+  ];
+}
 export async function doctor(
   project: ProjectRecord,
   targets: TargetRecord[],
@@ -236,11 +358,24 @@ export async function doctor(
   // One acquisition serves identity and every Working copy comparison, so a concurrent edit cannot split one report across revisions.
   const repository = await acquireDocument(
     project.repoPath,
-    project.name,
+    project,
     deps.documents,
   );
   checks.push(projectConfigCheck(project, repository));
+  if (project.renaming)
+    checks.push({
+      name: "project-rename",
+      ok: false,
+      message:
+        project.renaming.to === project.name
+          ? `Writing name: ${project.name} back to rig.yaml (from '${project.renaming.config}') did not finish.`
+          : `A rename of '${project.name}' to '${project.renaming.to}' did not finish: its rig.yaml or operator env files may have the new name already.`,
+      reason: "rename-unfinished",
+      hint: pendingRenameAdvice(project, project.renaming),
+    });
   for (const target of targets) {
+    const named = previewNameCheck(target, targets);
+    if (named) checks.push(named);
     if (target.deploymentIncomplete && !target.recovery)
       checks.push({
         name: `${target.name}/deployment`,
@@ -278,21 +413,23 @@ export async function doctor(
         reason: "deployment-recovery",
         hint: `Run ${rigCommand("down", { target })} to stop both recorded plans before retrying deployment.`,
       });
-    checks.push(
-      await configCheck(
-        project,
-        target,
-        target.kind === "working"
-          ? repository
-          : // A deployed Target is planned from the committed config in its checkout; the working copy never reaches it.
-            await acquireDocument(
-              target.plan.workspacePath,
-              project.name,
-              deps.documents,
-            ),
-        deps,
-      ),
-    );
+    // A deployed Target is planned from the committed config in its checkout; the working copy never reaches it.
+    const source =
+      target.kind === "working"
+        ? repository
+        : await acquireDocument(
+            target.plan.workspacePath,
+            project,
+            deps.documents,
+            "deployed",
+          );
+    checks.push(await configCheck(project, target, source, deps));
+    if (source.outcome === "usable" && source.formerName)
+      checks.push({
+        name: `${target.name}/name`,
+        ok: true,
+        message: `The deployed revision's rig.yaml names '${source.formerName}', this Project's name before it was renamed '${project.name}'; it runs as '${project.name}'. Commit rig.yaml with the new name, and the next deploy records it.`,
+      });
     const sites = plannedSites(target.plan);
     if (sites.length)
       checks.push({
@@ -388,19 +525,37 @@ function productionBranchCheck(
 }
 /** One read of a config document, kept apart by why it cannot serve a comparison. */
 type AcquiredDocument =
-  | { outcome: "usable"; document: ConfigDocument<ProjectConfig> }
+  | {
+      outcome: "usable";
+      document: ConfigDocument<ProjectConfig>;
+      /** The name a deployed revision's config gives, one the Project had before a rename; the document carries the
+       * Project's name, as the revision was planned. */
+      formerName?: string;
+    }
   | { outcome: "foreign"; document: ConfigDocument<ProjectConfig> }
   | { outcome: "invalid"; failure: ConfigError }
   | { outcome: "unreadable"; failure: Error };
-/** Reads one config document once; a parser rejection and a failed read are different findings. */
+/** Reads one config document once; a parser rejection and a failed read are different findings. A `deployed` revision's
+ * config that names a former name of the Project is its own, from before a rename. */
 async function acquireDocument(
   path: string,
-  projectName: string,
+  project: Pick<ProjectRecord, "name" | "formerNames">,
   documents: Pick<RuntimeDependencies["documents"], "read">,
+  revision?: "deployed",
 ): Promise<AcquiredDocument> {
   try {
     const document = await documents.read(path);
-    return document.config.name === projectName
+    const named = document.config.name;
+    if (revision === "deployed" && formerName(project, named))
+      return {
+        outcome: "usable",
+        document: {
+          ...document,
+          config: { ...document.config, name: project.name },
+        },
+        formerName: named,
+      };
+    return named === project.name
       ? { outcome: "usable", document }
       : { outcome: "foreign", document };
   } catch (error) {

@@ -119,7 +119,9 @@ export function createRigCommand(
   addHelpCommand(command, "rig");
   command
     .command("rename")
-    .description("Rename a Project after its Targets are stopped.")
+    .description(
+      "Rename a Project after its Targets are stopped; its operator env files move to the new name.",
+    )
     .argument("<name>", "New Project identity", nonEmpty)
     .option("--project <name>", "Current registered Project identity")
     .action(async (newName: string, options: ScopeOptions) =>

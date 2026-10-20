@@ -8,8 +8,9 @@
     "name": {
       "type": "string",
       "minLength": 1,
+      "maxLength": 128,
       "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]*$",
-      "description": "Stable registered Project name."
+      "description": "Stable registered Project name, at most 128 characters. It names the Project's operator env directory under <RIG_ROOT>/env, so no two Projects on a Host may have names that differ only in case. Change it with rig rename."
     },
     "description": {
       "description": "Project description.",

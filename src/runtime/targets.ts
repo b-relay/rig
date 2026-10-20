@@ -9,6 +9,12 @@ import type {
 import type { ConfigDocument, ProjectConfig } from "../config/types";
 import { configDigest } from "../config/config-digest";
 import { RigError } from "../domain/errors";
+import {
+  MAX_NAME_LENGTH,
+  caseVariantOf,
+  nameProblem,
+  reservedPreviewName,
+} from "../domain/names";
 import type { RuntimeDependencies } from "./contracts";
 import { portOwners, recordedPorts } from "./ports";
 import type { PortOwner } from "./host-reservations";
@@ -20,9 +26,10 @@ import {
   type TargetRole,
 } from "../config/schema";
 type TargetKind = TargetRecord["kind"];
-/** Names no new Preview may take: the working and stable Targets' names, and `dev`, which the working Target's Tools are
- * published under (`<tool>-dev`), so a Preview named so would claim the same executables. */
-const RESERVED_PREVIEW_NAMES: readonly string[] = [
+/** The reserved names no recorded Preview has in exactly this spelling, so a selector naming one is refused outright: they
+ * were refused since Previews could be named, and state from before names were fixed is read with such a Preview renamed
+ * (see state-store). Other spellings, and `all`, were reserved later: a Preview recorded under one stays selectable. */
+const NEVER_HELD_PREVIEW_NAMES: readonly string[] = [
   "working",
   "stable",
   WORKING_TOOL_SUFFIX,
@@ -49,7 +56,7 @@ export function selectTarget(
 ): { kind: TargetKind; name: string } {
   if (command.target === PREVIEW_SELECTOR) {
     const name = previewName(command);
-    if (RESERVED_PREVIEW_NAMES.includes(name))
+    if (NEVER_HELD_PREVIEW_NAMES.includes(name))
       throw new RigError(
         "PREVIEW_NAME",
         `'${name}' is reserved: ${name === WORKING_TOOL_SUFFIX ? "the working Target's Tools are published as <tool>-dev" : "it names this Project's working or stable Target"}.`,
@@ -65,6 +72,53 @@ export function selectTarget(
     `This Project has no Target named '${command.target}'.`,
     "Target names are fixed: select working, stable, or preview with a Branch.",
   );
+}
+/** Whether `name` is one `project` had before a rename: config that names it is this Project's, from before the rename. */
+export function formerName(
+  project: Pick<ProjectRecord, "name" | "formerNames">,
+  name: string,
+): boolean {
+  return name !== project.name && !!project.formerNames?.includes(name);
+}
+/** Refuses PREVIEW_NAME for a name no new Preview may take: one the name rule refuses, any spelling of a reserved name,
+ * or a spelling of one of `taken`, the Project's other Previews, that differs only in case, since a Mac's disk would give
+ * both one Tool path. A Preview recorded under such a name before these rules is only reported by doctor: it keeps working. */
+export function assertNewPreviewName(
+  name: string,
+  taken: Iterable<string>,
+): void {
+  const problem = nameProblem(name);
+  if (problem)
+    throw new RigError(
+      "PREVIEW_NAME",
+      `The Preview name ${problem}.`,
+      `Pass --deployment with a name of 1 to ${MAX_NAME_LENGTH} letters, digits, '_' or '-', starting with a letter or digit.`,
+      { name },
+    );
+  const reserved = reservedPreviewName(name);
+  if (reserved)
+    throw new RigError(
+      "PREVIEW_NAME",
+      `'${name}' is reserved: ${reservedBecause(reserved)}${reserved === name ? "" : ", and a Mac's disk does not tell case apart"}.`,
+      "Choose another Preview deployment name.",
+      { name, reserved },
+    );
+  const variant = caseVariantOf(name, taken);
+  if (variant !== undefined)
+    throw new RigError(
+      "PREVIEW_NAME",
+      `This Project already has a Preview named '${variant}', which differs from '${name}' only in case: a Mac's disk does not tell them apart, so they would share Tool paths.`,
+      `Deploy to it with --deployment ${shellWord(variant)}, or choose another name.`,
+      { name, existing: variant },
+    );
+}
+/** Why `reserved` is: what it names already. */
+export function reservedBecause(reserved: string): string {
+  if (reserved === WORKING_TOOL_SUFFIX)
+    return "the working Target's Tools are published as <tool>-dev";
+  if (reserved === "all")
+    return "the dashboard's Monitor shows every Target together as all";
+  return "it names this Project's working or stable Target";
 }
 /** Refuses TARGET_OFF when rig.yaml leaves the role off: a command that would select, start, deploy or publish an off Target
  * does nothing. The hint names the one line that turns it on. */
@@ -263,13 +317,16 @@ export async function persistTarget(
     else state.targets[index] = target;
   });
 }
-/** The rig config committed on a prepared revision; a revision that names another Project is never deployed here. */
+/** The rig config committed on a prepared revision, under the Project's name: a Commit from before a rename names a former
+ * one and is still this Project's. A revision that names another Project is never deployed here. */
 async function committedConfig(
   workspacePath: string,
   project: ProjectRecord,
   deps: Pick<RuntimeDependencies, "documents">,
 ): Promise<ProjectConfig> {
   const revision = await deps.documents.read(workspacePath);
+  if (formerName(project, revision.config.name))
+    return { ...revision.config, name: project.name };
   if (revision.config.name !== project.name)
     throw new RigError(
       "PROJECT_IDENTITY",

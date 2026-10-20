@@ -223,6 +223,29 @@ export interface BackupStorage {
    * deleting nothing, when another volume is mounted inside it. */
   remove(path: string): Promise<"removed" | "skipped">;
 }
+/** How a rename carries a Project's operator env directory to its new name: there is none to carry, it is renamed, or it
+ * is copied, since another registered Project reaches it by a name that differs only in case. */
+export type EnvCarry = "none" | "move" | "copy";
+/** The operator env files under `<RIG_ROOT>/env`, one directory per Project name (`<project>[/<service or job>]/...`).
+ * `from` is the Project's name and `to` the name a rename gives it. */
+export interface OperatorEnvFiles {
+  /** How the directory of `from` will be carried to `to`: copied when it is also the directory of one of `sharedWith`, other
+   * registered Projects' names. Changes nothing. Rejects ENV_DIRECTORY_TAKEN when `to` has a directory that is not `from`'s,
+   * whether or not `from` has one. */
+  plan(input: {
+    from: string;
+    to: string;
+    sharedWith: readonly string[];
+  }): Promise<EnvCarry>;
+  /** Carries the directory as `how` says, durably before it resolves; a copy is made aside and published whole by one
+   * rename. Run again after a crash, it finishes the work: a move made or a copy published is recognised as done.
+   * Rejects ENV_DIRECTORY_TAKEN when `to` has a directory that is not this rename's; ENV_MOVE when the rename or copy fails. */
+  carry(input: { from: string; to: string; how: EnvCarry }): Promise<void>;
+  /** Puts the files back where they were before `carry`, however far it got: renamed back, or the copy withdrawn by one
+   * rename and then deleted. Both carry and undo reject ENV_SPLIT, changing nothing, when the files were moved and a new
+   * directory was made under `from` since: neither may be left unread. */
+  undo(input: { from: string; to: string; how: EnvCarry }): Promise<void>;
+}
 /** A published Tool whose owner Target no state record names any more (a `rig forget`, or a state that lost the Target). */
 export interface OrphanedTool {
   /** The executable's path in `<RIG_ROOT>/bin`. */
@@ -291,6 +314,8 @@ export interface RuntimeDependencies {
   usage?: UsageMonitor;
   store: StateStore;
   documents: ProjectDocuments;
+  /** The operator env directories a rename carries to the new name. Absent, as in tests that keep none: a rename moves none. */
+  operatorEnv?: OperatorEnvFiles;
   sources: DeploymentSources;
   lifecycle: TargetLifecycle;
   observations: ObservationEffects;

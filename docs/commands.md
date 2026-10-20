@@ -81,7 +81,8 @@ rig
 │    --full                         print every line whole (default: shortened past 2,000 characters)
 │    --json                         one entry per line (JSON Lines)
 │
-├─ rename <name>                    new identity; the Project must be stopped
+├─ rename <name>                    new identity, 1 to 128 characters, not one a registered Project has in
+│                                   any case; the Project must be stopped; its env files move with it
 │    --project <name>               current identity
 ├─ repoint <path>                   new repository path; the Project must be stopped
 │    --project <name>

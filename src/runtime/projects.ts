@@ -6,6 +6,13 @@ import { RigError, failureCauses } from "../domain/errors";
 import { ConfigError } from "../config/errors";
 import type { DiscoverySearch, RuntimeDependencies } from "./contracts";
 import { shellWord } from "../domain/target-selector";
+import { pendingRenameAdvice } from "./rename";
+import {
+  MAX_NAME_LENGTH,
+  caseVariantOf,
+  nameKey,
+  nameProblem,
+} from "../domain/names";
 /** The commands a Project's recorded state answers without its rig.yaml: stopping or destroying a Target, and reading its
  * status, logs and activity. */
 const RECORDED_STATE_ACTIONS: ReadonlySet<RuntimeCommand["action"]> = new Set([
@@ -180,6 +187,16 @@ export async function prepareRegistration(
     command.repoPath,
     command,
   );
+  const problem = nameProblem(identity.name);
+  if (problem)
+    throw new RigError(
+      "PROJECT_NAME",
+      `The Project name '${identity.name.slice(0, MAX_NAME_LENGTH)}${identity.name.length > MAX_NAME_LENGTH ? "..." : ""}' ${problem}.`,
+      identity.configPath
+        ? `Change name in ${identity.configPath}, then run rig init again.`
+        : `Run rig init --project <name> with a name of 1 to ${MAX_NAME_LENGTH} letters, digits, dashes or underscores.`,
+      { name: identity.name },
+    );
   assertRegistrationAvailable((await deps.store.read()).projects, identity);
   return identity;
 }
@@ -247,6 +264,35 @@ function assertRegistrationAvailable(
     (project) =>
       project.name === identity.name || project.repoPath === identity.repoPath,
   );
+  // Names that differ only in case would share one env directory on a Mac's disk. Projects registered so before this rule
+  // keep working, and doctor reports them.
+  const variant = existing
+    ? undefined
+    : caseVariantOf(
+        identity.name,
+        projects.map((project) => project.name),
+      );
+  if (variant !== undefined)
+    throw new RigError(
+      "PROJECT_CONFLICT",
+      `Project '${variant}' is already registered, and its name differs from '${identity.name}' only in case: a Mac's disk does not tell them apart, so they would share operator env files and Tool paths.`,
+      `Choose another name: ${anotherName(identity)}.`,
+      { registeredName: variant },
+    );
+  // The name an unfinished rename gives another Project is that Project's: its env files may be there already.
+  const renaming = projects.find(
+    (project) =>
+      project.repoPath !== identity.repoPath &&
+      project.renaming &&
+      nameKey(project.renaming.to) === nameKey(identity.name),
+  );
+  if (renaming)
+    throw new RigError(
+      "PROJECT_CONFLICT",
+      `Project '${renaming.name}' has an unfinished rename to '${renaming.renaming!.to}', so its env files may be under that name already.`,
+      `Choose another name: ${anotherName(identity)}. Or end that rename first. ${pendingRenameAdvice(renaming, renaming.renaming!)}`,
+      { registeredName: renaming.name },
+    );
   if (
     existing &&
     (existing.name !== identity.name || existing.repoPath !== identity.repoPath)
@@ -277,13 +323,14 @@ export function assertIdentity(
 /** `rig rename <new>` on a config that already declares `<new>` adopts the edit instead of refusing it. */
 function adoptsConfigName(
   command: RuntimeCommand,
-  project: Pick<ProjectRecord, "name">,
+  project: Pick<ProjectRecord, "name" | "renaming">,
   document: ConfigDocument<ProjectConfig>,
 ): boolean {
   return (
     command.action === "rename" &&
     document.config.name !== project.name &&
-    command.newName === document.config.name
+    // An unfinished rename may have written rig.yaml already: rename finishes or undoes it whatever it says.
+    (command.newName === document.config.name || project.renaming !== undefined)
   );
 }
 /** The config's name and the registration disagree; rename adopts the config, or the config is restored. */

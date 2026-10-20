@@ -7,6 +7,7 @@ import { shellWord } from "../domain/target-selector";
 import { RigError, failureCauses, failureReason } from "../domain/errors";
 import { observeTargets } from "./status";
 import { keepPublishedNames, planTarget } from "./targets";
+import { renameProject } from "./rename";
 /** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
 async function assertTargetsStopped(
   targets: TargetRecord[],
@@ -268,6 +269,8 @@ function notForgotten(project: ProjectRecord, error: unknown): RigError {
 export interface RegistrationUpdate {
   outcome: "renamed" | "repointed" | "unchanged";
   project: ProjectRecord;
+  /** What the operator should know about files the change carried. */
+  warnings?: string[];
 }
 /** Renames or repoints a registration and returns the updated record; the `project` argument is read only. */
 export async function updateRegistration(
@@ -276,61 +279,18 @@ export async function updateRegistration(
   targets: TargetRecord[],
   deps: RuntimeDependencies,
 ): Promise<RegistrationUpdate> {
-  // Renaming to the registered name is a no-op unless the config drifted from it.
+  // Renaming to the registered name is a no-op unless the config drifted from it, or a rename was left unfinished.
   if (
     command.action === "rename" &&
     command.newName === project.name &&
+    !project.renaming &&
     (await deps.documents.read(project.repoPath)).config.name === project.name
   )
     return { outcome: "unchanged", project };
   await assertTargetsStopped(targets, deps);
   if (command.action === "rename") {
-    if (
-      !command.newName ||
-      !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(command.newName)
-    )
-      throw new RigError(
-        "PROJECT_NAME",
-        "A valid new Project name is required.",
-        "Use letters, digits, dashes, or underscores.",
-      );
-    const nameTaken = (projects: readonly ProjectRecord[]) =>
-      projects.some((p) => p.name === command.newName && p.id !== project.id);
-    if (nameTaken((await deps.store.read()).projects)) throw conflict("name");
-    const document = await deps.documents.rename(project, command.newName);
-    try {
-      await deps.store.update((state) => {
-        // Checked again in the write itself: an init running beside this rename may have taken the name since.
-        if (nameTaken(state.projects)) throw conflict("name");
-        const current = state.projects.find((p) => p.id === project.id)!;
-        current.name = command.newName!;
-        current.configPath = document.path;
-        for (const target of state.targets.filter(
-          (t) => t.projectId === project.id,
-        ))
-          target.plan.project = command.newName!;
-      });
-    } catch (error) {
-      try {
-        await deps.documents.rename(
-          { ...project, name: command.newName },
-          project.name,
-        );
-      } catch (recoveryError) {
-        throw new RigError(
-          "RENAME_ROLLBACK",
-          "Project rename could not restore its previous config.",
-          "Inspect the registered name and Project config before retrying.",
-          {},
-          failureCauses(error, recoveryError),
-        );
-      }
-      throw error;
-    }
-    return {
-      outcome: "renamed",
-      project: { ...project, name: command.newName, configPath: document.path },
-    };
+    const renamed = await renameProject(project, command.newName ?? "", deps);
+    return { outcome: "renamed", ...renamed };
   } else {
     if (!command.newPath)
       throw new RigError(
@@ -355,7 +315,7 @@ export async function updateRegistration(
       );
     const pathTaken = (projects: readonly ProjectRecord[]) =>
       projects.some((p) => p.id !== project.id && p.repoPath === repoPath);
-    if (pathTaken((await deps.store.read()).projects)) throw conflict("path");
+    if (pathTaken((await deps.store.read()).projects)) throw conflict();
     // The same planning as `up`: the moved config's ports are reserved against
     // every other Target, and recorded ports are kept where the config allows.
     const replanned = new Map<string, TargetRecord>();
@@ -378,7 +338,7 @@ export async function updateRegistration(
       );
     await deps.store.update((state) => {
       // Checked again in the write itself: an init running beside this repoint may have taken the directory since.
-      if (pathTaken(state.projects)) throw conflict("path");
+      if (pathTaken(state.projects)) throw conflict();
       const current = state.projects.find((p) => p.id === project.id)!;
       current.repoPath = repoPath;
       current.configPath = document.path;
@@ -392,17 +352,11 @@ export async function updateRegistration(
     };
   }
 }
-/** A rename or repoint whose new name or directory another registered Project holds. */
-function conflict(taken: "name" | "path"): RigError {
-  return taken === "name"
-    ? new RigError(
-        "PROJECT_CONFLICT",
-        "The new Project name is already registered.",
-        "Choose another name.",
-      )
-    : new RigError(
-        "PROJECT_CONFLICT",
-        "Another Project already owns the new directory.",
-        "Choose an unregistered directory.",
-      );
+/** A repoint whose new directory another registered Project holds. */
+function conflict(): RigError {
+  return new RigError(
+    "PROJECT_CONFLICT",
+    "Another Project already owns the new directory.",
+    "Choose an unregistered directory.",
+  );
 }

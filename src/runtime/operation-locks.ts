@@ -1,4 +1,5 @@
 import type { TargetRecord } from "../domain/runtime";
+import { nameKey } from "../domain/names";
 
 /** What an Operation holds while it runs: a path from the Host down. `[]` is the whole Host,
  * `["project", id]` one Project with all its Targets, `["project", id, "target", …]` one Target.
@@ -15,13 +16,14 @@ export function projectScope(projectId: string): LockScope {
   return ["project", projectId];
 }
 
-/** One Target. The working and stable Targets are keyed by role, which is also their name; a Preview by its name. */
+/** One Target. The working and stable Targets are keyed by role, which is also their name; a Preview by its name in any
+ * case, so two deploys of names that differ only in case cannot both create a Preview. */
 export function targetScope(
   projectId: string,
   target: Pick<TargetRecord, "kind" | "name">,
 ): LockScope {
   return target.kind === "preview"
-    ? ["project", projectId, "target", "preview", target.name]
+    ? ["project", projectId, "target", "preview", nameKey(target.name)]
     : ["project", projectId, "target", target.kind];
 }
 
@@ -43,9 +45,9 @@ export function dnsScope(zone: string): LockScope {
   return ["dns", zone];
 }
 
-/** A Project name that is being registered, so two registrations of one name cannot both succeed. */
+/** A Project name that is being registered, so two registrations of one name, in any case, cannot both succeed. */
 export function registrationScope(name: string): LockScope {
-  return ["registration", name];
+  return ["registration", nameKey(name)];
 }
 
 /** Scopes held by one Operation. Release is idempotent. */

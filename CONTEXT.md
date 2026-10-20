@@ -466,6 +466,26 @@ _Relationship_: Project identity is managed config. `rig init` creates it, and
 `rig rename` changes it for a stopped Project, coordinating Project config and
 `rigd` inventory. A hand edit of the name is adopted with `rig rename` too.
 
+_Relationship_: A Project name is 1 to 128 letters, digits, `_` or `-`,
+starting with a letter or digit, the most a selector carries. It names the
+Project's operator env directory, and a Mac's disk does not tell case apart,
+so names that differ only in case are one name: `rig init` and `rig rename`
+refuse a name that differs only in case from a registered Project's. Projects
+registered so before the rule keep working; `rig doctor` reports them
+(`project-names`) with the rename that separates them.
+
+_Relationship_: `rig rename` is one operation over everything named after the
+Project: its rig.yaml, its operator env directory (moved under the new name,
+or copied when a Project whose name differs only in case shares it), and its
+registration with every recorded plan's Project name and env-file paths. It is
+recorded on the registration before anything changes, and its new name is
+reserved from then on, so a rename a crash interrupted is finished by running
+it again, or undone by renaming the Project to its own name; no other rename
+starts until then. The names a Project had are kept, so a deployed
+Commit whose rig.yaml still names a former name stays the Project's: it
+deploys again, and `rig doctor` does not count it as drift. A Tool ownership
+conflict names its owner as it is registered now.
+
 _Relationship_: `rig list` is a Host-level Project inventory command. It
 lists Projects with summary metadata such as Target count, but it does not show
 every Target for every Project.
@@ -652,8 +672,12 @@ publish time as `ROUTE_CONFLICT`.
 A generated Target created from a Preview branch.
 
 _Relationship_: A Preview's name is generated from its Branch (a slug plus 8 hex
-digits) or given with `--deployment`; `working`, `stable` and `dev` are
-reserved. Project config controls only its hostname. By default it is the
+digits) or given with `--deployment`; any spelling of `working`, `stable`, `dev`
+(the working Target's Tools are `<tool>-dev`) and `all` (the dashboard's
+Monitor shows every Target as `all`) is reserved, and a new Preview's name may
+not differ only in case from another of the Project's Previews, since a Mac's
+disk would give both one Tool path. A Preview deployed under such a name before
+these rules keeps working, and `rig doctor` reports it. Project config controls only its hostname. By default it is the
 domain with a dash and the Preview name after the first label, a sibling of
 the domain (`pantry2.dev.b-relay.com` gives
 `pantry2-feat-x-1a2b3c4d.dev.b-relay.com`); `targets.preview.domain` replaces

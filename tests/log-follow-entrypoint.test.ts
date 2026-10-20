@@ -5,6 +5,13 @@ import { tmpdir } from "node:os";
 import { startControlPlane } from "../src/daemon/server";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
 import type { TargetRecord } from "../src/domain/runtime";
+import { processStartTime } from "../src/daemon/process-identity";
+
+/** This process, recorded the way rigd records itself, so discovery can verify it. */
+const self = {
+  pid: process.pid,
+  startedAt: (await processStartTime(process.pid))!,
+};
 
 test("compiled follow uses production scheduling and terminates on SIGTERM without continued reads", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rig-compiled-follow-"));
@@ -48,7 +55,7 @@ test("compiled follow uses production scheduling and terminates on SIGTERM witho
       join(root, "daemon/address.json"),
       JSON.stringify({
         port: server.port,
-        pid: process.pid,
+        ...self,
         instanceId: "follow-fixture",
       }),
     );
@@ -192,7 +199,7 @@ test("follow exits 0 and stops polling once its stdout reader has gone away", as
       join(root, "daemon/address.json"),
       JSON.stringify({
         port: server.port,
-        pid: process.pid,
+        ...self,
         instanceId: "closed-fixture",
       }),
     );

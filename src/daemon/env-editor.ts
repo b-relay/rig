@@ -86,6 +86,34 @@ export const envEditorRequestSchema = z.discriminatedUnion("action", [
   }),
 ]);
 export type EnvEditorRequest = z.infer<typeof envEditorRequestSchema>;
+const envFileViewSchema = z.object({
+  scope: scopeSchema,
+  path: z.string().min(1).describe("The file's path."),
+  exists: z.boolean().describe("Whether the file exists."),
+  revision: z.string().min(1).describe("Revision a write must name."),
+  keys: z.array(z.string()).describe("The names it assigns, in file order."),
+  mode: z.number().int().optional().describe("Permission bits."),
+  problem: z
+    .string()
+    .optional()
+    .describe("Why the file cannot be read or edited."),
+});
+/** What each env editor action answers: every file by name, one value, or the file a write left. */
+export const envEditorReplySchemas = {
+  read: z.object({
+    project: name.describe("Registered Project name."),
+    directory: z.string().min(1).describe("<RIG_ROOT>/env/<project>."),
+    services: z.array(name).describe("The Services rig.yaml declares."),
+    files: z.array(envFileViewSchema).describe("Every operator env file."),
+  }),
+  reveal: z.object({ value: z.string().describe("The value asked for.") }),
+  write: envFileViewSchema.extend({
+    warning: z
+      .string()
+      .optional()
+      .describe("Set when the write landed but Activity could not record it."),
+  }),
+} as const;
 export interface EnvEditorDependencies {
   /** `<RIG_ROOT>/env`, where operator env files live. */
   envRoot: string;

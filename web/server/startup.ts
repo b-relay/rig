@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { DaemonClient } from "../../src/daemon/client";
+import { connectDaemon } from "../../src/daemon/connection";
 import type { ListResult } from "../../src/daemon/protocol";
-import { daemonAddress } from "./daemon";
 import { sandboxDaemon } from "./sandbox";
 import { downCommands, seedSandbox } from "./seed";
 import type { SiteSettings } from "./site";
@@ -78,7 +77,7 @@ export async function startSite(settings: SiteSettings): Promise<void> {
     // The Host's rigd allows a stopping Service four seconds, so this talks to the sandbox's
     // control plane directly and stops every Project at once rather than starting a CLI per step.
     stopSandbox = async () => {
-      const control = new DaemonClient(await daemonAddress(sandboxRoot));
+      const control = await connectDaemon(sandboxRoot);
       const { projects } = (await control.command({
         action: "list",
       })) as ListResult;

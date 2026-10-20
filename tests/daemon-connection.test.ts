@@ -3,6 +3,13 @@ import { mkdtemp, mkdir, realpath, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectDaemon } from "../src/daemon/connection";
+import { processStartTime } from "../src/daemon/process-identity";
+
+/** This process, recorded the way rigd records itself, so discovery can verify it. */
+const self = {
+  pid: process.pid,
+  startedAt: (await processStartTime(process.pid))!,
+};
 
 test("discovery re-reads the address and credentials for each command after restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "rig-connection-"));
@@ -26,7 +33,7 @@ test("discovery re-reads the address and credentials for each command after rest
       servers.push(server);
       await writeFile(
         join(root, "daemon/address.json"),
-        JSON.stringify({ port: server.port, pid: 1, instanceId: token }),
+        JSON.stringify({ port: server.port, ...self, instanceId: token }),
       );
       await writeFile(join(root, "auth/control-plane.token"), token);
       const client = await connectDaemon(root);
@@ -141,7 +148,7 @@ test("Doctor uses captured or explicit repo paths and only falls back for missin
     });
     await writeFile(
       join(root, "daemon/address.json"),
-      JSON.stringify({ port: server.port, pid: 1, instanceId: "fixture" }),
+      JSON.stringify({ port: server.port, ...self, instanceId: "fixture" }),
     );
     await expect(connectDaemon(root)).rejects.toMatchObject({
       code: "DAEMON_MISSING",
@@ -202,7 +209,7 @@ test("Doctor on a daemon that is alive but slow reports a read timeout, never th
       join(root, "daemon/address.json"),
       JSON.stringify({
         port: server.port,
-        pid: process.pid,
+        ...self,
         instanceId: "fixture",
       }),
     );
@@ -243,7 +250,7 @@ test("an empty or unreadable credential is reported by its path, never as a miss
       join(root, "daemon/address.json"),
       JSON.stringify({
         port: server.port,
-        pid: process.pid,
+        ...self,
         instanceId: "self",
       }),
     );

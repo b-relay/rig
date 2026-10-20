@@ -103,10 +103,10 @@ installed": `rigd status` reports it as a warning with the daemon unreachable,
 no daemon running `rigd install` simply reissues the credential.
 Normal `rig` commands do not install or manually start `rigd`; if the daemon is
 missing or unreachable, they report the problem and point to `rigd status` or
-`rigd install`. Before sending the token anywhere, `rig` and `rigd status`
-check that the process recorded in the daemon's address file
-still exists and is the same process: the daemon records its start time beside
-its pid, so a pid that was reused by an unrelated process after a crash or
+`rigd install`. Before sending the token anywhere, `rig`, the dashboard (which
+discovers rigd the same way) and `rigd status` check that the process recorded
+in the daemon's address file still exists and is the same process: the daemon
+records its start time beside its pid, so a pid that was reused by an unrelated process after a crash or
 reboot counts as exited. A record left by a daemon that died is reported as
 stale and its port is never contacted, so another local process that later
 binds that port does not receive the credential. `rigd install` reclaims such
@@ -114,10 +114,11 @@ a record; `rigd uninstall` signals only a process proven to be the recorded
 daemon. A daemon that is reachable but has no installation record (deleted by
 hand, or started manually) is adopted by `rigd install`, which writes the
 record, and `rigd uninstall` can still stop it: it removes the launchd job if
-one exists and then signals the recorded pid. A record that carries no start
-time cannot verify a live pid: `rigd status` warns, and `rigd install`, `rigd
-uninstall` and a starting daemon refuse, naming the files under
-`<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
+one exists and then signals the recorded pid. Every rigd since 1.0.0 records
+its start time; a record that carries none cannot verify a live pid, so `rig`
+and the dashboard treat it as stale and never contact its port, `rigd status`
+warns, and `rigd install`, `rigd uninstall` and a starting daemon refuse,
+naming the files under `<RIG_ROOT>/daemon` to remove once you have confirmed no rigd is running.
 
 Both records are written whole (through a sibling temp file and rename), so a
 crash never leaves a torn record. A lease that still cannot be read is

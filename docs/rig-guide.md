@@ -111,8 +111,12 @@ runs, and only once `rigd` has confirmed that the dashboard's own process holds
 `127.0.0.1:<dashboard.port>`. Before that, while it restarts, once it stops, and
 while another program holds the port, Caddy answers the hostname with Rig's
 page (`503 - rig.example.com is currently down`), so a program that takes the
-port never receives its requests. A dashboard that cannot start because another
-program holds its port says so in `rigd status`, in `rig doctor` and in its log.
+port never receives its requests. When Caddy cannot be made to withhold it, rigd
+leaves the dashboard running, recorded, rather than free its port, and the next
+`rigd` stops it once the domain is withheld. A dashboard that cannot start
+because another program holds its port, one that runs but is not confirmed on
+that address within 30 seconds, and a route Caddy would not take are reported in
+`rigd status`, in `rig doctor` and in its log; rigd keeps trying.
 A Target or `proxy.routes` naming the same
 hostname is refused (`rigd install` refuses a domain a Target already serves
 before it restarts anything). The route follows the dashboard `rigd` started
@@ -1819,11 +1823,18 @@ at `503`, also while other Services of the Target start or recover: a path is
 released only when its own Service is next verified, by an automatic retry or
 by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
 not attempted. Stopping works the same way: `rig down`, `rig restart`, a
-deploy, turning a Target off and stopping a Preview withhold the paths of the
-Services they stop before any process stops, so those paths answer `503`, and a
-program that later takes a freed port never receives their requests. A
-Service a deploy keeps running keeps its paths throughout. A stopped Target's
-paths reach its Services again only once a start verifies them.
+deploy, turning a Target off, stopping a Preview and a health restart withhold
+the paths of the Services they stop before any process stops, so those paths
+answer `503`, and a program that later takes a freed port never receives their
+requests. When Rig's Caddy cannot be made to withhold them, nothing is stopped
+(`ROUTE_WITHHOLD`). A failed start or deploy that rolls back brings the earlier
+route back with every path of a Service that is not running withheld. A
+Service a deploy keeps running keeps its paths throughout, and a path a deploy
+gives it, on a port it already serves, follows that port; a port it was not
+serving before is published once its process is found listening there on
+`127.0.0.1`. A stopped Target's paths reach its Services again only once a start
+verifies them. A Service that exits on its own and is not started again keeps
+its paths until the next `rig up` or `rig down`.
 A Preview serves the domain with a dash and its name after the first label:
 `pantry2.dev.b-relay.com` gives `pantry2-feat-x-1a2b3c4d.dev.b-relay.com` for
 the Preview `feat-x-1a2b3c4d`, a sibling of the domain rather than a subdomain

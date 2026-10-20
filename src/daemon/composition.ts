@@ -257,13 +257,18 @@ export async function composeDaemon(
             (await probeLocalPort(port, AbortSignal.timeout(3000))).ready,
           serving: async (listening) => {
             dashboardListening = listening;
-            await managed?.caddy.refresh().catch((error: unknown) =>
-              diagnostic.record({
+            try {
+              await managed?.caddy.refresh();
+            } catch (error) {
+              // Not served after all: every later publication keeps the domain withheld until the dashboard tries again.
+              dashboardListening = false;
+              await diagnostic.record({
                 event: "proxy.dashboard",
                 level: "error",
                 ...(error instanceof RigError ? { code: error.code } : {}),
-              }),
-            );
+              });
+              throw error;
+            }
           },
           wait: waitForLogPoll,
           now: Date.now,
@@ -436,25 +441,43 @@ export async function composeDaemon(
     async start() {
       // Queued ahead of anything the first pass publishes: Host config's proxy settings (or extra_config) may have changed, and a
       // crash may have left the route file ahead of the current generation. A failure is a doctor finding, not a failed start.
-      const republished = (
+      const republished = await (
         managed ? managed.caddy.republish() : external!.republish()
-      ).catch((error: unknown) =>
-        diagnostic.record({
-          event: "proxy.republish",
-          level: "error",
-          ...(error instanceof RigError ? { code: error.code } : {}),
-          ...(error instanceof RigError &&
-          typeof error.details?.evidence === "string"
-            ? { evidence: error.details.evidence }
-            : {}),
-        }),
+      ).then(
+        () => true,
+        async (error: unknown) => {
+          await diagnostic.record({
+            event: "proxy.republish",
+            level: "error",
+            ...(error instanceof RigError ? { code: error.code } : {}),
+            ...(error instanceof RigError &&
+            typeof error.details?.evidence === "string"
+              ? { evidence: error.details.evidence }
+              : {}),
+          });
+          return false;
+        },
       );
-      // One an earlier rigd left running is stopped whether or not this rigd serves one, once the republish has withheld the
-      // dashboard's domain until this rigd's own dashboard holds the port: the port it frees is never routed. This one only
-      // reads rigd, so it is served while the first pass still runs.
-      await republished;
-      await stopLeftOverDashboard(root);
-      dashboard?.start();
+      // One an earlier rigd left running is stopped whether or not this rigd serves one, but only once Caddy has taken a
+      // publication that withholds the dashboard's domain, so the port it frees is never routed: until then it keeps serving,
+      // and taking it over is tried every 5 s. This one only reads rigd, so it is served while the first pass still runs.
+      const takeOver = async () => {
+        await stopLeftOverDashboard(root);
+        dashboard?.start();
+      };
+      if (republished || !managed || !dashboardRoute) await takeOver();
+      else
+        void (async () => {
+          while (
+            !stopped &&
+            !(await managed.caddy.refresh().then(
+              () => true,
+              () => false,
+            ))
+          )
+            await Bun.sleep(5000);
+          if (!stopped) await takeOver();
+        })();
       await runtime.reconcile();
       // Queued behind the republish, beside everything else: a route block no recorded Target owns (one an earlier rig
       // forget left, #336) is withdrawn so its hostnames can be published again, unless the route file lies outside the

@@ -247,9 +247,66 @@ Bun.serve({ port: Number(process.env.PORT), hostname: "::1", fetch: () => new Re
     expect(f.serving).toEqual([]);
     await dashboard.stop();
     expect(f.serving).toEqual([]);
+    expect(
+      await readFile(
+        join(f.root, "logs", "dashboard", "dashboard.log"),
+        "utf8",
+      ),
+    ).toContain(`[rigd] ${dashboard.problem()}`);
   } finally {
     other.stop(true);
   }
+});
+
+test("a dashboard whose route Caddy would not take is tried again until it does, saying why meanwhile", async () => {
+  const f = await installed(SERVER);
+  let refusals = 2;
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    wait: (_ms, signal) => waitForLogPoll(50, signal),
+    serving: async (listening) => {
+      if (listening && refusals-- > 0) throw new Error("caddy is unreachable");
+      f.serving.push(listening);
+    },
+  }))!;
+  dashboard.start();
+  expect(await until(() => f.serving.length === 1)).toBe(true);
+  expect(f.notes.slice(0, 2)).toEqual([
+    `${DASHBOARD.name}: Rig's Caddy could not be made to route the dashboard's domain to it (caddy is unreachable); rigd tries again in 1 s.`,
+    `${DASHBOARD.name}: Rig's Caddy could not be made to route the dashboard's domain to it (caddy is unreachable); rigd tries again in 2 s.`,
+  ]);
+  expect(dashboard.problem()).toBeUndefined();
+  await dashboard.stop();
+  expect(f.serving).toEqual([true, false]);
+});
+
+test("a stop whose withholding Caddy would not take leaves the dashboard running and recorded, for the next rigd to stop once it can", async () => {
+  const f = await installed(SERVER);
+  let refuse = false;
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    serving: async (listening) => {
+      if (refuse) throw new Error("caddy is unreachable");
+      f.serving.push(listening);
+    },
+  }))!;
+  dashboard.start();
+  const pid = Number(await answer(dashboard.url));
+  expect(await until(() => f.serving.length === 1)).toBe(true);
+  refuse = true;
+  await dashboard.stop();
+  // Never signalled: the port it holds is still routed to it, and freeing it would hand that route to any program.
+  expect(processExists(pid)).toBe(true);
+  expect(
+    JSON.parse(
+      await readFile(join(f.root, "dashboard", "process.json"), "utf8"),
+    ),
+  ).toMatchObject({ pid });
+  expect(dashboard.problem()).toContain(
+    "so the dashboard was left running for the next rigd",
+  );
+  await stopLeftOverDashboard(f.root);
+  expect(processExists(pid)).toBe(false);
 });
 
 test("a dashboard that exits is started again after a back-off that doubles while it keeps exiting, and doctor hears of it", async () => {

@@ -322,7 +322,8 @@ is not currently available.
 
 _Relationship_: A route's upstream is a listener Rig has verified it owns at
 that moment: a Service's paths reach its port only from its verified start
-until just before it stops, and the dashboard's hostname reaches its port only
+until just before it stops (one that exits on its own keeps them until the next
+start or stop of its Target), and the dashboard's hostname reaches its port only
 while rigd has confirmed its own dashboard holds it. Otherwise the proxy
 answers with Rig's not-running reply, so a program that takes a freed port
 never receives the route's requests.

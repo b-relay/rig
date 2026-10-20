@@ -479,16 +479,15 @@ test("a deploy's down of a plan without the Services it keeps leaves their paths
   expect([...f.running]).toEqual(["t1:web"]);
 });
 
-test("a down whose route cannot be withheld still stops every Service, then says the route may still reach the freed ports", async () => {
+test("a down whose route cannot be withheld stops nothing: the proxy may still reach those ports, which any program could bind once freed", async () => {
   const f = stopFixture(["t1:web", "t1:api"]);
   f.routeFailure.withhold = new Error("caddy is down");
   await expect(f.lifecycle.down(routed())).rejects.toMatchObject({
     code: "ROUTE_WITHHOLD",
-    message: expect.stringContaining(
-      "its hostnames may still reach the ports it freed",
-    ),
+    message: expect.stringContaining("so nothing was stopped"),
   });
-  expect([...f.running]).toEqual([]);
+  expect(f.stops).toEqual([]);
+  expect([...f.running].sort()).toEqual(["t1:api", "t1:web"]);
 });
 
 test("stopping one Service withholds its paths first, and a stop whose paths cannot be withheld is not made", async () => {
@@ -504,9 +503,9 @@ test("stopping one Service withholds its paths first, and a stop whose paths can
   expect([...f.running]).toEqual(["t1:web"]);
 });
 
-test("restoring a stopped Target's effects withholds every path of the route that leaves published", async () => {
+test("withholding a Target withholds every path of its route, whatever plan published it", async () => {
   const f = stopFixture();
-  await f.lifecycle.restoreEffects(routed());
+  await f.lifecycle.withhold(routed());
   expect(f.withheld).toEqual([{ afterStops: 0 }]);
 });
 

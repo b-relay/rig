@@ -431,7 +431,7 @@ test("real Caddy never hands a stopped Target's hostname, or the dashboard's, to
     environment: { PATH: process.env.PATH! },
   });
   await caddy.republish();
-  await effects.route(target, { verified: new Set(["web"]) });
+  await effects.route(target, { verified: new Set([servicePort]) });
   await job.install();
   for (
     let deadline = Date.now() + 15_000;

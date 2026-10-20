@@ -86,16 +86,15 @@ jobs:
           for tool in /usr/bin/lockf /usr/bin/hdiutil /usr/sbin/lsof /bin/ps /usr/bin/shasum git; do
             command -v "$tool" >/dev/null || { echo "::error::$tool is missing"; exit 1; }
           done
+      # The tests assume Git names a new repository's first branch main, as Rig's default Production Branch is. It goes in
+      # ~/.gitconfig because rigd runs git with the operator's HOME but not the rest of its environment.
+      - run: git config --global init.defaultBranch main
       - run: bun install --frozen-lockfile
       # Two test files at a time, each running at most four of its concurrent tests at once. RIG_ROOT is a root no test is
-      # meant to use: a test that forgot its own temporary root would land there, never in ~/.rig. The tests assume Git
-      # names a new repository's first branch main, as Rig's default Production Branch is.
+      # meant to use: a test that forgot its own temporary root would land there, never in ~/.rig.
       - run: bun run test:ci
         env:
           RIG_ROOT: ${{ runner.temp }}/rig-root
-          GIT_CONFIG_COUNT: "1"
-          GIT_CONFIG_KEY_0: init.defaultBranch
-          GIT_CONFIG_VALUE_0: main
 
   package:
     name: Build, package and smoke test (Apple Silicon)

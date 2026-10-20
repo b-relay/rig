@@ -16,7 +16,9 @@ import { startControlPlane } from "../src/daemon/server";
 import { fileNamed, layeredKeys, scopeKey } from "../web/lib/env";
 import {
   EMPTY_DRAFT,
+  beginEdit,
   drift,
+  keepEdit,
   keepReveal,
   rebase,
   revealedValue,
@@ -233,6 +235,47 @@ test("two writers race: the dashboard's draft, made against the older file, is r
     expect(saved.ok, what).toBe(true);
     expect(await values(), what).toEqual({ ...stored, A: "dashboard-draft" });
   }
+});
+
+test("a value typed while a refresh arrives is kept against the file its typing began on, so saving it is refused", async () => {
+  await fresh();
+  await changeElsewhere({}, [{ op: "set", key: "A", value: "first" }]);
+  // Edit opens on the file as read, and the operator types; a Keep comes only after the refresh.
+  const before = await shown();
+  const edit = { ...beginEdit(before, "A"), value: "draft-started-on-R0" };
+  await changeElsewhere({}, [
+    { op: "set", key: "A", value: "external-update" },
+  ]);
+  const after = await shown();
+  const draft = keepEdit(EMPTY_DRAFT, edit, after);
+  expect(draft.base?.revision).toBe(before.revision);
+  expect(drift(draft, after)).toEqual({ added: [], removed: [] });
+  expect(await runEnvEdit(saveRequest("demo", draft, after))).toMatchObject({
+    ok: false,
+    failure: { code: "ENV_REVISION_CONFLICT" },
+  });
+  expect(await values()).toEqual({ A: "external-update" });
+  // A new name typed in the Add form before the refresh is kept against the file shown when its typing began too.
+  const added = keepEdit(
+    EMPTY_DRAFT,
+    { key: "B", value: "typed-on-R1", base: after },
+    after,
+  );
+  await changeElsewhere({}, [{ op: "remove", key: "A" }]);
+  const latest = await shown();
+  expect(drift(added, latest)).toEqual({ added: [], removed: ["A"] });
+  // A change begun on an older file than a draft already reviewed against the current one makes it stale again,
+  // and a change begun on the current file keeps an older base stale.
+  const reviewed = rebase(
+    stage(EMPTY_DRAFT, before, "C", { op: "set", value: "c" }),
+    latest,
+  );
+  expect(drift(reviewed, latest)).toBeUndefined();
+  expect(drift(keepEdit(reviewed, edit, latest), latest)).toBeDefined();
+  const older = stage(EMPTY_DRAFT, before, "C", { op: "set", value: "c" });
+  expect(keepEdit(older, beginEdit(latest, "D"), latest).base?.revision).toBe(
+    before.revision,
+  );
 });
 
 test("a live refresh during an unsaved edit keeps the draft, flagged as made against the older file", async () => {

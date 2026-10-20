@@ -273,13 +273,13 @@ export function createEnvEditor(dependencies: EnvEditorDependencies) {
         request.key,
       );
     return dependencies.exclusive(found.name, async () => {
-      // A rename, forget or repoint may have finished while this waited: the Project and its scope are read again
-      // here, and a name that now denotes another registration is refused rather than written for it.
+      // A rename, forget or repoint may have finished while this waited: the Project is read again here, and a name
+      // that now denotes another registration, or the same one at another checkout, is refused rather than written for.
       const current = await registered(request.project);
-      if (current.id !== found.id)
+      if (current.id !== found.id || current.repoPath !== found.repoPath)
         throw new RigError(
           "PROJECT_CHANGED",
-          `Project '${request.project}' was registered anew while this change waited, so nothing was written.`,
+          `Project '${request.project}' was registered anew or repointed while this change waited, so nothing was written.`,
           "Read the env files again and make the change on the Project as it is now.",
           { project: request.project },
         );

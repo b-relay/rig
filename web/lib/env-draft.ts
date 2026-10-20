@@ -20,20 +20,49 @@ export interface EnvDraft {
 }
 export const EMPTY_DRAFT: EnvDraft = { pending: {}, revealed: {} };
 
-/** Pure: the draft with `key`'s change staged, or undone when `change` is undefined. The first staged change takes
- * `file`, the file shown now, as the base every later one is made against. */
+/** Pure: the draft with `key`'s change staged, or undone when `change` is undefined. `file` is the file shown now and
+ * `madeOn` the one shown when the change began (see EnvEdit), which the first staged change takes as the draft's base.
+ * A change begun on another file than the base makes the draft stale against `file` whichever of the two `file` is, so
+ * it is reviewed against the current file before it can be saved. */
 export function stage(
   draft: EnvDraft,
   file: EnvFileView,
   key: string,
   change: Pending | undefined,
+  madeOn: EnvFileView = file,
 ): EnvDraft {
   const { [key]: _old, ...kept } = draft.pending;
   const pending = change ? { ...kept, [key]: change } : kept;
-  return Object.keys(pending).length
-    ? { ...draft, pending, base: draft.base ?? file }
-    : { pending, revealed: draft.revealed };
+  if (!Object.keys(pending).length)
+    return { pending, revealed: draft.revealed };
+  const base =
+    !draft.base ||
+    (draft.base.revision !== madeOn.revision &&
+      draft.base.revision === file.revision)
+      ? madeOn
+      : draft.base;
+  return { ...draft, pending, base };
 }
+/** A value being typed for a name, with the file shown when the typing began: the file it is made against. */
+export interface EnvEdit {
+  key: string;
+  value: string;
+  base: EnvFileView;
+}
+/** Pure: an edit of `key` that begins on `file`, the file shown now. */
+export const beginEdit = (
+  file: EnvFileView,
+  key: string,
+  value = "",
+): EnvEdit => ({ key, value, base: file });
+/** Pure: the edit's value staged against the file it began on, so a refresh while it was typed leaves the draft stale
+ * against the newer file rather than made on it. */
+export const keepEdit = (
+  draft: EnvDraft,
+  edit: EnvEdit,
+  file: EnvFileView,
+): EnvDraft =>
+  stage(draft, file, edit.key, { op: "set", value: edit.value }, edit.base);
 /** Pure: the draft without its staged changes. */
 export const discard = (draft: EnvDraft): EnvDraft => ({
   pending: {},

@@ -198,16 +198,20 @@ is never shown.
 A `write` applies set and remove changes line by line, keeping comments and
 order, only if the file still has the revision the changes were made against
 (checked again just before the rename, after the Project and scope are read
-again under the Project's lock, so a rename, forget or repoint that finished
-first refuses it). The dashboard keeps that revision with its unsaved changes
-(`web/lib/env-draft.ts`): a live refresh shows the newer file and keeps the
+again under the Project's lock, so a rename, forget, new registration under the
+name or repoint to another checkout that finished first refuses it as
+`PROJECT_MISSING` or `PROJECT_CHANGED`). The dashboard keeps that revision with
+its unsaved changes (`web/lib/env-draft.ts`), taken from the file shown when the
+typing of each change began: a live refresh shows the newer file and keeps the
 changes, naming the names added or removed since; saving them is refused as
 `ENV_REVISION_CONFLICT` until the operator reviews them against the current
 file. The config editor's draft does the same with `rig.yaml`
 (`followRead` in `web/lib/config-form.ts`). The new content goes to a private temporary file
 renamed over the old, so a reader never sees half of either; the file is 0600
-and every directory from `<RIG_ROOT>/env` down to it 0700. A symlinked file
-stays a symlink. Each value is quoted so the env-file reader reads it back
+and every directory from `<RIG_ROOT>/env` down to it 0700. A symlink below
+`<RIG_ROOT>/env`, to the file or a directory on the way to it, is refused for
+read, reveal and write (`ENV_SCOPE_SYMLINK`), so nothing outside the env tree
+is read or replaced. Each value is quoted so the env-file reader reads it back
 exactly, and refused by name when it cannot be. Each write records an Activity
 entry (`env`, `updated`) naming who asked and which names changed in which
 file, never a value. Every such request is signed in, so the server names where

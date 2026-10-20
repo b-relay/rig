@@ -23,7 +23,10 @@ import {
   revealedValue,
   saveRequest,
   stage,
+  beginEdit,
+  keepEdit,
   type EnvDraft,
+  type EnvEdit,
   type Pending,
 } from "@/lib/env-draft";
 import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
@@ -74,8 +77,14 @@ export function SecretsEditor({
   // Staged changes keep the file they were made against, and revealed values the revision they were read from, so a
   // refresh shows the current file without losing the draft or showing an old value as current.
   const [draft, setDraft] = useState<EnvDraft>(EMPTY_DRAFT);
-  const [editing, setEditing] = useState<{ key: string; value: string }>();
-  const [adding, setAdding] = useState({ key: "", value: "", show: false });
+  // An edit or a new name keeps the file shown when its typing began, which a Keep stages it against.
+  const [editing, setEditing] = useState<EnvEdit>();
+  const [adding, setAdding] = useState<{
+    key: string;
+    value: string;
+    show: boolean;
+    base?: EnvFileView;
+  }>({ key: "", value: "", show: false });
   const [failure, setFailure] = useState<FailureShape>();
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
@@ -297,7 +306,7 @@ export function SecretsEditor({
                     className="flex gap-2"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      stageChange(key, { op: "set", value: editing.value });
+                      setDraft((now) => keepEdit(now, editing, file));
                       setEditing(undefined);
                     }}
                   >
@@ -306,7 +315,7 @@ export function SecretsEditor({
                       type={editVisible ? "text" : "password"}
                       value={editing.value}
                       onChange={(event) =>
-                        setEditing({ key, value: event.target.value })
+                        setEditing({ ...editing, value: event.target.value })
                       }
                       aria-label={`New value for ${key}`}
                       placeholder={
@@ -418,7 +427,7 @@ export function SecretsEditor({
                       disabled={locked}
                       onClick={() => {
                         setEditVisible(shownValue(key) !== undefined);
-                        setEditing({ key, value: shownValue(key) ?? "" });
+                        setEditing(beginEdit(file, key, shownValue(key) ?? ""));
                       }}
                     >
                       <Pencil />
@@ -443,14 +452,19 @@ export function SecretsEditor({
           onSubmit={(event) => {
             event.preventDefault();
             if (!newKeyValid) return;
-            stageChange(adding.key, { op: "set", value: adding.value });
+            const { key, value, base = file } = adding;
+            setDraft((now) => keepEdit(now, { key, value, base }, file));
             setAdding({ key: "", value: "", show: false });
           }}
         >
           <Input
             value={adding.key}
             onChange={(event) =>
-              setAdding((now) => ({ ...now, key: event.target.value }))
+              setAdding((now) => ({
+                ...now,
+                key: event.target.value,
+                base: now.base ?? file,
+              }))
             }
             placeholder="NAME"
             aria-label="New variable name"
@@ -463,7 +477,11 @@ export function SecretsEditor({
               value={adding.value}
               type={adding.show ? "text" : "password"}
               onChange={(event) =>
-                setAdding((now) => ({ ...now, value: event.target.value }))
+                setAdding((now) => ({
+                  ...now,
+                  value: event.target.value,
+                  base: now.base ?? file,
+                }))
               }
               placeholder="value"
               aria-label="New variable value"

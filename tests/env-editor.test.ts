@@ -518,11 +518,8 @@ describe("the env editor writes only what is current", () => {
     const edit = createEnvEditor({
       envRoot: join(root, "env"),
       resolveProject: async (name) => registry.get(name),
-      // Only the first checkout declares web; a repoint elsewhere drops it.
-      declared: async (repoPath) => ({
-        services: repoPath === join(root, "repo") ? ["web"] : [],
-        jobs: [],
-      }),
+      // Every checkout declares web, so a repoint keeps the scope valid.
+      declared: async () => ({ services: ["web"], jobs: [] }),
       // The registration changes while the write waits, as a rename, forget or repoint finishing first does.
       exclusive: async (_project, operation) => {
         change(registry);
@@ -532,11 +529,11 @@ describe("the env editor writes only what is current", () => {
       now: () => "2026-10-10T00:00:00.000Z",
       id: () => "op",
     });
-    const write = () =>
+    const write = (scope: EnvScope) =>
       edit({
         action: "write",
         project: "demo",
-        scope: { service: "web" },
+        scope,
         expectedRevision: ABSENT_REVISION,
         changes: [{ op: "set", key: "A", value: "1" }],
         actor: "dashboard (this Mac)",
@@ -568,23 +565,24 @@ describe("the env editor writes only what is current", () => {
         "PROJECT_CHANGED",
       ],
       [
-        "repointed at a checkout without the Service",
+        "repointed at another checkout that declares the same Service",
         (registry) =>
           registry.set("demo", {
             ...registry.get("demo")!,
             repoPath: "/elsewhere",
           }),
-        "ENV_SCOPE",
+        "PROJECT_CHANGED",
       ],
     ];
-    for (const [what, change, code] of cases) {
-      const { write, written, recorded } = await racing(change);
-      await expect(write(), what).rejects.toMatchObject({ code });
-      expect(await written(), what).toEqual([]);
-      expect(recorded, what).toEqual([]);
-    }
+    for (const [what, change, code] of cases)
+      for (const scope of [{}, { service: "web" }]) {
+        const { write, written, recorded } = await racing(change);
+        await expect(write(scope), what).rejects.toMatchObject({ code });
+        expect(await written(), what).toEqual([]);
+        expect(recorded, what).toEqual([]);
+      }
     const { write, recorded } = await racing(() => {});
-    await write();
+    await write({ service: "web" });
     expect(recorded).toHaveLength(1);
   });
   test("a write against an older revision is refused, names what the file assigns now and never a value, and leaves it as it is", async () => {

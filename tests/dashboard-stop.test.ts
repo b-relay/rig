@@ -256,3 +256,33 @@ test("a rigd readied to stop but never stopped says so, and rigd install of the 
   });
   await f.served();
 }, 90_000);
+
+test("a rigd whose dashboard has already exited is replaced within the stop's bound while Caddy holds every publication", async () => {
+  const f = await rigRoot();
+  const admin = (...extra: string[]) =>
+    new DaemonAdmin({
+      root: f.root,
+      command: [process.execPath, script, ...extra],
+      mode: "process",
+      userHome: f.root,
+    });
+  cleanups.push(async () => {
+    await f.answer();
+    await admin().uninstall();
+    await rm(f.root, { recursive: true, force: true });
+  });
+  expect(await admin().install()).toMatchObject({ reachable: true });
+  await f.served();
+  const rigd = (await readDaemonAddress(f.root))!.pid;
+  // Caddy holds every publication, and the dashboard dies: rigd's supervisor waits on its withholding.
+  await f.hold();
+  process.kill(await f.dashboardPid(), "SIGKILL");
+  await Bun.sleep(500);
+  // Nothing of rigd's holds the port, so the stop goes on within its bound rather than waiting on Caddy.
+  const began = Date.now();
+  expect(await admin("again").install()).toMatchObject({
+    outcome: "installed",
+    replaced: { pid: rigd },
+  });
+  expect(Date.now() - began).toBeLessThan(10_000);
+}, 90_000);

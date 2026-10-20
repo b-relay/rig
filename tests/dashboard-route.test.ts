@@ -428,6 +428,76 @@ test("a stop whose withholding waits behind Caddy gives up at its bound, and the
   expect(f.violations).toEqual([]);
 }, 30_000);
 
+test("a stop while the supervisor waits on Caddy to withhold an exited dashboard's domain returns within its bound", async () => {
+  const f = await served(SERVER, { stopConfirmMs: 200 });
+  f.dashboard.start();
+  await f.routed();
+  const pid = (await recordedPid(f.w.root))!;
+  // Caddy holds every publication; the dashboard dies, and its supervisor waits on the withholding.
+  let release = () => {};
+  const answer = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.w.control.beforeConfig = () => answer;
+  process.kill(pid, "SIGKILL");
+  await until(() => f.dashboard.route()?.port === null);
+  await Bun.sleep(300);
+  const began = Date.now();
+  await f.dashboard.stop();
+  expect(Date.now() - began).toBeLessThan(1000);
+  // The withholding still under way is served late; nothing routes the domain to whatever takes the port.
+  const other = foreign(f.port);
+  f.w.control.beforeConfig = undefined;
+  release();
+  await until(() => f.w.servedHost(DOMAIN) === "withheld");
+  await Bun.sleep(300);
+  expect(f.w.servedHost(DOMAIN)).toBe("withheld");
+  expect(f.violations).toEqual([]);
+  other.stop(true);
+}, 30_000);
+
+test("a withholding Caddy loads only after the stop gave up is followed by the route rigd asks for: live while the dashboard runs, withheld once it has exited", async () => {
+  for (const exits of [false, true]) {
+    const f = await served(SERVER, { stopConfirmMs: 300 });
+    f.dashboard.start();
+    await f.routed();
+    const pid = (await recordedPid(f.w.root))!;
+    // Caddy loads the withholding, then holds before it confirms it.
+    let release = () => {};
+    const confirmation = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const loads: (string | undefined)[] = [];
+    f.w.control.onLoad = async (config) => {
+      loads.push(hostAnswer(config, DOMAIN));
+      if (loads.length === 1) await confirmation;
+      else await f.check(config);
+    };
+    await expect(f.dashboard.stop()).rejects.toMatchObject({
+      code: "DASHBOARD_WITHHOLD",
+    });
+    expect(loads).toEqual(["withheld"]);
+    let other: { stop(force: boolean): void } | undefined;
+    if (exits) {
+      // Before Caddy confirms it, the dashboard dies and another program takes its port.
+      process.kill(pid, "SIGKILL");
+      await until(() => f.dashboard.route()?.port === null);
+      other = foreign(f.port);
+    }
+    release();
+    await until(() => loads.length > 1 || exits);
+    await Bun.sleep(500);
+    expect([exits, loads]).toEqual([
+      exits,
+      exits ? ["withheld"] : ["withheld", f.live],
+    ]);
+    expect(f.w.servedHost(DOMAIN)).toBe(exits ? "withheld" : f.live);
+    expect(f.violations).toEqual([]);
+    other?.stop(true);
+    await f.dashboard.stop();
+  }
+}, 60_000);
+
 test("a generation that routes the dashboard to a port rigd no longer confirms is never loaded, even when a crash left it current", async () => {
   const port = freePort();
   let dashboard: PublishedDashboard | undefined = {

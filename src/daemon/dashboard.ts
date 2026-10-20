@@ -380,8 +380,8 @@ export async function openDashboard(
   const where = `${UPSTREAM_HOST}:${deps.port}`;
   const domain = deps.published?.domain;
   /** Whether `run`'s own process listens on 127.0.0.1:<port> now; with what rigd could read when it cannot tell. */
-  const listening = async (run: Run) => {
-    const evidence = await deps.listeners.inspect(run.child.pid!);
+  const listening = async (run: Run, signal?: AbortSignal) => {
+    const evidence = await deps.listeners.inspect(run.child.pid!, signal);
     return {
       evidence,
       found:
@@ -406,12 +406,12 @@ export async function openDashboard(
               : null,
         };
   /** Has Caddy withhold the domain: tried until Caddy confirms it, or until `signal` aborts (rigd is stopping, and its stop
-   * withholds it). */
+   * withholds it, within its own bound). A publication still under way then goes on unawaited: it can only withhold. */
   const withhold = async (signal: AbortSignal) => {
     routed = undefined;
     for (let attempt = 1; deps.publish; attempt++) {
       try {
-        await deps.publish();
+        await unlessAborted(deps.publish(), signal);
         return;
       } catch (error) {
         const delay = lookDelay(attempt);
@@ -431,13 +431,15 @@ export async function openDashboard(
     let reportAt =
       Date.now() + (deps.unverifiedReportMs ?? UNVERIFIED_REPORT_MS);
     for (let attempt = 1; ; attempt++) {
-      const { evidence, found } = await listening(run);
+      const { evidence, found } = await listening(run, stopping.signal);
       // Checked with nothing awaited before the route is set, so a stop or an exit already seen is never routed past.
       if (ended(run) || stopping.signal.aborted) return false;
       if (found && !halting) {
         routed = deps.port;
         try {
-          await deps.publish?.();
+          // A stop does not wait for it: what it builds once a stop has begun is withheld (see route).
+          await unlessAborted(deps.publish?.(), stopping.signal);
+          if (stopping.signal.aborted) return false;
           problem = undefined;
           return true;
         } catch (error) {
@@ -637,6 +639,33 @@ export async function openDashboard(
   };
 }
 
+/** Resolves as `work` settles, or as soon as `signal` aborts, leaving `work` to go on unawaited (its failure ignored then). */
+function unlessAborted(
+  work: Promise<unknown> | undefined,
+  signal: AbortSignal,
+): Promise<unknown> {
+  if (!work || signal.aborted) {
+    work?.catch(() => {});
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const aborted = () => {
+      work.catch(() => {});
+      resolve(undefined);
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", aborted);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", aborted);
+        reject(error);
+      },
+    );
+  });
+}
 /** How `work` settled within `ms`: done, failed with its error, or neither yet (it goes on, unawaited). */
 async function settled(
   work: Promise<unknown>,

@@ -80,6 +80,8 @@ async function fixture() {
     step(ms: number) {
       world.clock.ms += ms;
     },
+    /** The wall clock now. */
+    now: () => world.clock.ms,
     async restartDaemon() {
       await runtime.drain();
       runtime = createRuntime({ ...world.deps, clock });
@@ -161,4 +163,35 @@ test("restart attempts long past their window still count as old after the clock
   await f.supervise();
   expect((await f.run()).exhausted).toBeUndefined();
   expect(f.starts).toHaveLength(7);
+});
+
+test("an attempt made at the same wall-clock time as an expired one, after the clock is set back, still counts against the budget", async () => {
+  const f = await fixture();
+  // A first automatic restart, at wall-clock time `first`.
+  await f.crash();
+  await f.supervise();
+  f.wait(100);
+  const first = f.now();
+  await f.supervise();
+  expect((await f.run()).attempts).toEqual([first]);
+  // A healthy minute: that attempt leaves the window, and the next crash drops it from the record.
+  f.wait(61_000);
+  await f.crash();
+  await f.supervise();
+  expect((await f.run()).attempts).toEqual([]);
+  // The clock is set back so the next attempt lands on that same wall-clock time.
+  f.step(first - f.now() - 100);
+  f.wait(100);
+  await f.supervise();
+  expect((await f.run()).attempts).toEqual([first]);
+  // Crashing at once from then on: the budget's five attempts are spent, and the next crash exhausts it.
+  for (let crash = 0; crash < 10 && !(await f.run()).exhausted; crash++) {
+    await f.crash();
+    await f.supervise();
+    f.wait(5000);
+    await f.supervise();
+  }
+  expect((await f.run()).exhausted).toBe(true);
+  // The initial start, the first restart, and five in the window.
+  expect(f.starts).toHaveLength(RESTART_LIMIT + 2);
 });

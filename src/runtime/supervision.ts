@@ -194,8 +194,8 @@ export function scheduleAttempt(
   ages: readonly number[],
 ): { exhausted: true } | { run: ServiceRun } {
   const rule = BUDGETS[budget];
-  const recent = spentAttempts(run, budget).filter(
-    (_at, index) => ages[index]! < rule.windowMs,
+  const recent = spentAttempts(run, budget).filter((_at, index) =>
+    inWindow(budget, ages[index]!),
   );
   if (recent.length >= rule.limit) return { exhausted: true };
   return {
@@ -206,14 +206,26 @@ export function scheduleAttempt(
   };
 }
 
+/** Whether an attempt `age` elapsed milliseconds old still counts against `budget`. */
+function inWindow(budget: RestartBudget, age: number): boolean {
+  return age < BUDGETS[budget].windowMs;
+}
+
 /** Where on the elapsed clock this rigd saw each Service's restart evidence, by `<target id>:<service>`: the exit its next
  * automatic attempt waits after, and the attempts each budget counts. Kept beside the records and matched to them by the
- * process that exited and by the attempts' order, never by a wall-clock time alone, which a correction can repeat. What a
- * record holds that this rigd did not see happen (a previous rigd wrote it) is placed by its wall-clock age (`placed`). */
+ * process that exited, and by position: a budget's marks are the record's attempts, one for one in order, pruned with
+ * them, never matched by a wall-clock time, which a correction can repeat. What a record holds that this rigd did not see
+ * happen (a previous rigd wrote it) is placed by its wall-clock age (`placed`). */
 export type RestartMarks = Map<string, ServiceMarks>;
+interface Mark {
+  at: number;
+  mark: number;
+}
 interface ServiceMarks {
   exit?: { incarnation: string | undefined; at: string; mark: number };
-  attempts: Record<RestartBudget, { at: number; mark: number }[]>;
+  attempts: Record<RestartBudget, Mark[]>;
+  /** The attempt this rigd made last, until the record shows it spent: one more attempt than `attempts` holds, at `at`. */
+  made?: Mark & { budget: RestartBudget };
 }
 function serviceMarks(marks: RestartMarks, key: string): ServiceMarks {
   let entry = marks.get(key);
@@ -241,26 +253,29 @@ function exitMark(
   entry.exit = { incarnation: run.incarnation, at: run.outcome.at, mark };
   return mark;
 }
-/** The age, in elapsed milliseconds, of each attempt `run` spent from `budget`, in order: each matched to the next one this
- * rigd made with the same wall-clock time, else placed now. */
-function attemptAges(
+/** The marks of the attempts `run` spent from `budget`, one for one in order: the ones this rigd holds when the record still
+ * lists exactly those, followed by the attempt it made last when the record added just that one; otherwise every attempt
+ * placed now. */
+function attemptMarks(
   entry: ServiceMarks,
   run: ServiceRun,
   budget: RestartBudget,
   clock: Clock,
-): number[] {
-  const seen = entry.attempts[budget];
-  let next = 0;
-  const aligned = spentAttempts(run, budget).map((at) => {
-    const found = seen.findIndex(
-      (attempt, index) => index >= next && attempt.at === at,
-    );
-    if (found < 0) return { at, mark: placed(clock, at) };
-    next = found + 1;
-    return seen[found]!;
-  });
-  entry.attempts[budget] = aligned;
-  return aligned.map((attempt) => clock.elapsed() - attempt.mark);
+): Mark[] {
+  const recorded = spentAttempts(run, budget);
+  const made = entry.made?.budget === budget ? entry.made : undefined;
+  entry.made = undefined;
+  const held = entry.attempts[budget];
+  const lists = (marks: readonly Mark[]) =>
+    marks.length === recorded.length &&
+    marks.every((attempt, index) => attempt.at === recorded[index]);
+  const marks = lists(held)
+    ? held
+    : made && lists([...held, made])
+      ? [...held, { at: made.at, mark: made.mark }]
+      : recorded.map((at) => ({ at, mark: placed(clock, at) }));
+  entry.attempts[budget] = marks;
+  return marks;
 }
 
 /** Saves one Service's record with an optional Activity entry, in one write that touches nothing else of the saved Target:
@@ -707,12 +722,9 @@ async function superviseService(
   const endedAt = Date.parse(outcome.at);
   const exited = exitMark(entry, { ...run, outcome }, clock);
   if (run.retryAt === undefined) {
-    const scheduled = scheduleAttempt(
-      run,
-      budget,
-      endedAt,
-      attemptAges(entry, run, budget, clock),
-    );
+    const marks = attemptMarks(entry, run, budget, clock);
+    const ages = marks.map((attempt) => clock.elapsed() - attempt.mark);
+    const scheduled = scheduleAttempt(run, budget, endedAt, ages);
     if ("exhausted" in scheduled) {
       await saveRun(target, service, { ...run, exhausted: true }, deps, {
         action: "restart",
@@ -723,6 +735,10 @@ async function superviseService(
     }
     run = scheduled.run;
     await saveRun(target, service, run, deps);
+    // The record dropped the attempts past the window: so do their marks, at the same positions.
+    entry.attempts[budget] = marks.filter((_mark, index) =>
+      inWindow(budget, ages[index]!),
+    );
   }
   // The delay after the exit, waited in elapsed time.
   const wait = run.retryAt! - endedAt - (clock.elapsed() - exited);
@@ -738,7 +754,7 @@ async function superviseService(
   }
   // The attempt, as recorded and as this rigd saw it happen.
   const attemptAt = clock.now();
-  entry.attempts[budget].push({ at: attemptAt, mark: clock.elapsed() });
+  entry.made = { budget, at: attemptAt, mark: clock.elapsed() };
   const journal = activationJournal(target, budget, deps, { attemptAt });
   let started: Awaited<ReturnType<Deps["lifecycle"]["recover"]>>;
   try {

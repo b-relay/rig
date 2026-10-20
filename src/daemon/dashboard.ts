@@ -156,6 +156,18 @@ export function servedDashboard(
     },
   };
 }
+/** Pure: what rigd status says when the dashboard is published elsewhere than Host config asks (`asked`), because Rig's
+ * Caddy has not taken that address; undefined when it is published as asked. */
+export function pendingDashboard(
+  asked: DashboardPublication | undefined,
+  published: DashboardPublication | undefined,
+): string | undefined {
+  if (!asked || asked.authority === published?.authority) return undefined;
+  const where = published
+    ? `It is published at https://${published.authority}, the address Rig's Caddy accepted`
+    : "It is not published, as Rig's Caddy accepted";
+  return `${where}; Host config asks for https://${asked.authority}, which Caddy has not taken. Run rigd install to apply it.`;
+}
 /** Pure: proxy settings with the dashboard's route beside the owner's proxy.routes, as DNS records name the hostnames Rig's
  * Caddy serves. Never what Caddy publishes: the dashboard's upstream comes only from rigd's verified dashboard (see
  * Dashboard.route). Host config refuses a domain proxy.routes already has. */

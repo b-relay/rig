@@ -22,6 +22,7 @@ import { processExists } from "../src/daemon/host";
 import { dashboardDirectory, dashboardServing } from "../src/daemon/dashboard";
 import { readHostConfig } from "../src/config";
 import { createProcessCaddyJob } from "../src/providers/caddy-job";
+import { createManagedCaddy } from "../src/providers/managed-caddy";
 import { currentGeneration } from "../src/adapters/proxy-generation";
 import { RigError } from "../src/domain/errors";
 import { rigFixture } from "./support/rig-fixture";
@@ -444,6 +445,11 @@ test("after a rigd install whose new dashboard address Caddy refused, the runnin
   );
   expect(await eventually(local, atA)).toBe(atA);
   expect(await eventually(() => through(a.domain, a.https), atA)).toBe(atA);
+  // rigd status says the address is held, and how to apply Host config's.
+  const status = await f.rigd(["status"]);
+  expect(status.stdout + status.stderr).toContain(
+    `Dashboard: It is published at https://${atA}, the address Rig's Caddy accepted; Host config asks for https://${b.domain}:${b.https}, which Caddy has not taken. Run rigd install to apply it.`,
+  );
 
   // Once the port is free, the same command moves Caddy and the dashboard together.
   blocker.stop(true);
@@ -645,4 +651,134 @@ test("after a boot-mode rigd install whose new dashboard address Caddy refused, 
   expect(await eventually(w.local, atB)).toBe(atB);
   expect(await eventually(() => through(b.domain, b.https), atB)).toBe(atB);
   expect(await admin.install()).toMatchObject({ outcome: "unchanged" });
+}, 180_000);
+
+test("a rigd that cannot confirm what Caddy serves after an unclean stop starts no dashboard until it can, then admits the address Caddy serves", async () => {
+  if (!caddy)
+    throw new Error("Proxy installation tests require a local caddy.");
+  const root = await mkdtemp("/tmp/rig-pi-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const paths = proxyPaths(root);
+  const caddyAdmin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({
+    root,
+    paths,
+    userHome: home,
+    admin: caddyAdmin,
+  });
+  cleanups.push(() => job.remove());
+  const installation = createProxyInstallation({
+    root,
+    userHome: home,
+    uid: process.getuid!(),
+    userName: "test",
+    mode: "process",
+    run: runCommand,
+    startDeadlineMs: 8000,
+  });
+  const server = join(dashboardDirectory(root), "web", "server.js");
+  await mkdir(join(server, ".."), { recursive: true });
+  await writeFile(
+    server,
+    `Bun.serve({ port: Number(process.env.PORT), hostname: process.env.HOSTNAME, fetch: () => new Response(process.env.RIG_WEB_DASHBOARD_HOST ?? "unpublished") });`,
+  );
+  const http = freePort();
+  const port = freePort();
+  const a = { domain: "dash-a.example.test", https: freePort() };
+  const b = { domain: "dash-b.example.test", https: freePort() };
+  const configure = (domain: string, https: number) =>
+    writeFile(
+      join(root, "config.yaml"),
+      `proxy:\n  caddy: ${caddy}\n  ports: { http: ${http}, https: ${https} }\n  tls: { ca: internal }\ndashboard:\n  domain: ${domain}\n  port: ${port}\n`,
+    );
+  const local = () =>
+    fetch(`http://127.0.0.1:${port}/`)
+      .then((response) => response.text())
+      .catch(() => undefined);
+
+  // An earlier rigd served A, its dashboard found on its port.
+  await configure(a.domain, a.https);
+  await installation.install();
+  const earlier = Bun.spawn([process.execPath, server], {
+    env: {
+      PATH: process.env.PATH,
+      PORT: String(port),
+      HOSTNAME: "127.0.0.1",
+      RIG_WEB_DASHBOARD_HOST: `${a.domain}:${a.https}`,
+    },
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  expect(await eventually(local, `${a.domain}:${a.https}`)).toBe(
+    `${a.domain}:${a.https}`,
+  );
+  const routeA = { domain: a.domain, port };
+  const publisher = createManagedCaddy({
+    root,
+    settings: async () => (await readHostConfig(root)).proxy!,
+    dashboard: { current: () => routeA, confirmed: async () => routeA },
+    run: runCommand,
+    job,
+    admin: caddyAdmin,
+  });
+  await publisher.republish();
+  const servedA = await currentGeneration(root);
+  await publisher.close();
+  earlier.kill();
+  await earlier.exited;
+  // Then B was switched to, and the rigd ended before Caddy loaded it (#696's crash boundary): `current` names B, Caddy
+  // runs A, and no clean stop was recorded. The restart that recovery needs is refused, and no dashboard is left running.
+  await configure(b.domain, b.https);
+  await installation.install();
+  expect(await caddyAdmin.load(servedA!.adapted)).toBeUndefined();
+  await rm(paths.cleanStop, { force: true });
+  await writeFile(join(root, "refuse-caddy-restart"), "");
+  // The credential rigd install would have issued.
+  await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
+  await writeFile(join(root, "auth", "control-plane.token"), "t".repeat(43), {
+    mode: 0o600,
+  });
+  const rigd = Bun.spawn(
+    [process.execPath, join(import.meta.dir, "support", "system-rigd.ts")],
+    {
+      env: {
+        ...process.env,
+        RIG_ROOT: root,
+        RIG_DAEMON_CHILD: "1",
+        RIG_DAEMON_MODE: "system",
+      },
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+  cleanups.push(async () => {
+    rigd.kill();
+    await rigd.exited;
+  });
+  const status = new DaemonAdmin({
+    root,
+    command: [process.execPath],
+    mode: "process",
+    userHome: home,
+  });
+  const waiting = async () =>
+    ((await status.status()).warnings ?? []).some((warning) =>
+      warning.includes(
+        "not started until rigd confirms what Rig's Caddy serves",
+      ),
+    );
+  expect(await eventually(waiting, true)).toBe(true);
+  // Nothing admits B while Caddy still serves A.
+  expect(await local()).toBeUndefined();
+  expect(Bun.deepEquals(await caddyAdmin.config(), servedA!.adapted)).toBe(
+    true,
+  );
+  // Once the restart is allowed, recovery serves the current generation, and the dashboard admits its address.
+  await rm(join(root, "refuse-caddy-restart"));
+  const atB = `${b.domain}:${b.https}`;
+  expect(await eventually(local, atB, 60_000)).toBe(atB);
+  expect(await eventually(() => through(b.domain, b.https), atB)).toBe(atB);
+  expect(await through(a.domain, a.https)).toBeUndefined();
 }, 180_000);

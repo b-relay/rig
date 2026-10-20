@@ -337,8 +337,11 @@ an install whose publication failed (a new HTTPS port another program held, for
 example), running it again finishes the change rather than reporting
 `unchanged`. The dashboard always admits the domain and HTTPS port Caddy
 accepted for it: as `rigd` starts, it first asks Caddy for Host config's, so
-until Caddy takes them both stay on the address Caddy still serves, and
-`rig doctor`'s `dashboard` check names the difference.
+until Caddy takes them both stay on the address Caddy still serves; `rigd
+status` and `rig doctor`'s `dashboard` check name the difference. The
+dashboard starts only once `rigd` has confirmed what Caddy serves: after an
+unclean stop whose Caddy restart fails, it waits, and `rigd status` says so,
+until a later attempt succeeds.
 A `proxy.routes` hostname a Target already serves is refused before `rigd` is
 restarted. A new definition of the LaunchAgent is loaded only once launchd has
 let the old job go. `rigd uninstall` stops the job and keeps the certificates

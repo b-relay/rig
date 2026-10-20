@@ -75,7 +75,6 @@ import {
 } from "../providers/managed-caddy";
 import { proxyPaths } from "../domain/managed-proxy";
 import { proxyReport } from "../adapters/proxy-report";
-import { currentGeneration } from "../adapters/proxy-generation";
 import { createDnsControl } from "../adapters/dns-control";
 import { readDnsToken } from "../adapters/dns-token";
 import { createCloudflareDns } from "../providers/cloudflare-dns";
@@ -100,6 +99,8 @@ import {
   publishedProxySettings,
   dashboardDirectory,
   servedDashboard,
+  dashboardPublication,
+  pendingDashboard,
   openDashboard,
   takeOverDashboard,
   withDashboardRoute,
@@ -452,21 +453,34 @@ export async function composeDaemon(
   let stopHealth: (() => Promise<void>) | undefined;
   let stopJobs: (() => Promise<void>) | undefined;
   let stopUsage: (() => Promise<void>) | undefined;
-  /** Once rigd's first publication is decided: the dashboard admits the address Caddy accepted for it, Host config's when
-   * that publication was taken and the one Caddy kept when it was not. One an earlier rigd left running is stopped whether
+  /** Why the dashboard is not started yet, or is published elsewhere than Host config asks; reported with its problems. */
+  let held: string | undefined;
+  /** Once rigd's first publication is decided and Caddy is confirmed to serve the current generation: the dashboard admits
+   * the address that generation was accepted with, Host config's when that publication was taken and the one Caddy kept
+   * when it was not. Until Caddy is confirmed (an earlier rigd's unclean stop whose restart failed, a Caddy that does not
+   * answer), nothing is started, and rigd asks again with a back-off. One an earlier rigd left running is stopped whether
    * or not this rigd serves one, once Caddy is confirmed to route no dashboard domain to a port; this rigd's is started
    * after it. It only reads rigd, so it is served while the first pass still runs. */
   async function startDashboard(): Promise<void> {
-    if (managed) {
-      const accepted = await currentGeneration(root).catch(() => undefined);
-      served = servedDashboard(
-        host,
-        configured,
-        accepted?.proxy && accepted.dashboard !== undefined
-          ? { dashboard: accepted.dashboard, https: accepted.proxy.ports.https }
-          : undefined,
-      );
-      dashboard?.publishAt(served.publication);
+    for (let attempt = 1; managed && configured; attempt++) {
+      try {
+        const accepted = await managed.caddy.served();
+        served = servedDashboard(
+          host,
+          configured,
+          accepted?.dashboard !== undefined
+            ? { dashboard: accepted.dashboard, https: accepted.https }
+            : undefined,
+        );
+        held = pendingDashboard(dashboardPublication(host), served.publication);
+        dashboard?.publishAt(served.publication);
+        break;
+      } catch (error) {
+        if (stopped) return;
+        const delay = Math.min(1000 * 2 ** (attempt - 1), 60_000);
+        held = `It is not started until rigd confirms what Rig's Caddy serves (${error instanceof Error ? error.message : String(error)}); rigd tries again in ${delay / 1000} s. Run rig doctor.`;
+        await waitForLogPoll(delay, shuttingDown.signal);
+      }
     }
     if (stopped) return;
     takeover = takeOverDashboard({
@@ -497,7 +511,7 @@ export async function composeDaemon(
             dashboard: () => (opened.stopped() ? undefined : opened.serving),
           }
         : {})(dashboard),
-    dashboardProblem: () => dashboard?.problem() ?? takeover?.problem(),
+    dashboardProblem: () => dashboard?.problem() ?? takeover?.problem() ?? held,
     // Its domain is withheld, and Caddy confirmed to serve that, before it stops; when Caddy does not confirm it, rigd keeps
     // serving, with the dashboard, and says why.
     prepareStop: async () => {

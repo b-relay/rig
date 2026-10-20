@@ -21,6 +21,7 @@ import {
   dashboardDirectory,
   dashboardServing,
   servedDashboard,
+  pendingDashboard,
   openDashboard,
   stopLeftOverDashboard,
   type DashboardDependencies,
@@ -646,6 +647,26 @@ test("the dashboard a rigd serves keeps the domain and HTTPS port Caddy accepted
   expect(
     servedDashboard(host, configured, { dashboard: null, https: 8444 }),
   ).toEqual({});
+});
+
+test("rigd status names a dashboard held at the address Caddy accepted, and the one Host config asks for", () => {
+  const at = (authority: string) => ({
+    domain: authority.split(":")[0]!,
+    authority,
+    trustedClients: [],
+  });
+  expect(pendingDashboard(undefined, undefined)).toBeUndefined();
+  expect(
+    pendingDashboard(at("new.example.com"), at("new.example.com")),
+  ).toBeUndefined();
+  expect(
+    pendingDashboard(at("new.example.com:8444"), at("old.example.com:8443")),
+  ).toBe(
+    "It is published at https://old.example.com:8443, the address Rig's Caddy accepted; Host config asks for https://new.example.com:8444, which Caddy has not taken. Run rigd install to apply it.",
+  );
+  expect(pendingDashboard(at("new.example.com"), undefined)).toBe(
+    "It is not published, as Rig's Caddy accepted; Host config asks for https://new.example.com, which Caddy has not taken. Run rigd install to apply it.",
+  );
 });
 
 test("while rigd serves a published dashboard, settings that move Caddy's HTTPS port are refused until rigd install moves both", () => {

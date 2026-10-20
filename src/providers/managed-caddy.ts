@@ -162,6 +162,13 @@ export interface ManagedCaddy {
    * whether its routes are known to hold no other dashboard route: false while it serves `proxy.routes` an older rigd
    * recorded (see GenerationMetadata.ownerRoutesOnly). */
   refreshDashboard(): Promise<{ known: boolean }>;
+  /** The dashboard's route and the HTTPS port of the generation Caddy is confirmed to serve, made to as every change is
+   * first (recovering from an earlier rigd's unclean stop included); a Caddy confirmed stopped reads that generation when it
+   * starts. Undefined before the first generation; `dashboard` absent from one an older rigd made. Rejects while what Caddy
+   * serves cannot be confirmed. */
+  served(): Promise<
+    { dashboard?: PublishedDashboard | null; https: number } | undefined
+  >;
   /** Ends publishing, for a rigd that stops: the Caddy command or load under way is cancelled, every change queued or
    * asked for later fails PROXY_CLOSED, and once nothing of the queue runs this records that the stop was clean (see
    * `ProxyPaths.cleanStop`). What Caddy serves then is confirmed by the next rigd as it starts. */
@@ -977,6 +984,19 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
         JSON.stringify({ pid: process.pid, at: now().toISOString() }) + "\n",
       );
     },
+    served: () =>
+      queued(async () => {
+        await reconcile("settings");
+        const metadata = await metadataOf(await currentGeneration());
+        const settings = proxySettingsSchema.safeParse(metadata?.proxy);
+        if (!metadata || !settings.success) return undefined;
+        return {
+          ...(metadata.dashboard !== undefined
+            ? { dashboard: metadata.dashboard }
+            : {}),
+          https: settings.data.ports.https,
+        };
+      }),
     refreshDashboard: () =>
       queued(async () => {
         const current = await currentGeneration();

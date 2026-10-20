@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { processStartTime } from "../src/daemon/process-identity";
 
 /** The pages Next itself renders for a path the proxy lets through without the key (a missing static file, the icon)
  * go through the root layout, which must show nothing of rigd to such a request. Builds the site from a copy of this
@@ -61,7 +62,13 @@ beforeAll(async () => {
   await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
   await writeFile(
     join(root, "daemon", "address.json"),
-    JSON.stringify({ port: rigd.port, pid: process.pid, instanceId: "test" }),
+    // The record names this test process, with its start time, so discovery verifies it and dials the stand-in.
+    JSON.stringify({
+      port: rigd.port,
+      pid: process.pid,
+      instanceId: "test",
+      startedAt: await processStartTime(process.pid),
+    }),
   );
   await writeFile(join(root, "auth", "control-plane.token"), "token\n", {
     mode: 0o600,

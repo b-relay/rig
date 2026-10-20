@@ -453,8 +453,10 @@ export async function composeDaemon(
   let stopHealth: (() => Promise<void>) | undefined;
   let stopJobs: (() => Promise<void>) | undefined;
   let stopUsage: (() => Promise<void>) | undefined;
-  /** Why the dashboard is not started yet, or is published elsewhere than Host config asks; reported with its problems. */
-  let held: string | undefined;
+  /** Why the dashboard is not started yet; reported with its problems. */
+  let waiting: string | undefined;
+  /** Set once the dashboard's address is decided (see startDashboard). */
+  let decided = false;
   /** Once rigd's first publication is decided and Caddy is confirmed to serve the current generation: the dashboard admits
    * the address that generation was accepted with, Host config's when that publication was taken and the one Caddy kept
    * when it was not. Until Caddy is confirmed (an earlier rigd's unclean stop whose restart failed, a Caddy that does not
@@ -472,13 +474,14 @@ export async function composeDaemon(
             ? { dashboard: accepted.dashboard, https: accepted.https }
             : undefined,
         );
-        held = pendingDashboard(dashboardPublication(host), served.publication);
+        waiting = undefined;
+        decided = true;
         dashboard?.publishAt(served.publication);
         break;
       } catch (error) {
         if (stopped) return;
         const delay = Math.min(1000 * 2 ** (attempt - 1), 60_000);
-        held = `It is not started until rigd confirms what Rig's Caddy serves (${error instanceof Error ? error.message : String(error)}); rigd tries again in ${delay / 1000} s. Run rig doctor.`;
+        waiting = `It is not started until rigd confirms what Rig's Caddy serves (${error instanceof Error ? error.message : String(error)}); rigd tries again in ${delay / 1000} s. Run rig doctor.`;
         await waitForLogPoll(delay, shuttingDown.signal);
       }
     }
@@ -511,7 +514,18 @@ export async function composeDaemon(
             dashboard: () => (opened.stopped() ? undefined : opened.serving),
           }
         : {})(dashboard),
-    dashboardProblem: () => dashboard?.problem() ?? takeover?.problem() ?? held,
+    // A dashboard held at the address Caddy accepted is compared with Host config as it is now, read at every report.
+    dashboardProblem: async () =>
+      dashboard?.problem() ??
+      takeover?.problem() ??
+      waiting ??
+      (decided && configured
+        ? await readHostConfig(root).then(
+            (now) =>
+              pendingDashboard(dashboardPublication(now), served.publication),
+            () => undefined,
+          )
+        : undefined),
     // Its domain is withheld, and Caddy confirmed to serve that, before it stops; when Caddy does not confirm it, rigd keeps
     // serving, with the dashboard, and says why.
     prepareStop: async () => {

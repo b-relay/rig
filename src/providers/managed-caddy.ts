@@ -62,8 +62,9 @@ export type CaddyJobState = "running" | "stopped" | "unknown";
 export interface CaddyJob {
   state(): Promise<CaddyJobState>;
   /** Ends the running Caddy so its manager starts it again from the current generation and binary. Resolves once the new
-   * process answers on its admin socket; fails at the deadline. */
-  restart(): Promise<void>;
+   * process answers on its admin socket; fails at the deadline, or as soon as `signal` aborts, when Caddy may still be
+   * starting. */
+  restart(signal?: AbortSignal): Promise<void>;
   /** The running Caddy's process id, for usage sampling; `undefined` when it is not running or its manager cannot tell.
    * Absent on a job that cannot report one. */
   pid?(): Promise<number | undefined>;
@@ -190,7 +191,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   const closing = new AbortController();
   /** Set once Caddy is known to hold nothing an earlier rigd sent (see recover). */
   let recovered = false;
-  /** Set when a load of this rigd's went unanswered: Caddy may still apply it, so this rigd cannot record a clean stop. */
+  /** Set when a load of this rigd's went unanswered, or `close` cut a restart short: Caddy may still apply the load, or be
+   * starting, so this rigd cannot record a clean stop. */
   let unanswered = false;
   const closed = () =>
     new RigError(
@@ -198,6 +200,15 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       "rigd is stopping, so Rig's Caddy takes no more changes from it.",
       "The next rigd confirms what Caddy serves as it starts.",
     );
+  /** Restarts Caddy's job, cut short by `close`: a restart under way then fails PROXY_CLOSED, and no clean stop is recorded,
+   * so the next rigd restarts Caddy before it trusts what Caddy serves. */
+  async function restartJob(): Promise<void> {
+    await options.job.restart(closing.signal).catch((error: unknown) => {
+      if (!closing.signal.aborted) throw error;
+      unanswered = true;
+      throw closed();
+    });
+  }
   function queued<T>(work: () => Promise<T>): Promise<T> {
     const operation = pending
       .catch(() => {})
@@ -618,7 +629,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (loaded === undefined && start) {
       assertDashboardUnchanged();
       // Its job starts it from the current generation, which is `directory`.
-      await options.job.restart();
+      await restartJob();
       return confirm();
     }
     if (loaded === undefined) {
@@ -654,9 +665,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       issuerCas(loaded).length > 0 &&
       issuancePolicies(loaded) !== issuancePolicies(expected)
     )
-      await options.job.restart().catch((error: unknown) => {
+      await restartJob().catch((error: unknown) => {
         // A publication puts the previous generation back, and says whether that worked (see publish).
-        if (!(error instanceof RigError) || during !== "publish") throw error;
+        if (
+          !(error instanceof RigError) ||
+          during !== "publish" ||
+          closing.signal.aborted
+        )
+          throw error;
         throw new RigError(
           error.code,
           `${error.message.replace(/\.$/, "")}${outcome}`,
@@ -757,7 +773,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           );
       }
       if (closing.signal.aborted) throw closed();
-      await options.job.restart();
+      await restartJob();
     }
     await rm(paths.cleanStop, { force: true });
     recovered = true;

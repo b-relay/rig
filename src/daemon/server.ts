@@ -14,8 +14,9 @@ export interface ControlPlaneOptions {
   /** Where rigd serves the dashboard, reported by /health; absent when it runs none, or (a function answering undefined)
    * once it has stopped it. */
   dashboard?: string | (() => string | undefined);
-  /** Why the dashboard it runs is not served now (see Dashboard.problem), reported by /health. */
-  dashboardProblem?: () => string | undefined;
+  /** Why the dashboard it runs is not served now (see Dashboard.problem), or is published elsewhere than Host config asks,
+   * reported by /health. */
+  dashboardProblem?: () => string | undefined | Promise<string | undefined>;
 }
 /** One JSON request to an editor route: its result, or its refusal with the code, message and hint the
  * editor gave. A body that is not JSON is refused without echoing it. */
@@ -155,7 +156,7 @@ export function startControlPlane(options: ControlPlaneOptions) {
             : options.dashboard,
         ),
         ...((problem) => (problem ? { dashboardProblem: problem } : {}))(
-          options.dashboardProblem?.(),
+          await options.dashboardProblem?.(),
         ),
       });
     // Probes that only want the status line (HEAD) get it without a body.

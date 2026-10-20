@@ -76,17 +76,27 @@ function caddyEnvironment(home: string): Record<string, string> {
   return { HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" };
 }
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** Waits until `ready` holds or the deadline passes. */
+/** Waits until `ready` holds or the deadline passes, or `signal` aborts. */
 async function until(
   ready: () => Promise<boolean>,
   deadlineMs: number,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   for (;;) {
     if (await ready()) return true;
-    if (Date.now() >= deadline) return false;
+    if (Date.now() >= deadline || signal?.aborted) return false;
     await pause(200);
   }
+}
+/** A restart whose wait for the new process was cut short by its signal: Caddy may still be starting. */
+function restartCancelled(paths: ProxyPaths): RigError {
+  return new RigError(
+    "PROXY_START",
+    "The restart of Rig's Caddy was cancelled before it answered.",
+    `Rig's Caddy may still be starting; rig doctor shows whether it answers on ${paths.socket}.`,
+    { socket: paths.socket },
+  );
 }
 function startFailure(paths: ProxyPaths, deadlineMs: number): RigError {
   return new RigError(
@@ -174,17 +184,22 @@ export function createSystemCaddyJob(options: {
     matches,
     state: async () => (await observe()).state,
     pid: async () => (await observe()).pid,
-    async restart() {
+    async restart(signal) {
       const before = await observe();
       await options.admin.stop();
-      const restarted = await until(async () => {
-        const now = await observe();
-        return (
-          now.state === "running" &&
-          now.pid !== before.pid &&
-          (await options.admin.reachable())
-        );
-      }, deadlineMs);
+      const restarted = await until(
+        async () => {
+          const now = await observe();
+          return (
+            now.state === "running" &&
+            now.pid !== before.pid &&
+            (await options.admin.reachable())
+          );
+        },
+        deadlineMs,
+        signal,
+      );
+      if (!restarted && signal?.aborted) throw restartCancelled(options.paths);
       if (!restarted) throw startFailure(options.paths, deadlineMs);
     },
     async install() {
@@ -263,17 +278,22 @@ export function createLaunchAgentCaddyJob(options: {
       (await readFile(plistPath, "utf8").catch(() => undefined)) === plist,
     state: async () => (await observe()).state,
     pid: async () => (await observe()).pid,
-    async restart() {
+    async restart(signal) {
       const before = await observe();
       await options.admin.stop();
-      const restarted = await until(async () => {
-        const now = await observe();
-        return (
-          now.state === "running" &&
-          now.pid !== before.pid &&
-          (await options.admin.reachable())
-        );
-      }, deadlineMs);
+      const restarted = await until(
+        async () => {
+          const now = await observe();
+          return (
+            now.state === "running" &&
+            now.pid !== before.pid &&
+            (await options.admin.reachable())
+          );
+        },
+        deadlineMs,
+        signal,
+      );
+      if (!restarted && signal?.aborted) throw restartCancelled(options.paths);
       if (!restarted) throw startFailure(options.paths, deadlineMs);
     },
     async install() {
@@ -338,7 +358,7 @@ export function createProcessCaddyJob(options: {
         ? "unknown"
         : "stopped";
   }
-  async function start(): Promise<void> {
+  async function start(signal?: AbortSignal): Promise<void> {
     const log = await openPrivateFile(options.root, paths.jobLog, "append");
     try {
       const [executable, ...args] = caddyCommand(paths);
@@ -362,8 +382,10 @@ export function createProcessCaddyJob(options: {
     } finally {
       await log.close();
     }
-    if (!(await until(() => options.admin.reachable(), deadlineMs)))
-      throw startFailure(paths, deadlineMs);
+    if (!(await until(() => options.admin.reachable(), deadlineMs, signal)))
+      throw signal?.aborted
+        ? restartCancelled(paths)
+        : startFailure(paths, deadlineMs);
   }
   async function stop(): Promise<void> {
     const recorded = await record();
@@ -393,9 +415,9 @@ export function createProcessCaddyJob(options: {
     state,
     pid: async () =>
       (await state()) === "running" ? (await record())?.pid : undefined,
-    async restart() {
+    async restart(signal) {
       await stop();
-      await start();
+      await start(signal);
     },
     async install() {
       if ((await state()) === "running") return { changed: false };

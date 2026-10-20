@@ -42,6 +42,22 @@ const jobs = (launchctl: LaunchctlCommand) => [
   }),
 ];
 
+test("a restart waiting for a new Caddy that never answers ends as soon as its signal aborts, not at its deadline", async () => {
+  // launchd keeps reporting the same process, and the admin socket does not answer: the restart would wait 30 s.
+  for (const job of jobs(
+    printing(0, "\tstate = running\n\tpid = 4242\n", ""),
+  )) {
+    const cancel = new AbortController();
+    setTimeout(() => cancel.abort(), 100);
+    const started = Date.now();
+    await expect(job.restart(cancel.signal)).rejects.toMatchObject({
+      code: "PROXY_START",
+      message: expect.stringContaining("cancelled"),
+    });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  }
+});
+
 test("only launchctl's exit 113 confirms a job stopped; its words on any other exit leave the state unknown", async () => {
   for (const job of jobs(
     printing(113, "", 'Could not find service "x" in domain for user gui: 502'),

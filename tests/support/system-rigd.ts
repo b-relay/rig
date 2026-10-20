@@ -1,9 +1,12 @@
 /** A system rigd (`daemon.start: boot`) for administration tests: the real composition as launchd's system job runs it, with
  * Rig's Caddy as a detached process instead of a system job, since a test defines no launchd job. While
  * `<RIG_ROOT>/refuse-caddy-restart` exists, a restart of Caddy is refused before it stops anything, as a job manager that
- * cannot act refuses it. Started as the job's program is, with RIG_ROOT set. */
+ * cannot act refuses it; while `<RIG_ROOT>/hold-caddy-restart` exists, a restart waits for its new process to answer, up
+ * to 30 s or until it is cancelled, writing `<RIG_ROOT>/caddy-restart-held` as it begins. Started as the job's program is,
+ * with RIG_ROOT set. */
 import { mock } from "bun:test";
 import { existsSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as caddyJob from "../../src/providers/caddy-job";
 import { RigError } from "../../src/domain/errors";
@@ -16,14 +19,30 @@ mock.module(join(import.meta.dir, "../../src/providers/caddy-job.ts"), () => ({
     const job = original.createCaddyJob({ ...options, mode: "process" });
     return {
       ...job,
-      async restart() {
+      async restart(signal?: AbortSignal) {
         if (existsSync(join(root, "refuse-caddy-restart")))
           throw new RigError(
             "PROXY_START",
             "Rig's Caddy was not restarted: its job refused.",
             "Retry once the job can be restarted.",
           );
-        await job.restart();
+        // As a job whose new process takes its whole deadline to answer: waits while the file exists, up to 30 s.
+        const hold = join(root, "hold-caddy-restart");
+        if (existsSync(hold)) {
+          await writeFile(join(root, "caddy-restart-held"), "");
+          for (
+            const deadline = Date.now() + 30_000;
+            existsSync(hold) && !signal?.aborted && Date.now() < deadline;
+          )
+            await Bun.sleep(50);
+          if (signal?.aborted)
+            throw new RigError(
+              "PROXY_START",
+              "The restart of Rig's Caddy was cancelled before it answered.",
+              "Rig's Caddy may still be starting.",
+            );
+        }
+        await job.restart(signal);
       },
     };
   },

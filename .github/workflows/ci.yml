@@ -1,19 +1,130 @@
 name: CI
 
+# Every pull request and push to main, and the release workflow for the tagged commit before it publishes anything:
+# formatting and types on Linux; the whole test suite, the builds, and the packaged release tried on an Apple Silicon
+# and an Intel Mac. Third-party actions are pinned to a reviewed commit; update them through a pull request.
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to package (v<RIG_VERSION>); empty packages v<RIG_VERSION> of the checked-out commit.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
 
 jobs:
   check:
     name: Prettier and typecheck
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run format:check
       - run: bun run typecheck
+
+  test:
+    name: Tests (macOS)
+    # The tests drive real processes and read them with ps and lsof, and use hdiutil and lockf: macOS only.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      # tests/managed-caddy-live.test.ts runs a real Caddy from /usr/local/bin or /opt/homebrew/bin, and fails without one.
+      - name: Install Caddy 2.10.2
+        run: |
+          [ "$(uname -m)" = arm64 ] || { echo "::error::This step installs Caddy for Apple Silicon, not $(uname -m)."; exit 1; }
+          curl --proto '=https' -fsSL -o "$RUNNER_TEMP/caddy.tar.gz" \
+            https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_mac_arm64.tar.gz
+          echo "3b8a4b24054bddd96cae8da5c34e48c19105be29859d6f09e37344b7e188881cfd6b0a91af3f3e8f1d10987153e6bad70d1752c967e1360cc0041fc7736076ec  $RUNNER_TEMP/caddy.tar.gz" | shasum -a 512 -c
+          tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP" caddy
+          sudo install -m 755 "$RUNNER_TEMP/caddy" /usr/local/bin/caddy
+          /usr/local/bin/caddy version
+      # The system tools the tests run; a missing one fails here by name rather than as a confusing test failure.
+      - name: Check the tests' tools
+        run: |
+          for tool in /usr/bin/lockf /usr/bin/hdiutil /usr/sbin/lsof /bin/ps /usr/bin/shasum git; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is missing"; exit 1; }
+          done
+      - run: bun install --frozen-lockfile
+      # Two test files at a time, each running at most four of its concurrent tests at once. RIG_ROOT is a root no test is
+      # meant to use: a test that forgot its own temporary root would land there, never in ~/.rig.
+      - run: bun run test:ci
+        env:
+          RIG_ROOT: ${{ runner.temp }}/rig-root
+
+  package:
+    name: Build, package and smoke test (Apple Silicon)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - id: release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [ -n "$TAG" ] || TAG="v$(bun -e 'import { RIG_VERSION } from "./src/domain/version"; process.stdout.write(RIG_VERSION)')"
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short=12 HEAD)" >>"$GITHUB_OUTPUT"
+      # Packaging needs a clean tree, so it goes first; it builds the dashboard and rig and rigd for both architectures.
+      - run: scripts/package-release.sh "$TAG" "$RUNNER_TEMP/dist"
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+      - run: bun run build
+      - run: scripts/smoke-release.sh "$TAG" "$COMMIT" "$RUNNER_TEMP/dist"
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          COMMIT: ${{ steps.release.outputs.commit }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ steps.release.outputs.tag }}
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  smoke-intel:
+    name: Smoke test (Intel)
+    needs: package
+    runs-on: macos-15-intel
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      # The smoke test picks a free port with bun.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ needs.package.outputs.tag }}
+          path: ${{ runner.temp }}/dist
+      - run: scripts/smoke-release.sh "$TAG" "$COMMIT" "$RUNNER_TEMP/dist"
+        env:
+          TAG: ${{ needs.package.outputs.tag }}
+          COMMIT: ${{ needs.package.outputs.commit }}

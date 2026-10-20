@@ -381,7 +381,10 @@ deployed, meant to run and on in `rig.yaml`.
 _Relationship_: A **run** never overlaps the one before it: a time due while
 it goes is skipped. A time missed by more than 5 minutes (the Mac slept, rigd
 was down) is not caught up and not recorded. Daylight saving time: a skipped
-wall time runs once at the change, a repeated one once, the first time.
+wall time runs once at the change, a repeated one once, the first time. A
+clock that ran fast and is set back holds nothing back: the times it skipped
+come due as the clock reaches them, and one that already ran is not run again.
+A run's `timeout` is elapsed time (see Elapsed time).
 
 _Relationship_: A deploy never stops a run; it finishes on the checkout it
 started in, which Rig keeps until then, as it keeps the checkout a Kept Service
@@ -1021,6 +1024,26 @@ check's output in Activity withheld, and version 9's backups ranked older than
 every backup since. The next write saves version 10. CLI and future UI views are derived
 from it through `rigd`, so they agree. Daemon administration activity is
 journaled beside it in `admin-activity.jsonl`, written by the `rigd` CLI.
+
+### Elapsed time
+
+How long something must still wait, as `rigd` measures it: on a monotonic
+clock, apart from the Mac's wall clock. These waits are elapsed time: a
+`stop_timeout` and the waits around a stop, a Service's restart delays and
+budget windows, a healthcheck's `interval` and the health restart back-off, a
+job's `timeout`, how often the job scheduler offers its own work again, and how
+often log writers reread the `logs` settings. Wall time is what records,
+Activity and status show (a run's duration included), and what job schedules
+follow. Correcting the Mac's clock, forwards or back, moves wall time only, so
+it never shortens or lengthens one of these waits. Elapsed time stops while
+the Mac sleeps, so a wait resumes after sleep where it was, as the process it
+times does. It does not survive a `rigd` restart: the next `rigd` measures a
+wait the previous one began by the wall-clock age of its recorded time, which
+counts time asleep, and counts a time that the clock, set back meanwhile, puts
+in the future as now, so the wait is never longer than it was meant to be. A
+clock moved forward while no `rigd` ran can shorten it, and can age restart
+attempts out of their budget's window.
+_Avoid_: uptime, real time
 
 ### Port selection
 

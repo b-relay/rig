@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Clock } from "../src/domain/clock";
 import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
@@ -24,7 +25,11 @@ function fixture(
   healthcheck: Partial<HealthcheckPlan> | null = {},
   options: { services?: string[]; concurrency?: number } = {},
 ) {
+  /** The wall clock, and the elapsed one: time passing moves both, a correction of the clock (`step`) only the wall clock. */
   let now = 0;
+  let elapsed = 0;
+  const clock: Clock = { now: () => now, elapsed: () => elapsed };
+  /** Timers, by when they fire on the elapsed clock. */
   const timers: { at: number; fire: () => void }[] = [];
   const services = options.services ?? ["web"];
   const component = (name: string): ManagedComponent => ({
@@ -96,6 +101,8 @@ function fixture(
   } as unknown as RuntimeState;
   const incarnations = new Map(services.map((name) => [name, 1]));
   const checks: { service: string; at: number; test?: string }[] = [];
+  /** When each check and each restart was asked, on the elapsed clock. */
+  const elapsedAt = { checks: [] as number[], restarts: [] as number[] };
   /** Every write the monitor asked of the store, by when it was asked. */
   const writes: number[] = [];
   /** The signal of each health probe asked, in order. */
@@ -163,6 +170,7 @@ function fixture(
         };
       },
       async health(_target, component, signal) {
+        elapsedAt.checks.push(elapsed);
         checks.push({
           service: component.name,
           at: now,
@@ -175,18 +183,24 @@ function fixture(
         return unrecorded ? { ...check, unrecorded } : check;
       },
     },
-    now: () => now,
+    clock,
     id: () => `id${Math.random()}`,
     busy: () => busy,
     async restart(request) {
       restarts.push({ ...request, at: now });
+      elapsedAt.restarts.push(elapsed);
       if (restartHangs) return await new Promise<never>(() => {});
       if (restartOutcome === "skipped" || restartOutcome === "deferred")
         return { outcome: restartOutcome };
-      if (restartOutcome === "failed")
-        return { outcome: "failed", at: now + lockWait };
+      if (restartOutcome === "failed") {
+        // It waited for its Target's lock, then was attempted.
+        now += lockWait;
+        elapsed += lockWait;
+        return { outcome: "failed", at: now, elapsed };
+      }
       const next = incarnations.get(request.service)! + 1;
       incarnations.set(request.service, next);
+      const at = now;
       // As the restart's journal records it on the Service.
       state.targets[0]!.services![request.service] = {
         deployment: "/work",
@@ -195,13 +209,13 @@ function fixture(
         attempts: [],
         healthStretch: {
           since: request.since,
-          restarts: [...request.restarts, now],
+          restarts: [...request.restarts, at],
         },
       };
-      return { outcome: "restarted", at: now };
+      return { outcome: "restarted", at, elapsed };
     },
     schedule(delayMs, fire) {
-      const timer = { at: now + delayMs, fire };
+      const timer = { at: elapsed + delayMs, fire };
       timers.push(timer);
       return () => timers.splice(timers.indexOf(timer), 1);
     },
@@ -214,7 +228,8 @@ function fixture(
   const runUntil = async (until: number) => {
     while (now < until) {
       now += 1000;
-      for (const timer of timers.filter((t) => t.at <= now)) {
+      elapsed += 1000;
+      for (const timer of timers.filter((t) => t.at <= elapsed)) {
         timers.splice(timers.indexOf(timer), 1);
         timer.fire();
       }
@@ -246,10 +261,21 @@ function fixture(
     /** Moves the fake clock without a pass, firing the timers that come due. */
     tick(ms: number) {
       now += ms;
-      for (const timer of timers.filter((t) => t.at <= now)) {
+      elapsed += ms;
+      for (const timer of timers.filter((t) => t.at <= elapsed)) {
         timers.splice(timers.indexOf(timer), 1);
         timer.fire();
       }
+    },
+    /** The wall clock is corrected by `ms`, forwards or back; no time passes. */
+    step(ms: number) {
+      now += ms;
+    },
+    /** Runs a pass per second for `ms` more. */
+    runFor: (ms: number) => runUntil(now + ms),
+    /** The wall clock now. */
+    get now() {
+      return now;
     },
     /** A new rigd: nothing in memory, the same records. */
     restartDaemon() {
@@ -258,6 +284,7 @@ function fixture(
     state,
     checks,
     restarts,
+    elapsedAt,
     runUntil,
     result: () => monitorUnderTest.results({ id: "t1" }, "web"),
     set answer(value: (service: string) => Promise<boolean> | boolean) {
@@ -1117,4 +1144,72 @@ test("a Service that flaps through a long storage outage keeps a bounded queue o
   expect(times).toEqual([...times].sort((a, b) => a - b));
   expect(f.notices()).toEqual([]);
   expect(f.monitor.retained()).toBe(retained);
+});
+
+test("correcting the clock never suspends checks or keeps a stale result: they follow their interval in elapsed time", async () => {
+  for (const jump of [-3_600_000, 3_600_000]) {
+    const f = fixture({ interval: 5, retries: 3 });
+    await f.runFor(10 * SECOND);
+    expect(f.result()).toMatchObject({ status: "healthy" });
+    f.answer = () => false;
+    f.step(jump);
+    const before = f.elapsedAt.checks.length;
+    await f.runFor(60 * SECOND);
+    const after = f.elapsedAt.checks.slice(before);
+    // Every 5 s, as before the correction, and the result follows them.
+    expect(after.length).toBe(12);
+    expect(after.slice(1).map((at, index) => at - after[index]!)).toEqual(
+      Array(11).fill(5 * SECOND),
+    );
+    expect(f.result()).toMatchObject({ status: "unhealthy", failures: 12 });
+    expect(f.result()!.checkedAt).toBe(
+      new Date(f.checks.at(-1)!.at).toISOString(),
+    );
+  }
+});
+
+test("correcting the clock neither delays nor hastens a health restart: the back-off is elapsed time", async () => {
+  for (const jump of [-3_600_000, 3_600_000]) {
+    const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+    f.answer = () => false;
+    await f.runFor(10 * SECOND);
+    expect(f.elapsedAt.restarts).toEqual([1 * SECOND]);
+    f.step(jump);
+    await f.runFor(120 * SECOND);
+    // 1 min after the first, then 5 min after that.
+    expect(f.elapsedAt.restarts).toEqual([1 * SECOND, 61 * SECOND]);
+    await f.runFor(300 * SECOND);
+    expect(f.elapsedAt.restarts).toEqual([
+      1 * SECOND,
+      61 * SECOND,
+      361 * SECOND,
+    ]);
+  }
+});
+
+test("a new rigd after the clock was set back continues a recorded unhealthy stretch within its back-off, not after the correction", async () => {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  f.answer = () => false;
+  await f.runFor(10 * SECOND);
+  expect(f.elapsedAt.restarts).toEqual([1 * SECOND]);
+  // rigd restarts while the clock is set back an hour: the recorded restart lies in the new clock's future.
+  f.step(-3_600_000);
+  f.restartDaemon();
+  await f.runFor(70 * SECOND);
+  // At most the 1 min back-off after the new rigd first measured it, not an hour.
+  expect(f.elapsedAt.restarts).toEqual([1 * SECOND, 71 * SECOND]);
+  expect(f.restarts[1]).toMatchObject({ attempt: 2 });
+});
+
+test("time the Mac sleeps does not count toward a check's interval: checks resume where they were", async () => {
+  const f = fixture({ interval: 30 });
+  await f.runFor(1 * SECOND);
+  expect(f.elapsedAt.checks).toEqual([1 * SECOND]);
+  await f.runFor(9 * SECOND);
+  // An hour asleep: the wall clock moves on, elapsed time does not.
+  f.step(3_600_000);
+  await f.runFor(20 * SECOND);
+  expect(f.elapsedAt.checks).toEqual([1 * SECOND]);
+  await f.runFor(1 * SECOND);
+  expect(f.elapsedAt.checks).toEqual([1 * SECOND, 31 * SECOND]);
 });

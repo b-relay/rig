@@ -42,15 +42,15 @@ type EndDependencies = Pick<
   JobRunDependencies,
   "store" | "now" | "backups" | "diagnostic" | "id"
 >;
+/** How many of the scheduled times a job handled most recently its record keeps: an hour of an every-minute schedule.
+ * The clock set back past one of them never runs it again. */
+export const JOB_HANDLED_LIMIT = 60;
 /** The variable a backup job's command, and a restore, find their backup directory in. */
 export const BACKUP_DIR_VARIABLE = "RIG_BACKUP_DIR";
 
-/** Whether `run` is past its timeout at `now` (Unix milliseconds). */
-export function pastTimeout(run: JobRun, now: number): boolean {
-  return (
-    run.timeout !== undefined &&
-    now >= Date.parse(run.startedAt) + run.timeout * 1000
-  );
+/** Whether `run` is past its timeout once `elapsedMs` of elapsed time have passed since it started. */
+export function pastTimeout(run: JobRun, elapsedMs: number): boolean {
+  return run.timeout !== undefined && elapsedMs >= run.timeout * 1000;
 }
 /** The record of `job` of the Target `targetId`, if any. */
 export function findJobRecord(
@@ -278,20 +278,20 @@ async function stopJobProcess(
   }
   return "ended";
 }
-/** Stops the run `runId` of `job` once it is past its timeout, whether or not an Operation holds its Target, recorded as
- * timed out: a deploy or another long Operation on the Target never extends a run's limit. Its end is recorded later,
- * under the Target's lease (`settleJobRun`). Nothing when the record names another run by now, or no timeout has passed. */
+/** Stops the run `runId` of `job`, which the scheduler found past its timeout, whether or not an Operation holds its
+ * Target, recorded as timed out: a deploy or another long Operation on the Target never extends a run's limit. Its end is
+ * recorded later, under the Target's lease (`settleJobRun`). Nothing when the record names another run by now. */
 export async function enforceJobDeadline(
   target: TargetRecord,
   job: string,
   runId: string,
-  deps: Pick<EndDependencies, "store" | "now"> & {
+  deps: Pick<JobRunDependencies, "store" | "now"> & {
     lifecycle: Pick<TargetLifecycle, "observeJob" | "stopJob">;
   },
   stops?: StopControl,
 ): Promise<void> {
   const run = findJobRecord(await deps.store.read(), target.id, job)?.running;
-  if (run?.id !== runId || !pastTimeout(run, Date.parse(deps.now()))) return;
+  if (run?.id !== runId) return;
   await stopJobProcess(target, job, run, "timed-out", deps, stops);
 }
 
@@ -397,7 +397,7 @@ export async function startJobRun(
     }
     const record = ensureJobRecord(state, target.id, job.name);
     record.running = run;
-    if (run.scheduledFor) record.lastScheduled = run.scheduledFor;
+    if (run.scheduledFor) handledTime(record, run.scheduledFor);
   });
   /** Whether this run made its directory, which is then its own to delete. */
   let created = false;
@@ -497,7 +497,7 @@ export async function recordSkippedRun(
   const at = new Date(scheduledFor).toISOString();
   await deps.store.update((state) => {
     const record = ensureJobRecord(state, target.id, job);
-    record.lastScheduled = at;
+    handledTime(record, at);
     const running = record.running;
     if (!running) return;
     const first = running.skipped === undefined;
@@ -636,11 +636,25 @@ export function recordScheduling(
   for (const fact of facts) {
     const record = ensureJobRecord(state, fact.target, fact.job);
     if (fact.watchedFrom !== undefined) record.watchedFrom ??= fact.watchedFrom;
-    if (
-      fact.passedOver !== undefined &&
-      (record.lastScheduled === undefined ||
-        Date.parse(record.lastScheduled) < Date.parse(fact.passedOver))
-    )
-      record.lastScheduled = fact.passedOver;
+    if (fact.passedOver !== undefined) handledTime(record, fact.passedOver);
   }
+}
+/** Records `at` (ISO) as a scheduled time handled: among the latest JOB_HANDLED_LIMIT handled, and as `lastScheduled`
+ * unless a later time is. */
+function handledTime(record: JobRecord, at: string): void {
+  if (
+    record.lastScheduled === undefined ||
+    Date.parse(record.lastScheduled) < Date.parse(at)
+  )
+    record.lastScheduled = at;
+  const handled = (record.handled ?? []).filter((time) => time !== at);
+  record.handled = [...handled, at].slice(-JOB_HANDLED_LIMIT);
+}
+/** The scheduled times `record` says were handled, in Unix milliseconds: what the scheduler and status both skip. */
+export function handledTimes(
+  record: Pick<JobRecord, "handled" | "lastScheduled"> | undefined,
+): ReadonlySet<number> {
+  const times = [...(record?.handled ?? [])];
+  if (record?.lastScheduled) times.push(record.lastScheduled);
+  return new Set(times.map((at) => Date.parse(at)));
 }

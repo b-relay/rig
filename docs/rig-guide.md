@@ -2105,6 +2105,17 @@ Nothing is started again while `rigd` itself is down; the first pass of the
 next daemon applies the same rules to what it finds. Every start, automatic
 or not, reads the env files fresh.
 
+These delays and windows, like a `stop_timeout`, a healthcheck's `interval`
+and its restart back-off, and a job's `timeout`, are elapsed time: correcting
+the Mac's clock, forwards or back, never shortens or lengthens one, and time
+the Mac sleeps does not count, so a wait resumes after sleep where it was.
+Across a `rigd` restart only the clock can tell how much time passed, so the
+next `rigd` measures a wait by the wall-clock age of the time recorded for it
+(which counts time asleep), and counts a recorded time that the clock, set
+back meanwhile, puts in the future as now: the wait is never longer than it
+was meant to be. A clock moved forward while `rigd` was down can shorten it,
+and can age earlier attempts out of their budget's window.
+
 #### After the Mac restarts or you log in again
 
 A restart of the Mac ends every Service; logging out and in again ends those
@@ -2365,10 +2376,16 @@ jobs:
   (02:30 on the night clocks jump from 02:00 to 03:00) runs once, at the
   change (03:00); a time the autumn change repeats (01:30 on the night clocks
   fall back) runs once, the first time. So a daily job runs exactly once on
-  both nights. A schedule in `UTC` never shifts.
+  both nights. A schedule in `UTC` never shifts. When the Mac's clock ran fast
+  and is set back, the times it skipped come due as the clock reaches them,
+  and a time that already ran, was skipped or was passed over is not acted on
+  again: the job's latest 60 such times are recorded with it, so this holds
+  across a `rigd` restart too.
 - **`timeout`** (such as `2h`, at most `168h`) stops a run that is still going
   then, with SIGTERM and SIGKILL after its `stop_timeout` (default `10s`), and
-  records it as timed out. Without it a run may take as long as it takes. The
+  records it as timed out. It is elapsed time: correcting the Mac's clock does
+  not change it, and time the Mac sleeps does not count. A run's duration in
+  status and Activity is still told by the wall clock. Without it a run may take as long as it takes. The
   limit holds while a deploy or another Operation holds the Target: the run is
   stopped at its time, and its end is recorded once the Target is free. A run's
   end in status and Activity is when its process ended, however much later it

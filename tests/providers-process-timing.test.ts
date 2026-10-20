@@ -16,20 +16,24 @@ const errno = (code: string) => Object.assign(new Error(code), { code });
 const pid = 424242;
 const identity = createHash("sha256").update(`${pid}:born`).digest("hex");
 
-/** A clock that only moves when the supervisor waits, plus the timers it scheduled, which the test inspects. */
+/** A clock that only moves when the supervisor waits, plus the timers it scheduled, which the test inspects. `step` moves
+ * the wall clock alone, as a correction of the Mac's clock does. */
 function virtualTiming(start = 1_700_000_000_000) {
-  let clock = start;
+  let wall = start;
+  let elapsed = 0;
   let next = 0;
   const timers = new Map<number, { at: number; callback: () => void }>();
   const timing: ProcessTiming = {
-    now: () => new Date(clock),
+    now: () => new Date(wall),
+    elapsed: () => elapsed,
     wait: async (ms) => {
-      clock += ms;
+      wall += ms;
+      elapsed += ms;
       await Promise.resolve();
     },
     schedule: (ms, callback) => {
       const id = ++next;
-      timers.set(id, { at: clock + ms, callback });
+      timers.set(id, { at: elapsed + ms, callback });
       return () => {
         timers.delete(id);
       };
@@ -37,8 +41,11 @@ function virtualTiming(start = 1_700_000_000_000) {
   };
   return {
     timing,
-    elapsed: () => clock - start,
-    pending: () => [...timers.values()].map((timer) => timer.at - start),
+    elapsed: () => elapsed,
+    step: (ms: number) => {
+      wall += ms;
+    },
+    pending: () => [...timers.values()].map((timer) => timer.at),
   };
 }
 
@@ -314,4 +321,100 @@ test("a wrapper started with a longer grace than the stop now asks for is still 
   });
   await supervisor.stop("owned", { graceMs: 1000 });
   expect(clock.elapsed()).toBeGreaterThanOrEqual(63_500);
+});
+
+test("correcting the wall clock during a stop changes none of its waits: the grace, a kill's wait, the wait after SIGKILL and a wrapper's", async () => {
+  const hour = 3_600_000;
+  for (const jump of [hour, -hour]) {
+    /** A clock corrected by `jump` the first time `poll` runs, which a group's presence check calls. */
+    const corrected = () => {
+      const clock = virtualTiming();
+      let stepped = false;
+      return {
+        clock,
+        poll: () => {
+          if (!stepped) clock.step(jump);
+          stepped = true;
+        },
+      };
+    };
+    // The grace: a group that ignores SIGTERM is killed once 3 s have elapsed.
+    {
+      const { clock, poll } = corrected();
+      const signals: Array<NodeJS.Signals | 0> = [];
+      const { supervisor } = await recovered({
+        timing: clock.timing,
+        signals,
+        present: () => (poll(), !signals.includes("SIGKILL")),
+      });
+      expect(await supervisor.stop("owned", { graceMs: 3000 })).toEqual({
+        outcome: "stopped",
+        killed: "timeout",
+      });
+      expect(clock.elapsed()).toBeGreaterThanOrEqual(3000);
+      expect(clock.elapsed()).toBeLessThan(3100);
+    }
+    // A kill asked ten seconds in: SIGKILL follows it by the kill wait.
+    {
+      const { clock, poll } = corrected();
+      const signals: Array<NodeJS.Signals | 0> = [];
+      const kill = new AbortController();
+      const { supervisor } = await recovered({
+        timing: clock.timing,
+        killWaitMs: 1500,
+        signals,
+        present: () => {
+          poll();
+          if (clock.elapsed() >= 10_000) kill.abort();
+          return !signals.includes("SIGKILL");
+        },
+      });
+      expect(
+        await supervisor.stop("owned", { graceMs: 120_000, kill: kill.signal }),
+      ).toEqual({ outcome: "stopped", killed: "request" });
+      expect(clock.elapsed()).toBeGreaterThanOrEqual(11_500);
+      expect(clock.elapsed()).toBeLessThan(11_600);
+    }
+    // A group that survives SIGKILL fails after the grace and the kill wait, the clock corrected right after the SIGKILL.
+    {
+      const clock = virtualTiming();
+      const signals: Array<NodeJS.Signals | 0> = [];
+      let stepped = false;
+      const { supervisor } = await recovered({
+        timing: clock.timing,
+        killWaitMs: 250,
+        signals,
+        present: () => {
+          if (signals.includes("SIGKILL") && !stepped) {
+            clock.step(jump);
+            stepped = true;
+          }
+          return true;
+        },
+      });
+      await expect(
+        supervisor.stop("owned", { graceMs: 500 }),
+      ).rejects.toMatchObject({ code: "STOP_TIMEOUT" });
+      expect(clock.elapsed()).toBeGreaterThanOrEqual(750);
+      expect(clock.elapsed()).toBeLessThan(800);
+    }
+    // A capture wrapper is waited for through its application's grace, kill wait and headroom.
+    {
+      const { clock, poll } = corrected();
+      const signals: Array<NodeJS.Signals | 0> = [];
+      const { supervisor } = await recovered({
+        timing: clock.timing,
+        killWaitMs: 1500,
+        capture: { understandsKill: true },
+        signals,
+        present: () => (poll(), !signals.includes("SIGKILL")),
+      });
+      expect(await supervisor.stop("owned", { graceMs: 120_000 })).toEqual({
+        outcome: "stopped",
+        killed: "timeout",
+      });
+      expect(clock.elapsed()).toBeGreaterThanOrEqual(123_500);
+      expect(clock.elapsed()).toBeLessThan(123_600);
+    }
+  }
 });

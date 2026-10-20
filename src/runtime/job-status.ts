@@ -7,10 +7,10 @@ import type {
 } from "../domain/runtime";
 import { backupSummary } from "./backups";
 import { targetSelector } from "../domain/target-selector";
-import { describeRun, findJobRecord } from "./jobs";
+import { describeRun, findJobRecord, handledTimes } from "./jobs";
 import {
   jobTimeZone,
-  nextJobRun,
+  nextUnhandledRun,
   schedulesJobs,
   type JobClock,
 } from "./job-scheduler";
@@ -44,7 +44,10 @@ export function jobReports(
       (job.scheduled === false
         ? `jobs.${job.name}.targets does not name ${target.kind}, so only rig run runs it here.`
         : undefined);
-    const next = why ? undefined : nextJobRun(job, now, clock);
+    // As the scheduler counts it: a time its record says was handled is not run again.
+    const next = why
+      ? undefined
+      : nextUnhandledRun(job, now, handledTimes(record), clock);
     const backup = backupSummary({ backups: [...backups] }, target.id, job);
     return {
       name: job.name,

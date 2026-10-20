@@ -18,20 +18,21 @@ export const LOG_RETENTION_REFRESH_MS = 5000;
 
 /** The Host config's `logs` settings as they are now, for the writers of Target logs: rigd and every capture wrapper
  * read them this way, so all writers of one file rotate it alike. The config is read again at most once per
- * `refreshMs` of `now`, so a changed setting reaches every writer within that time without a restart; callers in
- * between share one read. A config that cannot be read or is invalid keeps the last retention read (the default before
- * any), so a config mistake never stops output being recorded; `rig doctor` and other commands report the config
- * problem itself. */
+ * `refreshMs` of elapsed time, so a changed setting reaches every writer within that time without a restart, however the
+ * Mac's clock is corrected meanwhile; callers in between share one read. A config that cannot be read or is invalid keeps
+ * the last retention read (the default before any), so a config mistake never stops output being recorded; `rig doctor`
+ * and other commands report the config problem itself. */
 export function hostLogRetention(input: {
   readonly read: () => Promise<HostConfig>;
-  readonly now: () => number;
+  /** Monotonic milliseconds. */
+  readonly elapsed: () => number;
   readonly refreshMs: number;
 }): () => Promise<LogRetention> {
   let current: LogRetention = DEFAULT_LOG_RETENTION;
   let readAt: number | undefined;
   let reading: Promise<LogRetention> | undefined;
   return () => {
-    if (readAt !== undefined && input.now() - readAt < input.refreshMs)
+    if (readAt !== undefined && input.elapsed() - readAt < input.refreshMs)
       return Promise.resolve(current);
     reading ??= input
       .read()
@@ -44,7 +45,7 @@ export function hostLogRetention(input: {
         () => current,
       )
       .finally(() => {
-        readAt = input.now();
+        readAt = input.elapsed();
         reading = undefined;
       });
     return reading;

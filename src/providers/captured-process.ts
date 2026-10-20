@@ -25,6 +25,7 @@ import {
   type ProcessInspection,
 } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
+import { elapsedNow } from "./system-clock";
 /** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
 const OBSERVATION_HEARTBEAT_MS = 250;
 /** Signals that ask the wrapper to stop its application within its grace; the wrapper then ends by the same signal.
@@ -77,7 +78,7 @@ async function runUntilStopped(
     logRetention: request.configRoot
       ? hostLogRetention({
           read: () => readHostConfig(request.configRoot!),
-          now: Date.now,
+          elapsed: elapsedNow,
           refreshMs: LOG_RETENTION_REFRESH_MS,
         })
       : async () => DEFAULT_LOG_RETENTION,
@@ -152,7 +153,7 @@ async function runUntilStopped(
           applicationIdentity,
           observation,
         }),
-      { heartbeatMs: OBSERVATION_HEARTBEAT_MS, now: Date.now },
+      { heartbeatMs: OBSERVATION_HEARTBEAT_MS, elapsed: elapsedNow },
     );
     try {
       return ended(

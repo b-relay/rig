@@ -1,6 +1,7 @@
 import type { UsageMonitor } from "./usage-report";
 import type { UsageWindow } from "../domain/usage-summary";
 import { targetSelector } from "../domain/target-selector";
+import { clockOr } from "../domain/clock";
 import type {
   ProjectStatusReader,
   ProjectStatusReport,
@@ -52,6 +53,7 @@ import {
   intendStopped,
   superviseTarget,
   supervisionScope,
+  type RestartMarks,
 } from "./supervision";
 import {
   findHostRestart,
@@ -157,7 +159,6 @@ import {
 } from "./backups";
 import {
   JOB_LATE_LIMIT_MS,
-  pastTimeout,
   schedulesJobs,
   type JobSettleRequest,
   type ScheduledRunRequest,
@@ -305,6 +306,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
     : input;
   const locks = createOperationLocks();
+  /** Where on the elapsed clock this daemon saw each Service's exits and automatic attempts. */
+  const restartMarks: RestartMarks = new Map();
   /** How supervision went: reading the state (`STATE_WORK`), and each Target's share by its id. */
   const supervision = trackedWorkReport(deps.supervision);
   const reservations = createHostReservations();
@@ -1785,7 +1788,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             ...diagnosticCauses(error),
           })
           .catch(() => {});
-        return { outcome: "failed" as const, at: Date.parse(deps.now()) };
+        const clock = clockOr(deps.clock, deps.now);
+        return {
+          outcome: "failed" as const,
+          at: clock.now(),
+          elapsed: clock.elapsed(),
+        };
       } finally {
         lease.release();
         operations.delete(operationId);
@@ -2072,7 +2080,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         // Another run by now, started after the scheduler looked: what it judged is not about this one.
         if (run?.id !== request.runId) return;
         const held = { ...deps, lifecycle };
-        if (pastTimeout(run, Date.parse(deps.now())))
+        if (request.timedOut)
           await stopJobRun(target, request.job, run, "timed-out", held);
         else await settleJobRun(target, request.job, run.id, held);
         await releaseHeldCheckouts(target, deps);
@@ -2498,6 +2506,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           target,
           { ...deps, lifecycle },
           supervisionScope(target),
+          restartMarks,
         );
       }
       if (action === "reconcile") {

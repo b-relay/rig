@@ -1,6 +1,7 @@
 import type { ManagedComponent, RestartPolicy } from "../config/types";
 import { DEFAULT_RESTART_POLICY } from "../config/plan-defaults";
 import { recordActivity } from "../domain/activity";
+import { clockOr, placed, type Clock } from "../domain/clock";
 import { hostRestartText, type HostRestart } from "../domain/host-session";
 import {
   RigError,
@@ -97,6 +98,7 @@ type Deps = Pick<
   RuntimeDependencies,
   | "store"
   | "now"
+  | "clock"
   | "id"
   | "lifecycle"
   | "observations"
@@ -182,16 +184,18 @@ function withAttempts(
 }
 
 /** When the next automatic attempt from `budget` is due for a Service that ended at `endedAt`, keeping only the attempts
- * still inside the budget's window at `now`; `exhausted` when the window already holds the budget's limit. */
+ * still inside the budget's window: those whose age (`ages`, elapsed milliseconds, one per spent attempt in order) is
+ * under it. `exhausted` when the window already holds the budget's limit. `retryAt` is the wall-clock time the delay after
+ * `endedAt` ends, as recorded and shown; the delay itself, `retryAt - endedAt`, is waited in elapsed time. */
 export function scheduleAttempt(
   run: ServiceRun,
   budget: RestartBudget,
   endedAt: number,
-  now: number,
+  ages: readonly number[],
 ): { exhausted: true } | { run: ServiceRun } {
   const rule = BUDGETS[budget];
-  const recent = spentAttempts(run, budget).filter(
-    (at) => now - at < rule.windowMs,
+  const recent = spentAttempts(run, budget).filter((_at, index) =>
+    inWindow(budget, ages[index]!),
   );
   if (recent.length >= rule.limit) return { exhausted: true };
   return {
@@ -200,6 +204,88 @@ export function scheduleAttempt(
       retryAt: endedAt + rule.delayMs(recent.length),
     },
   };
+}
+
+/** Whether an attempt `age` elapsed milliseconds old still counts against `budget`. */
+function inWindow(budget: RestartBudget, age: number): boolean {
+  return age < BUDGETS[budget].windowMs;
+}
+
+/** Where on the elapsed clock this rigd saw each Service's restart evidence, by `<target id>:<service>`: the exit its next
+ * automatic attempt waits after, and the attempts each budget counts. Kept beside the records and matched to them by the
+ * process that exited, and by position: a budget's marks are the record's attempts, one for one in order, pruned with
+ * them, never matched by a wall-clock time, which a correction can repeat. What a record holds that this rigd did not see
+ * happen (a previous rigd wrote it) is placed by its wall-clock age (`placed`). */
+export type RestartMarks = Map<string, ServiceMarks>;
+interface Mark {
+  at: number;
+  mark: number;
+}
+interface ServiceMarks {
+  exit?: { incarnation: string | undefined; at: string; mark: number };
+  attempts: Record<RestartBudget, BudgetMarks>;
+}
+/** One budget's marks: one per attempt its record lists, in order, and the attempt this rigd made last from it until the
+ * record shows that spent. */
+interface BudgetMarks {
+  marks: Mark[];
+  made?: Mark;
+}
+function serviceMarks(marks: RestartMarks, key: string): ServiceMarks {
+  let entry = marks.get(key);
+  if (!entry)
+    marks.set(
+      key,
+      (entry = {
+        attempts: {
+          "known-exit": { marks: [] },
+          "unknown-exit": { marks: [] },
+        },
+      }),
+    );
+  return entry;
+}
+/** The elapsed reading of the exit `run` records: the one this rigd saw for that process, else placed now. */
+function exitMark(
+  entry: ServiceMarks,
+  run: ServiceRun & { outcome: ServiceOutcome },
+  clock: Clock,
+): number {
+  const known = entry.exit;
+  if (
+    known !== undefined &&
+    known.incarnation === run.incarnation &&
+    known.at === run.outcome.at
+  )
+    return known.mark;
+  const mark = placed(clock, Date.parse(run.outcome.at));
+  entry.exit = { incarnation: run.incarnation, at: run.outcome.at, mark };
+  return mark;
+}
+/** The marks of the attempts `run` spent from `budget`, one for one in order. A budget's record only gains the attempt this
+ * rigd made last from it (one more than the marks hold) and loses its oldest, so it is the tail of the marks, with that
+ * attempt when it is one longer: those marks are kept. A record that is not (a previous rigd wrote it, or another writer
+ * reset it) has its attempts placed now. */
+function attemptMarks(
+  entry: ServiceMarks,
+  run: ServiceRun,
+  budget: RestartBudget,
+  clock: Clock,
+): Mark[] {
+  const recorded = spentAttempts(run, budget);
+  const own = entry.attempts[budget];
+  const timed =
+    own.made && recorded.length === own.marks.length + 1
+      ? [...own.marks, own.made]
+      : own.marks;
+  const offset = timed.length - recorded.length;
+  const marks =
+    offset >= 0 &&
+    recorded.every((at, index) => timed[offset + index]!.at === at)
+      ? timed.slice(offset)
+      : recorded.map((at) => ({ at, mark: placed(clock, at) }));
+  entry.attempts[budget] = { marks };
+  return marks;
 }
 
 /** Saves one Service's record with an optional Activity entry, in one write that touches nothing else of the saved Target:
@@ -274,6 +360,8 @@ export function activationJournal(
   options: {
     afterHostRestart?: HostRestart;
     healthStretch?: NonNullable<ServiceRun["healthStretch"]>;
+    /** When an automatic attempt was made (Unix milliseconds), as its budget records it; now when absent. */
+    attemptAt?: number;
   } = {},
 ): ActivationJournal & { failed(error: unknown): Promise<void> } {
   const begun: string[] = [];
@@ -302,7 +390,12 @@ export function activationJournal(
                   ? { healthStretch: options.healthStretch }
                   : {}),
               }
-            : automaticStart(fresh, current, mode, Date.parse(deps.now()));
+            : automaticStart(
+                fresh,
+                current,
+                mode,
+                options.attemptAt ?? Date.parse(deps.now()),
+              );
       // In the same write, the start takes the next value of the state's startSeq, which orders it after every Host
       // restart recorded before it: such a restart's stop never applies to this run.
       await saveRuns(target, { [service]: run }, deps, (state) => {
@@ -541,25 +634,32 @@ async function settleStopped(
  * policy (within `scope`) retries that outcome, the outcome's budget allows and its backoff has passed; the start publishes
  * its paths again once it is verified. A due attempt waits, spending nothing, while a Service it depends on is not running,
  * and after an unknown exit while one of its ports still accepts connections.
- * Returns when the earliest scheduled attempt is due, in Unix milliseconds.
+ * Returns when the earliest scheduled attempt is due, in Unix milliseconds by the wall clock as it returns.
  * A route that cannot be withheld, or a record that cannot be saved, ends the Service's pass before anything is recorded or
  * started; every other Service is still supervised, and then the first such failure is thrown. */
 export async function superviseTarget(
   target: TargetRecord,
   deps: Deps,
   scope: SupervisionScope = DEFAULT_SUPERVISION_SCOPE,
+  /** The daemon's restart evidence on the elapsed clock; absent, every recorded time is placed by its wall-clock age. */
+  marks: RestartMarks = new Map(),
 ): Promise<number | undefined> {
   let next: number | undefined;
   const failures: unknown[] = [];
+  const services = new Set<string>();
   for (const component of target.plan.components) {
     if (component.kind !== "managed") continue;
+    services.add(`${target.id}:${component.name}`);
     try {
-      const due = await superviseService(target, component, deps, scope);
+      const due = await superviseService(target, component, deps, scope, marks);
       if (due !== undefined) next = Math.min(next ?? due, due);
     } catch (error) {
       failures.push(error);
     }
   }
+  for (const key of marks.keys())
+    if (key.startsWith(`${target.id}:`) && !services.has(key))
+      marks.delete(key);
   if (failures.length) throw failures[0];
   return next;
 }
@@ -569,8 +669,11 @@ async function superviseService(
   component: ManagedComponent,
   deps: Deps,
   scope: SupervisionScope,
+  marks: RestartMarks,
 ): Promise<number | undefined> {
   const service = component.name;
+  const clock = clockOr(deps.clock, deps.now);
+  const entry = serviceMarks(marks, `${target.id}:${service}`);
   // An observation that does not answer within the status budget decides nothing; the pass moves on. A stopped one means
   // nothing of the start runs any more, the application a capture wrapper last reported included.
   const [observed] = await boundedObservations(
@@ -600,7 +703,12 @@ async function superviseService(
     // recorded, so a route that cannot be withheld is tried again by the next pass.
     if (plannedRoutes(target.plan).some((route) => route.service === service))
       await deps.lifecycle.withhold(target, [service]);
-    const outcome = observedOutcome(run, observation, deps.now());
+    const outcome = observedOutcome(
+      run,
+      observation,
+      new Date(clock.now()).toISOString(),
+    );
+    const mark = clock.elapsed();
     run = {
       ...(run ?? {
         deployment: target.plan.workspacePath,
@@ -616,13 +724,17 @@ async function superviseService(
       deps,
       exitActivity(service, outcome, restartBudget(policy, outcome, scope)),
     );
+    entry.exit = { incarnation: run.incarnation, at: outcome.at, mark };
   }
   const outcome = run.outcome!;
   const budget = restartBudget(policy, outcome, scope);
   if (!budget) return undefined;
-  const now = Date.parse(deps.now());
+  const endedAt = Date.parse(outcome.at);
+  const exited = exitMark(entry, { ...run, outcome }, clock);
   if (run.retryAt === undefined) {
-    const scheduled = scheduleAttempt(run, budget, Date.parse(outcome.at), now);
+    const marks = attemptMarks(entry, run, budget, clock);
+    const ages = marks.map((attempt) => clock.elapsed() - attempt.mark);
+    const scheduled = scheduleAttempt(run, budget, endedAt, ages);
     if ("exhausted" in scheduled) {
       await saveRun(target, service, { ...run, exhausted: true }, deps, {
         action: "restart",
@@ -633,8 +745,14 @@ async function superviseService(
     }
     run = scheduled.run;
     await saveRun(target, service, run, deps);
+    // The record dropped the attempts past the window: so do their marks, at the same positions.
+    entry.attempts[budget] = {
+      marks: marks.filter((_mark, index) => inWindow(budget, ages[index]!)),
+    };
   }
-  if (now < run.retryAt!) return run.retryAt;
+  // The delay after the exit, waited in elapsed time.
+  const wait = run.retryAt! - endedAt - (clock.elapsed() - exited);
+  if (wait > 0) return clock.now() + wait;
   if (budget === "unknown-exit") {
     // Nothing says the process that ended is not still serving under another identity: its ports must be free first.
     const busy = await listeningPorts(target, component, deps);
@@ -644,7 +762,10 @@ async function superviseService(
       return undefined;
     }
   }
-  const journal = activationJournal(target, budget, deps);
+  // The attempt, as recorded and as this rigd saw it happen.
+  const attemptAt = clock.now();
+  entry.attempts[budget].made = { at: attemptAt, mark: clock.elapsed() };
+  const journal = activationJournal(target, budget, deps, { attemptAt });
   let started: Awaited<ReturnType<Deps["lifecycle"]["recover"]>>;
   try {
     started = await deps.lifecycle.recover(target, service, journal);
@@ -667,7 +788,10 @@ async function superviseService(
       service,
       {
         ...(refusedBeforeStart
-          ? withAttempts(rest, budget, [...spentAttempts(rest, budget), now])
+          ? withAttempts(rest, budget, [
+              ...spentAttempts(rest, budget),
+              attemptAt,
+            ])
           : rest),
         outcome: failedAttemptOutcome(error, deps.now()),
       },
@@ -678,7 +802,7 @@ async function superviseService(
         message: `${service} could not be started again automatically (${diagnosticErrorCode(error)}).`,
       },
     );
-    return await superviseService(target, component, deps, scope);
+    return await superviseService(target, component, deps, scope, marks);
   }
   if (started.outcome === "unchanged") {
     // It was found running, started by something else: nothing was spent, and nothing of the ended process stays scheduled.

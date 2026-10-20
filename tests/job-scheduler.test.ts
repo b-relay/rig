@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { JOB_HANDLED_LIMIT } from "../src/runtime/jobs";
+import type { Clock } from "../src/domain/clock";
 import type { PlanJob } from "../src/config/types";
 import type {
   JobRecord,
@@ -10,8 +12,8 @@ import type { ProcessObservation } from "../src/providers/contracts";
 import {
   JOB_CHECKOUT_RETRY_MS,
   JOB_LATE_LIMIT_MS,
+  JOB_OFF_CHECK_MS,
   createJobScheduler,
-  pastTimeout,
   type ScheduledRunRequest,
   type ScheduledRunResult,
 } from "../src/runtime/job-scheduler";
@@ -119,12 +121,24 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     activity: [],
     jobs,
   });
-  const clock = { ms: 0 };
+  /** The wall clock (`ms`) and the elapsed one; time passing moves both, a correction of the clock (`step`) only `ms`. */
+  const clock = { ms: 0, elapsed: 0 };
+  const platform: Clock = {
+    now: () => clock.ms,
+    elapsed: () => clock.elapsed,
+  };
+  /** Time passes until the wall clock reads `iso`. */
+  const until = (iso: string) => {
+    clock.elapsed += at(iso) - clock.ms;
+    clock.ms = at(iso);
+  };
   const processes = new Map<string, ProcessObservation>();
   const started: { job: string; id: string }[] = [];
   const stops: string[] = [];
   const released: string[] = [];
   const offChecks: string[] = [];
+  /** How many times queued backup work was offered. */
+  const tidied = { count: 0 };
   const requests: ScheduledRunRequest[] = [];
   let ids = 0;
   let busy = false;
@@ -177,7 +191,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     createJobScheduler({
       store,
       lifecycle,
-      clock: { now: () => clock.ms, timeZone: () => "UTC" },
+      clock: { ...platform, timeZone: () => "UTC" },
       id: () => `id${++ids}`,
       busy: () => busy,
       async start(request): Promise<ScheduledRunResult> {
@@ -218,7 +232,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
           (r) => r.job === request.job,
         )?.running;
         if (run?.id !== request.runId) return;
-        if (pastTimeout(run, clock.ms))
+        if (request.timedOut)
           await stopJobRun(target, request.job, run, "timed-out", runDeps);
         else await settleJobRun(target, request.job, run.id, runDeps);
       },
@@ -249,23 +263,37 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       async stopJobsIfOff(targetId) {
         offChecks.push(targetId);
       },
+      async tidyBackups() {
+        tidied.count++;
+      },
       async diagnostic() {},
       report: workReport(board, JOB_SCHEDULER),
     });
   let current = scheduler();
   const pass = async (iso?: string) => {
-    if (iso) clock.ms = at(iso);
+    if (iso) until(iso);
     await current.pass();
     await current.idle();
   };
   return {
     store,
     clock,
+    /** The wall clock is corrected by `ms`, forwards or back; no time passes. */
+    step(ms: number) {
+      clock.ms += ms;
+    },
+    /** `ms` pass on both clocks, then one pass. */
+    async after(ms: number) {
+      clock.ms += ms;
+      clock.elapsed += ms;
+      await pass();
+    },
     processes,
     started,
     stops,
     released,
     offChecks,
+    tidied,
     requests,
     pass,
     restart() {
@@ -300,7 +328,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
     },
     /** One pass, without waiting for the work it dispatched, which may wait for the Target. */
     async passOnly(iso: string) {
-      clock.ms = at(iso);
+      until(iso);
       await current.pass();
       for (let round = 0; round < 10; round++)
         await new Promise((resolve) => setImmediate(resolve));
@@ -339,6 +367,7 @@ test("a due time starts one run, which is recorded as it ends with its exit, and
     job: "link-resolver",
     watchedFrom: "2026-10-10T17:16:00.000Z",
     lastScheduled: "2026-10-10T17:17:00.000Z",
+    handled: ["2026-10-10T17:17:00.000Z"],
     last: expect.objectContaining({
       id: "id1",
       outcome: "succeeded",
@@ -523,6 +552,7 @@ test("a Target not meant to run passes its times over and records that it did, s
     job: "tick",
     watchedFrom: "2026-10-10T12:00:30.000Z",
     lastScheduled: "2026-10-10T12:01:00.000Z",
+    handled: ["2026-10-10T12:01:00.000Z"],
   });
   // rig up, then rigd restarts within the late limit: 12:01 was passed over, not missed.
   stopped.store.state.targets[0]!.desired = "running";
@@ -1015,4 +1045,284 @@ test("a run's failed deadline stop is reported for that run alone: once it is go
   w.setBusy(false);
   await w.pass("2026-10-14T12:00:08Z");
   expect(w.notices()).toEqual([]);
+});
+
+test("a run's timeout is elapsed time: correcting the clock forward does not stop a fresh run, correcting it back does not extend one", async () => {
+  const hour = 3_600_000;
+  for (const jump of [hour, -hour]) {
+    const w = world(
+      stableTarget([job("mb-mirror", "0 7 * * 3,6", { timeout: 30 })]),
+    );
+    await w.pass("2026-10-14T11:59:00Z");
+    await w.pass("2026-10-14T12:00:00Z");
+    expect(w.record("mb-mirror")!.running).toBeDefined();
+    // Corrected before the pass that first sees the run, which comes a second later: it is timed from no later than then.
+    w.step(jump);
+    for (let second = 1; second < 30; second++) await w.after(1000);
+    expect(w.stops).toEqual([]);
+    await w.after(1000);
+    await w.after(1000);
+    expect(w.stops).toEqual(["mb-mirror"]);
+    expect(w.record("mb-mirror")!.last).toMatchObject({ outcome: "timed-out" });
+    expect(w.store.state.activity.at(-1)).toMatchObject({ outcome: "failed" });
+  }
+});
+
+test("a run a previous rigd started is timed out by its age when the next rigd first sees it, never later than its timeout", async () => {
+  const running = (startedAt: string) => [
+    {
+      target: "t1",
+      job: "mb-mirror",
+      running: {
+        id: "adopted",
+        trigger: "manual" as const,
+        startedAt,
+        workspace: "/rig/targets/p1/t1/revisions/r2",
+        timeout: 60,
+      },
+    },
+  ];
+  // The clock was set back an hour while no rigd ran: the run started "in the future" counts as starting now.
+  const w = world(
+    stableTarget([job("mb-mirror", "0 7 * * 3,6", { timeout: 60 })]),
+    running("2026-10-14T13:00:00.000Z"),
+  );
+  w.processes.set("mb-mirror", { state: "running", incarnation: "adopted" });
+  await w.pass("2026-10-14T12:00:30Z");
+  expect(w.stops).toEqual([]);
+  // The wall clock is corrected again: elapsed time alone decides.
+  w.step(-30 * 60_000);
+  await w.after(59_000);
+  expect(w.stops).toEqual([]);
+  await w.after(1000);
+  expect(w.stops).toEqual(["mb-mirror"]);
+  // A run 30 s old by the wall clock when first seen has 30 s left.
+  const fresh = world(
+    stableTarget([job("mb-mirror", "0 7 * * 3,6", { timeout: 60 })]),
+    running("2026-10-14T12:00:00.000Z"),
+  );
+  fresh.processes.set("mb-mirror", {
+    state: "running",
+    incarnation: "adopted",
+  });
+  await fresh.pass("2026-10-14T12:00:30Z");
+  fresh.step(3 * 3_600_000);
+  await fresh.after(29_000);
+  expect(fresh.stops).toEqual([]);
+  await fresh.after(1000);
+  expect(fresh.stops).toEqual(["mb-mirror"]);
+});
+
+test("the off switch, held checkouts and queued backup work are offered again on elapsed time, whichever way the clock is corrected", async () => {
+  for (const jump of [3_600_000, -3_600_000]) {
+    const w = world(stableTarget([job("tick", "0 0 1 1 *")]), [
+      {
+        target: "t1",
+        job: "tick",
+        running: {
+          id: "long",
+          trigger: "manual",
+          startedAt: "2026-10-10T12:00:00.000Z",
+          workspace: "/rig/targets/p1/t1/revisions/r2",
+        },
+      },
+    ]);
+    w.processes.set("tick", { state: "running", incarnation: "long" });
+    w.store.state.heldCheckouts = [
+      {
+        target: "t1",
+        project: "p1",
+        workspace: "/rig/targets/p1/t1/revisions/r1",
+      },
+    ];
+    w.store.state.backupRemovals = [
+      { target: "t1", project: "p1", path: "/rig/backups/b1" },
+    ];
+    w.setReleasing(false);
+    await w.pass("2026-10-10T12:00:00Z");
+    expect([w.offChecks.length, w.released.length, w.tidied.count]).toEqual([
+      1, 0, 1,
+    ]);
+    w.step(jump);
+    // Within the intervals nothing is offered again, however far the clock moved.
+    await w.after(JOB_OFF_CHECK_MS - 1000);
+    expect([w.offChecks.length, w.tidied.count]).toEqual([1, 1]);
+    await w.after(1000);
+    expect(w.offChecks.length).toBe(2);
+    w.setReleasing(true);
+    await w.after(JOB_CHECKOUT_RETRY_MS - JOB_OFF_CHECK_MS);
+    expect(w.released).toEqual(["/rig/targets/p1/t1/revisions/r1"]);
+    expect(w.tidied.count).toBe(2);
+  }
+});
+
+test("correcting a clock that ran fast holds no job back: the times up to the one it ran come due again, which does not run twice", async () => {
+  const minutes = (w: ReturnType<typeof world>) =>
+    w.requests.map((r) => new Date(r.scheduledFor).toISOString().slice(11, 16));
+  const hour = 3_600_000;
+  const w = world(stableTarget([job("tick", "* * * * *")]));
+  await w.pass("2026-10-13T12:00:00.500Z");
+  // The clock jumps an hour ahead for one pass, which runs 13:00, then is corrected.
+  w.step(hour);
+  await w.after(1000);
+  w.end("tick", 0);
+  w.step(-hour);
+  await w.after(59_000);
+  w.end("tick", 0);
+  await w.after(60_000);
+  expect(minutes(w)).toEqual(["13:00", "12:01", "12:02"]);
+  // Status names the time the scheduler runs next.
+  const report = () =>
+    jobReports(
+      w.store.state.targets[0]!,
+      w.store.state.jobs,
+      w.clock.ms,
+      { timeZone: () => "UTC" },
+      true,
+    )![0]!.nextRunAt;
+  expect(report()).toBe("2026-10-13T12:03:00.000Z");
+  // A new rigd reading the same state goes on the same way.
+  w.restart();
+  w.end("tick", 0);
+  await w.pass("2026-10-13T12:02:30Z");
+  await w.pass("2026-10-13T12:03:00.500Z");
+  expect(minutes(w).slice(-2)).toEqual(["12:02", "12:03"]);
+  // 12:59 runs, 13:00 already ran and is not run again (status says so too), and 13:01 runs.
+  w.end("tick", 0);
+  await w.pass("2026-10-13T12:59:00.500Z");
+  expect(report()).toBe("2026-10-13T13:01:00.000Z");
+  w.end("tick", 0);
+  await w.pass("2026-10-13T13:00:00.500Z");
+  w.end("tick", 0);
+  await w.pass("2026-10-13T13:01:00.500Z");
+  expect(minutes(w).slice(-2)).toEqual(["12:59", "13:01"]);
+  // A step back past times that ran never runs them again.
+  const back = world(stableTarget([job("tick", "* * * * *")]));
+  await back.pass("2026-10-13T11:59:30Z");
+  await back.after(31_000);
+  back.end("tick", 0);
+  await back.after(60_000);
+  back.end("tick", 0);
+  back.step(-90_000);
+  for (let second = 0; second < 150; second++) {
+    await back.after(1000);
+    back.end("tick", 0);
+  }
+  expect(minutes(back)).toEqual(["12:00", "12:01", "12:02"]);
+});
+
+test("after the clock is set back and rigd restarts, no time already run, skipped or passed over runs again, and status agrees", async () => {
+  const minutes = (w: ReturnType<typeof world>) =>
+    w.requests.map((r) => new Date(r.scheduledFor).toISOString().slice(11, 16));
+  const next = (w: ReturnType<typeof world>) =>
+    jobReports(
+      w.store.state.targets[0]!,
+      w.store.state.jobs,
+      w.clock.ms,
+      { timeZone: () => "UTC" },
+      true,
+    )![0]!.nextRunAt;
+  /** The clock jumps an hour ahead for one pass, then is set back to 12:00:31 while rigd restarts; then 150 s pass. */
+  const corrected = async (w: ReturnType<typeof world>) => {
+    w.end("tick", 0);
+    w.step(3_600_000);
+    await w.after(1000);
+    w.end("tick", 0);
+    w.step(Date.parse("2026-10-13T12:00:31Z") - w.clock.ms);
+    w.restart();
+    await w.after(0);
+    const status = next(w);
+    for (let second = 0; second < 150; second++) {
+      await w.after(1000);
+      w.end("tick", 0);
+    }
+    return status;
+  };
+  // Run: 12:01 and 12:02 ran.
+  const ran = world(stableTarget([job("tick", "* * * * *")]));
+  await ran.pass("2026-10-13T12:00:30Z");
+  await ran.pass("2026-10-13T12:01:00.500Z");
+  ran.end("tick", 0);
+  await ran.pass("2026-10-13T12:02:00.500Z");
+  expect(await corrected(ran)).toBe("2026-10-13T12:03:00.000Z");
+  expect(minutes(ran)).toEqual(["12:01", "12:02", "13:02", "12:03"]);
+  // Skipped: 12:02 came while the run of 12:01 still went.
+  const skipped = world(stableTarget([job("tick", "* * * * *")]));
+  await skipped.pass("2026-10-13T12:00:30Z");
+  await skipped.pass("2026-10-13T12:01:00.500Z");
+  await skipped.pass("2026-10-13T12:02:00.500Z");
+  expect(skipped.started).toHaveLength(1);
+  expect(await corrected(skipped)).toBe("2026-10-13T12:03:00.000Z");
+  expect(minutes(skipped)).toEqual(["12:01", "12:02", "13:02", "12:03"]);
+  expect(skipped.started).toHaveLength(3);
+  // Passed over: the Target was stopped at 12:01 and 12:02, and is up again.
+  const stopped = world(
+    stableTarget([job("tick", "* * * * *")], { desired: "stopped" }),
+  );
+  await stopped.pass("2026-10-13T12:00:30Z");
+  await stopped.pass("2026-10-13T12:01:00.500Z");
+  await stopped.pass("2026-10-13T12:02:00.500Z");
+  stopped.store.state.targets[0]!.desired = "running";
+  expect(await corrected(stopped)).toBe("2026-10-13T12:03:00.000Z");
+  expect(minutes(stopped)).toEqual(["13:02", "12:03"]);
+});
+
+test("a job's record keeps only its latest handled times", async () => {
+  const w = world(stableTarget([job("tick", "* * * * *")]));
+  await w.pass("2026-10-13T12:00:30Z");
+  for (let minute = 0; minute < JOB_HANDLED_LIMIT + 10; minute++) {
+    w.end("tick", 0);
+    await w.after(60_000);
+  }
+  const handled = w.record("tick")!.handled!;
+  expect(handled).toHaveLength(JOB_HANDLED_LIMIT);
+  expect(handled.at(-1)).toBe(w.record("tick")!.lastScheduled);
+});
+
+test("runs that share a wall-clock start after a correction are timed apart", async () => {
+  const run = (job: string) => ({
+    target: "t1",
+    job,
+    running: {
+      id: `${job}-run`,
+      trigger: "manual" as const,
+      startedAt: "2026-10-13T12:00:00.000Z",
+      workspace: "/rig/targets/p1/t1/revisions/r2",
+      timeout: 30,
+    },
+  });
+  const w = world(
+    stableTarget([
+      job("first", "0 0 1 1 *", { timeout: 30 }),
+      job("second", "0 0 1 1 *", { timeout: 30 }),
+    ]),
+    [run("first")],
+  );
+  w.processes.set("first", { state: "running", incarnation: "first-run" });
+  await w.pass("2026-10-13T12:00:00Z");
+  for (let second = 0; second < 20; second++) await w.after(1000);
+  // The clock is set back 20 s, and another run starts at the same wall-clock time as the first.
+  w.step(-20_000);
+  w.record("second")!.running = run("second").running;
+  w.processes.set("second", { state: "running", incarnation: "second-run" });
+  for (let second = 0; second < 10; second++) await w.after(1000);
+  expect(w.stops).toEqual(["first"]);
+  for (let second = 0; second < 21; second++) await w.after(1000);
+  expect(w.stops).toEqual(["first", "second"]);
+});
+
+test("time the Mac sleeps does not count toward a run's timeout", async () => {
+  const w = world(
+    stableTarget([job("mb-mirror", "0 7 * * 3,6", { timeout: 30 })]),
+  );
+  await w.pass("2026-10-14T11:59:00Z");
+  await w.pass("2026-10-14T12:00:00Z");
+  for (let second = 0; second < 5; second++) await w.after(1000);
+  // An hour asleep: the wall clock moves on, elapsed time does not.
+  w.step(3_600_000);
+  for (let second = 5; second < 29; second++) await w.after(1000);
+  expect(w.stops).toEqual([]);
+  await w.after(1000);
+  await w.after(1000);
+  expect(w.stops).toEqual(["mb-mirror"]);
 });

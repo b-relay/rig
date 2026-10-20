@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { wallOnlyClock } from "../src/domain/clock";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -191,7 +192,7 @@ async function world(
     monitor = createHealthMonitor({
       store: w.store,
       observations: w.deps.observations,
-      now: () => clock.ms,
+      clock: wallOnlyClock(() => clock.ms),
       id: () => `h${Math.random()}`,
       busy: runtime.targetBusy,
       restart: runtime.restartUnhealthy,

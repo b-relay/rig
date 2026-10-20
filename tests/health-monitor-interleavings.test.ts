@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { wallOnlyClock } from "../src/domain/clock";
 import type { ManagedComponent } from "../src/config/types";
 import type { RuntimeState } from "../src/domain/runtime";
 import {
@@ -328,7 +329,7 @@ function world(
               };
         },
       },
-      now: () => now,
+      clock: wallOnlyClock(() => now),
       id: () => `id${Math.random()}`,
       busy: () => false,
       async restart(request) {
@@ -396,7 +397,7 @@ function world(
         processRunning = survives;
         transitions++;
         expected = "unhealthy";
-        return { outcome: "failed", at: now };
+        return { outcome: "failed", at: now, elapsed: now };
       },
       schedule(delayMs, fire) {
         const timer = { at: now + delayMs, fire };

@@ -15,7 +15,7 @@ function scriptedWait(timeoutMs: number) {
     pauses,
     wait: {
       timeoutMs,
-      now: () => clock,
+      elapsed: () => clock,
       wait: async (ms: number) => {
         pauses.push(ms);
         clock += ms;

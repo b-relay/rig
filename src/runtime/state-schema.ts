@@ -648,7 +648,13 @@ const jobRecord = z.object({
   lastScheduled: text
     .optional()
     .describe(
-      "The latest scheduled time rigd acted on, run, skipped or passed over (ISO 8601); a new rigd never acts on it or an earlier one again.",
+      "The latest scheduled time rigd acted on, run, skipped or passed over (ISO 8601); a new rigd never acts on it again, nor on an earlier one unless the clock was set back past it.",
+    ),
+  handled: z
+    .array(text)
+    .optional()
+    .describe(
+      "The scheduled times rigd acted on most recently, run, skipped or passed over (ISO 8601), oldest first and at most 60: none is acted on again, even after the clock was set back past it.",
     ),
   watchedFrom: text
     .optional()

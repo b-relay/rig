@@ -173,9 +173,11 @@ A Linux job runs the format check and the typecheck. On an Apple Silicon Mac,
 one job runs the whole suite as `bun run test:ci` (two files at a time, and at
 most four of a file's concurrent tests at once), with `RIG_ROOT` set to a
 directory no test uses, so a test that forgot its own root never reaches
-`~/.rig`. It first installs Caddy 2.10.2, pinned by checksum, for the live Caddy
-tests, and fails by name if a system tool the tests run is missing (`lockf`,
-`hdiutil`, `lsof`, `ps`, `shasum`, `git`); nothing is skipped there. Only the
+`~/.rig`. It first builds Caddy 2.10.2 with the Cloudflare DNS module Rig's
+Caddy needs, from pinned module versions, for the live Caddy tests, and fails
+by name if a system tool the tests run is missing (`lockf`, `hdiutil`, `lsof`,
+`ps`, `shasum`, `git`); nothing is skipped there. Git there names a new
+repository's first branch `main`, as the tests assume. Only the
 `hdiutil` volume test and the native process-usage reader skip, and only off
 macOS. Another job packages the release with `scripts/package-release.sh`, runs
 `bun run build`, and tries the package with `scripts/smoke-release.sh`; an Intel
@@ -214,9 +216,15 @@ checkout to try one locally, and `scripts/smoke-release.sh <tag> <commit> dist`
 to smoke test it.
 
 Publishing (`scripts/publish-release.ts`) uploads the files into a new draft,
-which stays private, checks the draft holds exactly those files, each uploaded
-with its digest, and only then publishes it. Drafts of a `v*` tag belong to the
-release workflow. A release run can end in four ways:
+which stays private, checks the draft holds exactly those files, each with this
+run's SHA-256 (downloading any file GitHub reports no digest for), and only
+then publishes it. Nothing is read as published or published unless the tag
+still names the commit the run built. A release counts as already published
+only when it holds exactly the release's files, each matching its published
+`SHA256SUMS`, and that `SHA256SUMS` carries the release workflow's provenance
+for the tag at that commit (`gh attestation verify`). A rebuild produces
+different bytes, so a re-run never compares against its own. Drafts of a `v*`
+tag belong to the release workflow. A release run can end in four ways:
 
 - It fails before publishing (a failing check, packaging, the smoke test,
   attestation, or an upload): nothing is public, though a draft may be left.
@@ -228,10 +236,11 @@ release workflow. A release run can end in four ways:
 - It fails after publishing, during cleanup say: the release is public and
   complete. A re-run finds it published with every file, changes nothing, and
   succeeds.
-- A published release lacks a file (publishing is never expected to leave one):
-  the run fails and changes nothing. A published release is never replaced,
-  since a rebuild produces different bytes; compare its files with its
-  `SHA256SUMS` and attestations by hand, and release a new version to change it.
+- A published release is not complete (a file missing, not matching its
+  `SHA256SUMS`, or without provenance; publishing is never expected to leave
+  one): the run fails and changes nothing. A published release is never
+  replaced; compare its files with its `SHA256SUMS` and attestations by hand,
+  and release a new version to change it.
 
 The `install` script downloads one release's archive for the Mac it runs on,
 checks it against `SHA256SUMS`, puts `rig` and `rigd` in `<RIG_ROOT>/bin` and

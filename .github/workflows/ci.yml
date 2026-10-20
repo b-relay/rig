@@ -17,6 +17,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the run of its previous push; runs on main and for a release each keep their own.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     name: Prettier and typecheck
@@ -45,16 +50,36 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.2
-      # tests/managed-caddy-live.test.ts runs a real Caddy from /usr/local/bin or /opt/homebrew/bin, and fails without one.
-      - name: Install Caddy 2.10.2
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25"
+          cache: false
+      # The live Caddy tests run a real Caddy from /usr/local/bin or /opt/homebrew/bin, and fail without one. Rig's Caddy
+      # needs the Cloudflare DNS module, which Caddy's own release builds lack, so it is built here from the pinned module
+      # versions, which Go checks against its checksum database.
+      - name: Build Caddy 2.10.2 with the Cloudflare DNS module
+        working-directory: ${{ runner.temp }}
         run: |
-          [ "$(uname -m)" = arm64 ] || { echo "::error::This step installs Caddy for Apple Silicon, not $(uname -m)."; exit 1; }
-          curl --proto '=https' -fsSL -o "$RUNNER_TEMP/caddy.tar.gz" \
-            https://github.com/caddyserver/caddy/releases/download/v2.10.2/caddy_2.10.2_mac_arm64.tar.gz
-          echo "3b8a4b24054bddd96cae8da5c34e48c19105be29859d6f09e37344b7e188881cfd6b0a91af3f3e8f1d10987153e6bad70d1752c967e1360cc0041fc7736076ec  $RUNNER_TEMP/caddy.tar.gz" | shasum -a 512 -c
-          tar -xzf "$RUNNER_TEMP/caddy.tar.gz" -C "$RUNNER_TEMP" caddy
-          sudo install -m 755 "$RUNNER_TEMP/caddy" /usr/local/bin/caddy
+          mkdir caddy-build && cd caddy-build
+          cat >main.go <<'EOF'
+          package main
+
+          import (
+          	caddycmd "github.com/caddyserver/caddy/v2/cmd"
+
+          	_ "github.com/caddy-dns/cloudflare"
+          	_ "github.com/caddyserver/caddy/v2/modules/standard"
+          )
+
+          func main() { caddycmd.Main() }
+          EOF
+          go mod init rig-ci-caddy
+          go get github.com/caddyserver/caddy/v2@v2.10.2 github.com/caddy-dns/cloudflare@v0.2.4
+          go mod tidy
+          go build -trimpath -o caddy .
+          sudo install -m 755 caddy /usr/local/bin/caddy
           /usr/local/bin/caddy version
+          /usr/local/bin/caddy list-modules | grep -qx dns.providers.cloudflare
       # The system tools the tests run; a missing one fails here by name rather than as a confusing test failure.
       - name: Check the tests' tools
         run: |
@@ -63,10 +88,14 @@ jobs:
           done
       - run: bun install --frozen-lockfile
       # Two test files at a time, each running at most four of its concurrent tests at once. RIG_ROOT is a root no test is
-      # meant to use: a test that forgot its own temporary root would land there, never in ~/.rig.
+      # meant to use: a test that forgot its own temporary root would land there, never in ~/.rig. The tests assume Git
+      # names a new repository's first branch main, as Rig's default Production Branch is.
       - run: bun run test:ci
         env:
           RIG_ROOT: ${{ runner.temp }}/rig-root
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: init.defaultBranch
+          GIT_CONFIG_VALUE_0: main
 
   package:
     name: Build, package and smoke test (Apple Silicon)

@@ -304,6 +304,39 @@ test("a Caddy left stopped by a restart that rigd's stop cut short is started ag
   }
 });
 
+test("a rollback to a Caddy that never stopped owes no restart: an owner's stop afterwards is kept by the next rigd", async () => {
+  const w = await world({ tls: { ca: "internal" } });
+  await w.caddy.router.apply(app());
+  const restore = join(w.root, "caddy", "restore.json");
+  // The CA change's restart is refused before Caddy stops: the old process serves the previous generation throughout.
+  let recorded = false;
+  w.control.beforeRestart = async () => {
+    recorded = (await stat(restore).catch(() => undefined)) !== undefined;
+    throw new RigError(
+      "PROXY_START",
+      "Caddy did not exit before the deadline.",
+      "Retry.",
+    );
+  };
+  w.setSettings({ tls: { ca: "https://127.0.0.1:65534/acme" } });
+  await expect(w.caddy.republish()).rejects.toMatchObject({
+    code: "PROXY_START",
+    message: expect.stringContaining("the previous configuration was restored"),
+  });
+  // Written before the restart was asked for, and ended once Caddy was confirmed to serve the previous generation.
+  expect(recorded).toBe(true);
+  expect(await stat(restore).catch(() => undefined)).toBeUndefined();
+  w.control.beforeRestart = undefined;
+  await w.caddy.close();
+  // Its owner stops Caddy; the next rigd leaves it stopped.
+  w.control.state = "stopped";
+  w.control.reachable = false;
+  const restarts = w.control.restarts;
+  await w.reopen().served();
+  expect(w.control.restarts).toBe(restarts);
+  expect(w.control.state as string).toBe("stopped");
+});
+
 test("a Caddy its owner stopped stays stopped for the next rigd", async () => {
   const w = await world();
   await w.caddy.router.apply(app());

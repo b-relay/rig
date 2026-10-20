@@ -12,7 +12,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { privateDirectory, replacePrivateFile } from "./private-files";
+import {
+  privateDirectory,
+  removeFileDurably,
+  replacePrivateFile,
+} from "./private-files";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import {
   bareHostname,
@@ -203,20 +207,36 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   /** Restarts Caddy's job, cut short by `close`: a restart under way then fails PROXY_CLOSED, and no clean stop is recorded,
    * so the next rigd restarts Caddy before it trusts what Caddy serves. */
   async function restartJob(guard?: () => void): Promise<void> {
-    // Recorded first: until Caddy answers again it may be stopped by this restart, and then recovery starts it again.
+    // Recorded first, durably: until Caddy answers again it may be stopped by this restart, and then recovery starts it
+    // again, after a crash of the Mac too. One an earlier restart left stays until Caddy answers.
+    const owed =
+      (await stat(paths.restore).catch(() => undefined)) !== undefined;
     await replacePrivateFile(
       options.root,
       paths.restore,
       JSON.stringify({ pid: process.pid, at: now().toISOString() }) + "\n",
+      { durable: true },
     );
-    if (closing.signal.aborted) throw closed();
-    guard?.();
+    // Checked after that write, with nothing awaited before the restart; a restart that is not made owes nothing.
+    try {
+      if (closing.signal.aborted) throw closed();
+      guard?.();
+    } catch (error) {
+      if (!owed) await removeFileDurably(paths.restore);
+      throw error;
+    }
     await options.job.restart(closing.signal).catch((error: unknown) => {
       if (!closing.signal.aborted) throw error;
       unanswered = true;
       throw closed();
     });
-    await rm(paths.restore, { force: true });
+    await removeFileDurably(paths.restore);
+  }
+  /** Ends the obligation to restart Caddy (see restartJob) once Caddy is confirmed to serve what Rig meant it to, however
+   * it came to: a rollback to a Caddy that never stopped needs no restart. */
+  async function discharge(): Promise<void> {
+    if (await stat(paths.restore).catch(() => undefined))
+      await removeFileDurably(paths.restore);
   }
   function queued<T>(work: () => Promise<T>): Promise<T> {
     const operation = pending
@@ -623,6 +643,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           "Run rig doctor and read Caddy's log before retrying.",
           { generation: basename(directory) },
         );
+      await discharge();
     };
     /** Checked after every wait, with nothing awaited between it and the load or start: a route to the dashboard that
      * rigd stopped asking for meanwhile (its dashboard ended, or a stop began) is never served. */
@@ -638,7 +659,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
     if (loaded === undefined && start) {
       assertDashboardUnchanged();
       // Its job starts it from the current generation, which is `directory`.
-      await restartJob();
+      await restartJob(assertDashboardUnchanged);
       return confirm();
     }
     if (loaded === undefined) {
@@ -665,7 +686,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           { socket: paths.socket, state },
         );
     }
-    if (expected !== undefined && Bun.deepEquals(loaded, expected)) return;
+    if (expected !== undefined && Bun.deepEquals(loaded, expected))
+      return discharge();
     assertDashboardUnchanged();
     // Only certificates from another CA must go; a Caddy with no issuer yet holds none.
     // Any change in which CA issues which subjects restarts, conservatively: a Caddy with no issuer yet holds no certificates.
@@ -674,7 +696,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       issuerCas(loaded).length > 0 &&
       issuancePolicies(loaded) !== issuancePolicies(expected)
     )
-      await restartJob().catch((error: unknown) => {
+      await restartJob(assertDashboardUnchanged).catch((error: unknown) => {
         // A publication puts the previous generation back, and says whether that worked (see publish).
         if (
           !(error instanceof RigError) ||

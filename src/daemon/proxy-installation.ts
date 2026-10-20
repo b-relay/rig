@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { removeFileDurably } from "../providers/private-files";
 import { readHostConfig } from "../config";
 import type { ProxyMode, ProxySettings } from "../config/proxy-schema";
 import { inspectProxyToken } from "../adapters/proxy-token";
@@ -59,7 +60,7 @@ export interface ProxyInstallation {
    * Caddy 2.10 or later with the DNS module. */
   preflight(): Promise<void>;
   /** Removes Rig's Caddy job that needs no root (the process or the LaunchAgent), if one is defined, and resolves to whether
-   * one was. Certificates, generations and the token stay. */
+   * one was. Certificates, generations and the token stay; a restart Rig owed Caddy (ProxyPaths.restore) is owed no more. */
   remove(): Promise<boolean>;
 }
 export interface ProxyInstallationOptions {
@@ -301,6 +302,8 @@ export function createProxyInstallation(
         (await stat(job.description).catch(() => undefined)) !== undefined ||
         (await job.state()) !== "stopped";
       await job.remove();
+      // Stopped on purpose: no rigd starts it again for a restart Rig did not see through.
+      await removeFileDurably(paths.restore);
       return defined;
     },
     systemJob: () =>

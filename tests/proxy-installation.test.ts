@@ -294,6 +294,16 @@ test("a proxy.routes hostname a Target serves is refused before rigd is replaced
   expect(await w.admin.status()).toMatchObject({ reachable: true });
 }, 60_000);
 
+test("removing Rig's Caddy stops it on purpose: a restart Rig still owed it is owed no more", async () => {
+  const w = await world();
+  await w.config({ tls: { ca: "internal" } });
+  await w.admin.install();
+  await writeFile(w.paths.restore, "{}\n", { mode: 0o600 });
+  await w.admin.uninstall();
+  expect(await w.caddyAdmin.reachable()).toBe(false);
+  expect(existsSync(w.paths.restore)).toBe(false);
+}, 60_000);
+
 test("uninstall removes Rig's Caddy even when the daemon's record is already gone, as an install whose rigd never started leaves it", async () => {
   const w = await world();
   await w.config({ tls: { ca: "internal" } });

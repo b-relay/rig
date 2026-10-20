@@ -141,6 +141,9 @@ export async function managedCaddyWorld(
     /** How many restarts to come stop Caddy and then fail, as a new process that exits at once does; the one after starts
      * it again. */
     failingRestarts: 0,
+    /** Runs each time the router reads the clock, before it gets the time (as it records a restart it is about to make,
+     * among other things). */
+    beforeNow: undefined as undefined | (() => void),
     /** Runs as each restart begins, with its signal; throwing fails the restart there, before Caddy starts again. */
     beforeRestart: undefined as
       undefined | ((signal?: AbortSignal) => Promise<void>),
@@ -241,7 +244,10 @@ export async function managedCaddyWorld(
         : {}),
       generationId: () => `g${String(++id).padStart(3, "0")}`,
       reachableWaitMs: 300,
-      now: () => new Date("2026-10-10T00:00:00.000Z"),
+      now: () => {
+        control.beforeNow?.();
+        return new Date("2026-10-10T00:00:00.000Z");
+      },
     });
   const caddy = open();
   return {

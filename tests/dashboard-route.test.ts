@@ -5,6 +5,7 @@ import {
   readFile,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -604,6 +605,39 @@ test("a rollback that starts Caddy again never loads a dashboard route rigd stop
     expect(w.servedHost(DOMAIN)).toBe("withheld");
     expect(w.control.state).toBe("running");
   }
+});
+
+test("a dashboard that ends while Rig records the restart it is about to make is never routed by that restart", async () => {
+  const port = freePort();
+  let dashboard: PublishedDashboard = { domain: DOMAIN, port };
+  const w = await managedCaddyWorld(
+    { tls: { ca: "internal" } },
+    TOKEN,
+    () => dashboard,
+  );
+  roots.push(w.root);
+  await w.caddy.router.apply(app);
+  expect(w.servedHost(DOMAIN)).toBe(`127.0.0.1:${port}`);
+  const loaded: (string | undefined)[] = [];
+  w.control.onLoad = async (config) => {
+    loaded.push(hostAnswer(config, DOMAIN));
+  };
+  // Once activation has asked Caddy what it runs (and checked the route), the next read of the clock is the restart's
+  // record being written: the dashboard ends then.
+  let checked = false;
+  w.control.beforeConfig = async () => {
+    checked = true;
+  };
+  w.control.beforeNow = () => {
+    if (checked) dashboard = { domain: DOMAIN, port: null };
+  };
+  w.setSettings({ tls: { ca: "https://127.0.0.1:65534/acme" } });
+  await w.caddy.republish();
+  expect(loaded).not.toContain(`127.0.0.1:${port}`);
+  expect(w.servedHost(DOMAIN)).toBe("withheld");
+  expect(
+    await stat(join(w.root, "caddy", "restore.json")).catch(() => undefined),
+  ).toBeUndefined();
 });
 
 test("a rollback whose dashboard route changed is published again as rigd confirms it, and Caddy is started on that", async () => {

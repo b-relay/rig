@@ -814,16 +814,21 @@ test("output a rigd-held process writes rotates under the supervisor's log reten
   });
   supervisors.push(supervisor);
   const logRoot = join(root, "logs");
+  // A log is rotated as the write after it fills begins, and the pipe may hand all forty lines over as one write: the last
+  // line is written only once they are all recorded.
   const request = {
     key: "target/web",
     componentName: "web",
     command: [
       process.execPath,
       "-e",
-      "for (let n = 0; n < 40; n++) process.stdout.write(`line ${n}\\n`); process.stdout.write('done\\n'); setInterval(()=>{},1000)",
+      `for (let n = 0; n < 40; n++) process.stdout.write(\`line \${n}\\n\`);
+const recorded = () => require("node:fs").readFileSync(process.env.LOG, "utf8").includes('"line 39"');
+const poll = setInterval(() => { try { if (!recorded()) return; } catch { return; } clearInterval(poll); process.stdout.write("done\\n"); }, 10);
+setInterval(() => {}, 1000);`,
     ],
     cwd: root,
-    env: { PATH: "/usr/bin:/bin" },
+    env: { PATH: "/usr/bin:/bin", LOG: join(logRoot, "target.jsonl") },
     logRoot,
     incarnation: "start-1",
   };
@@ -833,9 +838,7 @@ test("output a rigd-held process writes rotates under the supervisor's log reten
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line).line as string);
-  for (let i = 0; i < 200 && !(await newest()).includes("done"); i++)
-    await Bun.sleep(10);
-  expect(await newest()).toContain("done");
+  while (!(await newest()).includes("done")) await Bun.sleep(10);
   expect(
     (await readdir(logRoot))
       .filter((name) => name.startsWith("target.jsonl"))

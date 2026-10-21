@@ -121,12 +121,14 @@ beforeAll(async () => {
   throw new Error("next start did not answer /healthz within a minute");
 }, 600_000);
 
+// Removing the work directory removes a clone of node_modules and a Next build, tens of thousands of files: seconds of
+// work on an idle Mac, more on a busy runner, so the hook's bound is sized for that work rather than the default 5 s.
 afterAll(async () => {
   site?.kill();
   await site?.exited;
   rigd?.stop(true);
   if (work) await rm(work, { recursive: true, force: true });
-});
+}, 120_000);
 
 const render = async (path: string, headers: Record<string, string> = {}) => {
   const answer = await fetch(`${base}${path}`, { headers });

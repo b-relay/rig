@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import {
   chmod,
   mkdir,
@@ -38,6 +38,7 @@ import {
   processExists,
   processStartTime,
 } from "../src/daemon/process-identity";
+import * as processIdentity from "../src/daemon/process-identity";
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
@@ -95,6 +96,19 @@ Bun.serve({
   fetch: () => new Response(String(process.pid)),
 });
 `;
+/** A back-off that lasts until the stop, so nothing is started again meanwhile. `begun` resolves as it begins, once rigd has
+ * logged and reported how the run ended. */
+function heldBackOff() {
+  const { promise: begun, resolve } = Promise.withResolvers<void>();
+  const wait = (_ms: number, signal: AbortSignal) => {
+    resolve();
+    return new Promise<void>((done) => {
+      if (signal.aborted) done();
+      signal.addEventListener("abort", () => done(), { once: true });
+    });
+  };
+  return { begun, wait };
+}
 async function answer(url: string): Promise<string | undefined> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const reply = await fetch(url).then(
@@ -321,6 +335,57 @@ test("a dashboard whose process cannot be recorded is stopped rather than left r
   }
 });
 
+test("a dashboard that exits before rigd could record it is reported by how it ended, not as unrecorded", async () => {
+  const f = await installed("process.exit(3);");
+  const backOff = heldBackOff();
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    // Its start time is read only once it has gone, as on a busy Mac.
+    startTime: async (pid) => {
+      while (processExists(pid)) await Bun.sleep(5);
+      return processStartTime(pid);
+    },
+    wait: backOff.wait,
+  }))!;
+  dashboard.start();
+  await backOff.begun;
+  await dashboard.stop();
+  expect(f.notes).toEqual([
+    "dashboard: The dashboard exited with code 3; rigd starts it again in 1 s.",
+  ]);
+});
+
+test("a dashboard whose exit rigd has seen is reported by how it ended, even when another process has taken its pid", async () => {
+  const f = await installed("process.exit(3);");
+  const backOff = heldBackOff();
+  const exists = processIdentity.processExists;
+  let reused = false;
+  // Once it has gone, its pid names another process.
+  const liveness = spyOn(processIdentity, "processExists").mockImplementation(
+    (pid) => reused || exists(pid),
+  );
+  try {
+    const dashboard = (await openDashboard({
+      ...f.deps,
+      // Its start time is read only once it has gone and rigd has seen it exit, which Bun records as it reaps it.
+      startTime: async (pid) => {
+        while (exists(pid)) await Bun.sleep(5);
+        reused = true;
+        return undefined;
+      },
+      wait: backOff.wait,
+    }))!;
+    dashboard.start();
+    await backOff.begun;
+    await dashboard.stop();
+  } finally {
+    liveness.mockRestore();
+  }
+  expect(f.notes).toEqual([
+    "dashboard: The dashboard exited with code 3; rigd starts it again in 1 s.",
+  ]);
+});
+
 test("a stop during the back-off ends the wait at once", async () => {
   const f = await installed("process.exit(3);");
   const dashboard = (await openDashboard({ ...f.deps, wait: waitForLogPoll }))!;
@@ -358,13 +423,14 @@ test("the back-off doubles up to a minute while it keeps exiting, and starts ove
 test("the dashboard's log is rotated by the Host's log sizes", async () => {
   // A kilobyte of output, then an exit, which rigd's own line about the restart follows in the log.
   const f = await installed("console.log('x'.repeat(1000)); process.exit(3);");
+  const backOff = heldBackOff();
   const dashboard = (await openDashboard({
     ...f.deps,
     retention: async () => ({ maxBytes: 300, generations: 1 }),
+    wait: backOff.wait,
   }))!;
   dashboard.start();
-  for (let attempt = 0; attempt < 100 && f.notes.length === 0; attempt++)
-    await Bun.sleep(20);
+  await backOff.begun;
   await dashboard.stop();
   const logs = join(f.root, "logs", "dashboard");
   expect((await stat(join(logs, "dashboard.log.1"))).size).toBeGreaterThan(0);

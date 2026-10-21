@@ -787,6 +787,43 @@ test("a passing start check is the first passing check: the Service is healthy a
   expect(f.checks.map((check) => check.at / SECOND)).toEqual([30]);
 });
 
+test("a passing start check stands through a pass that reads the Target before its Operation records it meant to run", async () => {
+  // rig up records the Target meant to run once its Services started; a deploy ends its recovery then.
+  for (const before of [
+    { desired: "stopped" as const },
+    { recovery: { stage: "pending" } },
+  ]) {
+    const f = fixture({ interval: 30 });
+    Object.assign(f.state.targets[0]!, before);
+    f.busy = true;
+    f.monitor.started(f.state.targets[0]!, "web", "web-1");
+    await f.runFor(1 * SECOND);
+    expect(f.result()).toMatchObject({ status: "healthy" });
+    f.state.targets[0]!.desired = "running";
+    delete f.state.targets[0]!.recovery;
+    f.monitor.invalidate("t1");
+    f.busy = false;
+    await f.runFor(1 * SECOND);
+    expect(f.result()).toMatchObject({
+      status: "healthy",
+      checkedAt: new Date(0).toISOString(),
+    });
+    expect(f.checks).toEqual([]);
+  }
+});
+
+test("a Target its Operation leaves not meant to run forgets the result of a start it made", async () => {
+  const f = fixture({ interval: 30 });
+  f.state.targets[0]!.desired = "stopped";
+  f.busy = true;
+  f.monitor.started(f.state.targets[0]!, "web", "web-1");
+  await f.runFor(1 * SECOND);
+  f.busy = false;
+  await f.runFor(1 * SECOND);
+  expect(f.result()).toBeUndefined();
+  expect(f.monitor.retained()).toBe(0);
+});
+
 test("a process a health restart started stays unhealthy after its start check, until an ongoing check passes", async () => {
   const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
   f.answer = () => false;

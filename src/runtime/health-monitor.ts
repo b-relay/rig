@@ -51,7 +51,8 @@ import { trackedWorkReport } from "./work-report";
  * - `stop` makes every comparison fail.
  *
  * A Service or Target nothing is known about any more is forgotten, its marks included. That is safe because only a pass
- * forgets, only keys untouched since its own read and with no check or restart in flight, and passes run one at a time. */
+ * forgets, only keys untouched since its own read, with no check or restart in flight and whose Target no Operation holds,
+ * and passes run one at a time. */
 /** How many ongoing checks run at once across the Host. */
 export const HEALTH_CHECK_CONCURRENCY = 4;
 /** How often rigd looks for checks that are due; a check runs at most this late. */
@@ -305,7 +306,7 @@ export function createHealthMonitor(
    * A Service's own transition (a start or stop begins, another process is recorded) also drops what was cached about it,
    * which was about what ran before; `started` or the next pass caches anew. A Target's keeps its Services' cache: a write
    * after a start (its plan or desired state recorded) must not undo what `started` cached, and a Target no longer
-   * meant to run is forgotten by the next pass. */
+   * meant to run is forgotten by the next pass that finds it free. */
   const invalidate = (targetId: string, service?: string) => {
     clock++;
     if (service === undefined) targetMarks.set(targetId, clock);
@@ -415,13 +416,17 @@ export function createHealthMonitor(
       const recorded = await deps.store.read();
       if (stopped) return;
       const monitored = new Set<string>();
+      /** Targets not meant to run that an Operation holds, whose Services keep what is known of them (see the forgetting). */
+      const held = new Set<string>();
       for (const target of recorded.targets) {
         if (
           target.desired !== "running" ||
           target.recovery ||
           target.destructionPending
-        )
+        ) {
+          if (deps.busy(target)) held.add(target.id);
           continue;
+        }
         for (const component of target.plan.components) {
           if (component.kind !== "managed") continue;
           const policy = healthPolicy(component);
@@ -528,6 +533,8 @@ export function createHealthMonitor(
       }
       // A Service no longer meant to run, or no longer checked, forgets what was known about it, marks included, once
       // nothing touched it after this read and nothing of it is in flight; a Target, once none of its Services is left.
+      // Not while an Operation holds its Target: an up or deploy records the Target meant to run only after its Services
+      // passed their start checks, and what `started` cached of them must stand.
       const targetsKept = new Set<string>();
       for (const key of new Set([
         ...states.keys(),
@@ -540,6 +547,7 @@ export function createHealthMonitor(
         if (
           monitored.has(key) ||
           inFlight.has(key) ||
+          held.has(targetId) ||
           !current(targetId, service, since)
         ) {
           targetsKept.add(targetId);

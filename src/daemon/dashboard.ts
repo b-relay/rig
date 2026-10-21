@@ -587,8 +587,9 @@ export async function openDashboard(
       current = run;
       let how: string;
       if (run.child.pid !== undefined && !(await remember(run.child.pid))) {
-        // It ended before rigd could read its start time: nothing runs to record, and how it ended is what to report.
-        if (!processExists(run.child.pid)) how = await run.ended;
+        // It ended before rigd could read its start time: nothing runs to record, and how it ended is what to report. Its
+        // exit, once seen, decides before its pid does, which another process may have taken by now.
+        if (ended(run) || !processExists(run.child.pid)) how = await run.ended;
         else {
           // A dashboard no later rigd could find and stop must not run, or it would keep the port after a crash.
           await terminate(run);

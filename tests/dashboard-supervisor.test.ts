@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import {
   chmod,
   mkdir,
@@ -38,6 +38,7 @@ import {
   processExists,
   processStartTime,
 } from "../src/daemon/process-identity";
+import * as processIdentity from "../src/daemon/process-identity";
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
@@ -349,6 +350,37 @@ test("a dashboard that exits before rigd could record it is reported by how it e
   dashboard.start();
   await backOff.begun;
   await dashboard.stop();
+  expect(f.notes).toEqual([
+    "dashboard: The dashboard exited with code 3; rigd starts it again in 1 s.",
+  ]);
+});
+
+test("a dashboard whose exit rigd has seen is reported by how it ended, even when another process has taken its pid", async () => {
+  const f = await installed("process.exit(3);");
+  const backOff = heldBackOff();
+  const exists = processIdentity.processExists;
+  let reused = false;
+  // Once it has gone, its pid names another process.
+  const liveness = spyOn(processIdentity, "processExists").mockImplementation(
+    (pid) => reused || exists(pid),
+  );
+  try {
+    const dashboard = (await openDashboard({
+      ...f.deps,
+      // Its start time is read only once it has gone and rigd has seen it exit, which Bun records as it reaps it.
+      startTime: async (pid) => {
+        while (exists(pid)) await Bun.sleep(5);
+        reused = true;
+        return undefined;
+      },
+      wait: backOff.wait,
+    }))!;
+    dashboard.start();
+    await backOff.begun;
+    await dashboard.stop();
+  } finally {
+    liveness.mockRestore();
+  }
   expect(f.notes).toEqual([
     "dashboard: The dashboard exited with code 3; rigd starts it again in 1 s.",
   ]);

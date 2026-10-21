@@ -95,6 +95,19 @@ Bun.serve({
   fetch: () => new Response(String(process.pid)),
 });
 `;
+/** A back-off that lasts until the stop, so nothing is started again meanwhile. `begun` resolves as it begins, once rigd has
+ * logged and reported how the run ended. */
+function heldBackOff() {
+  const { promise: begun, resolve } = Promise.withResolvers<void>();
+  const wait = (_ms: number, signal: AbortSignal) => {
+    resolve();
+    return new Promise<void>((done) => {
+      if (signal.aborted) done();
+      signal.addEventListener("abort", () => done(), { once: true });
+    });
+  };
+  return { begun, wait };
+}
 async function answer(url: string): Promise<string | undefined> {
   for (let attempt = 0; attempt < 100; attempt++) {
     const reply = await fetch(url).then(
@@ -321,6 +334,26 @@ test("a dashboard whose process cannot be recorded is stopped rather than left r
   }
 });
 
+test("a dashboard that exits before rigd could record it is reported by how it ended, not as unrecorded", async () => {
+  const f = await installed("process.exit(3);");
+  const backOff = heldBackOff();
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    // Its start time is read only once it has gone, as on a busy Mac.
+    startTime: async (pid) => {
+      while (processExists(pid)) await Bun.sleep(5);
+      return processStartTime(pid);
+    },
+    wait: backOff.wait,
+  }))!;
+  dashboard.start();
+  await backOff.begun;
+  await dashboard.stop();
+  expect(f.notes).toEqual([
+    "dashboard: The dashboard exited with code 3; rigd starts it again in 1 s.",
+  ]);
+});
+
 test("a stop during the back-off ends the wait at once", async () => {
   const f = await installed("process.exit(3);");
   const dashboard = (await openDashboard({ ...f.deps, wait: waitForLogPoll }))!;
@@ -358,13 +391,14 @@ test("the back-off doubles up to a minute while it keeps exiting, and starts ove
 test("the dashboard's log is rotated by the Host's log sizes", async () => {
   // A kilobyte of output, then an exit, which rigd's own line about the restart follows in the log.
   const f = await installed("console.log('x'.repeat(1000)); process.exit(3);");
+  const backOff = heldBackOff();
   const dashboard = (await openDashboard({
     ...f.deps,
     retention: async () => ({ maxBytes: 300, generations: 1 }),
+    wait: backOff.wait,
   }))!;
   dashboard.start();
-  for (let attempt = 0; attempt < 100 && f.notes.length === 0; attempt++)
-    await Bun.sleep(20);
+  await backOff.begun;
   await dashboard.stop();
   const logs = join(f.root, "logs", "dashboard");
   expect((await stat(join(logs, "dashboard.log.1"))).size).toBeGreaterThan(0);

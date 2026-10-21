@@ -23,6 +23,7 @@ import type { PublishedDashboard } from "../domain/managed-proxy";
 import { UPSTREAM_HOST, takesUpstream } from "../domain/route-upstream";
 import type { NoticeBoard, NoticeChannel } from "./notices";
 import {
+  processExists,
   processStartTime,
   recordedProcess,
   type ProcessRecord,
@@ -364,6 +365,8 @@ export interface DashboardDependencies {
   /** Resolves after `ms`, or early once `signal` aborts. */
   wait(ms: number, signal: AbortSignal): Promise<void>;
   now(): number;
+  /** Reads a process's start time, which its record keeps; processStartTime when absent. */
+  readonly startTime?: (pid: number) => Promise<string | undefined>;
 }
 
 /** The dashboard rigd runs: started with rigd, kept running, stopped with it. */
@@ -560,7 +563,7 @@ export async function openDashboard(
   // beside the record and renamed over it, so a crash never leaves a torn record.
   const remember = async (pid: number): Promise<boolean> => {
     try {
-      const startedAt = await processStartTime(pid);
+      const startedAt = await (deps.startTime ?? processStartTime)(pid);
       if (startedAt === undefined) return false;
       const staged = `${record}.${process.pid}`;
       await writeFile(staged, JSON.stringify({ pid, startedAt }), {
@@ -584,9 +587,13 @@ export async function openDashboard(
       current = run;
       let how: string;
       if (run.child.pid !== undefined && !(await remember(run.child.pid))) {
-        // A dashboard no later rigd could find and stop must not run, or it would keep the port after a crash.
-        await terminate(run);
-        how = `could not be recorded in ${record}, so it was stopped`;
+        // It ended before rigd could read its start time: nothing runs to record, and how it ended is what to report.
+        if (!processExists(run.child.pid)) how = await run.ended;
+        else {
+          // A dashboard no later rigd could find and stop must not run, or it would keep the port after a crash.
+          await terminate(run);
+          how = `could not be recorded in ${record}, so it was stopped`;
+        }
       } else {
         const served = await serve(run);
         // Once it has been served steadily, an earlier failure no longer stands.

@@ -994,8 +994,14 @@ restart stop in reverse dependency order and start in order, so a kept `db`
 under a changed `api` is checked and left running, and a changed `db`
 restarts `api` and `web` too. Anything Rig cannot establish (a diff that
 fails, an env file it cannot read, a process it cannot observe) restarts the
-Service. The first deploy after upgrading Rig restarts everything once, since
-older records say nothing to compare.
+Service. The first deploy after upgrading from a Rig that did not keep
+Services restarts everything once, since older records say nothing to compare.
+How a rigd records a plan never counts as a change: Rig 1.0.0 wrote each
+`${...}` value into a shell command, and later versions hand it to the command
+in a `_RIG_` variable instead (see [References](#references)), so a deploy compares each Service
+with the new plan in the form its run was recorded in. Upgrading from 1.0.0,
+or a Mac restart that starts the Services again from a plan 1.0.0 recorded,
+restarts nothing.
 
 A kept process keeps running in the checkout it was started in, which Rig
 holds on disk while it runs; the new Deployment adopts it. Every later start of
@@ -1487,7 +1493,9 @@ as `status`, `list`, and `doctor` give up after five seconds and report
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run
-`rig activity` to see what `rigd` is doing, then retry.
+`rig activity` to see what `rigd` is doing, then retry. No other timeout ends
+a command's wait, and `rigd is not reachable` always means `rig` could not
+connect: a timeout is never reported so.
 
 `rigd` runs one mutation at a time per Target, and Projects are independent:
 a slow build, start check or stop in one Project never delays `rig up`,

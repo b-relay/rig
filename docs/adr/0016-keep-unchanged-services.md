@@ -34,6 +34,8 @@ Services removed from the plan are stopped. New Services are started.
 
 A `healthcheck`-only edit therefore restarts the Service too. That is Compose's behaviour, and it is simpler to explain than a split between process inputs and Rig policy. `stop_timeout` is in any case built into the capture wrapper when the process is spawned.
 
+How a rigd records a plan is not part of the definition (added for 1.0.2, after #725). Rig 1.0.0 wrote each `${...}` value into a shell command; 1.0.1 records `"$_RIG_..."` there, the value in the plan's `referenceValues`, and hands it to the command's process as that `_RIG_` variable. The same rig.yaml gives either plan, but not the same definition digest or environment. A deploy therefore compares a run with the new plan in the form the run was recorded in (`recordedForms`: as planned today, or with its values written, which `rig doctor` uses for plan drift too). The form whose definition is the run's decides the rest: a plan with its values written gives its commands no `_RIG_` variable, and a preparation records each environment's digest both with them and without, so a Service with its own build compares too.
+
 ### `watch`
 
 `watch` is a new optional Service key. It lists git pathspecs (paths, directories or globs, `*` and `**`) relative to the workspace root, which is where `env_file` paths are relative to as well. Absolute paths, `~` and `..` are refused. Target patches may set it like any Service setting.

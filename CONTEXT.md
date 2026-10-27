@@ -946,6 +946,14 @@ the process Rig recorded and is not unhealthy, and that depends on nothing
 restarted, is a Kept Service. Restarts spread to dependents. `--no-up` and
 `--force` keep nothing.
 
+_Relationship_: How a rigd records a plan never counts as a change. A plan
+recorded before reference variables (Rig 1.0.0) holds each `${...}` value in its
+commands; a later one hands the value to the command in a `_RIG_` variable. A
+deploy compares a Service's run with the new plan in the form the run was
+recorded in, so an upgrade, or a Host restart that starts the Services again
+from such a plan, restarts nothing; `rig doctor` applies the same rule to plan
+drift.
+
 _Relationship_: When a deploy explicitly targets a stable Target and the
 Production branch resolves to a new Commit, Rig replaces the existing
 Deployment without an additional confirmation prompt. Branch policy is the

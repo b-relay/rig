@@ -1489,9 +1489,11 @@ need `rig down` first; see `stop_timeout`.
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, a healthcheck's `start_period`, each
 at most one day, and the fixed dependency-install budget). Every read
-(`status`, `list`, `doctor`, `logs`, a `--follow` page, `activity` and the
-rest) gives up after five seconds, `rig dns`, which waits on the DNS
-provider, after five minutes, and reports
+(`status`, `list`, `doctor`, `activity`, each `rig logs --follow` page after
+the first and the rest) gives up after five seconds. Two reads wait ten
+minutes: `rig dns`, which waits on the DNS provider, and the first page of
+`rig logs`, which may read back through every kept log file (`logs.generations`)
+to find its lines. A read that gives up reports
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run

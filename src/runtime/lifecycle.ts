@@ -4,7 +4,8 @@ import type {
   ManagedComponent,
   PlanJob,
 } from "../config/types";
-import type { TargetRecord } from "../domain/runtime";
+import type { PreparedEnvironment, TargetRecord } from "../domain/runtime";
+import { withoutReferenceVariables } from "../domain/process-environment";
 import { targetSelector } from "../domain/target-selector";
 import { rigCommand } from "../domain/rig-command";
 import type {
@@ -148,8 +149,8 @@ export type RouteChange =
   | { readonly verified: ReadonlySet<number> };
 /** Where build outcomes are kept. `started` must be durable before it returns: it is the only evidence a crashed build leaves. */
 export interface BuildJournal {
-  /** `evidence.environment` is the keyed digest of the environment the unit's command is about to run in. */
-  started(unit: BuildUnit, evidence?: { environment?: string }): Promise<void>;
+  /** `evidence` holds the keyed digests of the environment the unit's command is about to run in. */
+  started(unit: BuildUnit, evidence?: PreparedEnvironment): Promise<void>;
   finished(unit: BuildUnit, state: "succeeded" | "failed"): Promise<void>;
 }
 /** The runtime's say over each process start, and what it learns before a route is published.
@@ -214,12 +215,12 @@ export interface TargetLifecycle {
   prepare(
     target: TargetRecord,
     request: PreparationRequest,
-  ): Promise<{
-    built: string[];
-    /** The keyed digest of the Project-scope environment dependency installation was given; absent when it could not be
-     * composed or digested. */
-    environment?: string;
-  }>;
+  ): Promise<
+    {
+      built: string[];
+    } /** The keyed digests of the Project-scope environment dependency installation was given; absent when it could not
+     * be composed or digested. */ & PreparedEnvironment
+  >;
   /** Starts the recorded plan and publishes its Tools; never builds. A deployed Target whose recorded preparation is not
    * complete is refused with PREPARATION_INCOMPLETE, or BUILD_UNKNOWN when a unit's outcome is unknown.
    * Every stopped Service is started, whatever its restart policy: this is the explicit start. Without a journal each start
@@ -565,18 +566,14 @@ export function createTargetLifecycle(
       const install = await effects.environment(target).catch(() => undefined);
       await stopPreparation(target);
       await effects.prepare(target, install);
-      const installed = install && (await digestOf(target, install));
+      const installed = await digestsOf(target, install);
       const units = await selectUnits(target, select, effects);
       for (const unit of units) {
         const env = await effects
           .buildEnvironment?.(unit, target)
           .catch(() => undefined);
         // Best effort: a build never fails for its digest, and a unit recorded without one keeps no Service running.
-        const environment = env && (await digestOf(target, env));
-        await journal.started(
-          unit,
-          environment !== undefined ? { environment } : {},
-        );
+        await journal.started(unit, await digestsOf(target, env));
         try {
           await effects.build(unit, target, env);
         } catch (error) {
@@ -599,10 +596,7 @@ export function createTargetLifecycle(
           );
         }
       }
-      return {
-        built: units.map((unit) => unit.id),
-        ...(installed !== undefined ? { environment: installed } : {}),
-      };
+      return { built: units.map((unit) => unit.id), ...installed };
     },
     async up(target, providedCheckpoint, journal, stops) {
       assertPrepared(target);
@@ -1000,14 +994,26 @@ export function createTargetLifecycle(
       );
     }
   }
-  /** The keyed digest of `env`, a composed environment of `target`; undefined when none can be taken. */
-  async function digestOf(
+  /** The keyed digests of `env`, a composed environment of `target` a preparation runs a command in: as it is, and without
+   * its `_RIG_` variables when it has any. Empty when it was not composed or no digest can be taken. */
+  async function digestsOf(
     target: TargetRecord,
-    env: Readonly<Record<string, string>>,
-  ): Promise<string | undefined> {
-    return await effects
-      .digestEnvironment?.(target, env)
-      .catch(() => undefined);
+    env: Readonly<Record<string, string>> | undefined,
+  ): Promise<PreparedEnvironment> {
+    const digest = (env: Readonly<Record<string, string>>) =>
+      effects.digestEnvironment?.(target, env).catch(() => undefined);
+    if (env === undefined) return {};
+    const environment = await digest(env);
+    if (environment === undefined) return {};
+    const written = withoutReferenceVariables(env);
+    const writtenEnvironment =
+      Object.keys(written).length < Object.keys(env).length
+        ? await digest(written)
+        : undefined;
+    return {
+      environment,
+      ...(writtenEnvironment !== undefined ? { writtenEnvironment } : {}),
+    };
   }
   /** Stops the build a daemon that died left running for `target`, within the default stop grace (a build has no
    * stop_timeout) or less under a kill; `unchanged` when none runs. */

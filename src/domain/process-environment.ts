@@ -7,6 +7,18 @@ export const REFERENCE_VARIABLE_PREFIX = "_RIG_";
 /** Why a name with REFERENCE_VARIABLE_PREFIX is refused, for every place that refuses one. */
 export const RESERVED_NAME_RULE = `names starting with ${REFERENCE_VARIABLE_PREFIX} are reserved for the variables that carry references into shell commands`;
 
+/** `env` without the variables that carry references' values: the environment the same command gets from a plan with its
+ * values written into its commands (see `withValuesWritten`). */
+export function withoutReferenceVariables(
+  env: Readonly<Record<string, string>>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([name]) => !name.startsWith(REFERENCE_VARIABLE_PREFIX),
+    ),
+  );
+}
+
 /** One env file's parsed contents, held only while an invocation is composed. */
 export interface LoadedEnvFile {
   path: string;

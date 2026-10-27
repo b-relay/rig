@@ -7,6 +7,7 @@ import { within } from "../domain/paths";
 import { holdCheckout } from "./jobs";
 import { ownedRevision } from "./revisions";
 import {
+  asRecorded,
   decideKept,
   recordedRun,
   servicesToObserve,
@@ -341,8 +342,12 @@ async function observeKeepFacts(
     return { process };
   if (deps.healthResults?.(previous, service)?.status === "unhealthy")
     return { process, unhealthy: true };
+  // From the new plan in the form the run was recorded in, as its own digest was taken.
   const environment = await deps.lifecycle
-    .environmentDigest(candidate, service)
+    .environmentDigest(
+      asRecorded(candidate, run, service) ?? candidate,
+      service,
+    )
     .catch(() => undefined);
   if (environment === undefined || environment !== run.source.environment)
     return { process, ...(environment ? { environment } : {}) };

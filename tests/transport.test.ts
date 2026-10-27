@@ -132,6 +132,34 @@ test("reads wait 5 s for rigd unless the client is told otherwise; mutations car
   }
 });
 
+test("no request is left to Bun's fetch idle timeout, and a timeout of a request without a deadline is not reported as unreachable", async () => {
+  const fetches = spyOn(globalThis, "fetch").mockImplementation((async () => {
+    throw new DOMException("The operation timed out.", "TimeoutError");
+  }) as unknown as typeof fetch);
+  try {
+    const client = new DaemonClient({ port: 1, token: "test" });
+    await expect(
+      client.command({
+        action: "deploy",
+        project: "melody",
+        target: "stable",
+        operationId: "op-725",
+      }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message:
+        "rigd took the deploy but the connection timed out before it answered (operation op-725); it may still be running.",
+      hint: "Run rig activity to see whether it finished.",
+    });
+    await client.command({ action: "doctor" }).catch(() => {});
+    for (const [, init] of fetches.mock.calls)
+      expect(init).toMatchObject({ timeout: false });
+    expect(fetches).toHaveBeenCalledTimes(2);
+  } finally {
+    fetches.mockRestore();
+  }
+});
+
 test("client rejects malformed health and command envelopes as protocol failures", async () => {
   const server = Bun.serve({
     hostname: "127.0.0.1",

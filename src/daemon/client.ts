@@ -57,6 +57,17 @@ const deadlineExpired = (
     "Run rig activity to see what rigd is doing, then retry; reads are answered without queueing.",
     { timeoutMs: deadline.ms, ...(operationId ? { operationId } : {}) },
   );
+/** A request without a deadline that timed out all the same: rigd took it, so it was reached, and it finishes the command
+ * whether or not anyone waits. */
+const unanswered = (command: RuntimeCommand | undefined) =>
+  new RigError(
+    "DAEMON_TIMEOUT",
+    `rigd took the ${command?.action ?? "request"} but the connection timed out before it answered${
+      command?.operationId ? ` (operation ${command.operationId})` : ""
+    }; it may still be running.`,
+    "Run rig activity to see whether it finished.",
+    command?.operationId ? { operationId: command.operationId } : {},
+  );
 /** How long one read may go unanswered, and what to call it when it does. */
 interface ReadDeadline {
   ms: number;
@@ -99,9 +110,9 @@ function validated(command: RuntimeCommand, result: unknown): unknown {
   return report.data;
 }
 /** Network adapter. Reads carry a deadline; mutations wait for rigd, which owns
- * every command budget. A deadline expiry is DAEMON_TIMEOUT (the operation may
- * still be running), a failed connection is DAEMON_UNREACHABLE. Replies are
- * untrusted input. */
+ * every command budget, however long it takes. A timeout is DAEMON_TIMEOUT (the
+ * operation may still be running), a failed connection is DAEMON_UNREACHABLE.
+ * Replies are untrusted input. */
 export class DaemonClient {
   private readonly readDeadlineMs: number;
   constructor(
@@ -172,22 +183,31 @@ export class DaemonClient {
       ...(deadline ? [AbortSignal.timeout(deadline.ms)] : []),
       ...(signal ? [signal] : []),
     ];
+    const init: RequestInit & { timeout: false } = {
+      method: body ? "POST" : "GET",
+      headers: {
+        authorization: `Bearer ${this.address.token}`,
+        "content-type": "application/json",
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(limits.length ? { signal: AbortSignal.any(limits) } : {}),
+      redirect: "error",
+      // Off: Bun's fetch otherwise drops a request whose socket stays quiet for its idle timeout (about 5 minutes), and rigd
+      // sends nothing until a command finishes. The deadline above is the only one.
+      timeout: false,
+    };
     let response: Response;
     try {
-      response = await fetch(`http://127.0.0.1:${this.address.port}${path}`, {
-        method: body ? "POST" : "GET",
-        headers: {
-          authorization: `Bearer ${this.address.token}`,
-          "content-type": "application/json",
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        ...(limits.length ? { signal: AbortSignal.any(limits) } : {}),
-        redirect: "error",
-      });
+      response = await fetch(
+        `http://127.0.0.1:${this.address.port}${path}`,
+        init,
+      );
     } catch (error) {
       if (signal?.aborted) throw abandoned();
-      if (deadline && (error as { name?: string }).name === "TimeoutError")
-        throw deadlineExpired(deadline, body?.operationId);
+      if ((error as { name?: string }).name === "TimeoutError")
+        throw deadline
+          ? deadlineExpired(deadline, body?.operationId)
+          : unanswered(body);
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "rigd is not reachable.",

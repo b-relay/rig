@@ -24,7 +24,7 @@ import {
   roleLabel,
   turnOnInstruction,
 } from "./targets";
-import { withPlanDefaults, withValuesWritten } from "../config/plan-defaults";
+import { recordedForms, withPlanDefaults } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
 import { routeOwnerToken } from "../domain/proxy-publication";
@@ -685,11 +685,10 @@ async function configCheck(
     const replanned = replannedPolicy(target, config, deps.documents.resolve);
     // A plan recorded before the planner wrote a field is compared as holding that field's default, and one recorded before
     // reference variables with today's plan as that rigd wrote it, so an upgrade alone is no drift.
-    const current =
-      target.plan.referenceValues === undefined
-        ? withValuesWritten(replanned)
-        : replanned;
-    return isDeepStrictEqual(current, withPlanDefaults(target.plan))
+    const recorded = withPlanDefaults(target.plan);
+    return recordedForms(replanned).some((current) =>
+      isDeepStrictEqual(current, recorded),
+    )
       ? {
           name,
           ok: true,

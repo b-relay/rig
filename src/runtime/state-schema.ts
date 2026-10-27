@@ -237,6 +237,11 @@ export const targetPlanSchema = z.object({
       "The values the plan's shell commands read through _RIG_ variables, by variable name; absent on plans recorded before them, whose commands hold their values.",
     ),
 });
+const writtenEnvironment = text
+  .optional()
+  .describe(
+    "Keyed digest of the same environment without its _RIG_ variables, as a plan with its values written into its commands gives it, so a Service started from a plan recorded before reference variables can still be kept; absent when it has none. Never a value.",
+  );
 const preparation = z
   .object({
     deployment: text.describe(
@@ -247,6 +252,7 @@ const preparation = z
       .describe(
         "Keyed digest of the Project-scope environment the workspace's dependency installation ran in, as it was when the preparation began; never a value.",
       ),
+    writtenEnvironment,
     units: z.record(
       text,
       z.object({
@@ -264,6 +270,7 @@ const preparation = z
           .describe(
             "Keyed digest of the environment the unit's command ran in, as it was then; never a value.",
           ),
+        writtenEnvironment,
         startedAt: text,
         finishedAt: text.optional(),
       }),

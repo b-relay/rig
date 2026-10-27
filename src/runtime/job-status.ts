@@ -9,6 +9,7 @@ import { backupSummary } from "./backups";
 import { rigCommand } from "../domain/rig-command";
 import { describeRun, findJobRecord, handledTimes } from "./jobs";
 import {
+  inTransition,
   jobTimeZone,
   nextUnhandledRun,
   schedulesJobs,
@@ -32,11 +33,12 @@ export function jobReports(
   const reason =
     on === false
       ? `${target.kind} is off in rig.yaml, so its jobs are not scheduled.`
-      : !schedulesJobs(target)
-        ? target.desired !== "running"
-          ? `${target.name} is stopped, so its jobs are not scheduled; ${rigCommand("up", { target })} schedules them again.`
-          : `${target.name} has an unfinished deploy or transition, so its jobs are not scheduled.`
-        : undefined;
+      : schedulesJobs(target)
+        ? undefined
+        : // Before `desired`, which during a deploy is the new Deployment's: stopped until its start completes.
+          inTransition(target)
+          ? `${target.name} has an unfinished deploy or transition, so its jobs are not scheduled.`
+          : `${target.name} is stopped, so its jobs are not scheduled; ${rigCommand("up", { target })} schedules them again.`;
   const reports = jobs.map((job): JobReport => {
     const record = findJobRecord({ jobs: records }, target.id, job.name);
     const why =

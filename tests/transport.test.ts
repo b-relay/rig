@@ -1,11 +1,17 @@
 import { test, expect, spyOn } from "bun:test";
 import { startControlPlane } from "../src/daemon/server";
-import { DaemonClient, DEFAULT_READ_DEADLINE_MS } from "../src/daemon/client";
+import {
+  DaemonClient,
+  DEFAULT_READ_DEADLINE_MS,
+  LONG_READ_DEADLINE_MS,
+} from "../src/daemon/client";
 import type { z } from "zod";
 import {
   dnsResultSchema,
   doctorResultSchema,
   proxyResultSchema,
+  readActions,
+  type RuntimeCommand,
 } from "../src/daemon/protocol";
 import type { DoctorReport } from "../src/runtime/doctor";
 import type { ProxyReport } from "../src/adapters/proxy-report";
@@ -112,7 +118,7 @@ test("a reply slower than the read deadline is reported as a timeout naming the 
   }
 });
 
-test("reads wait 5 s for rigd unless the client is told otherwise; mutations carry no deadline", async () => {
+test("every read waits 5 s for rigd unless the client is told otherwise, the DNS read and a first logs read 10 minutes; mutations carry no deadline", async () => {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -121,14 +127,150 @@ test("reads wait 5 s for rigd unless the client is told otherwise; mutations car
   const deadlines = spyOn(AbortSignal, "timeout");
   try {
     const client = new DaemonClient({ port: server.port!, token: "test" });
-    await client.command({ action: "doctor" });
+    for (const action of readActions) {
+      deadlines.mockClear();
+      // The reply is no valid report for most reads; only the deadline it was asked under counts here.
+      await client
+        .command({ action, project: "demo" } as RuntimeCommand)
+        .catch(() => {});
+      expect([action, deadlines.mock.calls]).toEqual([
+        action,
+        [
+          [
+            action === "dns" || action === "logs"
+              ? LONG_READ_DEADLINE_MS
+              : DEFAULT_READ_DEADLINE_MS,
+          ],
+        ],
+      ]);
+    }
+    // A follow page carries its cursor and reads at most 4 MiB per file.
+    deadlines.mockClear();
+    await client
+      .command({ action: "logs", project: "demo", after: "cursor-1" })
+      .catch(() => {});
     expect(deadlines.mock.calls).toEqual([[DEFAULT_READ_DEADLINE_MS]]);
     expect(DEFAULT_READ_DEADLINE_MS).toBe(5000);
+    expect(LONG_READ_DEADLINE_MS).toBe(600_000);
+    deadlines.mockClear();
     await client.command({ action: "up", project: "demo", target: "working" });
-    expect(deadlines).toHaveBeenCalledTimes(1);
+    expect(deadlines).not.toHaveBeenCalled();
   } finally {
     deadlines.mockRestore();
     await server.stop(true);
+  }
+});
+
+test("a stalled activity, logs or queue read ends at the read deadline, though Bun's fetch idle timeout is off", async () => {
+  // rigd answers each after 1 s, long after the deadline, so a read without one waits for that answer instead.
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await Bun.sleep(1000);
+      return Response.json({ result: [] });
+    },
+  });
+  try {
+    const client = new DaemonClient(
+      { port: server.port!, token: "test" },
+      { readDeadlineMs: 100 },
+    );
+    for (const command of [
+      { action: "activity" },
+      // A follow asks for each page as one such read.
+      { action: "logs", project: "demo", after: "cursor-1" },
+      { action: "queue", project: "demo", target: "stable" },
+    ] as RuntimeCommand[])
+      await expect(client.command(command)).rejects.toMatchObject({
+        code: "DAEMON_TIMEOUT",
+        message: `rigd did not answer the ${command.action} read within 0.1 s; it may be busy.`,
+      });
+  } finally {
+    await server.stop(true);
+  }
+}, 10000);
+
+test("a slow first logs read scanning old generations returns its page, while a follow page that slow times out", async () => {
+  // rigd answers after 1 s, as a read back through many rotated files does, far past a 0.1 s read deadline.
+  const page = {
+    project: "demo",
+    target: "stable",
+    entries: [
+      {
+        timestamp: "2026-10-25T23:59:59.000Z",
+        component: "api",
+        stream: "stdout",
+        line: "listening",
+      },
+    ],
+    cursor: "cursor-2",
+  };
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await Bun.sleep(1000);
+      return Response.json({ result: page });
+    },
+  });
+  try {
+    const client = new DaemonClient(
+      { port: server.port!, token: "test" },
+      { readDeadlineMs: 100 },
+    );
+    expect(
+      await client.command({
+        action: "logs",
+        project: "demo",
+        target: "stable",
+        lines: 100,
+        logFilter: { until: "2026-10-26T00:00:00.000Z" },
+      }),
+    ).toMatchObject(page);
+    await expect(
+      client.command({
+        action: "logs",
+        project: "demo",
+        target: "stable",
+        lines: 1000,
+        after: "cursor-2",
+      }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message:
+        "rigd did not answer the logs read within 0.1 s; it may be busy.",
+    });
+  } finally {
+    await server.stop(true);
+  }
+}, 10000);
+
+test("no request is left to Bun's fetch idle timeout, and a timeout of a request without a deadline is not reported as unreachable", async () => {
+  const fetches = spyOn(globalThis, "fetch").mockImplementation((async () => {
+    throw new DOMException("The operation timed out.", "TimeoutError");
+  }) as unknown as typeof fetch);
+  try {
+    const client = new DaemonClient({ port: 1, token: "test" });
+    await expect(
+      client.command({
+        action: "deploy",
+        project: "melody",
+        target: "stable",
+        operationId: "op-725",
+      }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message:
+        "The deploy request timed out before rigd answered (operation op-725); it may still be running.",
+      hint: "Run rig activity to see whether it finished.",
+    });
+    await client.command({ action: "doctor" }).catch(() => {});
+    for (const [, init] of fetches.mock.calls)
+      expect(init).toMatchObject({ timeout: false });
+    expect(fetches).toHaveBeenCalledTimes(2);
+  } finally {
+    fetches.mockRestore();
   }
 });
 

@@ -917,6 +917,42 @@ test("a kept checkout that could not be given back is offered again, by this rig
   expect(again.released).toEqual(["/rig/targets/p1/t1/revisions/r1"]);
 });
 
+test("during a deploy of a running Target, its jobs say the deploy holds them, not that the Target is stopped", () => {
+  const reason = (target: TargetRecord) =>
+    jobReports(
+      target,
+      [],
+      at("2026-10-27T15:25:00Z"),
+      { timeZone: () => "UTC" },
+      true,
+    )![0]!.reason;
+  const jobs = [job("search-index-incremental", "*/15 * * * *")];
+  const running = stableTarget(jobs);
+  // A deploy stores the new Deployment as stopped until its start completes, with the previous plan meant to run.
+  const deploying = stableTarget(jobs, {
+    desired: "stopped",
+    deploymentIncomplete: true,
+    recovery: {
+      operationId: "op-1",
+      plan: {
+        ...running.plan,
+        workspacePath: "/rig/targets/p1/t1/revisions/r1",
+      },
+      branch: "main",
+      commit: "820ced9",
+      desired: "running",
+      stage: "pending",
+    },
+  });
+  expect(reason(deploying)).toBe(
+    "stable has an unfinished deploy or transition, so its jobs are not scheduled.",
+  );
+  expect(reason(stableTarget(jobs, { desired: "stopped" }))).toBe(
+    "stable is stopped, so its jobs are not scheduled; rig up stable --project melody schedules them again.",
+  );
+  expect(reason(running)).toBeUndefined();
+});
+
 test("status and logs keep a run whose job a deploy removed, unscheduled", () => {
   const target = stableTarget([job("tick", "0 0 1 1 *")]);
   const records: JobRecord[] = [

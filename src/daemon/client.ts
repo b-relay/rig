@@ -7,6 +7,7 @@ import { z } from "zod";
 import { RigError, cancelled } from "../domain/errors";
 import { RIG_BUILD } from "../domain/version";
 import {
+  readActions,
   readResultSchemas,
   type DaemonAddress,
   type DaemonHealth,
@@ -57,6 +58,17 @@ const deadlineExpired = (
     "Run rig activity to see what rigd is doing, then retry; reads are answered without queueing.",
     { timeoutMs: deadline.ms, ...(operationId ? { operationId } : {}) },
   );
+/** A request without a deadline that timed out all the same. Not unreachable: the connection was made, and rigd may have
+ * taken the command, which it then finishes whether or not anyone waits. */
+const unanswered = (command: RuntimeCommand | undefined) =>
+  new RigError(
+    "DAEMON_TIMEOUT",
+    `The ${command?.action ?? "request"} request timed out before rigd answered${
+      command?.operationId ? ` (operation ${command.operationId})` : ""
+    }; it may still be running.`,
+    "Run rig activity to see whether it finished.",
+    command?.operationId ? { operationId: command.operationId } : {},
+  );
 /** How long one read may go unanswered, and what to call it when it does. */
 interface ReadDeadline {
   ms: number;
@@ -71,9 +83,23 @@ const protocolFailure = () =>
 
 /** How long a read waits for rigd when the client is not told otherwise. */
 export const DEFAULT_READ_DEADLINE_MS = 5000;
+/** How long a read whose work grows with more than rigd's own records waits (see `longRead`). A first logs read may scan
+ * every retained generation: at the schema's most, 21 files of the default 64 MiB per log family, about half a minute at
+ * the 50 MiB/s a loaded Mac reads them, and again when a rotation interrupts it. `max_bytes` has no upper bound, so no deadline fits every Host config; this one fits the
+ * defaults' worst case many times over. */
+export const LONG_READ_DEADLINE_MS = 600_000;
+/** Pure: whether `command` is a read whose work grows with more than rigd's own records: the DNS read, which lists every
+ * zone's records from the DNS provider, and a logs read without a cursor, which scans back through the retained log files
+ * until it has its entries. A follow page (`after`) reads at most 4 MiB per file and keeps the short deadline. */
+export function longRead(command: RuntimeCommand): boolean {
+  return (
+    command.action === "dns" ||
+    (command.action === "logs" && command.after === undefined)
+  );
+}
 /** How the client waits on rigd; every field has the platform default when absent. */
 export interface DaemonClientOptions {
-  /** Milliseconds a status, list, or doctor read may go unanswered before it fails as DAEMON_TIMEOUT;
+  /** Milliseconds a read other than a `longRead` may go unanswered before it fails as DAEMON_TIMEOUT;
    * `DEFAULT_READ_DEADLINE_MS` when absent. */
   readonly readDeadlineMs?: number;
 }
@@ -99,9 +125,9 @@ function validated(command: RuntimeCommand, result: unknown): unknown {
   return report.data;
 }
 /** Network adapter. Reads carry a deadline; mutations wait for rigd, which owns
- * every command budget. A deadline expiry is DAEMON_TIMEOUT (the operation may
- * still be running), a failed connection is DAEMON_UNREACHABLE. Replies are
- * untrusted input. */
+ * every command budget, however long it takes. A timeout is DAEMON_TIMEOUT (the
+ * operation may still be running), a failed connection is DAEMON_UNREACHABLE.
+ * Replies are untrusted input. */
 export class DaemonClient {
   private readonly readDeadlineMs: number;
   constructor(
@@ -153,8 +179,13 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         command,
-        ["status", "list", "doctor", "monitor"].includes(command.action)
-          ? { ms: this.readDeadlineMs, subject: `${command.action} read` }
+        readActions.has(command.action)
+          ? {
+              ms: longRead(command)
+                ? LONG_READ_DEADLINE_MS
+                : this.readDeadlineMs,
+              subject: `${command.action} read`,
+            }
           : undefined,
         signal,
       ),
@@ -172,22 +203,31 @@ export class DaemonClient {
       ...(deadline ? [AbortSignal.timeout(deadline.ms)] : []),
       ...(signal ? [signal] : []),
     ];
+    const init: RequestInit & { timeout: false } = {
+      method: body ? "POST" : "GET",
+      headers: {
+        authorization: `Bearer ${this.address.token}`,
+        "content-type": "application/json",
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(limits.length ? { signal: AbortSignal.any(limits) } : {}),
+      redirect: "error",
+      // Off: Bun's fetch otherwise drops a request whose socket stays quiet for its idle timeout (about 5 minutes), and rigd
+      // sends nothing until a command finishes. The deadline above is the only one.
+      timeout: false,
+    };
     let response: Response;
     try {
-      response = await fetch(`http://127.0.0.1:${this.address.port}${path}`, {
-        method: body ? "POST" : "GET",
-        headers: {
-          authorization: `Bearer ${this.address.token}`,
-          "content-type": "application/json",
-        },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-        ...(limits.length ? { signal: AbortSignal.any(limits) } : {}),
-        redirect: "error",
-      });
+      response = await fetch(
+        `http://127.0.0.1:${this.address.port}${path}`,
+        init,
+      );
     } catch (error) {
       if (signal?.aborted) throw abandoned();
-      if (deadline && (error as { name?: string }).name === "TimeoutError")
-        throw deadlineExpired(deadline, body?.operationId);
+      if ((error as { name?: string }).name === "TimeoutError")
+        throw deadline
+          ? deadlineExpired(deadline, body?.operationId)
+          : unanswered(body);
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "rigd is not reachable.",

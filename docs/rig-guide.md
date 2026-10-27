@@ -994,8 +994,14 @@ restart stop in reverse dependency order and start in order, so a kept `db`
 under a changed `api` is checked and left running, and a changed `db`
 restarts `api` and `web` too. Anything Rig cannot establish (a diff that
 fails, an env file it cannot read, a process it cannot observe) restarts the
-Service. The first deploy after upgrading Rig restarts everything once, since
-older records say nothing to compare.
+Service. The first deploy after upgrading from a Rig that did not keep
+Services restarts everything once, since older records say nothing to compare.
+How a rigd records a plan never counts as a change: Rig 1.0.0 wrote each
+`${...}` value into a shell command, and later versions hand it to the command
+in a `_RIG_` variable instead (see [References](#references)), so a deploy compares each Service
+with the new plan in the form its run was recorded in. Upgrading from 1.0.0,
+or a Mac restart that starts the Services again from a plan 1.0.0 recorded,
+restarts nothing.
 
 A kept process keeps running in the checkout it was started in, which Rig
 holds on disk while it runs; the new Deployment adopts it. Every later start of
@@ -1482,12 +1488,18 @@ need `rig down` first; see `stop_timeout`.
 
 `rig` waits for `rigd` to answer a lifecycle or deploy command however long
 it takes; `rigd` owns every budget (`build_timeout`, a healthcheck's `start_period`, each
-at most one day, and the fixed dependency-install budget). Reads such
-as `status`, `list`, and `doctor` give up after five seconds and report
+at most one day, and the fixed dependency-install budget). Every read
+(`status`, `list`, `doctor`, `activity`, each `rig logs --follow` page after
+the first and the rest) gives up after five seconds. Two reads wait ten
+minutes: `rig dns`, which waits on the DNS provider, and the first page of
+`rig logs`, which may read back through every kept log file (`logs.generations`)
+to find its lines. A read that gives up reports
 `rigd did not answer the doctor read within 5 s; it may be busy`, which is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run
-`rig activity` to see what `rigd` is doing, then retry.
+`rig activity` to see what `rigd` is doing, then retry. No other timeout ends
+a lifecycle or deploy command's wait, and `rigd is not reachable` always means
+`rig` could not connect: a timeout is never reported so.
 
 `rigd` runs one mutation at a time per Target, and Projects are independent:
 a slow build, start check or stop in one Project never delays `rig up`,

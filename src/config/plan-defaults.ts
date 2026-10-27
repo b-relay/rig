@@ -44,6 +44,15 @@ export function writtenCommand(
     },
   );
 }
+/** `plan`, made from today's config, in each form a rigd records such a plan: as planned today, then with its values written
+ * as a rigd before reference variables (Rig 1.0.0) recorded it. A recorded plan, or a Service started from one, that
+ * matches either is unchanged, so an upgrade alone changes nothing. Each form gives its own commands and environments: one
+ * with values written hands no command a `_RIG_` variable. */
+export function recordedForms(plan: TargetPlan): TargetPlan[] {
+  return plan.referenceValues === undefined
+    ? [plan]
+    : [plan, withValuesWritten(plan)];
+}
 /** `plan` with every shell command written with its values (see writtenCommand) and no `referenceValues`: the plan a rigd
  * before reference variables made from the same config, so a plan it recorded is no drift after an upgrade alone. */
 export function withValuesWritten(plan: TargetPlan): TargetPlan {

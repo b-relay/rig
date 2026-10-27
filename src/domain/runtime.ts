@@ -28,7 +28,7 @@ export interface PendingRename {
 }
 /** The recorded outcome of one build unit. `started` read by anything but the operation that wrote it means the
  * command may or may not have finished: the outcome is unknown and the unit is never rerun under this identity. */
-export interface BuildOutcome {
+export interface BuildOutcome extends PreparedEnvironment {
   state: "started" | "succeeded" | "failed";
   /** Digest of the unit's public policy: command, public env, env-file paths and workspace; never env-file values. */
   policy: string;
@@ -40,13 +40,21 @@ export interface BuildOutcome {
   finishedAt?: string;
 }
 /** Build outcomes of one Deployment, by unit id. */
-export interface Preparation {
+export interface Preparation extends PreparedEnvironment {
   /** The workspace the outcomes belong to; a new revision starts a fresh scope. */
   deployment: string;
   units: Record<string, BuildOutcome>;
   /** Keyed digest of the Project-scope environment the workspace's dependency installation ran in, as it was when this
    * preparation began (ADR 0016); never a value. Absent when it could not be computed, or before Rig recorded it. */
   environment?: string;
+}
+/** The keyed digests of one environment a preparation ran a command in (ADR 0016); never a value. */
+export interface PreparedEnvironment {
+  /** The digest of the environment as it was. */
+  environment?: string;
+  /** The digest of the same environment without its `_RIG_` variables, as the plan with its values written gives it (see
+   * `recordedForms`), for comparing with a Service started from a plan recorded so; absent when it has no such variable. */
+  writtenEnvironment?: string;
 }
 
 /** How the latest process of a Service ended, as far as Rig knows. `unknown` is a finding, not a gap: the process is gone and

@@ -107,11 +107,13 @@ export interface JobScheduler {
 /** Whether a recorded Target runs its jobs on schedule now: deployed completely, meant to run, and in no transition. Whether
  * rig.yaml still turns its role on is checked when a run starts. */
 export function schedulesJobs(target: TargetRecord): boolean {
-  return (
-    target.desired === "running" &&
-    !target.recovery &&
-    !target.destructionPending &&
-    !target.deploymentIncomplete
+  return target.desired === "running" && !inTransition(target);
+}
+/** Whether a deploy, rollback or removal of `target` is unfinished. Its record then describes what that operation makes, not
+ * what runs: a deploy records the new Deployment as stopped until its start completes. */
+export function inTransition(target: TargetRecord): boolean {
+  return Boolean(
+    target.recovery || target.destructionPending || target.deploymentIncomplete,
   );
 }
 /** The zone `job` is scheduled in: its own, or the Host's. */

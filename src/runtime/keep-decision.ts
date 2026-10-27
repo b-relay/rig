@@ -1,3 +1,4 @@
+import { recordedForms } from "../config/plan-defaults";
 import type { ManagedComponent, TargetPlan } from "../config/types";
 import type { ServiceRun, TargetRecord } from "../domain/runtime";
 import { preparedBuild, serviceDefinition } from "../domain/service-definition";
@@ -37,7 +38,8 @@ export interface KeepFacts {
   process?: { state: "running" | "stopped" | "unknown"; incarnation?: string };
   /** Its healthcheck's cached result says unhealthy. */
   unhealthy?: boolean;
-  /** The keyed digest of the environment it would start with from the new plan; absent when it could not be composed. */
+  /** The keyed digest of the environment it would start with from the new plan, in the form its run was recorded in
+   * (`asRecorded`); absent when it could not be composed. */
   environment?: string;
   /** Whether a file it watches changed between its run's Commit and the new one; absent when that could not be told. */
   changed?: boolean;
@@ -123,19 +125,34 @@ function settledReason(
   service: string,
 ): RestartReason | undefined {
   const before = managed(input.previous.plan).find((c) => c.name === service);
-  const after = managed(input.candidate.plan).find((c) => c.name === service)!;
   if (!before) return "new";
   if (!input.keep) return "requested";
   const run = recordedRun(input.previous, service);
   if (!run || input.previous.deploymentIncomplete) return "unrecorded";
   if (input.previous.desired !== "running" || run.intent !== "running")
     return "not-running";
+  const recorded = asRecorded(input.candidate, service, run.source.definition);
   if (
-    serviceDefinition(input.candidate.plan, after) !== run.source.definition ||
+    !recorded ||
     run.source.build === undefined ||
-    run.source.build !== preparedBuild(input.candidate, service)
+    run.source.build !== preparedBuild(recorded, service)
   )
     return "definition";
+  return undefined;
+}
+/** Pure: `candidate` in the form a run of `service` with `definition` was recorded in (see `recordedForms`): the one whose
+ * definition of it is that. Everything else about the run is compared with that form, whose environments a start from it
+ * would have; undefined when no form has that definition. */
+export function asRecorded<T extends KeepInput["candidate"]>(
+  candidate: T,
+  service: string,
+  definition: string,
+): T | undefined {
+  for (const plan of recordedForms(candidate.plan)) {
+    const component = managed(plan).find((c) => c.name === service);
+    if (component && serviceDefinition(plan, component) === definition)
+      return { ...candidate, plan };
+  }
   return undefined;
 }
 /** Why `service` restarts given what was observed; undefined when it may be kept. Only for a Service `settledReason`

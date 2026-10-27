@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { BuildUnit, TargetPlan } from "../config/types";
-import type { BuildOutcome, TargetRecord } from "../domain/runtime";
+import type {
+  BuildOutcome,
+  PreparedEnvironment,
+  TargetRecord,
+} from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import type { BuildJournal, PreparationRequest } from "./lifecycle";
 import { persistTarget } from "./targets";
@@ -60,9 +64,7 @@ export async function prepareTarget(
         state: "started",
         policy: unitPolicy(unit, target.plan),
         ...(target.commit ? { commit: target.commit } : {}),
-        ...(evidence?.environment !== undefined
-          ? { environment: evidence.environment }
-          : {}),
+        ...preparedEnvironment(evidence),
         startedAt: deps.now(),
       }),
     finished: (unit, state) =>
@@ -70,7 +72,19 @@ export async function prepareTarget(
   };
   const prepared = await deps.lifecycle.prepare(target, { select, journal });
   // The Project scope dependency installation ran in, as handed to it; a workspace installs once, at its first preparation.
-  if (fresh && prepared.environment !== undefined)
-    preparation.environment = prepared.environment;
+  if (fresh) Object.assign(preparation, preparedEnvironment(prepared));
   return { built: prepared.built };
+}
+/** The environment digests `evidence` holds, and nothing else. */
+function preparedEnvironment(
+  evidence: PreparedEnvironment | undefined,
+): PreparedEnvironment {
+  return {
+    ...(evidence?.environment !== undefined
+      ? { environment: evidence.environment }
+      : {}),
+    ...(evidence?.writtenEnvironment !== undefined
+      ? { writtenEnvironment: evidence.writtenEnvironment }
+      : {}),
+  };
 }

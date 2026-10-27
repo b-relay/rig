@@ -13,6 +13,7 @@ import {
 import { generatedPreviewName } from "../src/domain/target-selector";
 import { pendingRenameAdvice } from "../src/runtime/rename";
 import { previewReplacement } from "../src/runtime/doctor";
+import { hostnameRelease } from "../src/runtime/application";
 import { shellArgs } from "./support/shell-args";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 
@@ -262,6 +263,75 @@ test("every complete rig command the documents and help texts show parses with t
   expect(checked).toBeGreaterThan(50);
 }, 60_000);
 
+/** The actions: the commands without --json and without subcommands, such as deploy, up and restart. */
+function actionNames(): string[] {
+  return grammar()
+    .commands.filter(
+      (command) =>
+        !command.options.some((option) => option.long === "--json") &&
+        !command.commands.length,
+    )
+    .map((command) => command.name());
+}
+/** Whether `sentence` says an action (a deploy, a lifecycle command, `rig <action>`) prints JSON. A read's own command
+ * (`rig status --json`) is the read's JSON, whatever action the sentence goes on to name, and a sentence that denies it
+ * ("do not support --json") claims nothing. */
+function claimsActionJson(
+  sentence: string,
+  actions: readonly string[],
+): boolean {
+  const action = new RegExp(
+    `\\b(deploy|lifecycle)\\b|\`rig (${actions.join("|")})\\b`,
+  );
+  const rest = sentence.replace(
+    /`rig ([a-z-]+)[^`]*`/g,
+    (span, name: string) => (actions.includes(name) ? span : "a read"),
+  );
+  return (
+    /JSON|--json/.test(rest) &&
+    action.test(rest) &&
+    !/\b(not|no|never)\b|n't\b/.test(rest)
+  );
+}
+
+test("a sentence claims JSON from an action only when it says the action prints it", () => {
+  const actions = actionNames();
+  expect(actions).toEqual(expect.arrayContaining(["deploy", "up", "restart"]));
+  const claims = (sentence: string) => claimsActionJson(sentence, actions);
+  // What the guide used to say.
+  expect(
+    claims(
+      "the JSON result has `kept` and `restarted` (each with its reason), the deploy history records `kept`.",
+    ),
+  ).toBe(true);
+  expect(claims("- `--json` is available for status/lifecycle/deploy;")).toBe(
+    true,
+  );
+  expect(claims("`rig deploy stable --json` prints the result.")).toBe(true);
+  // A read's JSON, or a denial, is no such claim.
+  expect(claims("Use `rig activity --json` to inspect a failed deploy.")).toBe(
+    false,
+  );
+  expect(claims("`rig status --json` reports lifecycle state.")).toBe(false);
+  expect(claims("Actions such as `rig deploy` do not support `--json`.")).toBe(
+    false,
+  );
+});
+
+test("no document says an action, such as a deploy or a lifecycle command, prints JSON", () => {
+  // Only reads take --json; a shown command with it on an action fails to parse above, and this holds the prose to it too.
+  const actions = actionNames();
+  const claims = DOCUMENTS.flatMap((path) =>
+    readFileSync(path, "utf8")
+      .replace(/^```[a-z]*\n[\s\S]*?^```/gm, "")
+      .replace(/\s+/g, " ")
+      .split(/(?<=[.;:])\s+/)
+      .filter((sentence) => claimsActionJson(sentence, actions))
+      .map((sentence) => `${relative(ROOT, path)}: ${sentence}`),
+  );
+  expect(claims).toEqual([]);
+});
+
 test("every hint rigd and rig render with rigCommand, pasted into a shell, selects the Target, job and Project it names", async () => {
   // Branches and Project names the shell would read: an apostrophe, a space, $ expansions, a leading =.
   const branches = [
@@ -399,6 +469,54 @@ test("the advice for an unfinished rename names rename commands the grammar acce
   ]);
   for (const command of commands)
     expect(await refusal(shellArgs(command))).toBeUndefined();
+});
+
+test("a ROUTE_CONFLICT hint frees the hostname with commands that act on its holder, in the holder's Project", async () => {
+  const project = "it's $x";
+  const holders = [
+    { kind: "working" as const, name: "working" },
+    { kind: "stable" as const, name: "stable" },
+    {
+      kind: "preview" as const,
+      name: generatedPreviewName("feat/(draft) it's"),
+      branch: "feat/(draft) it's",
+    },
+    { kind: "preview" as const, name: "demo", branch: "feature/login" },
+  ];
+  const sent: RuntimeCommand[][] = [];
+  for (const holder of holders) {
+    const hint = hostnameRelease({ ...holder, plan: { project } });
+    const requests: RuntimeCommand[] = [];
+    for (const [, line] of hint.matchAll(/run (rig .+?)(?=, |$)/g))
+      await createRigCommand(
+        "/workspace",
+        { write() {}, error() {} },
+        async (request) => {
+          requests.push(request);
+        },
+      )
+        .parseAsync(shellArgs(line!), { from: "user" })
+        .catch((error: unknown) => {
+          throw new Error(`${line}: ${String(error)}`);
+        });
+    sent.push(requests);
+  }
+  // A Preview's destroy frees it; forget is offered for the working and stable Targets only.
+  const forget = { action: "forget", project };
+  expect(sent).toMatchObject([
+    [{ action: "restart", target: "working", project }, forget],
+    [{ action: "deploy", target: "stable", project }, forget],
+    [
+      {
+        action: "destroy",
+        target: "preview",
+        branch: "feat/(draft) it's",
+        project,
+      },
+    ],
+    [{ action: "destroy", target: "preview", deployment: "demo", project }],
+  ]);
+  expect(sent.map((requests) => requests.length)).toEqual([2, 2, 1, 1]);
 });
 
 test("doctor's replacement of a legacy Preview deploys and destroys in the Preview's own Project", async () => {

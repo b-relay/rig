@@ -415,11 +415,16 @@ hostnames until the deploy is decided, so neither another deploy nor a
 Every hostname has exactly one owner, a Target or one `proxy.routes` entry.
 Any publication that would give one two owners (a deploy, a rollback, a
 recovery stop, a reload, rigd's start) is refused with `ROUTE_CONFLICT`,
-naming both, before anything is written or stopped. To clear one, remove an
-owner: stop the Target that should not serve it with `rig down` (the hint
-names it, `--project` included; `rig down preview <branch> --destroy` also
-deletes a Preview), or take it out of `proxy.routes` and run
-`rig proxy reload`.
+naming both, before anything is written or stopped. A stopped Target keeps its
+hostnames (they answer `503`), so `rig down` does not free one. To clear a
+conflict, remove an owner: change the other Target's `domain` and apply it
+(`rig restart working` for the working Target; for the stable Target or a
+Preview, commit `rig.yaml` and deploy it), destroy the Preview with
+`rig down preview <branch> --destroy` (which deletes its data), forget its
+Project with `rig forget <name>` once every Target of it is stopped and every
+Preview destroyed, or take the hostname out of `proxy.routes` and run
+`rig proxy reload`. The hint names the owner and its commands, `--project`
+included.
 
 A route whose Target no longer exists (one a `rig forget` from before this was
 fixed left behind, or one whose Target record was lost) owns nothing Rig can
@@ -1002,10 +1007,10 @@ once. A failed deploy stops only what it started, so a kept Service is never
 stopped by it, unless its own start check failed during the deploy: then the
 rollback starts it again from the previous plan, with its dependents. The
 deploy line names what it kept, for example
-`melody stable deployed main@470a510 (was 83496f8), kept db, search`; the JSON
-result has `kept` and `restarted` (each with its reason), the deploy history
-records `kept`, and `rig status` shows `kept from <sha>` beside a Service that
-runs from an earlier Commit than its Target:
+`melody stable deployed main@470a510 (was 83496f8), kept db, search`; the deploy
+history (the dashboard's history page) records `kept`, and `rig status` shows
+`kept from <sha>` beside a Service that runs from an earlier Commit than its
+Target:
 
 ```text
 stable  healthy  main@470a510
@@ -1565,8 +1570,7 @@ honoured, because `rigd` finishes the mutation either way: `rig` prints
 Press Ctrl-C again to detach.` on stderr and keeps waiting, and a mutation
 that then completes renders its result as usual. A second Ctrl-C detaches:
 `rig` exits 130, records `command.detached` in its diagnostic log, and names
-`rig activity <id>` for the outcome (`--json` prints an `error` object with
-code `DETACHED` and the `operationId`). A third Ctrl-C ends the process with
+`rig activity <id>` for the outcome. A third Ctrl-C ends the process with
 status 130 without waiting for anything. Ctrl-C or EOF at an interactive
 prompt (an `init` question, a Production confirmation) is
 the same cancellation: exit 0, no message, no diagnostic record. Answering no
@@ -2996,7 +3000,9 @@ Current config surface:
 - `rig config` prints validated Project config and its source path.
 - there is no `rig config set`.
 - managed fields such as Project identity are not simple settable fields.
-- `--json` is available for status/lifecycle/deploy; there is no global flag.
+- only reads, such as `rig config` and `rig status`, take `--json`; there is no
+  global flag. An action answers with its exit code and a line saying what it
+  did, and a failed action's code is read from `rig activity`.
 
 Config is YAML only: a Project uses `rig.yaml` and the Host uses
 `<RIG_ROOT>/config.yaml`. No other file name or format is read; `.yml` is

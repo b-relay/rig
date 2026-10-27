@@ -842,7 +842,7 @@ test("one owner per hostname, at the write point: every publication path refuses
   const refused = {
     code: "ROUTE_CONFLICT",
     hint: expect.stringContaining(
-      "stop the Target that should not serve it with rig down",
+      "change the domain of the Target that should give it up and apply it",
     ),
   };
   // Every path that would publish the file refuses it, before writing anything.

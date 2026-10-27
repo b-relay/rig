@@ -1,6 +1,11 @@
 import type { UsageMonitor } from "./usage-report";
 import type { UsageWindow } from "../domain/usage-summary";
-import { rigCommand, selectedTarget } from "../domain/rig-command";
+import {
+  rigCommand,
+  selectedTarget,
+  type RecordedTarget,
+} from "../domain/rig-command";
+import { shellWord } from "../domain/target-selector";
 import { clockOr } from "../domain/clock";
 import type {
   ProjectStatusReader,
@@ -2623,7 +2628,8 @@ async function withdrawOrphanedRoutes(
 /** `error` said for what it is when it is a ROUTE_CONFLICT against route blocks: against one no recorded Target owns, no
  * `rig down` reaches that owner, so the hint names doctor and the reload that withdraws it, and `sweepFailure`, why the
  * sweep before the Operation could not, is kept as the recovery cause and in the message; against recorded Targets only,
- * the hint names the command that stops each of them, in its own Project. Any other error is returned as it is. */
+ * the hint names each of them and the commands that free the hostname from it (`hostnameRelease`). Any other error is
+ * returned as it is. */
 async function orphanConflict(
   error: unknown,
   deps: Pick<RuntimeDependencies, "store">,
@@ -2639,12 +2645,9 @@ async function orphanConflict(
     state.targets.map((target) => routeOwnerToken(target.id)),
   );
   if (!tokens.some((token) => !recorded.has(String(token)))) {
-    const stops = state.targets
+    const holders = state.targets
       .filter((target) => tokens.includes(routeOwnerToken(target.id)))
-      .map(
-        (target) =>
-          `${rigCommand("down", { target })}${target.kind === "preview" ? " (with --destroy to delete the Preview)" : ""}`,
-      );
+      .map(hostnameRelease);
     // An owner that is no Target, such as proxy.routes in Host config.
     const setting = (
       Array.isArray(error.details.owners) ? error.details.owners : []
@@ -2654,7 +2657,7 @@ async function orphanConflict(
     return new RigError(
       error.code,
       error.message,
-      `Each hostname has one owner. Stop the Target that should not serve it, ${stops.join(" or ")}${setting ? `, or take it out of ${setting} and run rig proxy reload` : ""}. Nothing changed.`,
+      `Each hostname has one owner, and a stopped Target keeps its own. To free it from ${holders.join("; or from ")}${setting ? `; or take it out of ${setting} and run rig proxy reload` : ""}. Nothing changed.`,
       error.details,
       error.causes,
     );
@@ -2678,6 +2681,19 @@ async function orphanConflict(
       ? error.causes
       : failureCauses(error, sweepFailure),
   );
+}
+/** Who `target` is and what frees the hostnames it holds, for a ROUTE_CONFLICT hint: stopping it keeps its route, so only
+ * its domain changed and applied, its destruction for a Preview, or its Project forgotten gives them up. Forget refuses
+ * while any Preview of the Project remains, so it is offered with that, and not for a Preview, which its destroy frees. */
+export function hostnameRelease(target: RecordedTarget): string {
+  const project = target.plan.project;
+  if (target.kind === "preview")
+    return `the Preview ${target.name} of ${project}, run ${rigCommand("down", { target }, "--destroy")}, which deletes its data`;
+  const release =
+    target.kind === "working"
+      ? `change its domain in rig.yaml and run ${rigCommand("restart", { target })}`
+      : `commit a changed domain in rig.yaml and run ${rigCommand("deploy", { target })}`;
+  return `the ${target.kind} Target of ${project}, ${release}, or stop every Target of ${project}, destroy its Previews (which deletes their data), then run rig forget ${shellWord(project)}`;
 }
 /** The Project's current rig.yaml, read once per action. A config that cannot be read, or that names another Project,
  * yields its failure instead so recorded names keep selecting Targets to stop or inspect. */

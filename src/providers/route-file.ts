@@ -58,6 +58,10 @@ export interface Router {
   ): Promise<string[]>;
 }
 
+/** How a hostname another Target holds is freed, for a hint that cannot name that Target: a stopped Target keeps its route
+ * (answering 503), so only a domain changed and applied, a destroyed Preview or a forgotten Project gives it up. */
+const HOSTNAME_RELEASE =
+  "change the domain of the Target that should give it up and apply it (deploy it, or rig restart working for the working Target), destroy its Preview with rig down preview <branch> --destroy (which deletes its data), or forget its Project with rig forget <name> once every Target of it is stopped and every Preview destroyed (which deletes their data); rig proxy reload withdraws a route whose Target no longer exists";
 /** One change to the route file, worked out from its text alone. */
 export interface RouteEdit {
   readonly after: string;
@@ -114,7 +118,7 @@ export function editRouteFile(input: {
     throw new RigError(
       "ROUTE_CONFLICT",
       "This hostname is already owned by another route.",
-      "Choose a different hostname or explicitly migrate its existing owner.",
+      `Choose a different hostname, or free it: a stopped Target keeps its hostname, so ${HOSTNAME_RELEASE}.`,
       {
         hostname: taken.hostname,
         ...(holder ? { routeTokens: [holder.token] } : {}),
@@ -349,7 +353,7 @@ export function assertSingleOwners(
       throw new RigError(
         "ROUTE_CONFLICT",
         `The hostname ${address} would belong to two owners: ${held.owner} and ${owner}.`,
-        `Each hostname has one owner. Remove one: stop the Target that should not serve it with rig down (rig down preview <branch> --destroy also deletes a Preview)${outside ? `, or take it out of ${outside.owner} and run rig proxy reload` : ""}. Nothing changed.`,
+        `Each hostname has one owner, and a stopped Target keeps its own. To free it, ${outside ? `take it out of ${outside.owner} and run rig proxy reload, or ` : ""}${HOSTNAME_RELEASE}. Nothing changed.`,
         {
           hostname: address,
           owners: [held.owner, owner],

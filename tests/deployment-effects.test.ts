@@ -1108,7 +1108,7 @@ test("a deploy blocked by an unrelated duplicate owner is refused before anythin
     code: "ROUTE_CONFLICT",
     message: expect.stringContaining("b.test would belong to two owners"),
     hint: expect.stringContaining(
-      "stop the Target that should not serve it with rig down",
+      "change the domain of the Target that should give it up and apply it",
     ),
   });
   // The previous Deployment never stopped, and Caddy serves what it served.

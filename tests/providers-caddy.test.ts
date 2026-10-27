@@ -902,7 +902,7 @@ test("the external router's deploy check refuses a prospective route file with t
     await expect(router.check!(site("a", "a.test"))).rejects.toMatchObject({
       code: "ROUTE_CONFLICT",
       hint: expect.stringContaining(
-        "stop the Target that should not serve it with rig down",
+        "change the domain of the Target that should give it up and apply it",
       ),
     });
     // Removing one owner is the way out.

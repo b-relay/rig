@@ -131,7 +131,7 @@ function settledReason(
   if (!run || input.previous.deploymentIncomplete) return "unrecorded";
   if (input.previous.desired !== "running" || run.intent !== "running")
     return "not-running";
-  const recorded = asRecorded(input.candidate, run, service);
+  const recorded = asRecorded(input.candidate, service, run.source.definition);
   if (
     !recorded ||
     run.source.build === undefined ||
@@ -140,20 +140,17 @@ function settledReason(
     return "definition";
   return undefined;
 }
-/** `candidate` in the form `run` was recorded in (see `recordedForms`): the one whose definition of `service` is the run's.
- * Everything else about the run is compared with that form, whose environments a start from it would have; undefined when
- * no form has the run's definition. */
+/** Pure: `candidate` in the form a run of `service` with `definition` was recorded in (see `recordedForms`): the one whose
+ * definition of it is that. Everything else about the run is compared with that form, whose environments a start from it
+ * would have; undefined when no form has that definition. */
 export function asRecorded<T extends KeepInput["candidate"]>(
   candidate: T,
-  run: Pick<ServiceRun, "source">,
   service: string,
+  definition: string,
 ): T | undefined {
   for (const plan of recordedForms(candidate.plan)) {
     const component = managed(plan).find((c) => c.name === service);
-    if (
-      component &&
-      serviceDefinition(plan, component) === run.source?.definition
-    )
+    if (component && serviceDefinition(plan, component) === definition)
       return { ...candidate, plan };
   }
   return undefined;

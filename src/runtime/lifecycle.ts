@@ -211,16 +211,13 @@ export interface TargetLifecycle {
    * A build a daemon that died left running is stopped first, so two never run in the workspace at once; each command's
    * process group is recorded before it runs, so the next daemon can stop it in turn.
    * Starts no Service and publishes nothing. The first failing unit stops preparation with BUILD_FAILED or BUILD_TIMEOUT.
-   * BUILD_UNKNOWN means a command succeeded but its outcome could not be recorded; the journal still says `started`. */
+   * BUILD_UNKNOWN means a command succeeded but its outcome could not be recorded; the journal still says `started`.
+   * Answers with the units it ran and the keyed digests of the Project-scope environment dependency installation was given,
+   * absent when it could not be composed or digested. */
   prepare(
     target: TargetRecord,
     request: PreparationRequest,
-  ): Promise<
-    {
-      built: string[];
-    } /** The keyed digests of the Project-scope environment dependency installation was given; absent when it could not
-     * be composed or digested. */ & PreparedEnvironment
-  >;
+  ): Promise<{ built: string[] } & PreparedEnvironment>;
   /** Starts the recorded plan and publishes its Tools; never builds. A deployed Target whose recorded preparation is not
    * complete is refused with PREPARATION_INCOMPLETE, or BUILD_UNKNOWN when a unit's outcome is unknown.
    * Every stopped Service is started, whatever its restart policy: this is the explicit start. Without a journal each start
@@ -1000,8 +997,8 @@ export function createTargetLifecycle(
     target: TargetRecord,
     env: Readonly<Record<string, string>> | undefined,
   ): Promise<PreparedEnvironment> {
-    const digest = (env: Readonly<Record<string, string>>) =>
-      effects.digestEnvironment?.(target, env).catch(() => undefined);
+    const digest = (composed: Readonly<Record<string, string>>) =>
+      effects.digestEnvironment?.(target, composed).catch(() => undefined);
     if (env === undefined) return {};
     const environment = await digest(env);
     if (environment === undefined) return {};

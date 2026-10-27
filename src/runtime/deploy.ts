@@ -345,7 +345,7 @@ async function observeKeepFacts(
   // From the new plan in the form the run was recorded in, as its own digest was taken.
   const environment = await deps.lifecycle
     .environmentDigest(
-      asRecorded(candidate, run, service) ?? candidate,
+      asRecorded(candidate, service, run.source.definition) ?? candidate,
       service,
     )
     .catch(() => undefined);

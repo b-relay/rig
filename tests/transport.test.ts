@@ -150,12 +150,12 @@ test("every read waits 5 s for rigd unless the client is told otherwise, the DNS
 });
 
 test("a stalled activity, logs or queue read ends at the read deadline, though Bun's fetch idle timeout is off", async () => {
-  const answer = Promise.withResolvers<void>();
+  // rigd answers each after 1 s, long after the deadline, so a read without one waits for that answer instead.
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch() {
-      await answer.promise;
+      await Bun.sleep(1000);
       return Response.json({ result: [] });
     },
   });
@@ -175,10 +175,9 @@ test("a stalled activity, logs or queue read ends at the read deadline, though B
         message: `rigd did not answer the ${command.action} read within 0.1 s; it may be busy.`,
       });
   } finally {
-    answer.resolve();
     await server.stop(true);
   }
-});
+}, 10000);
 
 test("no request is left to Bun's fetch idle timeout, and a timeout of a request without a deadline is not reported as unreachable", async () => {
   const fetches = spyOn(globalThis, "fetch").mockImplementation((async () => {

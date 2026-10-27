@@ -1,11 +1,17 @@
 import { test, expect, spyOn } from "bun:test";
 import { startControlPlane } from "../src/daemon/server";
-import { DaemonClient, DEFAULT_READ_DEADLINE_MS } from "../src/daemon/client";
+import {
+  DaemonClient,
+  DEFAULT_READ_DEADLINE_MS,
+  DNS_READ_DEADLINE_MS,
+} from "../src/daemon/client";
 import type { z } from "zod";
 import {
   dnsResultSchema,
   doctorResultSchema,
   proxyResultSchema,
+  readActions,
+  type RuntimeCommand,
 } from "../src/daemon/protocol";
 import type { DoctorReport } from "../src/runtime/doctor";
 import type { ProxyReport } from "../src/adapters/proxy-report";
@@ -112,7 +118,7 @@ test("a reply slower than the read deadline is reported as a timeout naming the 
   }
 });
 
-test("reads wait 5 s for rigd unless the client is told otherwise; mutations carry no deadline", async () => {
+test("every read waits 5 s for rigd unless the client is told otherwise, the DNS read 5 minutes; mutations carry no deadline", async () => {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -121,13 +127,55 @@ test("reads wait 5 s for rigd unless the client is told otherwise; mutations car
   const deadlines = spyOn(AbortSignal, "timeout");
   try {
     const client = new DaemonClient({ port: server.port!, token: "test" });
-    await client.command({ action: "doctor" });
-    expect(deadlines.mock.calls).toEqual([[DEFAULT_READ_DEADLINE_MS]]);
+    for (const action of readActions) {
+      deadlines.mockClear();
+      // The reply is no valid report for most reads; only the deadline it was asked under counts here.
+      await client
+        .command({ action, project: "demo" } as RuntimeCommand)
+        .catch(() => {});
+      expect([action, deadlines.mock.calls]).toEqual([
+        action,
+        [[action === "dns" ? DNS_READ_DEADLINE_MS : DEFAULT_READ_DEADLINE_MS]],
+      ]);
+    }
     expect(DEFAULT_READ_DEADLINE_MS).toBe(5000);
+    expect(DNS_READ_DEADLINE_MS).toBe(300_000);
+    deadlines.mockClear();
     await client.command({ action: "up", project: "demo", target: "working" });
-    expect(deadlines).toHaveBeenCalledTimes(1);
+    expect(deadlines).not.toHaveBeenCalled();
   } finally {
     deadlines.mockRestore();
+    await server.stop(true);
+  }
+});
+
+test("a stalled activity, logs or queue read ends at the read deadline, though Bun's fetch idle timeout is off", async () => {
+  const answer = Promise.withResolvers<void>();
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await answer.promise;
+      return Response.json({ result: [] });
+    },
+  });
+  try {
+    const client = new DaemonClient(
+      { port: server.port!, token: "test" },
+      { readDeadlineMs: 100 },
+    );
+    for (const command of [
+      { action: "activity" },
+      // A follow asks for each page as one such read.
+      { action: "logs", project: "demo", after: "cursor-1" },
+      { action: "queue", project: "demo", target: "stable" },
+    ] as RuntimeCommand[])
+      await expect(client.command(command)).rejects.toMatchObject({
+        code: "DAEMON_TIMEOUT",
+        message: `rigd did not answer the ${command.action} read within 0.1 s; it may be busy.`,
+      });
+  } finally {
+    answer.resolve();
     await server.stop(true);
   }
 });
@@ -148,7 +196,7 @@ test("no request is left to Bun's fetch idle timeout, and a timeout of a request
     ).rejects.toMatchObject({
       code: "DAEMON_TIMEOUT",
       message:
-        "rigd took the deploy but the connection timed out before it answered (operation op-725); it may still be running.",
+        "The deploy request timed out before rigd answered (operation op-725); it may still be running.",
       hint: "Run rig activity to see whether it finished.",
     });
     await client.command({ action: "doctor" }).catch(() => {});

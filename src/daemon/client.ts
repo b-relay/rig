@@ -7,6 +7,7 @@ import { z } from "zod";
 import { RigError, cancelled } from "../domain/errors";
 import { RIG_BUILD } from "../domain/version";
 import {
+  readActions,
   readResultSchemas,
   type DaemonAddress,
   type DaemonHealth,
@@ -57,12 +58,12 @@ const deadlineExpired = (
     "Run rig activity to see what rigd is doing, then retry; reads are answered without queueing.",
     { timeoutMs: deadline.ms, ...(operationId ? { operationId } : {}) },
   );
-/** A request without a deadline that timed out all the same: rigd took it, so it was reached, and it finishes the command
- * whether or not anyone waits. */
+/** A request without a deadline that timed out all the same. Not unreachable: the connection was made, and rigd may have
+ * taken the command, which it then finishes whether or not anyone waits. */
 const unanswered = (command: RuntimeCommand | undefined) =>
   new RigError(
     "DAEMON_TIMEOUT",
-    `rigd took the ${command?.action ?? "request"} but the connection timed out before it answered${
+    `The ${command?.action ?? "request"} request timed out before rigd answered${
       command?.operationId ? ` (operation ${command.operationId})` : ""
     }; it may still be running.`,
     "Run rig activity to see whether it finished.",
@@ -82,9 +83,12 @@ const protocolFailure = () =>
 
 /** How long a read waits for rigd when the client is not told otherwise. */
 export const DEFAULT_READ_DEADLINE_MS = 5000;
+/** How long the DNS read waits: rigd lists every zone's records from the DNS provider, each request within its own budget,
+ * so it gets the wait every read had while Bun's idle timeout ended a silent request (about 5 minutes). */
+export const DNS_READ_DEADLINE_MS = 300_000;
 /** How the client waits on rigd; every field has the platform default when absent. */
 export interface DaemonClientOptions {
-  /** Milliseconds a status, list, or doctor read may go unanswered before it fails as DAEMON_TIMEOUT;
+  /** Milliseconds a read other than `dns` may go unanswered before it fails as DAEMON_TIMEOUT;
    * `DEFAULT_READ_DEADLINE_MS` when absent. */
   readonly readDeadlineMs?: number;
 }
@@ -164,8 +168,14 @@ export class DaemonClient {
       await this.request(
         "/v1/command",
         command,
-        ["status", "list", "doctor", "monitor"].includes(command.action)
-          ? { ms: this.readDeadlineMs, subject: `${command.action} read` }
+        readActions.has(command.action)
+          ? {
+              ms:
+                command.action === "dns"
+                  ? DNS_READ_DEADLINE_MS
+                  : this.readDeadlineMs,
+              subject: `${command.action} read`,
+            }
           : undefined,
         signal,
       ),

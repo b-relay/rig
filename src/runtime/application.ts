@@ -2683,20 +2683,17 @@ async function orphanConflict(
   );
 }
 /** Who `target` is and what frees the hostnames it holds, for a ROUTE_CONFLICT hint: stopping it keeps its route, so only
- * its domain changed and applied, its destruction for a Preview, or its Project forgotten gives them up. */
+ * its domain changed and applied, its destruction for a Preview, or its Project forgotten gives them up. Forget refuses
+ * while any Preview of the Project remains, so it is offered with that, and not for a Preview, which its destroy frees. */
 export function hostnameRelease(target: RecordedTarget): string {
   const project = target.plan.project;
-  const owner =
-    target.kind === "preview"
-      ? `the Preview ${target.name} of ${project}`
-      : `the ${target.kind} Target of ${project}`;
+  if (target.kind === "preview")
+    return `the Preview ${target.name} of ${project}, run ${rigCommand("down", { target }, "--destroy")}, which deletes its data`;
   const release =
     target.kind === "working"
       ? `change its domain in rig.yaml and run ${rigCommand("restart", { target })}`
-      : target.kind === "stable"
-        ? `commit a changed domain in rig.yaml and run ${rigCommand("deploy", { target })}`
-        : `run ${rigCommand("down", { target }, "--destroy")}, which deletes its data`;
-  return `${owner}, ${release}, or stop ${project} and run rig forget ${shellWord(project)}`;
+      : `commit a changed domain in rig.yaml and run ${rigCommand("deploy", { target })}`;
+  return `the ${target.kind} Target of ${project}, ${release}, or stop every Target of ${project}, destroy its Previews (which deletes their data), then run rig forget ${shellWord(project)}`;
 }
 /** The Project's current rig.yaml, read once per action. A config that cannot be read, or that names another Project,
  * yields its failure instead so recorded names keep selecting Targets to stop or inspect. */

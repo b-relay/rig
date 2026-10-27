@@ -263,26 +263,70 @@ test("every complete rig command the documents and help texts show parses with t
   expect(checked).toBeGreaterThan(50);
 }, 60_000);
 
-test("no document says an action, such as a deploy or a lifecycle command, prints JSON", async () => {
-  // Only reads take --json; a shown command with it on an action fails to parse above, and this holds the prose to it too.
-  const actions = grammar()
+/** The actions: the commands without --json and without subcommands, such as deploy, up and restart. */
+function actionNames(): string[] {
+  return grammar()
     .commands.filter(
       (command) =>
         !command.options.some((option) => option.long === "--json") &&
         !command.commands.length,
     )
     .map((command) => command.name());
-  expect(actions).toEqual(expect.arrayContaining(["deploy", "up", "restart"]));
+}
+/** Whether `sentence` says an action (a deploy, a lifecycle command, `rig <action>`) prints JSON. A read's own command
+ * (`rig status --json`) is the read's JSON, whatever action the sentence goes on to name, and a sentence that denies it
+ * ("do not support --json") claims nothing. */
+function claimsActionJson(
+  sentence: string,
+  actions: readonly string[],
+): boolean {
   const action = new RegExp(
     `\\b(deploy|lifecycle)\\b|\`rig (${actions.join("|")})\\b`,
   );
+  const rest = sentence.replace(
+    /`rig ([a-z-]+)[^`]*`/g,
+    (span, name: string) => (actions.includes(name) ? span : "a read"),
+  );
+  return (
+    /JSON|--json/.test(rest) &&
+    action.test(rest) &&
+    !/\b(not|no|never)\b|n't\b/.test(rest)
+  );
+}
+
+test("a sentence claims JSON from an action only when it says the action prints it", () => {
+  const actions = actionNames();
+  expect(actions).toEqual(expect.arrayContaining(["deploy", "up", "restart"]));
+  const claims = (sentence: string) => claimsActionJson(sentence, actions);
+  // What the guide used to say.
+  expect(
+    claims(
+      "the JSON result has `kept` and `restarted` (each with its reason), the deploy history records `kept`.",
+    ),
+  ).toBe(true);
+  expect(claims("- `--json` is available for status/lifecycle/deploy;")).toBe(
+    true,
+  );
+  expect(claims("`rig deploy stable --json` prints the result.")).toBe(true);
+  // A read's JSON, or a denial, is no such claim.
+  expect(claims("Use `rig activity --json` to inspect a failed deploy.")).toBe(
+    false,
+  );
+  expect(claims("`rig status --json` reports lifecycle state.")).toBe(false);
+  expect(claims("Actions such as `rig deploy` do not support `--json`.")).toBe(
+    false,
+  );
+});
+
+test("no document says an action, such as a deploy or a lifecycle command, prints JSON", () => {
+  // Only reads take --json; a shown command with it on an action fails to parse above, and this holds the prose to it too.
+  const actions = actionNames();
   const claims = DOCUMENTS.flatMap((path) =>
     readFileSync(path, "utf8")
       .replace(/^```[a-z]*\n[\s\S]*?^```/gm, "")
       .replace(/\s+/g, " ")
       .split(/(?<=[.;:])\s+/)
-      .filter((sentence) => /JSON|--json/.test(sentence))
-      .filter((sentence) => action.test(sentence))
+      .filter((sentence) => claimsActionJson(sentence, actions))
       .map((sentence) => `${relative(ROOT, path)}: ${sentence}`),
   );
   expect(claims).toEqual([]);
@@ -457,6 +501,7 @@ test("a ROUTE_CONFLICT hint frees the hostname with commands that act on its hol
         });
     sent.push(requests);
   }
+  // A Preview's destroy frees it; forget is offered for the working and stable Targets only.
   const forget = { action: "forget", project };
   expect(sent).toMatchObject([
     [{ action: "restart", target: "working", project }, forget],
@@ -468,13 +513,10 @@ test("a ROUTE_CONFLICT hint frees the hostname with commands that act on its hol
         branch: "feat/(draft) it's",
         project,
       },
-      forget,
     ],
-    [
-      { action: "destroy", target: "preview", deployment: "demo", project },
-      forget,
-    ],
+    [{ action: "destroy", target: "preview", deployment: "demo", project }],
   ]);
+  expect(sent.map((requests) => requests.length)).toEqual([2, 2, 1, 1]);
 });
 
 test("doctor's replacement of a legacy Preview deploys and destroys in the Preview's own Project", async () => {

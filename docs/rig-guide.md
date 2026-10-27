@@ -421,8 +421,9 @@ conflict, remove an owner: change the other Target's `domain` and apply it
 (`rig restart working` for the working Target; for the stable Target or a
 Preview, commit `rig.yaml` and deploy it), destroy the Preview with
 `rig down preview <branch> --destroy` (which deletes its data), forget its
-Project with `rig forget <name>`, or take the hostname out of `proxy.routes` and
-run `rig proxy reload`. The hint names the owner and its commands, `--project`
+Project with `rig forget <name>` once every Target of it is stopped and every
+Preview destroyed, or take the hostname out of `proxy.routes` and run
+`rig proxy reload`. The hint names the owner and its commands, `--project`
 included.
 
 A route whose Target no longer exists (one a `rig forget` from before this was

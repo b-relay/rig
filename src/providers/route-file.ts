@@ -61,7 +61,7 @@ export interface Router {
 /** How a hostname another Target holds is freed, for a hint that cannot name that Target: a stopped Target keeps its route
  * (answering 503), so only a domain changed and applied, a destroyed Preview or a forgotten Project gives it up. */
 const HOSTNAME_RELEASE =
-  "change the domain of the Target that should give it up and apply it (deploy it, or rig restart working for the working Target), destroy its Preview with rig down preview <branch> --destroy (which deletes its data), or forget its Project with rig forget <name>; rig proxy reload withdraws a route whose Target no longer exists";
+  "change the domain of the Target that should give it up and apply it (deploy it, or rig restart working for the working Target), destroy its Preview with rig down preview <branch> --destroy (which deletes its data), or forget its Project with rig forget <name> once every Target of it is stopped and every Preview destroyed (which deletes their data); rig proxy reload withdraws a route whose Target no longer exists";
 /** One change to the route file, worked out from its text alone. */
 export interface RouteEdit {
   readonly after: string;

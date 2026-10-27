@@ -618,7 +618,7 @@ test("managed: a ROUTE_CONFLICT with a stopped Target names it and a step that f
     .catch((error: unknown) => error)) as RigError;
   expect(refusal).toMatchObject({ code: "ROUTE_CONFLICT" });
   expect(refusal.hint).toContain(
-    "a stopped Target keeps its own. To free it from the stable Target of ledger, commit a changed domain in rig.yaml and run rig deploy stable --project ledger, or stop ledger and run rig forget ledger.",
+    "a stopped Target keeps its own. To free it from the stable Target of ledger, commit a changed domain in rig.yaml and run rig deploy stable --project ledger, or stop every Target of ledger, destroy its Previews (which deletes their data), then run rig forget ledger.",
   );
   expect(refusal.hint).not.toContain("rig down");
   // The stable Target is stopped already, which is why stopping it never freed the hostname.
@@ -653,7 +653,7 @@ test("managed: a ROUTE_CONFLICT with a stopped Preview names the destroy that fr
     .catch((error: unknown) => error)) as RigError;
   expect(refusal).toMatchObject({ code: "ROUTE_CONFLICT" });
   expect(refusal.hint).toContain(
-    `To free it from the Preview ${generatedPreviewName("feature/x")} of ledger, run rig down preview feature/x --project ledger --destroy, which deletes its data, or stop ledger and run rig forget ledger.`,
+    `To free it from the Preview ${generatedPreviewName("feature/x")} of ledger, run rig down preview feature/x --project ledger --destroy, which deletes its data. Nothing changed.`,
   );
   await runPasted(w, hinted(refusal.hint, "down"));
   await w.runtime.command(restartWorking);
@@ -661,6 +661,38 @@ test("managed: a ROUTE_CONFLICT with a stopped Preview names the destroy that fr
     (await w.routes()).match(new RegExp(`^${hostname} \\{$`, "gm")),
   ).toHaveLength(1);
   expect(w.state.targets.some((t) => t.kind === "preview")).toBe(false);
+});
+
+test("managed: a ROUTE_CONFLICT hint's forget asks for the Project's Previews to be destroyed first, since forget refuses while one remains", async () => {
+  const w = await rigWorld("managed");
+  await w.deployedThenStopped();
+  editConfig(w, { stable: "ledger.test", working: "dev.ledger.test" });
+  const preview = {
+    project: "ledger",
+    target: "preview" as const,
+    branch: "feature/x",
+  };
+  await w.runtime.command({ ...preview, action: "deploy" });
+  await w.runtime.command({ ...preview, action: "down" });
+  // The working Target now asks for the hostname the stopped stable Target holds.
+  editConfig(w, { stable: "next.ledger.test", working: "ledger.test" });
+  const refusal = (await w.runtime
+    .command(restartWorking)
+    .catch((error: unknown) => error)) as RigError;
+  expect(refusal).toMatchObject({ code: "ROUTE_CONFLICT" });
+  expect(refusal.hint).toContain(
+    "or stop every Target of ledger, destroy its Previews (which deletes their data), then run rig forget ledger.",
+  );
+  // Every Target is stopped, yet forget alone is refused while the Preview remains, and withdraws nothing.
+  const forget = hinted(refusal.hint, "forget");
+  await expect(runPasted(w, forget)).rejects.toMatchObject({
+    code: "PROJECT_TARGETS",
+  });
+  expect(await w.routes()).toContain("ledger.test {");
+  // With the Preview destroyed, as the hint says, forget frees the hostname.
+  await w.runtime.command({ ...preview, action: "destroy" });
+  await runPasted(w, forget);
+  expect(await w.routes()).not.toContain("# rig begin");
 });
 
 test("forget of a Project whose Targets have no route never asks the proxy", async () => {

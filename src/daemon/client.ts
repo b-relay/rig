@@ -83,12 +83,23 @@ const protocolFailure = () =>
 
 /** How long a read waits for rigd when the client is not told otherwise. */
 export const DEFAULT_READ_DEADLINE_MS = 5000;
-/** How long the DNS read waits: rigd lists every zone's records from the DNS provider, each request within its own budget,
- * so it gets the wait every read had while Bun's idle timeout ended a silent request (about 5 minutes). */
-export const DNS_READ_DEADLINE_MS = 300_000;
+/** How long a read whose work grows with more than rigd's own records waits (see `longRead`). A first logs read may scan
+ * every retained generation: at the schema's most, 21 files of the default 64 MiB per log family, about half a minute at
+ * the 50 MiB/s a loaded Mac reads them, and again when a rotation interrupts it. `max_bytes` has no upper bound, so no deadline fits every Host config; this one fits the
+ * defaults' worst case many times over. */
+export const LONG_READ_DEADLINE_MS = 600_000;
+/** Pure: whether `command` is a read whose work grows with more than rigd's own records: the DNS read, which lists every
+ * zone's records from the DNS provider, and a logs read without a cursor, which scans back through the retained log files
+ * until it has its entries. A follow page (`after`) reads at most 4 MiB per file and keeps the short deadline. */
+export function longRead(command: RuntimeCommand): boolean {
+  return (
+    command.action === "dns" ||
+    (command.action === "logs" && command.after === undefined)
+  );
+}
 /** How the client waits on rigd; every field has the platform default when absent. */
 export interface DaemonClientOptions {
-  /** Milliseconds a read other than `dns` may go unanswered before it fails as DAEMON_TIMEOUT;
+  /** Milliseconds a read other than a `longRead` may go unanswered before it fails as DAEMON_TIMEOUT;
    * `DEFAULT_READ_DEADLINE_MS` when absent. */
   readonly readDeadlineMs?: number;
 }
@@ -170,10 +181,9 @@ export class DaemonClient {
         command,
         readActions.has(command.action)
           ? {
-              ms:
-                command.action === "dns"
-                  ? DNS_READ_DEADLINE_MS
-                  : this.readDeadlineMs,
+              ms: longRead(command)
+                ? LONG_READ_DEADLINE_MS
+                : this.readDeadlineMs,
               subject: `${command.action} read`,
             }
           : undefined,

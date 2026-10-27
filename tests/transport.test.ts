@@ -3,7 +3,7 @@ import { startControlPlane } from "../src/daemon/server";
 import {
   DaemonClient,
   DEFAULT_READ_DEADLINE_MS,
-  DNS_READ_DEADLINE_MS,
+  LONG_READ_DEADLINE_MS,
 } from "../src/daemon/client";
 import type { z } from "zod";
 import {
@@ -118,7 +118,7 @@ test("a reply slower than the read deadline is reported as a timeout naming the 
   }
 });
 
-test("every read waits 5 s for rigd unless the client is told otherwise, the DNS read 5 minutes; mutations carry no deadline", async () => {
+test("every read waits 5 s for rigd unless the client is told otherwise, the DNS read and a first logs read 10 minutes; mutations carry no deadline", async () => {
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -135,11 +135,23 @@ test("every read waits 5 s for rigd unless the client is told otherwise, the DNS
         .catch(() => {});
       expect([action, deadlines.mock.calls]).toEqual([
         action,
-        [[action === "dns" ? DNS_READ_DEADLINE_MS : DEFAULT_READ_DEADLINE_MS]],
+        [
+          [
+            action === "dns" || action === "logs"
+              ? LONG_READ_DEADLINE_MS
+              : DEFAULT_READ_DEADLINE_MS,
+          ],
+        ],
       ]);
     }
+    // A follow page carries its cursor and reads at most 4 MiB per file.
+    deadlines.mockClear();
+    await client
+      .command({ action: "logs", project: "demo", after: "cursor-1" })
+      .catch(() => {});
+    expect(deadlines.mock.calls).toEqual([[DEFAULT_READ_DEADLINE_MS]]);
     expect(DEFAULT_READ_DEADLINE_MS).toBe(5000);
-    expect(DNS_READ_DEADLINE_MS).toBe(300_000);
+    expect(LONG_READ_DEADLINE_MS).toBe(600_000);
     deadlines.mockClear();
     await client.command({ action: "up", project: "demo", target: "working" });
     expect(deadlines).not.toHaveBeenCalled();
@@ -174,6 +186,61 @@ test("a stalled activity, logs or queue read ends at the read deadline, though B
         code: "DAEMON_TIMEOUT",
         message: `rigd did not answer the ${command.action} read within 0.1 s; it may be busy.`,
       });
+  } finally {
+    await server.stop(true);
+  }
+}, 10000);
+
+test("a slow first logs read scanning old generations returns its page, while a follow page that slow times out", async () => {
+  // rigd answers after 1 s, as a read back through many rotated files does, far past a 0.1 s read deadline.
+  const page = {
+    project: "demo",
+    target: "stable",
+    entries: [
+      {
+        timestamp: "2026-10-25T23:59:59.000Z",
+        component: "api",
+        stream: "stdout",
+        line: "listening",
+      },
+    ],
+    cursor: "cursor-2",
+  };
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch() {
+      await Bun.sleep(1000);
+      return Response.json({ result: page });
+    },
+  });
+  try {
+    const client = new DaemonClient(
+      { port: server.port!, token: "test" },
+      { readDeadlineMs: 100 },
+    );
+    expect(
+      await client.command({
+        action: "logs",
+        project: "demo",
+        target: "stable",
+        lines: 100,
+        logFilter: { until: "2026-10-26T00:00:00.000Z" },
+      }),
+    ).toMatchObject(page);
+    await expect(
+      client.command({
+        action: "logs",
+        project: "demo",
+        target: "stable",
+        lines: 1000,
+        after: "cursor-2",
+      }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_TIMEOUT",
+      message:
+        "rigd did not answer the logs read within 0.1 s; it may be busy.",
+    });
   } finally {
     await server.stop(true);
   }

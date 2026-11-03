@@ -8,6 +8,7 @@ import {
   CADDY_IGNORED_FIELDS,
   generationFiles,
   proxyPaths,
+  renderedWildcards,
   settingsDigest,
   type HostRoute,
   type PublishedDashboard,
@@ -19,6 +20,8 @@ export interface PublishedGeneration {
   readonly id: string;
   /** Its copy of the route file. */
   readonly routes: string;
+  /** The wildcard subjects its main file asks for. */
+  readonly wildcards: readonly string[];
   /** The proxy settings it was accepted with. A generation without them (none was ever released) is no last-good: what it
    * serves is described as before the first generation. */
   readonly proxy?: ProxySettings;
@@ -60,6 +63,9 @@ export async function currentGeneration(
   return {
     id: basename(directory),
     routes: await readFile(files.routes, "utf8").catch(() => ""),
+    wildcards: renderedWildcards(
+      await readFile(files.main, "utf8").catch(() => ""),
+    ),
     ...(adapted !== undefined ? { adapted } : {}),
     ...(proxy.success ? { proxy: proxy.data } : {}),
     customRoutes,

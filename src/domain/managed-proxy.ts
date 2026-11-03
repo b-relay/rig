@@ -149,6 +149,13 @@ export function wildcardParents(hostnames: readonly string[]): string[] {
   return [...parents].sort();
 }
 
+/** Pure: the wildcard subjects a generation's main file asks for, as `renderMainCaddyfile` writes them on one line. It holds
+ * what was accepted, whichever Rig rendered it, so what is served is told from this rather than worked out again. */
+export function renderedWildcards(main: string): string[] {
+  const line = main.split("\n").find((each) => each.startsWith('"*.'));
+  return line ? [...line.matchAll(/"(\*\.[^"]+)"/g)].map((m) => m[1]!) : [];
+}
+
 /** The bare hostname of a site address, as Caddy matches requests to it: no scheme, no port, lowercase. Two addresses with
  * one bare hostname are one name to a client, whatever port or scheme each is written with. */
 export function bareHostname(address: string): string {

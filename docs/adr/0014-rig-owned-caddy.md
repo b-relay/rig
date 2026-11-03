@@ -343,7 +343,7 @@ proxy:
 
 ## Certificates: one wildcard per parent
 
-Rig knows every hostname, so there is no on-demand TLS and no ask endpoint. Each hostname is covered by `*.<hostname minus its first label>`, provided that parent is below a public suffix (`*.co.uk` and `*.github.io` are never asked for, and `example.co.uk` has its own certificate as `example.com` does). The suffixes come from the Public Suffix List in the `tldts` package, private ones included, so the list is as new as the build; a TLD it does not know is a suffix of one label, which keeps `*.example.test` for names tests and private networks use.
+Rig knows every hostname, so there is no on-demand TLS and no ask endpoint. Each hostname is covered by `*.<hostname minus its first label>`, provided that parent is below a public suffix (`*.co.uk` and `*.github.io` are never asked for, and `example.co.uk` has its own certificate as `example.com` does). The suffixes come from the Public Suffix List in the `tldts` package, private ones included, so the list is as new as the build; a TLD it does not know is a suffix of one label, which keeps `*.example.test` for names tests and private networks use. rigd's start and `rig proxy reload` publish a new generation when the current one's main file is not what this Rig renders from the same settings and routes, so a change of rule reaches a Host with its config unchanged; `rig proxy` reads the wildcards from the accepted generation's main file, so it says what is served until then.
 
 | Hostnames                                                            | Covered by                                         |
 | -------------------------------------------------------------------- | -------------------------------------------------- |

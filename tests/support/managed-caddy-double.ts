@@ -26,6 +26,14 @@ import type { CommandRunner } from "../../src/providers/contracts";
 
 export const TOKEN = "Syn_thetic-Token-0123456789abcdefABCDEF";
 
+/** A main file as a Rig before public suffixes rendered it: with the wildcard `*.<suffix>` the current renderer leaves out. */
+export function renderedByOldRule(main: string, wildcard: string): string {
+  return main.replace(
+    /^import /m,
+    `# One certificate per parent of a served hostname. A name below one of these that no site serves is refused.\n"${wildcard}" {\n\tabort\n}\n\nimport `,
+  );
+}
+
 /** A stand-in for `caddy adapt`, shaped as Caddy's JSON is (checked against 2.10.2): Rig's sites and proxy.routes as
  * routes of one HTTPS server, the route file's text as the Rig routes' body, so two generations with the same content
  * adapt alike. Values in the main file are quoted, as Rig writes them. */

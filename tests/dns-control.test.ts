@@ -946,6 +946,8 @@ function zonesWorld(options: {
   records?: Record<string, [name: string, type: string, content: string][]>;
   failing?: string[];
   delayMs?: Record<string, number>;
+  /** Keeps a zone's read waiting until this settles. */
+  hold?: (zone: string) => Promise<void>;
   routes?: Record<string, number>;
 }) {
   const zones = options.zones.map((name, index) => ({
@@ -959,6 +961,7 @@ function zonesWorld(options: {
     async records(zone) {
       asked.push(zone.name);
       await Bun.sleep(options.delayMs?.[zone.name] ?? 0);
+      await options.hold?.(zone.name);
       if (options.failing?.includes(zone.name))
         throw new RigError(
           "DNS_AUTH",
@@ -1161,17 +1164,26 @@ test("a selected zone that cannot be read fails the read with its own error, whe
 
 test("an account-wide read reads every zone, four at a time, without waiting for a slow one to start the next", async () => {
   const zones = ["slow.test", "b.test", "c.test", "d.test", "e.test"];
+  const held = new Map(
+    zones.map((zone) => [zone, Promise.withResolvers<void>()]),
+  );
   const { control, asked } = zonesWorld({
     zones,
     records: { "e.test": [["app.e.test", "A", MAC]] },
     failing: ["c.test"],
-    delayMs: { "slow.test": 150 },
+    hold: (zone) => held.get(zone)!.promise,
     routes: { "app.e.test": 3000, "app.c.test": 3001 },
   });
   const pending = control.read({ hostnames: [] });
-  await Bun.sleep(50);
-  // Four at a time, and the fifth began when one of the quick ones finished, with the slow one still running.
+  while (asked.length < 4) await Bun.sleep(1);
+  await Bun.sleep(20);
+  // Four are held, so the fifth has not started.
+  expect(asked).toEqual(zones.slice(0, 4));
+  // One of the four finishes, with the other three still held: the fifth starts without waiting for them.
+  held.get("b.test")!.resolve();
+  await Bun.sleep(20);
   expect(asked).toEqual(zones);
+  for (const { resolve } of held.values()) resolve();
   const report = await pending;
   expect(report.zones.map((zone) => zone.name)).toEqual([
     "slow.test",

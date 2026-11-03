@@ -4,17 +4,12 @@ import {
   type PendingSettings,
 } from "./proxy-generation";
 import type { ProxySettings } from "../config/proxy-schema";
-import {
-  certificateName,
-  proxyPaths,
-  wildcardParents,
-} from "../domain/managed-proxy";
+import { certificateName, proxyPaths } from "../domain/managed-proxy";
 import type { CaddyAdmin, CaddyJob } from "../providers/managed-caddy";
 import { installedBinary } from "../providers/caddy-binary";
 import {
   ownedBlock,
   parseOwnedSites,
-  routeFileHostnames,
   type RoutePath,
 } from "../providers/route-file";
 
@@ -88,15 +83,7 @@ export async function proxyReport(options: {
     options.requested,
     generation?.proxy,
   );
-  const parents =
-    served?.tls.certificates === "wildcard"
-      ? new Set(
-          wildcardParents([
-            ...routeFileHostnames(routes),
-            ...customRoutes.map((route) => route.hostname),
-          ]),
-        )
-      : new Set<string>();
+  const parents = new Set(generation?.wildcards);
   const certificate = (hostname: string) => {
     const name = certificateName(hostname);
     if (!name) return {};

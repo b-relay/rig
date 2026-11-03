@@ -10,8 +10,10 @@ Three complete example configs live in [examples](examples).
 Install a release, as the [README](../README.md#install) shows: its `install`
 script puts `rig` and `rigd` in `<RIG_ROOT>/bin` and the dashboard in
 `<RIG_ROOT>/dashboard/<release>`, runs `rigd install`, and prints the line that
-adds `<RIG_ROOT>/bin` to `PATH` when it is missing. `rigd upgrade` installs a
-newer release later. An installed release is production; Rig itself is
+adds `<RIG_ROOT>/bin` to `PATH` when it is missing. The licenses of the
+third-party packages a release bundles are in that dashboard directory, as
+`THIRD_PARTY_NOTICES`. `rigd upgrade` installs a newer release later. An
+installed release is production; Rig itself is
 developed as a Rig Project's working Target, whose Tools are `rig-dev` and
 `rigd-dev` (see the README's Development), never by replacing the installed
 `rig` and `rigd`.

@@ -1,9 +1,10 @@
 #!/bin/sh
 # Tries one packaged release on this Mac before it is published. Every executable in both archives must be built for its
-# archive's architecture; this Mac's rig and rigd must exit 0 printing exactly <release>+<commit>; and the release's own
-# install script must install it into a throwaway RIG_ROOT and HOME, where rigd serves that build and the packaged
-# dashboard answers /healthz. Whatever it installed is uninstalled however it ends. CI runs it on an Apple Silicon and an
-# Intel runner, on every pull request and before a release is published.
+# archive's architecture, and both archives must hold the third-party notices; this Mac's rig and rigd must exit 0
+# printing exactly <release>+<commit>; and the release's own install script must install it into a throwaway RIG_ROOT and
+# HOME, where the notices are kept, rigd serves that build and the packaged dashboard answers /healthz. Whatever it
+# installed is uninstalled however it ends. CI runs it on an Apple Silicon and an Intel runner, on every pull request and
+# before a release is published.
 #
 #   scripts/smoke-release.sh <tag> <commit> <dist>     for example: scripts/smoke-release.sh v1.2.0 0123456789ab dist
 #
@@ -35,6 +36,13 @@ check_stamp() {
 	[ ! -s "$work/stderr" ] || fail "$1 --version wrote to stderr: $(cat "$work/stderr")"
 	printf '%s\n' "$stamp" | cmp -s - "$work/stdout" ||
 		fail "$1 --version printed \"$(cat "$work/stdout")\", not exactly $stamp."
+}
+
+# Fails unless the notices file $1 names packages of rig and rigd and of the dashboard.
+check_notices() {
+	for package in tldts tldts-core zod next react; do
+		grep -q "^$package@" "$1" 2>/dev/null || fail "$1 has no notice for $package."
+	done
 }
 
 # Uninstalls what the install script installed, then removes the throwaway root. The smoke test fails when uninstall
@@ -78,6 +86,7 @@ for arch in arm64 x64; do
 		[ "$archs" = "$machine" ] || fail "$build/$name is built for \"$archs\", not $machine."
 	done
 	[ -f "$work/$build/dashboard/web/server.js" ] || fail "$build has no dashboard/web/server.js."
+	check_notices "$work/$build/dashboard/THIRD_PARTY_NOTICES"
 done
 for name in rig rigd; do
 	check_stamp "$work/rig-$tag-darwin-$native/$name"
@@ -98,6 +107,7 @@ HOME="$home" RIG_ROOT="$root" RIG_RELEASE_URL="file://$releases" sh "$dist/insta
 for name in rig rigd; do
 	check_stamp "$root/bin/$name"
 done
+check_notices "$root/dashboard/$tag/THIRD_PARTY_NOTICES"
 
 status="$(HOME="$home" RIG_ROOT="$root" "$root/bin/rigd" status)" || fail "rigd status failed: $status"
 printf '%s\n' "$status" | grep -qxF "Version    $stamp" || fail "the installed rigd does not serve $stamp: $status"

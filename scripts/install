@@ -1,7 +1,7 @@
 #!/bin/sh
-# Installs Rig on this Mac: `rig` and `rigd` into the Rig root's bin directory (~/.rig/bin) and the dashboard into
-# ~/.rig/dashboard/<release> (off PATH: rigd starts it), then `rigd install`, which starts rigd as a LaunchAgent (with
-# RIG_ROOT set, as a detached process instead).
+# Installs Rig on this Mac: `rig` and `rigd` into the Rig root's bin directory (~/.rig/bin) and the dashboard, with the
+# release's THIRD_PARTY_NOTICES, into ~/.rig/dashboard/<release> (off PATH: rigd starts it), then `rigd install`, which
+# starts rigd as a LaunchAgent (with RIG_ROOT set, as a detached process instead).
 #
 # Read it before you run it. It downloads one release of https://github.com/b-relay/rig over HTTPS, checks the
 # download against that release's SHA256SUMS, and writes nothing outside the Rig root; `rigd install` then sets rigd up.

@@ -6,13 +6,17 @@ import { dirname, join } from "node:path";
 // scripts/smoke-release.sh on stand-in releases: executables that are shell scripts naming their architecture, which a
 // stand-in lipo reports. The install script always fails, so a release that passes the version checks is seen reaching
 // the installer, unless the release is `installable`: then a stand-in installer copies rig and rigd into the root and
-// serves /healthz on the dashboard's port, and the stand-in rigd reports `status` and stops that server on `uninstall`.
+// serves /healthz on the dashboard's port and keeps the dashboard's third-party notices, and the stand-in rigd reports
+// `status` and stops that server on `uninstall`.
 
 const SCRIPT = join(import.meta.dir, "../scripts/smoke-release.sh");
 const TAG = "v1.2.3";
 const COMMIT = "0123456789ab";
 const STAMP = "1.2.3+0123456789ab";
 const native = process.arch === "arm64" ? "arm64" : "x64";
+const NOTICES = ["tldts", "tldts-core", "zod", "next", "react"]
+  .map((name) => `${name}@1.0.0 (MIT)\n\nlicense text\n`)
+  .join("\n");
 let base: string;
 let bin: string;
 
@@ -42,13 +46,27 @@ const good: Executable = { stdout: `${STAMP}\n` };
 async function release(
   executables: { rig?: Executable; rigd?: Executable } = {},
   claims: Record<"arm64" | "x64", string> = { arm64: "arm64", x64: "x86_64" },
-  installable?: { readonly version: string; readonly uninstall: number },
+  installable?: {
+    readonly version: string;
+    readonly uninstall: number;
+    readonly dropsNotices?: boolean;
+  },
+  notices: Record<"arm64" | "x64", string | undefined> = {
+    arm64: NOTICES,
+    x64: NOTICES,
+  },
 ) {
   const dist = await mkdtemp(join(base, "dist-"));
   for (const arch of ["arm64", "x64"] as const) {
     const build = `rig-${TAG}-darwin-${arch}`;
     await mkdir(join(dist, build, "dashboard", "web"), { recursive: true });
     await writeFile(join(dist, build, "dashboard", "web", "server.js"), "");
+    const archNotices = notices[arch];
+    if (archNotices !== undefined)
+      await writeFile(
+        join(dist, build, "dashboard", "THIRD_PARTY_NOTICES"),
+        archNotices,
+      );
     for (const name of ["rig", "rigd"] as const) {
       const behaviour = (arch === native && executables[name]) || good;
       await writeFile(
@@ -75,7 +93,7 @@ async function release(
   await writeFile(
     join(dist, "install"),
     installable
-      ? STAND_IN_INSTALLER
+      ? standInInstaller(installable.dropsNotices === true)
       : "#!/bin/sh\necho 'stand-in installer' >&2\nexit 1\n",
   );
   await chmod(join(dist, "install"), 0o755);
@@ -102,12 +120,14 @@ uninstall)
   exit ${uninstall} ;;
 esac
 `;
-const STAND_IN_INSTALLER = `#!/bin/sh
+const standInInstaller = (dropsNotices: boolean) => `#!/bin/sh
 set -eu
 build="rig-${TAG}-darwin-${native}"
 tar -xzf "\${RIG_RELEASE_URL#file://}/${TAG}/$build.tar.gz" -C "$RIG_ROOT"
-mkdir -p "$RIG_ROOT/bin"
+mkdir -p "$RIG_ROOT/bin" "$RIG_ROOT/dashboard"
 cp "$RIG_ROOT/$build/rig" "$RIG_ROOT/$build/rigd" "$RIG_ROOT/bin/"
+cp -R "$RIG_ROOT/$build/dashboard" "$RIG_ROOT/dashboard/${TAG}"
+${dropsNotices ? `rm "$RIG_ROOT/dashboard/${TAG}/THIRD_PARTY_NOTICES"` : ""}
 port="$(sed -n 's/^  port: //p' "$RIG_ROOT/config.yaml")"
 bun -e "Bun.serve({ hostname: '127.0.0.1', port: $port, fetch: () => new Response('ok') })" >/dev/null 2>&1 &
 echo $! >"$RIG_ROOT/dashboard.pid"
@@ -208,6 +228,45 @@ test("an executable built for the other architecture, or files that do not match
   expect(tampered.code).toBe(1);
   expect(tampered.stderr).toContain("does not match its SHA256SUMS");
 });
+
+test("an archive without third-party notices, or whose notices miss a bundled package, fails the smoke test", async () => {
+  const absent = await smoke(
+    await release({}, undefined, undefined, {
+      arm64: NOTICES,
+      x64: undefined,
+    }),
+  );
+  expect(absent.code).toBe(1);
+  expect(absent.stderr).toContain(
+    `rig-${TAG}-darwin-x64/dashboard/THIRD_PARTY_NOTICES has no notice for tldts.`,
+  );
+
+  const partial = await smoke(
+    await release({}, undefined, undefined, {
+      arm64: NOTICES.replace("tldts-core@", "other@"),
+      x64: NOTICES,
+    }),
+  );
+  expect(partial.code).toBe(1);
+  expect(partial.stderr).toContain(
+    `rig-${TAG}-darwin-arm64/dashboard/THIRD_PARTY_NOTICES has no notice for tldts-core.`,
+  );
+});
+
+test("an install that does not keep the third-party notices fails the smoke test", async () => {
+  const result = await smoke(
+    await release({}, undefined, {
+      version: STAMP,
+      uninstall: 0,
+      dropsNotices: true,
+    }),
+    join(base, "dropped.log"),
+  );
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(
+    `/dashboard/${TAG}/THIRD_PARTY_NOTICES has no notice for tldts.`,
+  );
+}, 60000);
 
 test("an installed release is uninstalled and its throwaway root removed, after a failure too", async () => {
   const log = join(base, "passing.log");

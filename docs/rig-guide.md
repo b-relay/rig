@@ -551,8 +551,10 @@ that exists), or the `rig dns set` line `rig dns list` prints. It rewrites
 the name's one A record to this Mac's address, unproxied, or adds an A record,
 which then answers for the name instead of a wildcard. Only IPv4 addresses are
 compared, but a proxied AAAA record counts: Cloudflare then proxies the name's
-A records too, so the name is reported as elsewhere, and no fix is offered until
-you make that AAAA record DNS only or delete it.
+A records too, so the name is reported as elsewhere. With a proxied AAAA at the
+name itself, no fix is offered until you make that AAAA record DNS only or
+delete it. With one only on a wildcard that covers the name, the fix still adds
+the name's own A record, which then answers instead of the wildcard.
 
 This Mac's address is the Tailscale IPv4 address (`tailscale ip -4`). Set it
 in Host config when Tailscale is not the way in, and narrow the zones Rig

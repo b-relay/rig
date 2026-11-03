@@ -129,11 +129,37 @@ test("without a dashboard installed for this release, there is none to run", asy
 
 test("rigd serves the installed dashboard on 127.0.0.1 at its port, records its output, and stops it with itself", async () => {
   const f = await installed(SERVER);
-  const dashboard = (await openDashboard(f.deps))!;
+  // The process runs before rigd has its start time, so it can answer before it is recorded: `ps` is held to make that so.
+  const ps = Promise.withResolvers<void>();
+  const looked = Promise.withResolvers<void>();
+  let lookedYet = false;
+  const dashboard = (await openDashboard({
+    ...f.deps,
+    startTime: async (pid) => {
+      await ps.promise;
+      return await processStartTime(pid);
+    },
+    listeners: {
+      ...f.deps.listeners,
+      inspect: (...args) => {
+        lookedYet = true;
+        looked.resolve();
+        return f.deps.listeners.inspect(...args);
+      },
+    },
+  }))!;
   expect(dashboard.url).toBe(`http://127.0.0.1:${f.deps.port}`);
   dashboard.start();
   const pid = Number(await answer(dashboard.url));
   expect(processExists(pid)).toBe(true);
+  // rigd neither looks for it nor routes to it until it is recorded, however long it has been answering.
+  expect(lookedYet).toBe(false);
+  await expect(
+    stat(join(f.root, "dashboard", "process.json")),
+  ).rejects.toThrow();
+  ps.resolve();
+  // What rigd does next after the record is in place; the test's own timeout bounds the wait.
+  await looked.promise;
   // Recorded with its start time, so a later rigd can stop this very process.
   expect(
     JSON.parse(

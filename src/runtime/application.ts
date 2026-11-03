@@ -2276,8 +2276,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     const settled = new Set<string>();
     try {
       // Unreadable state is recorded, reported and left alone; the daemon keeps serving so doctor and status can show it.
-      let state;
+      let state: RuntimeState;
+      let revision: string | undefined;
       try {
+        // Before the read: a write in between only makes each Target read again.
+        revision = await deps.store.revision?.();
         state = await deps.store.read();
       } catch (error) {
         lease?.release();
@@ -2336,6 +2339,14 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         for (const target of eligible)
           if (target.kind !== "stable" && !finding?.settled.has(target.id))
             unmarked.set(target.id, mark);
+      // Each job works on its own Target only, so all of them can share this read while nothing has been written since.
+      const read = state;
+      const current = async () =>
+        action === "supervise" &&
+        revision !== undefined &&
+        (await deps.store.revision?.()) === revision
+          ? read
+          : await deps.store.read();
       // A Target another Operation holds is skipped: neither a failure nor a recovery of its supervision.
       jobs = eligible.flatMap((target, index) => {
         const held = leases[index];
@@ -2347,6 +2358,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             target.id,
             held,
             action,
+            current,
             async (error, name) => {
               failure = true;
               supervision.failed(target.id, about, error);
@@ -2425,8 +2437,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       result.kind === "completed" ? result.value : undefined,
     );
   }
-  /** One Target's share of a pass, under `lease`, which it releases. The record is read again under the lease, since a read
-   * made before it may predate what the Operation that last held the Target recorded. After the Host restart `mark` the
+  /** One Target's share of a pass, under `lease`, which it releases. The record comes from `current` under the lease, since a
+   * read made before it may predate what the Operation that last held the Target recorded. After the Host restart `mark` the
    * first pass found, a Stable Target meant to run is started again as by `rig up`, and the Working copy's or a Preview's stopped
    * Services are recorded as stopped by the restart, which keeps them stopped until `rig up`. Adds `targetId` to `settled`
    * once that is done, or once nothing about a restart is left to do for the Target. Never rejects; failures are
@@ -2435,6 +2447,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     targetId: string,
     lease: Lease,
     action: "reconcile" | "supervise",
+    current: () => Promise<RuntimeState>,
     failed: (error: unknown, target?: string) => Promise<void>,
     settled?: Set<string>,
     /** Targets an earlier daemon already settled for this same restart: stable Targets started again (or failed to), and
@@ -2457,7 +2470,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     let name: string | undefined;
     try {
       if (draining) return undefined;
-      const state = await deps.store.read();
+      const state = await current();
       const target = state.targets.find((t) => t.id === targetId);
       if (
         !target ||

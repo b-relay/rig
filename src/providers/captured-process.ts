@@ -1,7 +1,7 @@
 import {
+  changePublisher,
   writeCaptureObservation,
   type CaptureObservation,
-  throttledPublisher,
 } from "./capture-observation";
 import type { ProcessIdentityReader } from "./process-identity";
 import { writeCaptureStatus } from "./capture-status";
@@ -21,13 +21,13 @@ import { readHostConfig } from "../config/documents";
 import { runCommand } from "./command-runner";
 import {
   createProcessInspection,
-  platformKill,
+  platformInspection,
   type ProcessInspection,
 } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
 import { elapsedNow } from "./system-clock";
-/** Unchanged evidence is rewritten this often; the reader trusts evidence younger than one second. */
-const OBSERVATION_HEARTBEAT_MS = 250;
+/** How often the wrapper looks at a running application when nothing wakes it: its exit and a stop both do. */
+const OBSERVE_INTERVAL_MS = 1000;
 /** Signals that ask the wrapper to stop its application within its grace; the wrapper then ends by the same signal.
  * CAPTURE_KILL_SIGNAL asks it to stop the application and cut the grace to the kill wait. */
 const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
@@ -65,15 +65,14 @@ async function runUntilStopped(
   // The wrapper is the effect owner: it names the platform runner once and shares it with its supervisor.
   const processInspection =
     dependencies.processInspection ??
-    createProcessInspection({
-      run: runCommand,
-      kill: platformKill,
-    });
+    createProcessInspection(await platformInspection(runCommand));
+  const pause = wakeablePause();
   const supervisor = createChildSupervisor({
     stateRoot: dirname(requestPath),
     root,
     timing: createProcessTiming(),
     processInspection,
+    onExit: pause.wake,
     // The wrapper reads the Host's logs settings as rigd does, so every writer of the Target log rotates it alike.
     logRetention: request.configRoot
       ? hostLogRetention({
@@ -101,6 +100,7 @@ async function runUntilStopped(
             killed: result.killed,
           }).catch(() => {});
       });
+    pause.wake();
   };
   const handlers = [
     ...STOP_SIGNALS.map((signal) => {
@@ -140,8 +140,7 @@ async function runUntilStopped(
       state: "running",
       pid: applicationPid,
     });
-    // Idle evidence is rewritten only at the heartbeat, well inside the reader's freshness window.
-    const publish = throttledPublisher(
+    const publish = changePublisher(
       (
         observation: CaptureObservation["observation"],
         applicationIdentity?: string,
@@ -153,7 +152,6 @@ async function runUntilStopped(
           applicationIdentity,
           observation,
         }),
-      { heartbeatMs: OBSERVATION_HEARTBEAT_MS, elapsed: elapsedNow },
     );
     try {
       return ended(
@@ -163,6 +161,7 @@ async function runUntilStopped(
           inspect,
           publish,
           stopping: () => stopping,
+          pause: () => pause.wait(OBSERVE_INTERVAL_MS),
         }),
       );
     } catch (error) {
@@ -196,8 +195,36 @@ async function runUntilStopped(
 }
 /** Stays installed once the wrapper's stop is over, until it exits. */
 function ignoreLateKill(): void {}
-/** Publishes fresh application evidence until the application stops or a stop was requested; returns the exit code. */
-async function observeUntilStopped(input: {
+/** A pause `wake` ends early. A wake while nothing pauses ends the next pause at once, so none is lost; the timer goes with
+ * the pause, so it never holds the wrapper open as it exits. */
+export function wakeablePause() {
+  let woken = false;
+  let end: (() => void) | undefined;
+  return {
+    wake() {
+      if (end) end();
+      else woken = true;
+    },
+    wait: (ms: number) =>
+      new Promise<void>((resolve) => {
+        if (woken) {
+          woken = false;
+          resolve();
+          return;
+        }
+        const finish = () => {
+          clearTimeout(timer);
+          end = undefined;
+          resolve();
+        };
+        const timer = setTimeout(finish, ms);
+        end = finish;
+      }),
+  };
+}
+/** Publishes application evidence as it changes, looking once per `pause`, until the application stops or a stop was
+ * requested; returns the exit code. */
+export async function observeUntilStopped(input: {
   supervisor: Pick<Supervisor, "observe">;
   key: string;
   inspect: ProcessIdentityReader;
@@ -206,6 +233,7 @@ async function observeUntilStopped(input: {
     applicationIdentity?: string,
   ) => Promise<void>;
   stopping: () => Promise<unknown> | undefined;
+  pause: () => Promise<void>;
 }): Promise<number> {
   let applicationPid: number | undefined;
   let applicationIdentity: string | undefined;
@@ -222,7 +250,7 @@ async function observeUntilStopped(input: {
       state.state === "running" ? applicationIdentity : undefined,
     );
     if (state.state === "stopped") return state.exitCode ?? 1;
-    await Bun.sleep(50);
+    await input.pause();
   }
   await input.stopping();
   return 0;

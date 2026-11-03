@@ -5,6 +5,10 @@ import {
   createProcessIdentityReader,
   type ProcessIdentityReader,
 } from "./process-identity";
+import {
+  nativeProcessStart,
+  type ProcessStartReader,
+} from "./native-process-start";
 
 const groupRows = z
   .array(
@@ -26,21 +30,32 @@ export interface ProcessInspection {
 }
 export type ProcessKill = (pid: number, signal: NodeJS.Signals | 0) => void;
 export interface ProcessInspectionOptions {
-  /** Runs `/bin/ps` for identity and the permission fallback; `runCommand` on the platform. */
+  /** Runs `/bin/ps` for identity without `start`, and for the permission fallback; `runCommand` on the platform. */
   readonly run: CommandRunner;
   /** Sends a signal (0 probes); `platformKill` on the platform. */
   readonly kill: ProcessKill;
+  /** Reads a process's birth time without starting a process; without it, identity runs `/bin/ps`. */
+  readonly start?: ProcessStartReader;
 }
 /** The platform signal path; an owner passes it explicitly so a test can substitute it. */
 export const platformKill: ProcessKill = (pid, signal) => {
   process.kill(pid, signal);
 };
 
+/** What a daemon or capture wrapper inspects processes with: the kernel's start times where it can be asked, `run` for the
+ * rest. */
+export async function platformInspection(
+  run: CommandRunner,
+): Promise<ProcessInspectionOptions> {
+  const start = await nativeProcessStart();
+  return { run, kill: platformKill, ...(start ? { start } : {}) };
+}
+
 /** Owns OS probes, permission fallback and signal error translation. */
 export function createProcessInspection(
   options: ProcessInspectionOptions,
 ): ProcessInspection {
-  const { run, kill } = options;
+  const { run, kill, start } = options;
   async function groupExists(pid: number): Promise<boolean> {
     try {
       kill(-pid, 0);
@@ -110,7 +125,7 @@ export function createProcessInspection(
     }
   }
   return {
-    identity: createProcessIdentityReader(run),
+    identity: createProcessIdentityReader(run, start),
     groupExists,
     signalGroup,
     signalProcess,

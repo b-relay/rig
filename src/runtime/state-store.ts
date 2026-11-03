@@ -1,4 +1,4 @@
-import { access, link, readFile, rm } from "node:fs/promises";
+import { access, link, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { replacePrivateFile } from "../providers/private-files";
 import { z } from "zod";
@@ -17,14 +17,27 @@ import type { RuntimeState, StateStore } from "../domain/runtime";
 export class FileStateStore implements StateStore {
   private queue: Promise<void> = Promise.resolve();
   private readonly path: string;
+  /** The file as it last passed validation: rigd reads the state many times a second and it rarely changes. */
+  private validated: { revision: string | undefined; raw: string } | undefined;
   constructor(private readonly root: string) {
     this.path = join(root, "runtime", "state.json");
   }
 
+  /** Every write replaces the file, so a new inode and time; undefined when the file cannot be looked at. */
+  async revision(): Promise<string | undefined> {
+    const seen = await stat(this.path, { bigint: true }).catch(() => undefined);
+    return seen && `${seen.ino}:${seen.size}:${seen.mtimeNs}`;
+  }
+
   async read(): Promise<RuntimeState> {
+    // Looked at before the file is read: a write in between only makes the next read read it again.
+    const revision = await this.revision();
     let raw: string;
     try {
-      raw = await readFile(this.path, "utf8");
+      raw =
+        revision !== undefined && revision === this.validated?.revision
+          ? this.validated.raw
+          : await readFile(this.path, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
         return {
@@ -47,7 +60,8 @@ export class FileStateStore implements StateStore {
       withholdUnredactedHealthOutput(parsed);
       readFixedTargetNames(parsed);
       readEarlierVersions(parsed);
-      schema.parse(parsed);
+      if (raw !== this.validated?.raw) schema.parse(parsed);
+      this.validated = { revision, raw };
     } catch (error) {
       if (error instanceof RigError) throw error;
       const backup = (await exists(this.backupPath))

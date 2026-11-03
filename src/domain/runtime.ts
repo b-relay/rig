@@ -400,6 +400,9 @@ export interface RuntimeState {
 
 export interface StateStore {
   read(): Promise<RuntimeState>;
+  /** Names the state as it is stored now: two equal revisions mean nothing was written between them, so what was read after
+   * the first is still current. Undefined, or absent, when that cannot be told: the caller reads again. */
+  revision?(): Promise<string | undefined>;
   /** One daemon owns writes. Updates are serialized and committed atomically. */
   update(change: (state: RuntimeState) => void | Promise<void>): Promise<void>;
 }

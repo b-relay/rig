@@ -99,6 +99,8 @@ export interface ChildSupervisorOptions {
   /** Aborted by the owner as rigd begins to shut down, before it drains: a stop this supervisor makes on its own (what a
    * failed start spawned) stops waiting then, as `detach` makes it, and the process finishes stopping on its own. */
   readonly shutdown?: AbortSignal;
+  /** Called when a process this supervisor spawned has exited, so an owner polling `observe` looks at once. */
+  readonly onExit?: () => void;
 }
 /** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID.
  * A process is started once and never respawned here. Whoever holds the application's child handle records its exit:
@@ -563,6 +565,7 @@ export function createChildSupervisor(
           resolve(recordExit(wrapperExitRoot, code, signal)),
         ),
       );
+    child.once("exit", () => options.onExit?.());
     if (!options.captureCommand)
       captureOutput(root, owned, request, now, options.logRetention);
     await new Promise<void>((resolve, reject) => {

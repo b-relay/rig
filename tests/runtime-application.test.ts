@@ -153,6 +153,7 @@ function fixture() {
       async stopPreparation() {
         return { outcome: "unchanged" as const };
       },
+      async checkFirstBuild() {},
       async stopJob() {
         return { outcome: "unchanged" as const };
       },

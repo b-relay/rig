@@ -3,6 +3,7 @@ export type { ComponentReport, TargetReport } from "../domain/project-status";
 import {
   boundedObservations,
   type ObservationDeadline,
+  type ObservationResult,
 } from "./bounded-observations";
 import type {
   InstalledComponent,
@@ -74,6 +75,25 @@ export async function observeTargets(
   deadline: ObservationDeadline,
   health?: HealthResults,
 ): Promise<TargetReport[]> {
+  return (
+    await observeTargetsAndBuilds(targets, effects, budgetMs, deadline, health)
+  ).reports;
+}
+/** `observeTargets`, with what `leftoverBuild` says of each Target observed under the same one deadline. */
+export async function observeTargetsAndBuilds(
+  targets: readonly TargetRecord[],
+  effects: ObservationEffects,
+  budgetMs: number,
+  deadline: ObservationDeadline,
+  health?: HealthResults,
+  leftoverBuild?: (
+    target: TargetRecord,
+    signal: AbortSignal,
+  ) => Promise<ProcessObservation>,
+): Promise<{
+  reports: TargetReport[];
+  builds: ObservationResult<ProcessObservation>[];
+}> {
   const entries = targets.flatMap((target) =>
     target.plan.components.map((component) => ({
       target,
@@ -90,93 +110,110 @@ export async function observeTargets(
       },
     })),
   );
-  const results = await boundedObservations(
-    entries.map(
-      ({ target, component, base }) =>
-        async (signal): Promise<ComponentReport> => {
-          if (component.kind === "installed")
-            return {
-              ...base,
-              state: await effects.artifact(target, component, signal),
-            };
-          if (component.kind === "persistent")
-            return {
-              ...base,
-              state: (await effects.persistent(target, component, signal))
-                ? "ready"
-                : "missing",
-            };
-          const observed = await effects.process(target, component, signal);
-          if (observed.state === "stopped") {
-            const waiting = healthRestartWaiting(target, component);
-            if (waiting)
+  const observed = await boundedObservations<
+    ComponentReport | ProcessObservation
+  >(
+    [
+      ...entries.map(
+        ({ target, component, base }) =>
+          async (signal: AbortSignal): Promise<ComponentReport> => {
+            if (component.kind === "installed")
               return {
                 ...base,
-                port: component.port,
-                ...waiting,
-                ...(observed.reason
-                  ? { reason: `${observed.reason} ${waiting.reason}` }
-                  : {}),
+                state: await effects.artifact(target, component, signal),
               };
-            const standing = stoppedStanding(
-              target,
-              component,
-              observed,
-              supervisionScope(target),
-            );
-            const reason = [observed.reason, standing.reason]
+            if (component.kind === "persistent")
+              return {
+                ...base,
+                state: (await effects.persistent(target, component, signal))
+                  ? "ready"
+                  : "missing",
+              };
+            const observed = await effects.process(target, component, signal);
+            if (observed.state === "stopped") {
+              const waiting = healthRestartWaiting(target, component);
+              if (waiting)
+                return {
+                  ...base,
+                  port: component.port,
+                  ...waiting,
+                  ...(observed.reason
+                    ? { reason: `${observed.reason} ${waiting.reason}` }
+                    : {}),
+                };
+              const standing = stoppedStanding(
+                target,
+                component,
+                observed,
+                supervisionScope(target),
+              );
+              const reason = [observed.reason, standing.reason]
+                .filter(Boolean)
+                .join(" ");
+              return {
+                ...base,
+                ...standing,
+                port: component.port,
+                ...(reason ? { reason } : {}),
+              };
+            }
+            if (observed.state !== "running")
+              return {
+                ...base,
+                state: observed.state,
+                port: component.port,
+                ...(observed.reason ? { reason: observed.reason } : {}),
+              };
+            // A running component can still have something to say, such as output it cannot record or an unknown exit it was
+            // started again after.
+            const said = [
+              observed.reason,
+              runningNote(target, component, observed),
+            ]
               .filter(Boolean)
               .join(" ");
+            const cached =
+              component.healthcheck && health
+                ? monitoredHealth(target, component, health)
+                : undefined;
+            const reason = [said, cached?.reason].filter(Boolean).join(" ");
+            const commit = runningCommit(target, component.name, observed);
             return {
               ...base,
-              ...standing,
               port: component.port,
+              pid: observed.pid,
+              ...(commit ? { commit } : {}),
+              state: cached
+                ? cached.state
+                : component.health || component.healthcheck
+                  ? (await effects.health(target, component, signal)).ready
+                    ? "healthy"
+                    : "unhealthy"
+                  : "running",
+              ...(cached ? { health: cached.health } : {}),
               ...(reason ? { reason } : {}),
             };
-          }
-          if (observed.state !== "running")
-            return {
-              ...base,
-              state: observed.state,
-              port: component.port,
-              ...(observed.reason ? { reason: observed.reason } : {}),
-            };
-          // A running component can still have something to say, such as output it cannot record or an unknown exit it was
-          // started again after.
-          const said = [
-            observed.reason,
-            runningNote(target, component, observed),
-          ]
-            .filter(Boolean)
-            .join(" ");
-          const cached =
-            component.healthcheck && health
-              ? monitoredHealth(target, component, health)
-              : undefined;
-          const reason = [said, cached?.reason].filter(Boolean).join(" ");
-          const commit = runningCommit(target, component.name, observed);
-          return {
-            ...base,
-            port: component.port,
-            pid: observed.pid,
-            ...(commit ? { commit } : {}),
-            state: cached
-              ? cached.state
-              : component.health || component.healthcheck
-                ? (await effects.health(target, component, signal)).ready
-                  ? "healthy"
-                  : "unhealthy"
-                : "running",
-            ...(cached ? { health: cached.health } : {}),
-            ...(reason ? { reason } : {}),
-          };
-        },
-    ),
+          },
+      ),
+      ...(leftoverBuild
+        ? targets.map(
+            (target) => (signal: AbortSignal) => leftoverBuild(target, signal),
+          )
+        : []),
+    ],
     budgetMs,
     deadline,
   );
+  // In the order they were asked: every Component's, then every Target's build.
+  const results = observed.slice(
+    0,
+    entries.length,
+  ) as ObservationResult<ComponentReport>[];
+  const builds = observed.slice(
+    entries.length,
+  ) as ObservationResult<ProcessObservation>[];
   let offset = 0;
-  return targets.map((target) => {
+  const reports = targets.map((target): TargetReport => {
     const components: ComponentReport[] = target.plan.components.map(() => {
       const base = entries[offset]!.base;
       const result = results[offset++]!;
@@ -216,6 +253,7 @@ export async function observeTargets(
       state: aggregate(components),
     };
   });
+  return { reports, builds };
 }
 /** Every hostname a recorded Target serves, its domain first; nothing when it serves none. */
 function targetHostnames(

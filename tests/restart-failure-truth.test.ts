@@ -422,6 +422,43 @@ test("a restart that cannot read a Service's env file is refused before anything
   expect(f.events).toEqual(["stop api", "stop web", "start web", "start api"]);
 });
 
+test("a restart is refused before anything stops when the first build's own env file is missing, shared or a Service's, since nothing could write it first", async () => {
+  const web = (extra: Record<string, unknown>) => ({
+    command: "web",
+    restart: "always",
+    ports: { http: WEB },
+    ...extra,
+  });
+  const api = { command: "api", restart: "no", ports: { http: API } };
+  for (const build of ["shared", "service"] as const) {
+    const f = await fixture();
+    const file = join(f.world.root, "build-input.env");
+    await writeFile(file, "A=1\n");
+    const config =
+      build === "shared"
+        ? shop({
+            env_file: file,
+            build: "true",
+            services: { web: web({}), api },
+          })
+        : shop({
+            services: { web: web({ env_file: file, build: "true" }), api },
+          });
+    const read = f.deps.documents.read;
+    f.deps.documents.read = async (path) => ({
+      ...(await read.call(f.deps.documents, path)),
+      config,
+    });
+    await f.command({ action: "up", project: "shop", target: "working" });
+    await refusedWithEverythingRunning(
+      f,
+      "working",
+      () => rm(file),
+      "ENV_FILE_MISSING",
+    );
+  }
+});
+
 // After a Host restart (#702)
 
 test("after a Host restart no route of a working Target or Preview reaches its port until a verified start; a stable Target's comes back with its start", async () => {
@@ -562,6 +599,52 @@ test("rig status lists a build left running until it is stopped, and a build tha
   const after = await f.status("working");
   expect(after.report.leftoverBuild).toBeUndefined();
   expect(after.warnings.join()).not.toContain("a build an earlier rigd");
+});
+
+test("a build whose observation is uncertain is said to be uncertain, not running", async () => {
+  const f = await fixture();
+  await f.command({ action: "up", project: "shop", target: "working" });
+  f.deps.lifecycle.observePreparation = async () => ({
+    state: "unknown",
+    reason: "Process ownership could not be verified.",
+  });
+  const shown = await f.status("working");
+  expect(shown.report.leftoverBuild).toBeUndefined();
+  expect(shown.warnings.join()).not.toContain("is still running (");
+  expect(shown.warnings).toContainEqual(
+    expect.stringContaining(
+      "working: whether a build an earlier rigd started is still running could not be established (Process ownership could not be verified.).",
+    ),
+  );
+});
+
+test("status observes Services and builds under one deadline, whichever of them stalls", async () => {
+  const f = await fixture();
+  await f.command({ action: "up", project: "shop", target: "working" });
+  let deadlines = 0;
+  let expire = () => {};
+  const scheduled = new Promise<void>((resolve) => {
+    f.deps.observationDeadline = {
+      schedule(_ms, expiry) {
+        deadlines++;
+        expire = expiry;
+        resolve();
+        return () => {};
+      },
+    };
+  });
+  f.deps.observations.process = () => new Promise(() => {});
+  f.deps.lifecycle.observePreparation = () => new Promise(() => {});
+  const status = f.status("working");
+  await scheduled;
+  // One expiry ends all of it.
+  expire();
+  const shown = await status;
+  expect(deadlines).toBe(1);
+  expect(shown.report.leftoverBuild).toBeUndefined();
+  expect(shown.warnings).toContainEqual(
+    expect.stringContaining("could not be established"),
+  );
 });
 
 test("rig status does not call this rigd's own build a leftover", async () => {

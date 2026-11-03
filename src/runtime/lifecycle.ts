@@ -260,6 +260,9 @@ export interface TargetLifecycle {
    * records it, the checkout path normalized. Fails as composing that environment fails (an unreadable env file, say), or
    * ENV_DIGEST when no digest can be taken. A deploy compares it with the running process's. */
   environmentDigest(target: TargetRecord, service?: string): Promise<string>;
+  /** Fails as composing the environment of the plan's first build unit fails (an unreadable env file, say), which nothing
+   * runs before to write; runs nothing. */
+  checkFirstBuild(target: TargetRecord): Promise<void>;
   /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others as they are; its routed
    * paths are withheld first, and a stop whose paths cannot be withheld is not made. SERVICE_UNKNOWN when the plan has no
    * such Service. A health restart stops a Service this way before `recover` starts it again. */
@@ -404,6 +407,7 @@ export function withStops(
       lifecycle.recover(target, service, journal, control ?? stops),
     environmentDigest: (target, service) =>
       lifecycle.environmentDigest(target, service),
+    checkFirstBuild: (target) => lifecycle.checkFirstBuild(target),
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
@@ -892,6 +896,10 @@ export function createTargetLifecycle(
         target,
         await effects.environment(target, component),
       );
+    },
+    async checkFirstBuild(target) {
+      const first = target.plan.builds?.[0];
+      if (first) await effects.buildEnvironment?.(first, target);
     },
     async stop(target, service, stops) {
       const component = target.plan.components.find(

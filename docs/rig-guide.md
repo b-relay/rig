@@ -1085,8 +1085,8 @@ still allows them. `rig restart` plans before it stops anything, so one Rig
 refuses leaves the Target running as it was: a `rig.yaml` that cannot be read,
 a plan that cannot be made (a pinned port another Target holds, say), a route
 that could not be published, a deployed Target whose preparation is not
-complete, or an `env_file` that cannot be read (unless a build still runs
-before the start, which may write it). `rig up` on a Target that is already running keeps the plan
+complete, or an `env_file` that cannot be read (the first build's always, and
+any other unless an earlier build could write it). `rig up` on a Target that is already running keeps the plan
 its processes were started from; `rig doctor` reports `config-drift` for it and
 names `rig restart working` as the fix. A valid config
 that adds a Service the recorded plan has no port for is also reported as

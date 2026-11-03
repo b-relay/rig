@@ -2855,8 +2855,9 @@ function preparedWarning(
 }
 /** What a restart of `target` starts, before anything of it stops, or the refusal that leaves it running as it was: the
  * Working copy's plan from the current rig.yaml (its `document`, read only for it), or a deployed Target's recorded plan,
- * whose preparation must be complete. Each Service's environment must compose too, unless a build still runs before the
- * start, which may write an env file it reads. Changes nothing. */
+ * whose preparation must be complete. The first thing to run must be able to: the Working copy's first build, whose
+ * environment nothing runs before to write, or else each Service, whose environment must compose. With a build, a later
+ * build's and each Service's wait for their own turn, since an earlier build may write an env file they read. */
 async function checkedRestartPlan(
   target: TargetRecord,
   document: () => ConfigDocument<ProjectConfig>,
@@ -2879,7 +2880,10 @@ async function checkedRestartPlan(
           deps,
         )
       : target;
-  if (planned.kind === "working" && planned.plan.builds?.length) return planned;
+  if (planned.kind === "working" && planned.plan.builds?.length) {
+    await deps.lifecycle.checkFirstBuild(planned);
+    return planned;
+  }
   for (const component of planned.plan.components)
     if (component.kind === "managed")
       await deps.lifecycle

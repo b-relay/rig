@@ -299,6 +299,30 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       Bun.deepEquals(metadata.dashboard, options.dashboard?.current() ?? null)
     );
   }
+  /** Whether generation `directory`'s main file is what this Rig renders from what it was built from. One an older Rig
+   * rendered otherwise is published again, so a change of rule reaches a Host with its config unchanged. What cannot be
+   * rendered now is not: its publication then says why. */
+  async function rendersAsNow(
+    directory: string,
+    settings: ProxySettings,
+    routes: string,
+    dashboard: PublishedDashboard | null | undefined,
+  ): Promise<boolean> {
+    try {
+      return (
+        (await readText(generationFiles(directory).main)) ===
+        renderMainCaddyfile({
+          settings,
+          paths,
+          generation: directory,
+          hostnames: routeFileHostnames(routes),
+          ...(dashboard ? { dashboard } : {}),
+        })
+      );
+    } catch {
+      return false;
+    }
+  }
   async function recordRejection(
     settings: ProxySettings,
     error: RigError,
@@ -1143,7 +1167,8 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           metadata.ownerRoutesOnly === true &&
           servesDashboard(metadata) &&
           (await readText(generationFiles(current).routes)) === before &&
-          (await adaptedOf(current)) !== undefined
+          (await adaptedOf(current)) !== undefined &&
+          (await rendersAsNow(current, requested, before, metadata.dashboard))
         ) {
           // The files say it; Caddy must too. A crash after the switch leaves Caddy on the previous generation, a CA change
           // included, until this makes it serve the current one.
@@ -1173,7 +1198,13 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           if (
             routes !== (await readText(generationFiles(current).routes)) ||
             served?.settings !== settingsDigest(last.settings) ||
-            !servesDashboard(served)
+            !servesDashboard(served) ||
+            !(await rendersAsNow(
+              current,
+              last.settings,
+              routes,
+              served.dashboard,
+            ))
           )
             await republishWith(last.settings, "route", last.ownerRoutesOnly);
           throw new RigError(

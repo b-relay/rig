@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   dnsRecordInputSchema,
+  normalizeRecordInput,
   requestedDnsChange,
   canonicalIpv6,
   contentKey,
@@ -167,4 +168,73 @@ test("a CAA value keeps its exact characters: only the separators between fields
     ),
   ).toBe(false);
   expect(sameContent("CAA", '0 issue "a  b"', '0 issue "a b"')).toBe(false);
+});
+
+test("a null MX (RFC 7505) keeps its root exchange, needs preference 0, and only MX has one", () => {
+  const nullMx = {
+    name: "example.com",
+    type: "MX",
+    content: ".",
+    priority: 0,
+    ttl: 600,
+  };
+  const parsed = dnsRecordInputSchema.parse(nullMx);
+  expect(normalizeRecordInput(parsed).content).toBe(".");
+  expect(sameContent("MX", ".", ".")).toBe(true);
+  expect(contentKey("MX", " . ")).toBe(".");
+  expect(sameContent("MX", ".", "mail.example.com")).toBe(false);
+
+  const refused = (fields: Record<string, unknown>) =>
+    dnsRecordInputSchema.safeParse({ ...nullMx, ...fields }).error?.issues[0];
+  expect(refused({ priority: 10 })).toMatchObject({
+    path: ["priority"],
+    message: "must be 0 for a null MX (.)",
+  });
+  expect(refused({ priority: undefined })?.path).toEqual(["priority"]);
+  expect(refused({ type: "CNAME", priority: undefined })?.path).toEqual([
+    "content",
+  ]);
+  expect(refused({ content: ".." })?.path).toEqual(["content"]);
+
+  // An ordinary exchange is still canonical, whatever its priority.
+  const ordinary = dnsRecordInputSchema.parse({
+    ...nullMx,
+    content: "Mail.Example.com.",
+    priority: 0,
+  });
+  expect(normalizeRecordInput(ordinary).content).toBe("mail.example.com");
+});
+
+const txtRefused = (content: string) =>
+  dnsRecordInputSchema.safeParse({
+    name: "a.example.com",
+    type: "TXT",
+    content,
+    ttl: 1,
+  }).error?.issues[0]?.message;
+const quoted = (...strings: string[]) =>
+  strings.map((string) => `"${string}"`).join(" ");
+
+test("a TXT record's limit is its 4096 bytes in DNS, not how many characters it takes to write", () => {
+  // Bare text: Cloudflare splits it every 255 bytes, each string with a length byte. 4080 bytes make 16 strings, 4096 in all.
+  expect(txtRefused("x".repeat(4080))).toBeUndefined();
+  expect(txtRefused("x".repeat(4081))).toContain("4096 bytes");
+  expect(txtRefused("v=spf1 include:_spf.example.com -all")).toBeUndefined();
+
+  // Split strings: 16 of 255 bytes are exactly the limit, and a byte more is over, however they are divided.
+  const full = Array.from({ length: 16 }, () => "x".repeat(255));
+  expect(txtRefused(quoted(...full))).toBeUndefined();
+  expect(txtRefused(quoted(...full, "x"))).toContain("4096 bytes");
+
+  // Bytes, not characters: "é" is two bytes.
+  expect(txtRefused("é".repeat(2040))).toBeUndefined();
+  expect(txtRefused("é".repeat(2041))).toContain("4096 bytes");
+
+  // \DDD and \" are one byte each however long they are to write, so 16,367 characters can be within the limit.
+  const escaped = Array.from({ length: 16 }, () => "\\065".repeat(255));
+  expect(quoted(...escaped).length).toBeGreaterThan(16_000);
+  expect(txtRefused(quoted(...escaped))).toBeUndefined();
+  expect(txtRefused(quoted(...escaped, "\\065"))).toContain("4096 bytes");
+  const quotes = Array.from({ length: 16 }, () => '\\"'.repeat(255));
+  expect(txtRefused(quoted(...quotes))).toBeUndefined();
 });

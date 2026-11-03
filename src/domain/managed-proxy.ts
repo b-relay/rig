@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { getDomain } from "tldts";
 import { RigError } from "./errors";
 import { caddyValue, checkCaddyValue } from "./caddy-value";
 import { NAMED_CAS, type ProxySettings } from "../config/proxy-schema";
@@ -122,17 +123,37 @@ export function certificateName(address: string): string | undefined {
     return undefined;
   return host;
 }
+/** Pure: whether `name` is a registrable domain or below one, by the Public Suffix List that ships in this build, private
+ * suffixes such as github.io included. A name at or above a public suffix (co.uk, github.io, com) is not: nobody holds a
+ * zone for it, and no CA issues a wildcard there. A TLD the list does not know is a suffix of one label. */
+function belowPublicSuffix(name: string): boolean {
+  return (
+    getDomain(name, {
+      allowPrivateDomains: true,
+      extractHostname: false,
+      validateHostname: false,
+    }) !== null
+  );
+}
 /** The wildcard subjects that cover `hostnames` with one certificate per parent: `*.<hostname without its first label>`,
- * when that parent has at least two labels. Sorted and without duplicates. */
+ * when that parent is below a public suffix; a hostname whose parent is not has a certificate of its own. Sorted and without
+ * duplicates. */
 export function wildcardParents(hostnames: readonly string[]): string[] {
   const parents = new Set<string>();
   for (const address of hostnames) {
     const host = certificateName(address);
     if (!host) continue;
-    const parent = host.split(".").slice(1);
-    if (parent.length >= 2) parents.add(`*.${parent.join(".")}`);
+    const parent = host.split(".").slice(1).join(".");
+    if (belowPublicSuffix(parent)) parents.add(`*.${parent}`);
   }
   return [...parents].sort();
+}
+
+/** Pure: the wildcard subjects a generation's main file asks for, as `renderMainCaddyfile` writes them on one line. It holds
+ * what was accepted, whichever Rig rendered it, so what is served is told from this rather than worked out again. */
+export function renderedWildcards(main: string): string[] {
+  const line = main.split("\n").find((each) => each.startsWith('"*.'));
+  return line ? [...line.matchAll(/"(\*\.[^"]+)"/g)].map((m) => m[1]!) : [];
 }
 
 /** The bare hostname of a site address, as Caddy matches requests to it: no scheme, no port, lowercase. Two addresses with

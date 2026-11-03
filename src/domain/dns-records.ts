@@ -14,8 +14,10 @@ export type DnsRecordType = (typeof DNS_RECORD_TYPES)[number];
 export const PROXIABLE_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME"];
 /** TTL 1 asks the provider to choose ("Auto" in Cloudflare); otherwise seconds from 60 to one day. */
 export const AUTOMATIC_TTL = 1;
-/** Cloudflare's limit on one TXT record's content. */
-export const TXT_MAX = 2048;
+/** Cloudflare's limit on one TXT record, in bytes as DNS carries it: the text, and a length byte for each string of it. */
+export const TXT_MAX = 4096;
+/** The longest content Rig reads as written: a TXT record at TXT_MAX with every byte written as `\DDD`. */
+export const CONTENT_MAX = TXT_MAX * 4;
 /** The longest record comment any Cloudflare plan keeps (Free keeps 100; Cloudflare refuses a longer one there with its own
  * reason). Rig never refuses a comment Cloudflare stored, so an edit of such a record never fails on it. */
 export const COMMENT_MAX = 500;
@@ -82,6 +84,14 @@ export function validTargetHost(name: string): boolean {
 export function canonicalName(name: string): string {
   return name.trim().toLowerCase().replace(/\.$/, "");
 }
+/** Pure: whether `content` of `type` is a null MX's exchange, the root name: the name takes no mail (RFC 7505). */
+export function isNullMx(type: string, content: string): boolean {
+  return type === "MX" && content.trim() === ".";
+}
+/** Pure: an MX exchange as a record holds it: a hostname in canonical form, or a null MX's root name as it is. */
+export function canonicalExchange(content: string): string {
+  return isNullMx("MX", content) ? "." : canonicalName(content);
+}
 /** Pure: whether `name` is `zone` itself or a name below it. */
 export function inZone(name: string, zone: string): boolean {
   return name === zone || name.endsWith(`.${zone}`);
@@ -102,21 +112,42 @@ export function qualifyName(name: string, zone: string): string {
   if (typed === "@" || typed === "") return zone;
   return inZone(typed, zone) ? typed : `${typed}.${zone}`;
 }
+/** Pure: the character-strings of a fully quoted TXT content, each still escaped; undefined for any other content. */
+function quotedStrings(text: string): string[] | undefined {
+  if (!/^"(?:[^"\\]|\\.)*"(?:\s+"(?:[^"\\]|\\.)*")*$/.test(text))
+    return undefined;
+  return [...text.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((part) => part[1]!);
+}
 /** Pure: a TXT record's value as a resolver assembles it. Cloudflare documents TXT content as RFC 1035 quoted
  * character-strings of up to 255 bytes each, splits a longer value into several (`"part1" "part2"`), and returns the
  * content as stored, quoted or not. So a fully quoted content is its strings joined with nothing between, with `\"`, `\\`
  * and `\DDD` unescaped; anything else is the text itself. */
 export function txtValue(content: string): string {
   const text = content.trim();
-  const string = /"((?:[^"\\]|\\.)*)"/g;
-  if (!/^"(?:[^"\\]|\\.)*"(?:\s+"(?:[^"\\]|\\.)*")*$/.test(text)) return text;
-  return [...text.matchAll(string)]
-    .map((part) =>
-      part[1]!.replace(/\\(\d{3}|.)/g, (_, escaped: string) =>
+  const strings = quotedStrings(text);
+  if (!strings) return text;
+  return strings
+    .map((string) =>
+      string.replace(/\\(\d{3}|.)/g, (_, escaped: string) =>
         escaped.length === 3 ? String.fromCharCode(Number(escaped)) : escaped,
       ),
     )
     .join("");
+}
+const encoder = new TextEncoder();
+/** Pure: the bytes a TXT content takes in DNS, however it is written: each string's bytes, with `\DDD` and `\"` as one, and
+ * a length byte for every 255 of them, as Cloudflare splits a longer string. */
+function txtWireBytes(content: string): number {
+  const text = content.trim();
+  const strings = quotedStrings(text)?.map((string) =>
+    string.replace(/\\(\d{3}|.)/g, (_, escaped: string) =>
+      escaped.length === 3 ? "x" : escaped,
+    ),
+  ) ?? [text];
+  return strings.reduce((total, string) => {
+    const bytes = encoder.encode(string).length;
+    return total + bytes + Math.max(1, Math.ceil(bytes / 255));
+  }, 0);
 }
 /** Pure: whether two contents of a record type say the same: hostnames without case or a trailing dot, TXT values as
  * resolvers assemble them (see `txtValue`), anything else as written. */
@@ -124,15 +155,16 @@ export function sameContent(type: string, a: string, b: string): boolean {
   return contentKey(type, a) === contentKey(type, b);
 }
 /** Pure: content in the one form two equivalent contents of `type` share, as Cloudflare normalizes what it stores:
- * hostnames lowercase without a trailing dot, TXT as assembled, IPv4 and IPv6 canonical (RFC 5952: lowercase, leading
- * zeros dropped, the longest run of zero groups as `::`), CAA as flags, lowercase tag and the unquoted value exactly as
- * written. Content that does not parse as its type is compared as written. */
+ * hostnames lowercase without a trailing dot, a null MX's root name as it is, TXT as assembled, IPv4 and IPv6 canonical
+ * (RFC 5952: lowercase, leading zeros dropped, the longest run of zero groups as `::`), CAA as flags, lowercase tag and the
+ * unquoted value exactly as written. Content that does not parse as its type is compared as written. */
 export function contentKey(type: string, content: string): string {
   const text = content.trim();
   switch (type) {
     case "CNAME":
-    case "MX":
       return canonicalName(text);
+    case "MX":
+      return canonicalExchange(text);
     case "TXT":
       return txtValue(text);
     case "A":
@@ -227,9 +259,9 @@ export const dnsRecordInputSchema = z
     content: z
       .string()
       .min(1)
-      .max(TXT_MAX)
+      .max(CONTENT_MAX)
       .describe(
-        'A: an IPv4 address. AAAA: an IPv6 address. CNAME and MX: a hostname. TXT: text up to 2048 characters. CAA: <flags> <tag> "<value>", such as 0 issue "letsencrypt.org".',
+        'A: an IPv4 address. AAAA: an IPv6 address. CNAME: a hostname. MX: a hostname, or . for a null MX, which says the name takes no mail. TXT: text of up to 4096 bytes in DNS, which is 4080 bytes of text, whether quoted or split. CAA: <flags> <tag> "<value>", such as 0 issue "letsencrypt.org".',
       ),
     ttl: z
       .number()
@@ -253,7 +285,9 @@ export const dnsRecordInputSchema = z
       .min(0)
       .max(65535)
       .optional()
-      .describe("MX only, and required there: the preference, lower first."),
+      .describe(
+        "MX only, and required there: the preference, lower first; 0 for a null MX.",
+      ),
     comment: z
       .string()
       .max(COMMENT_MAX)
@@ -277,18 +311,29 @@ export const dnsRecordInputSchema = z
           issue("content", "must be an IPv6 address such as fd7a:115c:a1e0::1");
         break;
       case "CNAME":
-      case "MX":
         if (!validTargetHost(canonicalName(content)))
           issue("content", "must be a hostname such as app.example.com");
-        else if (
-          record.type === "CNAME" &&
-          canonicalName(content) === record.name
-        )
+        else if (canonicalName(content) === record.name)
           issue("content", "must not point at the record's own name");
+        break;
+      case "MX":
+        if (isNullMx(record.type, content)) {
+          if (record.priority !== undefined && record.priority !== 0)
+            issue("priority", "must be 0 for a null MX (.)");
+        } else if (!validTargetHost(canonicalName(content)))
+          issue(
+            "content",
+            "must be a hostname such as app.example.com, or . for a null MX",
+          );
         break;
       case "TXT":
         if (!PRINTABLE.test(content))
           issue("content", "must be printable text without line breaks");
+        else if (txtWireBytes(content) > TXT_MAX)
+          issue(
+            "content",
+            `must be at most ${TXT_MAX} bytes in DNS, which is ${TXT_MAX - 16} bytes of text`,
+          );
         break;
       case "CAA":
         if (!caaParts(content))
@@ -308,13 +353,15 @@ export const dnsRecordInputSchema = z
 
 /** Pure: `record` as its write request carries it: names and hostnames canonical, and no field its type does not use. */
 export function normalizeRecordInput(record: DnsRecordInput): DnsRecordInput {
-  const hostContent = record.type === "CNAME" || record.type === "MX";
   return {
     name: canonicalName(record.name),
     type: record.type,
-    content: hostContent
-      ? canonicalName(record.content)
-      : record.content.trim(),
+    content:
+      record.type === "MX"
+        ? canonicalExchange(record.content)
+        : record.type === "CNAME"
+          ? canonicalName(record.content)
+          : record.content.trim(),
     ttl: record.ttl,
     ...(PROXIABLE_TYPES.includes(record.type)
       ? { proxied: record.proxied === true }
@@ -360,6 +407,25 @@ export function recordsAt(
   return records.filter(
     (record) => record.name === name && record.type === type,
   );
+}
+/** Pure: why `record` cannot stand beside the MX records at its name, or undefined when it can. A null MX says the name takes
+ * no mail, so it is the name's only MX record (RFC 7505 section 3). `replacing` is the record a change rewrites, if any. */
+export function nullMxClash(
+  records: readonly DnsRecord[],
+  record: Pick<DnsRecordInput, "name" | "type" | "content">,
+  replacing?: string,
+): string | undefined {
+  if (record.type !== "MX") return undefined;
+  const others = recordsAt(records, record.name, "MX").filter(
+    (other) => other.id !== replacing,
+  );
+  if (isNullMx(record.type, record.content))
+    return others.length
+      ? `A null MX says a name takes no mail, but ${record.name} has ${others.map((other) => `MX ${other.content}`).join(", ")}.`
+      : undefined;
+  return others.some((other) => isNullMx(other.type, other.content))
+    ? `${record.name} has a null MX, which says it takes no mail, so it cannot have another MX record.`
+    : undefined;
 }
 /** Pure: what `create` would collide with, for a create that expects the name to have no such record yet: any record of the
  * same type at the name, or a CNAME there, or for a CNAME any record there. Cloudflare refuses some of these itself; the rest

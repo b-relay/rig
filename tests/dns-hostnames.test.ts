@@ -319,3 +319,107 @@ test("a chain of exactly MAX_HOPS CNAMEs reaches its address; one more is too lo
   expect(over).toMatchObject({ verdict: "unknown" });
   expect(over.reason).toBe("Its CNAME chain is longer than 8 hops or loops.");
 });
+
+const proxiedAaaa = (name: string) =>
+  record(name, "AAAA", "2001:db8::1", { proxied: true });
+
+test("a proxied AAAA proxies the name's A records too, so the name is elsewhere and repointing its A cannot fix it", () => {
+  const matching = check(
+    [record("app.example.com", "A", MAC), proxiedAaaa("app.example.com")],
+    "app.example.com",
+  );
+  expect(matching.verdict).toBe("elsewhere");
+  expect(matching.reason).toBe(
+    "It has a proxied AAAA record, so Cloudflare answers for all its addresses from its edge, which cannot reach this Mac's Tailscale address.",
+  );
+  expect(matching.fix).toBeUndefined();
+  expect(matching.fixBlocked).toBe(
+    "app.example.com has a proxied AAAA record, which keeps the whole name behind Cloudflare's edge: make it DNS only or delete it, and its A record can then point here.",
+  );
+
+  const other = check(
+    [
+      record("app.example.com", "A", "203.0.113.9"),
+      proxiedAaaa("app.example.com"),
+    ],
+    "app.example.com",
+  );
+  expect(other.verdict).toBe("elsewhere");
+  expect(other.fix).toBeUndefined();
+  expect(other.fixBlocked).toContain("proxied AAAA");
+
+  // An A record added beside it would be proxied as well.
+  const alone = check([proxiedAaaa("app.example.com")], "app.example.com");
+  expect(alone.verdict).toBe("elsewhere");
+  expect(alone.fix).toBeUndefined();
+  expect(alone.fixBlocked).toContain("proxied AAAA");
+
+  // Without the address of this Mac the proxied record alone decides it.
+  expect(
+    check(
+      [record("app.example.com", "A", MAC), proxiedAaaa("app.example.com")],
+      "app.example.com",
+      {},
+    ).verdict,
+  ).toBe("elsewhere");
+});
+
+test("a wildcard with a proxied AAAA is elsewhere, and the name's own A record still fixes it, since it then answers instead", () => {
+  const result = check(
+    [record("*.example.com", "A", MAC), proxiedAaaa("*.example.com")],
+    "app.example.com",
+  );
+  expect(result).toMatchObject({
+    verdict: "elsewhere",
+    wildcard: true,
+    answeredBy: "*.example.com",
+    fix: {
+      op: "create",
+      overrides: "*.example.com",
+      record: { name: "app.example.com", content: MAC, proxied: false },
+    },
+  });
+  expect(result.reason).toContain(
+    "The wildcard *.example.com has a proxied AAAA record",
+  );
+  expect(result.fixBlocked).toBeUndefined();
+});
+
+test("a CNAME's terminal name with a proxied AAAA is elsewhere, matching or not, and the CNAME says what to edit", () => {
+  for (const address of [MAC, "203.0.113.9"]) {
+    const result = check(
+      [
+        record("app.example.com", "CNAME", "origin.example.org"),
+        record("origin.example.org", "A", address),
+        proxiedAaaa("origin.example.org"),
+      ],
+      "app.example.com",
+    );
+    expect(result.verdict).toBe("elsewhere");
+    expect(result.reason).toContain(
+      "Its CNAME chain has a proxied AAAA record",
+    );
+    expect(result.fix).toBeUndefined();
+    expect(result.fixBlocked).toContain("is a CNAME to origin.example.org");
+  }
+});
+
+test("an unproxied AAAA is noted and not judged, as before, and a proxied A beside it is still the A's own fix", () => {
+  const records = [
+    record("app.example.com", "A", MAC),
+    record("app.example.com", "AAAA", "2001:db8::1"),
+  ];
+  expect(check(records, "app.example.com")).toMatchObject({
+    verdict: "mac",
+    reason: "Points at this Mac. Its AAAA records are not checked.",
+  });
+  const proxiedA = check(
+    [
+      record("app.example.com", "A", "203.0.113.9", { proxied: true }),
+      record("app.example.com", "AAAA", "2001:db8::1"),
+    ],
+    "app.example.com",
+  );
+  expect(proxiedA.verdict).toBe("elsewhere");
+  expect(proxiedA.fix).toMatchObject({ op: "update" });
+});

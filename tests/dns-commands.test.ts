@@ -94,8 +94,11 @@ const REPORT = {
   ],
 };
 
-/** Drives the CLI with an injected client that answers the dns read with REPORT; no daemon, filesystem or terminal. */
-function harness(options: { interaction?: CliInteraction } = {}) {
+/** Drives the CLI with an injected client that answers the dns read with REPORT, or the report given; no daemon, filesystem
+ * or terminal. */
+function harness(
+  options: { interaction?: CliInteraction; report?: unknown } = {},
+) {
   const requests: RuntimeCommand[] = [];
   let out = "";
   let err = "";
@@ -109,7 +112,7 @@ function harness(options: { interaction?: CliInteraction } = {}) {
       async command(request: RuntimeCommand) {
         requests.push(request);
         return request.action === "dns"
-          ? REPORT
+          ? (options.report ?? REPORT)
           : {
               outcome: "updated",
               summary:
@@ -571,4 +574,304 @@ test("rig dns list shows each zone's records and every served hostname, with the
   expect(text).toContain(
     "ok     www.example.com  Covered only by the wildcard *.example.com, which points at this Mac.",
   );
+});
+
+const dnsRecord = (
+  zone: string,
+  id: string,
+  type: string,
+  content: string,
+  name = "app.sub.example.co.uk",
+  fields: Record<string, unknown> = {},
+) => ({
+  id,
+  zone,
+  name,
+  type,
+  content,
+  ttl: 300,
+  ...(["A", "AAAA", "CNAME"].includes(type) ? { proxied: false } : {}),
+  modifiedOn: `m-${id}`,
+  ...fields,
+});
+const PARENT = "example.co.uk";
+const CHILD = "sub.example.co.uk";
+/** A parent zone and the child zone split from it, each with whatever records the case gives it. */
+const overlapping = (
+  ...records: ReturnType<typeof dnsRecord>[]
+): Record<string, unknown> => ({
+  provider: "cloudflare",
+  zones: [
+    { id: "parent", name: PARENT, status: "active" },
+    { id: "child", name: CHILD, status: "active" },
+  ],
+  records,
+  hostnames: [],
+});
+const NAME = "app.sub.example.co.uk";
+
+test("rig dns set plans against the child zone's own records, never the parent's record of the same name", async () => {
+  const { writes, run, out } = harness({
+    report: overlapping(
+      dnsRecord(PARENT, "p1", "A", MAC),
+      dnsRecord(CHILD, "c1", "A", "203.0.113.9"),
+    ),
+  });
+  // The parent's record already says this; the child's, which answers, does not.
+  expect(await run(["dns", "set", NAME, "A", MAC, "--yes"])).toBe(0);
+  expect(out()).not.toContain("is already set");
+  expect(writes()).toMatchObject([
+    {
+      action: "dns-update",
+      dns: {
+        zone: CHILD,
+        id: "c1",
+        modifiedOn: "m-c1",
+        record: { name: NAME, content: MAC },
+      },
+    },
+  ]);
+});
+
+test("rig dns set leaves a child record that already says it, whatever the parent's says", async () => {
+  const { writes, run, out } = harness({
+    report: overlapping(
+      dnsRecord(PARENT, "p1", "A", "203.0.113.9"),
+      dnsRecord(CHILD, "c1", "A", MAC),
+    ),
+  });
+  expect(await run(["dns", "set", NAME, "A", MAC, "--yes"])).toBe(0);
+  expect(out()).toContain("is already set");
+  expect(writes()).toEqual([]);
+});
+
+test("rig dns set creates in the child zone when only the parent holds the name, however many it holds", async () => {
+  const { writes, run } = harness({
+    report: overlapping(
+      dnsRecord(PARENT, "p1", "A", "203.0.113.8"),
+      dnsRecord(PARENT, "p2", "A", "203.0.113.9"),
+    ),
+  });
+  expect(await run(["dns", "set", NAME, "A", MAC, "--yes"])).toBe(0);
+  expect(writes()).toMatchObject([
+    {
+      action: "dns-create",
+      dns: { zone: CHILD, absent: true, record: { name: NAME, content: MAC } },
+    },
+  ]);
+});
+
+test("--zone picks the parent's record over the child's, and the child's over the parent's, for set and delete", async () => {
+  const report = overlapping(
+    dnsRecord(PARENT, "p1", "A", "203.0.113.8"),
+    dnsRecord(CHILD, "c1", "A", "203.0.113.9"),
+  );
+  const set = harness({ report });
+  expect(
+    await set.run(["dns", "set", NAME, "A", MAC, "--zone", PARENT, "--yes"]),
+  ).toBe(0);
+  expect(set.writes()).toMatchObject([
+    { action: "dns-update", dns: { zone: PARENT, id: "p1" } },
+  ]);
+
+  const child = harness({ report });
+  expect(
+    await child.run(["dns", "delete", NAME, "A", "--zone", CHILD, "--yes"]),
+  ).toBe(0);
+  expect(child.writes()).toMatchObject([
+    {
+      action: "dns-delete",
+      dns: { zone: CHILD, id: "c1", modifiedOn: "m-c1", confirm: NAME },
+    },
+  ]);
+
+  const parent = harness({ report });
+  expect(
+    await parent.run(["dns", "delete", NAME, "A", "--zone", PARENT, "--yes"]),
+  ).toBe(0);
+  expect(parent.writes()).toMatchObject([
+    { action: "dns-delete", dns: { zone: PARENT, id: "p1" } },
+  ]);
+
+  // The other zone's content is not in this zone, so nothing there matches: an id from one zone is never sent with another.
+  const crossed = harness({ report });
+  expect(
+    await crossed.run([
+      "dns",
+      "delete",
+      NAME,
+      "A",
+      "--zone",
+      PARENT,
+      "--content",
+      "203.0.113.9",
+      "--yes",
+    ]),
+  ).toBe(1);
+  expect(crossed.err()).toContain("has no A record with that content");
+  expect(crossed.writes()).toEqual([]);
+});
+
+test("a CNAME in the other zone is no conflict: DNS allows nothing beside a CNAME only within one zone", async () => {
+  const parentCname = harness({
+    report: overlapping(
+      dnsRecord(PARENT, "p1", "CNAME", "elsewhere.example.net"),
+    ),
+  });
+  expect(await parentCname.run(["dns", "set", NAME, "A", MAC, "--yes"])).toBe(
+    0,
+  );
+  expect(parentCname.writes()).toMatchObject([
+    { action: "dns-create", dns: { zone: CHILD, absent: true } },
+  ]);
+
+  const childCname = harness({
+    report: overlapping(
+      dnsRecord(CHILD, "c1", "CNAME", "elsewhere.example.net"),
+    ),
+  });
+  expect(
+    await childCname.run([
+      "dns",
+      "set",
+      NAME,
+      "A",
+      MAC,
+      "--zone",
+      PARENT,
+      "--yes",
+    ]),
+  ).toBe(0);
+  expect(childCname.writes()).toMatchObject([
+    { action: "dns-create", dns: { zone: PARENT, absent: true } },
+  ]);
+});
+
+test("a change to a name in an unreadable child zone fails with why, and is never planned against or written to the parent", async () => {
+  const report = {
+    ...overlapping(dnsRecord(PARENT, "p1", "A", MAC)),
+    zones: [{ id: "parent", name: PARENT, status: "active" }],
+    unreadableZones: [
+      { zone: CHILD, code: "DNS_AUTH", message: "Cloudflare refused it." },
+    ],
+  };
+  for (const args of [
+    ["dns", "set", NAME, "A", MAC, "--yes"],
+    ["dns", "set", "app", "A", MAC, "--zone", CHILD, "--yes"],
+    ["dns", "delete", NAME, "A", "--yes"],
+    ["dns", "delete", NAME, "A", "--zone", CHILD, "--yes"],
+  ]) {
+    const h = harness({ report });
+    expect(await h.run(args)).toBe(1);
+    expect(h.err()).toContain(`The records of ${CHILD} could not be read`);
+    expect(h.err()).toContain("Cloudflare refused it.");
+    expect(h.writes()).toEqual([]);
+  }
+  // It fails with the zone's own code, not one of its own.
+  expect(() => chooseZone(report as never, NAME, undefined)).toThrow(
+    expect.objectContaining({ code: "DNS_AUTH" }),
+  );
+  // With its zone named, the parent's own record is still the owner's to change.
+  const h = harness({ report });
+  expect(
+    await h.run(["dns", "delete", NAME, "A", "--zone", PARENT, "--yes"]),
+  ).toBe(0);
+  expect(h.writes()).toMatchObject([{ dns: { zone: PARENT, id: "p1" } }]);
+  // A one-label name is relative to the only zone, but there are two here even with one of them unreadable.
+  const bare = harness({ report });
+  expect(await bare.run(["dns", "set", "app", "A", MAC, "--yes"])).toBe(1);
+  expect(bare.err()).toContain("or it could be in several");
+  expect(bare.writes()).toEqual([]);
+});
+
+test("a null MX can be created with rig dns set, and its TTL changed, keeping its root exchange and preference 0", async () => {
+  const created = harness({ report: overlapping() });
+  expect(
+    await created.run(["dns", "set", "@", "MX", ".", "--zone", CHILD, "--yes"]),
+  ).toBe(0);
+  expect(created.writes()).toMatchObject([
+    {
+      action: "dns-create",
+      dns: {
+        zone: CHILD,
+        record: { name: CHILD, type: "MX", content: ".", priority: 0 },
+      },
+    },
+  ]);
+
+  const stored = dnsRecord(CHILD, "mx1", "MX", ".", CHILD, { priority: 0 });
+  const edited = harness({ report: overlapping(stored) });
+  expect(
+    await edited.run([
+      "dns",
+      "set",
+      "@",
+      "MX",
+      ".",
+      "--zone",
+      CHILD,
+      "--ttl",
+      "600",
+      "--yes",
+    ]),
+  ).toBe(0);
+  expect(edited.writes()).toMatchObject([
+    {
+      action: "dns-update",
+      dns: {
+        zone: CHILD,
+        id: "mx1",
+        record: { type: "MX", content: ".", priority: 0, ttl: 600 },
+      },
+    },
+  ]);
+
+  const same = harness({ report: overlapping(stored) });
+  expect(
+    await same.run(["dns", "set", "@", "MX", ".", "--zone", CHILD, "--yes"]),
+  ).toBe(0);
+  expect(same.out()).toContain("is already set");
+
+  const refused = harness({ report: overlapping() });
+  expect(
+    await refused.run([
+      "dns",
+      "set",
+      "@",
+      "MX",
+      ".",
+      "--zone",
+      CHILD,
+      "--priority",
+      "10",
+      "--yes",
+    ]),
+  ).toBe(1);
+  expect(refused.err()).toContain("priority must be 0 for a null MX");
+  expect(refused.writes()).toEqual([]);
+});
+
+test("a long TXT record Cloudflare stored can have its TTL changed, with its content as it is", async () => {
+  // 2048 bytes of text in strings of 255: 2057 bytes in DNS, 2074 characters as written.
+  const content = [
+    ...Array.from({ length: 8 }, () => `"${"x".repeat(255)}"`),
+    '"xxxxxxxx"',
+  ].join(" ");
+  const name = "dkim.example.co.uk";
+  const { writes, run } = harness({
+    report: overlapping(dnsRecord(PARENT, "t1", "TXT", content, name)),
+  });
+  expect(
+    await run(["dns", "set", name, "TXT", content, "--ttl", "600", "--yes"]),
+  ).toBe(0);
+  expect(writes()).toMatchObject([
+    {
+      action: "dns-update",
+      dns: {
+        zone: PARENT,
+        id: "t1",
+        record: { type: "TXT", content, ttl: 600 },
+      },
+    },
+  ]);
 });

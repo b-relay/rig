@@ -1,7 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { Crosshair } from "lucide-react";
-import { VERDICT, fixCommand, fixDescription, sourcesLabel } from "@/lib/dns";
+import {
+  VERDICT,
+  fixCommand,
+  fixDescription,
+  pointed,
+  sourcesLabel,
+} from "@/lib/dns";
 import type { HostnameCheck } from "@/lib/types";
 import { CARD, Failure, HEALTH_DOT, HEALTH_TILE, Mono } from "./bits";
 import { useRun } from "./operations";
@@ -63,7 +70,8 @@ export function DnsHostnames({
 export function HostnameRow({ check }: { check: HostnameCheck }) {
   const act = useRun();
   const verdict = VERDICT[check.verdict];
-  const done = act.result !== undefined;
+  const [sentFrom, setSentFrom] = useState<HostnameCheck>();
+  const done = pointed(check, sentFrom, act.result);
   return (
     <li className="grid gap-x-4 gap-y-1.5 px-4 py-3 text-sm md:grid-cols-[minmax(0,1.2fr)_minmax(0,1.6fr)_11rem] md:items-center">
       <span className="flex min-w-0 flex-col">
@@ -128,7 +136,10 @@ export function HostnameRow({ check }: { check: HostnameCheck }) {
             title={`Point ${check.hostname} at this Mac?`}
             description={fixDescription(check.fix)}
             confirmLabel="Change the record"
-            onConfirm={() => void act.run(fixCommand(check.fix!))}
+            onConfirm={() => {
+              setSentFrom(check);
+              void act.run(fixCommand(check.fix!));
+            }}
           >
             <Button
               size="sm"

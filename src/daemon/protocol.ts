@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { OPERATION_OUTCOMES } from "../domain/activity";
+import { CONTENT_MAX } from "../domain/dns-records";
 import { MAX_NAME_LENGTH } from "../domain/names";
 
 /** Only domain commands cross the local control plane, never arbitrary scripts. */
@@ -26,7 +27,7 @@ export const dnsRequestSchema = z.strictObject({
     .max(253)
     .optional()
     .describe(
-      "The zone, such as example.com. A read without one reads every zone Rig manages.",
+      "The zone, such as example.com. A read with one reads that zone and any zone its hostnames' CNAMEs lead to, and fails if that zone cannot be read. A read without one reads every zone Rig manages and reports those it could not read beside the rest.",
     ),
   id: z
     .string()
@@ -52,7 +53,7 @@ export const dnsRequestSchema = z.strictObject({
       type: z.string().max(16).describe("A, AAAA, CNAME, TXT, MX or CAA."),
       content: z
         .string()
-        .max(4096)
+        .max(CONTENT_MAX)
         .describe(
           "An address, a hostname, TXT text or CAA data, by type; rigd checks it against the type's rules.",
         ),
@@ -607,6 +608,12 @@ export const dnsResultSchema = z
               .passthrough()
               .optional(),
             fixBlocked: z.string().optional(),
+            unreadZone: z
+              .string()
+              .optional()
+              .describe(
+                "The zone whose records could not be read, when that is why the verdict is unknown.",
+              ),
           })
           .passthrough(),
       )

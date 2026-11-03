@@ -10,7 +10,12 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { managedCaddyWorld, TOKEN } from "./support/managed-caddy-double";
+import {
+  managedCaddyWorld,
+  renderedByOldRule,
+  TOKEN,
+} from "./support/managed-caddy-double";
+import { proxyReport } from "../src/adapters/proxy-report";
 import { createManagedCaddy } from "../src/providers/managed-caddy";
 import { parseHostConfig } from "../src/config";
 import { RigError } from "../src/domain/errors";
@@ -394,6 +399,64 @@ test("proxy.routes are served as plain reverse proxies, applied by a republish a
   ]);
   expect(JSON.stringify(w.control.loaded)).toContain("127.0.0.1:3007");
   expect(await w.caddy.republish()).toEqual({ published: false });
+});
+
+/** Makes the current generation one an older Rig rendered, asking for `*.co.uk`, as an upgrade finds it. */
+async function renderedBeforeUpgrade(w: { root: string }) {
+  const main = join(w.root, "caddy", "current", "Caddyfile");
+  await writeFile(
+    main,
+    renderedByOldRule(await readFile(main, "utf8"), "*.co.uk"),
+  );
+}
+/** The certificate `rig proxy` reports for `hostname`, one of the routes of `w`. */
+async function reportedCertificate(w: { root: string }, hostname: string) {
+  const report = await proxyReport({
+    root: w.root,
+    requested: parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } })
+      .proxy!,
+    job: { state: async () => "running" } as never,
+    admin: { reachable: async () => true } as never,
+    targets: [],
+  });
+  return report.sites.find((site) => site.hostname === hostname)?.certificate;
+}
+
+test("an upgrade republishes a generation an older Rig rendered differently, with nothing else changed, and the report says what is served", async () => {
+  const w = await world({ routes: { "example.co.uk": 3005 } });
+  expect(await w.caddy.republish()).toEqual({ published: true });
+  await renderedBeforeUpgrade(w);
+  const old = await w.current();
+  // Until it is republished the report names what that generation asks for, not what this Rig would render.
+  expect(await reportedCertificate(w, "example.co.uk")).toBe("*.co.uk");
+
+  expect(await w.caddy.republish()).toEqual({ published: true });
+  expect(await w.current()).not.toBe(old);
+  expect(await w.file("caddy", "current", "Caddyfile")).not.toContain(
+    "*.co.uk",
+  );
+  expect(await reportedCertificate(w, "example.co.uk")).toBe("example.co.uk");
+  // Rendered as this Rig renders it, so there is nothing more to do.
+  expect(await w.caddy.republish()).toEqual({ published: false });
+});
+
+test("an upgrade with Host config Rig refuses still republishes the older rendering, with the settings Caddy accepted", async () => {
+  const w = await world({ routes: { "example.co.uk": 3005 } });
+  await w.caddy.router.apply(app());
+  await renderedBeforeUpgrade(w);
+  const old = await w.current();
+  w.setSettings({
+    routes: { "example.co.uk": 3005, "app.example.test": 3006 },
+  });
+  expect(await w.caddy.republish().catch((caught) => caught)).toMatchObject({
+    code: "ROUTE_CONFLICT",
+    details: { pending: true },
+  });
+  expect(await w.current()).not.toBe(old);
+  const main = await w.file("caddy", "current", "Caddyfile");
+  expect(main).not.toContain("*.co.uk");
+  expect(main).toContain('"example.co.uk" {');
+  expect(main).not.toContain('"app.example.test" {');
 });
 
 test("one hostname is never both a Target's and the owner's, whatever scheme, port or case the Target's address has", async () => {

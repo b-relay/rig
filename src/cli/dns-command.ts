@@ -9,6 +9,7 @@ import {
   createConflicts,
   describeRecord,
   dnsRecordInputSchema,
+  isNullMx,
   normalizeRecordInput,
   qualifyName,
   recordsAt,
@@ -50,6 +51,11 @@ const reportSchema = z.object({
       modifiedOn: z.string(),
     }),
   ),
+  unreadableZones: z
+    .array(
+      z.object({ zone: z.string(), code: z.string(), message: z.string() }),
+    )
+    .optional(),
 });
 type Report = z.infer<typeof reportSchema>;
 interface ChangeOptions {
@@ -84,9 +90,12 @@ export function addDnsCommands(
   dns
     .command("list")
     .description(
-      "List the records of every zone Rig manages, or of one, and where each hostname Rig serves points.",
+      "List the records of every zone Rig manages, or of one, and where each hostname they hold that Rig serves points. A zone that cannot be read fails a read of that zone; a read of every zone warns of it (unreadableZones with --json), lists the rest and exits 0.",
     )
-    .argument("[zone]", "Only this zone, such as example.com")
+    .argument(
+      "[zone]",
+      "Only this zone, such as example.com, and not a child zone of it",
+    )
     .option("--json", "Render the report as JSON")
     .action(async (zone: string | undefined, options: { json?: boolean }) =>
       execute(
@@ -109,7 +118,10 @@ export function addDnsCommands(
       `Record type: ${DNS_RECORD_TYPES.join(", ")}`,
       recordType,
     )
-    .argument("<content>", "An address, a hostname, text, or CAA data")
+    .argument(
+      "<content>",
+      "An address, a hostname, text, or CAA data; for MX, . is a null MX, which says the name takes no mail",
+    )
     .option(
       "--ttl <seconds>",
       "Seconds resolvers may cache it, 60 to 86400 (30 on Enterprise), or auto (default: the record's own, else auto)",
@@ -122,7 +134,7 @@ export function addDnsCommands(
     )
     .option(
       "--priority <number>",
-      "MX preference (default: the record's own, else 10)",
+      "MX preference (default: 0 for a null MX, else the record's own, else 10)",
       count,
     )
     .option("--comment <text>", "A note kept with the record")
@@ -134,7 +146,10 @@ export function addDnsCommands(
       "--replace",
       "TXT, MX, CAA: change the one record of this name and type instead of adding one",
     )
-    .option("--zone <zone>", "The zone, when the name alone does not say")
+    .option(
+      "--zone <zone>",
+      "The zone, when the name alone does not say or should not: a name belongs to the longest zone that holds it",
+    )
     .option("-y, --yes", "Write without asking")
     .action(
       async (
@@ -148,7 +163,7 @@ export function addDnsCommands(
         const fqdn = qualifyName(name, zone);
         const plan = planSet(
           report.records.filter(
-            (record) => record.name === fqdn,
+            (record) => record.zone === zone && record.name === fqdn,
           ) as DnsRecord[],
           { zone, name: fqdn, type, content },
           options,
@@ -185,14 +200,21 @@ export function addDnsCommands(
       recordType,
     )
     .option("--content <content>", "Only the record with this content")
-    .option("--zone <zone>", "The zone, when the name alone does not say")
+    .option(
+      "--zone <zone>",
+      "The zone, when the name alone does not say or should not: a name belongs to the longest zone that holds it",
+    )
     .option("-y, --yes", "Delete without asking")
     .action(
       async (name: string, type: DnsRecordType, options: DeleteOptions) => {
         const report = await readReport(dependencies);
         const zone = chooseZone(report, name, options.zone);
         const fqdn = qualifyName(name, zone);
-        const matches = recordsAt(report.records, fqdn, type).filter(
+        const matches = recordsAt(
+          report.records.filter((record) => record.zone === zone),
+          fqdn,
+          type,
+        ).filter(
           (record) =>
             options.content === undefined ||
             sameContent(record.type, record.content, options.content),
@@ -242,7 +264,7 @@ export const MULTI_VALUED_TYPES: readonly DnsRecordType[] = [
   "MX",
   "CAA",
 ];
-/** Pure: what `rig dns set` does with the records at the name now (`atName`, every type).
+/** Pure: what `rig dns set` does with the records at the name now in the zone it writes to (`atName`, every type).
  * - A record of that type with the same content is changed in place (its TTL, proxying, priority, comment), or left.
  * - A, AAAA, CNAME: the one record of that type is replaced; several are ambiguous unless `add` asks for another.
  * - TXT, MX, CAA: a new record is added beside any there, unless `replace` asks to change the one there.
@@ -302,7 +324,13 @@ export function planSet(
         ? { proxied: true }
         : {}),
     ...(wanted.type === "MX"
-      ? { priority: options.priority ?? current?.priority ?? 10 }
+      ? {
+          priority:
+            options.priority ??
+            (isNullMx(wanted.type, wanted.content)
+              ? 0
+              : (current?.priority ?? 10)),
+        }
       : options.priority !== undefined
         ? { priority: options.priority }
         : {}),
@@ -350,15 +378,31 @@ export function planSet(
     },
   };
 }
-/** Pure: the zone a typed name belongs to: `--zone`, else the zone the name ends in, else the only zone for a name of one
- * label (`app`, `_dmarc`, `@`). A dotted name in no managed zone is refused rather than read as relative, since
- * `www.other.org` would otherwise become `www.other.org.example.com`; `--zone` makes it relative. */
+/** Pure: the zone a typed name belongs to: `--zone`, else the longest zone the name ends in, else the only zone for a name of
+ * one label (`app`, `_dmarc`, `@`). A dotted name in no managed zone is refused rather than read as relative, since
+ * `www.other.org` would otherwise become `www.other.org.example.com`; `--zone` makes it relative. A zone whose records could
+ * not be read still owns its names: a change to one fails with why, rather than falling to a parent zone. */
 export function chooseZone(
-  report: Pick<Report, "zones">,
+  report: Pick<Report, "zones" | "unreadableZones">,
   name: string,
   option: string | undefined,
 ): string {
-  const names = report.zones.map((zone) => zone.name);
+  const unreadable = report.unreadableZones ?? [];
+  const names = [
+    ...report.zones.map((zone) => zone.name),
+    ...unreadable.map((failure) => failure.zone),
+  ];
+  const readable = (zone: string) => {
+    const failure = unreadable.find((each) => each.zone === zone);
+    if (failure)
+      throw new RigError(
+        failure.code,
+        `The records of ${zone} could not be read, so Rig cannot plan a change there: ${failure.message}`,
+        "Fix what the message says and retry; --zone with another zone changes that zone's records instead.",
+        { zone },
+      );
+    return zone;
+  };
   if (option !== undefined) {
     const zone = canonicalName(option);
     if (!names.includes(zone))
@@ -369,12 +413,15 @@ export function chooseZone(
           ? `It manages ${names.join(", ")}.`
           : "The token sees no zone; check its permissions in the Cloudflare dashboard.",
       );
-    return zone;
+    return readable(zone);
   }
   const typed = canonicalName(name);
-  const found = zoneOf(typed, report.zones)?.name;
-  if (found) return found;
-  if (names.length === 1 && !typed.includes(".")) return names[0]!;
+  const found = zoneOf(
+    typed,
+    names.map((each) => ({ name: each })),
+  )?.name;
+  if (found) return readable(found);
+  if (names.length === 1 && !typed.includes(".")) return readable(names[0]!);
   throw new RigError(
     "DNS_ZONE",
     names.length

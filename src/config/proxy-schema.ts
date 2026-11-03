@@ -86,7 +86,7 @@ export const proxySettingsSchema = z
           .enum(["wildcard", "hostname"])
           .default("wildcard")
           .describe(
-            "wildcard: one certificate for each parent of a served hostname (*.example.com covers app.example.com and its Previews). hostname: one certificate for each hostname.",
+            "wildcard: one certificate for each parent of a served hostname (*.example.com covers app.example.com and its Previews), and one of its own for a hostname whose parent is a public suffix, such as example.co.uk. hostname: one certificate for each hostname.",
           ),
         resolvers: z
           .array(

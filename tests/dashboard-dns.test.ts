@@ -8,12 +8,13 @@ import {
   filterRecords,
   fixCommand,
   fixDescription,
+  pointed,
   recordDraft,
   relativeName,
   saveCommand,
   ttlLabel,
 } from "../web/lib/dns";
-import type { DnsRecord } from "../web/lib/types";
+import type { DnsRecord, HostnameCheck } from "../web/lib/types";
 import { DNS_DELETE_ELSEWHERE, confirmedDnsDelete } from "../web/server/dns";
 
 const zone = "example.com";
@@ -228,4 +229,59 @@ test("the dashboard's delete action passes on only a delete that carries the rec
     confirmedDnsDelete({ ...command, dns: { ...command.dns, id: "../x" } }),
   ).toMatchObject({ ok: false });
   expect(DNS_DELETE_ELSEWHERE.code).toBe("DNS_CONFIRMATION");
+});
+
+test("Point at this Mac has done its work only while the check it was sent from is the one on screen", () => {
+  const check = (modifiedOn: string): HostnameCheck => ({
+    hostname: "own.example.com",
+    sources: [{ kind: "route" }],
+    zone,
+    verdict: "elsewhere",
+    wildcard: false,
+    chain: [],
+    addresses: [],
+    reason: "x",
+    fix: {
+      op: "update",
+      zone,
+      id: "a1",
+      modifiedOn,
+      from: "100.64.41.99",
+      record: {
+        name: "own.example.com",
+        type: "A",
+        content: "100.64.41.1",
+        ttl: 1,
+        proxied: false,
+      },
+    },
+  });
+  const sent = check("m1");
+  expect(pointed(sent, sent, { outcome: "updated" })).toBe(true);
+  // Sent, and no answer yet; or refused.
+  expect(pointed(sent, sent, undefined)).toBe(false);
+  // A later check says for itself whether the name needs the fix, even one that plans exactly the same change.
+  expect(pointed(check("m2"), sent, { outcome: "updated" })).toBe(false);
+  expect(pointed(check("m1"), sent, { outcome: "updated" })).toBe(false);
+  expect(pointed(sent, undefined, { outcome: "updated" })).toBe(false);
+});
+
+test("the record dialog accepts a null MX at priority 0 and says so at any other", () => {
+  const draft = { ...recordDraft(zone), type: "MX" as const, name: "@" };
+  expect(draftRecord(zone, { ...draft, content: ".", priority: "0" })).toEqual({
+    ok: true,
+    record: {
+      name: zone,
+      type: "MX",
+      content: ".",
+      priority: 0,
+      ttl: 1,
+    },
+  });
+  expect(draftRecord(zone, { ...draft, content: ".", priority: "10" })).toEqual(
+    {
+      ok: false,
+      issues: { priority: "It must be 0 for a null MX (.)." },
+    },
+  );
 });

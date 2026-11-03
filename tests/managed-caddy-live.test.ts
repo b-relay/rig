@@ -15,7 +15,9 @@ import {
 import { verifyProxyCertificates } from "../src/adapters/proxy-verify";
 import { proxyReport } from "../src/adapters/proxy-report";
 import { join } from "node:path";
+import { connect } from "node:tls";
 import { parseHostConfig } from "../src/config";
+import { withDownPages } from "../src/domain/caddy-config";
 import { proxyPaths } from "../src/domain/managed-proxy";
 import { createCaddyAdmin } from "../src/providers/caddy-admin";
 import { installCaddyBinary } from "../src/providers/caddy-binary";
@@ -28,6 +30,7 @@ import { createTargetEffects } from "../src/adapters/target-effects";
 import { createTargetLifecycle } from "../src/runtime/lifecycle";
 import type { TargetRecord } from "../src/domain/runtime";
 import { localActivation } from "./support/activation-doubles";
+import { renderedByOldRule } from "./support/managed-caddy-double";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -72,6 +75,187 @@ async function get(
     body: lines.slice(0, -1).join("\n"),
   };
 }
+
+test("real Caddy serving an apex under a public suffix automates its own certificate, never the suffix's wildcard, and the report names each", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("own"),
+  });
+  cleanups.push(async () => upstream.stop(true));
+  const https = freePort();
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+      routes: {
+        "example.co.uk": upstream.port!,
+        "app.example.co.uk": upstream.port!,
+      },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  await caddy.republish();
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("example.co.uk", https)).status === 0 && Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await get("example.co.uk", https)).toEqual({
+    status: 200,
+    body: "own",
+  });
+  const report = await proxyReport({
+    root,
+    requested: settings,
+    job,
+    admin,
+    targets: [],
+  });
+  expect(report.sites.map((site) => [site.hostname, site.certificate])).toEqual(
+    [
+      ["app.example.co.uk", "*.example.co.uk"],
+      ["example.co.uk", "example.co.uk"],
+    ],
+  );
+  const log = await readFile(paths.log, "utf8");
+  expect(log).toContain("example.co.uk");
+  expect(log).not.toContain("*.co.uk");
+}, 60_000);
+
+/** The names of the certificate Caddy answers `hostname` with; undefined when it answers with none. */
+function servedCertificate(
+  hostname: string,
+  port: number,
+): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const socket = connect({
+      host: "127.0.0.1",
+      port,
+      servername: hostname,
+      rejectUnauthorized: false,
+    });
+    socket.once("secureConnect", () => {
+      resolve(socket.getPeerCertificate().subjectaltname);
+      socket.destroy();
+    });
+    socket.once("error", () => resolve(undefined));
+  });
+}
+
+test("real Caddy on a generation an older Rig rendered with a public suffix's wildcard stops serving it once an upgrade republishes, with Host config unchanged", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("own"),
+  });
+  cleanups.push(async () => upstream.stop(true));
+  const https = freePort();
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+      routes: { "example.co.uk": upstream.port! },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  const report = async () =>
+    (
+      await proxyReport({ root, requested: settings, job, admin, targets: [] })
+    ).sites.map((site) => site.certificate);
+
+  // The generation as the older Rig left it: its main file, and what Caddy adapted that to.
+  await caddy.republish();
+  const main = join(paths.current, "Caddyfile");
+  await writeFile(
+    main,
+    renderedByOldRule(await readFile(main, "utf8"), "*.co.uk"),
+  );
+  const adapted = await runCommand({
+    command: [source, "adapt", "--config", main, "--adapter", "caddyfile"],
+  });
+  await writeFile(
+    join(paths.current, "adapted.json"),
+    JSON.stringify(withDownPages(JSON.parse(adapted.stdout))) + "\n",
+  );
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await servedCertificate("other.co.uk", https)) === undefined &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await servedCertificate("other.co.uk", https)).toBe("DNS:*.co.uk");
+  expect(await report()).toEqual(["*.co.uk"]);
+
+  expect(await caddy.republish()).toEqual({ published: true });
+  expect(await servedCertificate("other.co.uk", https)).toBeUndefined();
+  expect(await readFile(main, "utf8")).not.toContain("*.co.uk");
+  expect(await report()).toEqual(["example.co.uk"]);
+  for (
+    let deadline = Date.now() + 15_000;
+    (await servedCertificate("example.co.uk", https)) === undefined &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await servedCertificate("example.co.uk", https)).toBe(
+    "DNS:example.co.uk",
+  );
+  expect(await caddy.republish()).toEqual({ published: false });
+}, 60_000);
 
 test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down page, the owner's own route, refused Host config kept pending, and a restart", async () => {
   const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(

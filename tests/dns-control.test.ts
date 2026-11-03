@@ -3,6 +3,8 @@ import { chmod, readFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { createDnsControl } from "../src/adapters/dns-control";
 import { readDnsToken } from "../src/adapters/dns-token";
+import type { DnsRecord } from "../src/domain/dns-records";
+import type { DnsProvider } from "../src/providers/contracts";
 import type { DnsReport } from "../src/runtime/contracts";
 import { createRuntime } from "../src/runtime/application";
 import { writeProxyToken } from "../src/adapters/proxy-token";
@@ -13,7 +15,7 @@ import { proxyPaths } from "../src/domain/managed-proxy";
 import { commandSchema, readActions } from "../src/daemon/protocol";
 import { createCloudflareDns } from "../src/providers/cloudflare-dns";
 import { runtimeWorld } from "./support/runtime-world";
-import { fakeCloudflare } from "./support/fake-cloudflare";
+import { fakeCloudflare, type FakeRecord } from "./support/fake-cloudflare";
 
 /** Synthetic: the shape of a Cloudflare token, never a real one. The Rig root is a temporary directory and Cloudflare a
  * fake on 127.0.0.1, so nothing here reads the real token or reaches the real API. */
@@ -34,6 +36,8 @@ async function world(
     proxy?: Record<string, unknown> | null;
     tailscale?: string;
     timeoutMs?: number;
+    /** What example.org holds, by default nothing. */
+    org?: Omit<FakeRecord, "modified_on">[];
   } = {},
 ) {
   const fake = fakeCloudflare({
@@ -68,7 +72,7 @@ async function world(
           ttl: 1,
         },
       ],
-      z2: [],
+      z2: options.org ?? [],
     },
   });
   cleanup.push(() => fake.stop());
@@ -431,7 +435,7 @@ test("a record that breaks its type's rules is DNS_RECORD naming the field, befo
       "content",
     ],
     [
-      { name: "a.example.com", type: "TXT", content: "x".repeat(2049), ttl: 1 },
+      { name: "a.example.com", type: "TXT", content: "x".repeat(4081), ttl: 1 },
       "content",
     ],
     [
@@ -934,4 +938,515 @@ test("a lost write whose read-back holds an equivalent content Cloudflare normal
     outcome: "updated",
     record: { content: '0 issue "letsencrypt.org"' },
   });
+});
+
+/** DNS control over an in-memory provider that records which zones' records were asked for, in order. */
+function zonesWorld(options: {
+  zones: string[];
+  records?: Record<string, [name: string, type: string, content: string][]>;
+  failing?: string[];
+  delayMs?: Record<string, number>;
+  /** Keeps a zone's read waiting until this settles. */
+  hold?: (zone: string) => Promise<void>;
+  routes?: Record<string, number>;
+}) {
+  const zones = options.zones.map((name, index) => ({
+    id: `z${index}`,
+    name,
+    status: "active",
+  }));
+  const asked: string[] = [];
+  const provider = {
+    zones: async () => zones,
+    async records(zone) {
+      asked.push(zone.name);
+      await Bun.sleep(options.delayMs?.[zone.name] ?? 0);
+      await options.hold?.(zone.name);
+      if (options.failing?.includes(zone.name))
+        throw new RigError(
+          "DNS_AUTH",
+          `Cannot read ${zone.name}.`,
+          "Check the token.",
+        );
+      return (options.records?.[zone.name] ?? []).map(
+        ([name, type, content], index): DnsRecord => ({
+          id: `${zone.id}r${index}`,
+          zone: zone.name,
+          name,
+          type,
+          content,
+          ttl: 1,
+          proxied: false,
+          modifiedOn: "m",
+        }),
+      );
+    },
+  } as DnsProvider;
+  const control = createDnsControl({
+    settings: async () =>
+      settings({ routes: options.routes ?? {}, dns: { address: MAC } }),
+    token: async () => TOKEN,
+    provider: () => provider,
+    address: { ipv4: async () => undefined },
+  });
+  return { control, asked };
+}
+const TWELVE = Array.from({ length: 12 }, (_, index) => `zone${index}.test`);
+
+test("a read of one zone asks for that zone's records alone, and shows only what that zone owns", async () => {
+  const { control, asked } = zonesWorld({
+    zones: TWELVE,
+    records: {
+      "zone0.test": [["app.zone0.test", "A", MAC]],
+      "zone1.test": [["app.zone1.test", "A", MAC]],
+    },
+    failing: ["zone11.test"],
+    delayMs: { "zone11.test": 5000 },
+    routes: { "app.zone0.test": 3000, "app.zone1.test": 3001 },
+  });
+  const started = Date.now();
+  const report = await control.read({ zone: "zone0.test", hostnames: [] });
+  // A slow, unreadable, unrelated zone was never asked, so it cannot delay this or fail it.
+  expect(Date.now() - started).toBeLessThan(2000);
+  expect(asked).toEqual(["zone0.test"]);
+  expect(report.zones.map((zone) => zone.name)).toEqual(["zone0.test"]);
+  expect(report.records.map((record) => record.zone)).toEqual(["zone0.test"]);
+  expect(report.hostnames.map((check) => check.hostname)).toEqual([
+    "app.zone0.test",
+  ]);
+  expect(report.hostnames[0]!.verdict).toBe("mac");
+  expect(report.unreadableZones).toBeUndefined();
+});
+
+test("a read of one zone reads another only when a CNAME of its hostnames leads there, and shows only its own records", async () => {
+  const { control, asked } = zonesWorld({
+    zones: ["a.test", "b.test", "c.test", "unrelated.test"],
+    records: {
+      "a.test": [["app.a.test", "CNAME", "hop.b.test"]],
+      "b.test": [["hop.b.test", "CNAME", "end.c.test"]],
+      "c.test": [["end.c.test", "A", MAC]],
+      "unrelated.test": [["end.unrelated.test", "A", MAC]],
+    },
+    routes: { "app.a.test": 3000 },
+  });
+  const report = await control.read({ zone: "a.test", hostnames: [] });
+  expect(asked).toEqual(["a.test", "b.test", "c.test"]);
+  expect(report.hostnames[0]).toMatchObject({
+    hostname: "app.a.test",
+    verdict: "mac",
+    chain: ["app.a.test -> hop.b.test", "hop.b.test -> end.c.test"],
+  });
+  expect(report.zones.map((zone) => zone.name)).toEqual(["a.test"]);
+  expect(report.records.map((record) => record.name)).toEqual(["app.a.test"]);
+  expect(report.unreadableZones).toBeUndefined();
+});
+
+test("a CNAME into a zone that cannot be read leaves the selected read a success: that hostname is unknown, and the zone named", async () => {
+  const { control, asked } = zonesWorld({
+    zones: ["a.test", "bad.test"],
+    records: {
+      "a.test": [
+        ["app.a.test", "CNAME", "end.bad.test"],
+        ["own.a.test", "A", MAC],
+      ],
+    },
+    failing: ["bad.test"],
+    routes: { "app.a.test": 3000, "own.a.test": 3001 },
+  });
+  const report = await control.read({ zone: "a.test", hostnames: [] });
+  expect(asked).toEqual(["a.test", "bad.test"]);
+  expect(report.records).toHaveLength(2);
+  expect(report.hostnames).toMatchObject([
+    { hostname: "app.a.test", verdict: "unknown" },
+    { hostname: "own.a.test", verdict: "mac" },
+  ]);
+  expect(report.hostnames[0]!.reason).toContain(
+    "whose records Rig could not read just now",
+  );
+  expect(report.unreadableZones).toEqual([
+    { zone: "bad.test", code: "DNS_AUTH", message: "Cannot read bad.test." },
+  ]);
+});
+
+test("a parent zone's read leaves a child zone unread and unlisted, and a CNAME into it is answered by the child", async () => {
+  const world = () =>
+    zonesWorld({
+      zones: ["example.test", "sub.example.test"],
+      records: {
+        "example.test": [
+          ["app.sub.example.test", "A", "203.0.113.8"],
+          ["*.sub.example.test", "A", "203.0.113.8"],
+          ["alias.example.test", "CNAME", "end.sub.example.test"],
+        ],
+        "sub.example.test": [
+          ["app.sub.example.test", "A", MAC],
+          ["end.sub.example.test", "A", MAC],
+        ],
+      },
+      routes: { "app.sub.example.test": 3000 },
+    });
+  const parent = world();
+  const report = await parent.control.read({
+    zone: "example.test",
+    hostnames: [],
+  });
+  expect(parent.asked).toEqual(["example.test"]);
+  expect(report.zones.map((zone) => zone.name)).toEqual(["example.test"]);
+  // The hostname belongs to the child, however its name reads, so it is the child's read that shows it.
+  expect(report.hostnames).toEqual([]);
+  expect(report.records).toHaveLength(3);
+
+  const child = world();
+  const below = await child.control.read({
+    zone: "sub.example.test",
+    hostnames: [],
+  });
+  expect(child.asked).toEqual(["sub.example.test"]);
+  expect(below.hostnames).toMatchObject([
+    {
+      hostname: "app.sub.example.test",
+      zone: "sub.example.test",
+      verdict: "mac",
+    },
+  ]);
+
+  const cname = world();
+  const alias = await cname.control.read({
+    zone: "example.test",
+    hostnames: [
+      {
+        hostname: "alias.example.test",
+        sources: [{ kind: "route" }],
+      },
+    ],
+  });
+  expect(cname.asked).toEqual(["example.test", "sub.example.test"]);
+  expect(alias.hostnames).toMatchObject([
+    { hostname: "alias.example.test", verdict: "mac" },
+  ]);
+  expect(alias.records.map((record) => record.zone)).toEqual([
+    "example.test",
+    "example.test",
+    "example.test",
+  ]);
+});
+
+test("a selected zone that cannot be read fails the read with its own error, whether or not another zone is readable", async () => {
+  for (const zones of [["bad.test"], ["bad.test", "ok.test"]]) {
+    const { control, asked } = zonesWorld({ zones, failing: ["bad.test"] });
+    const failed = await refusal(
+      control.read({ zone: "bad.test", hostnames: [] }),
+    );
+    expect(failed).toMatchObject({
+      code: "DNS_AUTH",
+      message: "Cannot read bad.test.",
+    });
+    expect(asked).toEqual(["bad.test"]);
+  }
+  // A zone that is readable and empty is a success, and one Rig does not manage is refused before anything is read.
+  const { control, asked } = zonesWorld({
+    zones: ["bad.test", "empty.test"],
+    failing: ["bad.test"],
+  });
+  expect(
+    await control.read({ zone: "empty.test", hostnames: [] }),
+  ).toMatchObject({
+    zones: [{ name: "empty.test" }],
+    records: [],
+    hostnames: [],
+  });
+  asked.length = 0;
+  expect(
+    (await refusal(control.read({ zone: "other.test", hostnames: [] }))).code,
+  ).toBe("DNS_ZONE");
+  expect(asked).toEqual([]);
+});
+
+test("an account-wide read reads every zone, four at a time, without waiting for a slow one to start the next", async () => {
+  const zones = ["slow.test", "b.test", "c.test", "d.test", "e.test"];
+  const held = new Map(
+    zones.map((zone) => [zone, Promise.withResolvers<void>()]),
+  );
+  const { control, asked } = zonesWorld({
+    zones,
+    records: { "e.test": [["app.e.test", "A", MAC]] },
+    failing: ["c.test"],
+    hold: (zone) => held.get(zone)!.promise,
+    routes: { "app.e.test": 3000, "app.c.test": 3001 },
+  });
+  const pending = control.read({ hostnames: [] });
+  while (asked.length < 4) await Bun.sleep(1);
+  await Bun.sleep(20);
+  // Four are held, so the fifth has not started.
+  expect(asked).toEqual(zones.slice(0, 4));
+  // One of the four finishes, with the other three still held: the fifth starts without waiting for them.
+  held.get("b.test")!.resolve();
+  await Bun.sleep(20);
+  expect(asked).toEqual(zones);
+  for (const { resolve } of held.values()) resolve();
+  const report = await pending;
+  expect(report.zones.map((zone) => zone.name)).toEqual([
+    "slow.test",
+    "b.test",
+    "d.test",
+    "e.test",
+  ]);
+  expect(report.records).toHaveLength(1);
+  expect(report.unreadableZones).toMatchObject([{ zone: "c.test" }]);
+  expect(report.hostnames).toMatchObject([
+    { hostname: "app.c.test", verdict: "unknown" },
+    { hostname: "app.e.test", verdict: "mac" },
+  ]);
+});
+
+test("a null MX can be created and its TTL changed through rigd, and no other MX can stand beside it", async () => {
+  const { runtime, fake } = await world({
+    org: [
+      {
+        id: "mx1",
+        name: "mail.example.org",
+        type: "MX",
+        content: ".",
+        ttl: 300,
+        priority: 0,
+      },
+      {
+        id: "mx2",
+        name: "ordinary.example.org",
+        type: "MX",
+        content: "mail.example.net",
+        ttl: 300,
+        priority: 10,
+      },
+    ],
+  });
+  const read = async () =>
+    ((await runtime.command({ action: "dns" })) as DnsReport).records;
+  const nullMx = (await read()).find((record) => record.id === "mx1")!;
+  expect(nullMx).toMatchObject({ content: ".", priority: 0 });
+
+  const edited = (await runtime.command({
+    action: "dns-update",
+    dns: {
+      zone: "example.org",
+      id: "mx1",
+      modifiedOn: nullMx.modifiedOn,
+      record: {
+        name: "mail.example.org",
+        type: "MX",
+        content: ".",
+        priority: 0,
+        ttl: 600,
+      },
+    },
+  })) as { record: { content: string; ttl: number } };
+  expect(edited.record).toMatchObject({ content: ".", ttl: 600 });
+  expect(fake.requests.at(-1)).toMatchObject({
+    method: "PATCH",
+    body: { content: ".", priority: 0, ttl: 600 },
+  });
+
+  const created = (await runtime.command({
+    action: "dns-create",
+    dns: {
+      zone: "example.org",
+      absent: true,
+      record: {
+        name: "none.example.org",
+        type: "MX",
+        content: ".",
+        priority: 0,
+        ttl: 1,
+      },
+    },
+  })) as { record: { content: string } };
+  expect(created.record.content).toBe(".");
+
+  const writes = () =>
+    fake.requests.filter((request) => request.method !== "GET").length;
+  const before = writes();
+  const mx = (name: string, content: string, priority: number) => ({
+    name,
+    type: "MX",
+    content,
+    priority,
+    ttl: 1,
+  });
+  // A second MX beside a null MX, a null MX beside an MX, and a priority a null MX cannot have, each before any write.
+  for (const [record, says] of [
+    [
+      mx("mail.example.org", "backup.example.net", 20),
+      "has a null MX, which says it takes no mail",
+    ],
+    [
+      mx("ordinary.example.org", ".", 0),
+      "A null MX says a name takes no mail, but ordinary.example.org has MX mail.example.net",
+    ],
+    [mx("new.example.org", ".", 10), "must be 0 for a null MX (.)"],
+  ] as const) {
+    const failed = await refusal(
+      runtime.command({
+        action: "dns-create",
+        dns: { zone: "example.org", record },
+      }),
+    );
+    expect(failed.code).toBe("DNS_RECORD");
+    expect(failed.message).toContain(says);
+  }
+  // An update that would turn one of two MX records into a null MX is refused; the only one may become it.
+  const second = (await runtime.command({
+    action: "dns-create",
+    dns: {
+      zone: "example.org",
+      record: mx("ordinary.example.org", "backup.example.net", 20),
+    },
+  })) as { record: { id: string; modifiedOn: string } };
+  const failed = await refusal(
+    runtime.command({
+      action: "dns-update",
+      dns: {
+        zone: "example.org",
+        id: second.record.id,
+        modifiedOn: second.record.modifiedOn,
+        record: mx("ordinary.example.org", ".", 0),
+      },
+    }),
+  );
+  expect(failed.code).toBe("DNS_RECORD");
+  expect(writes()).toBe(before + 1);
+  const only = (await read()).find((record) => record.id === "mx2")!;
+  await runtime.command({
+    action: "dns-delete",
+    dns: {
+      zone: "example.org",
+      id: second.record.id,
+      modifiedOn: second.record.modifiedOn,
+      confirm: "ordinary.example.org",
+    },
+  });
+  expect(
+    await runtime.command({
+      action: "dns-update",
+      dns: {
+        zone: "example.org",
+        id: "mx2",
+        modifiedOn: only.modifiedOn,
+        record: mx("ordinary.example.org", ".", 0),
+      },
+    }),
+  ).toMatchObject({ outcome: "updated", record: { content: "." } });
+});
+
+test("a TTL or comment edit of an MX beside a null MX Cloudflare already holds goes through: it adds no clash of its own", async () => {
+  const { runtime } = await world({
+    org: [
+      {
+        id: "mx1",
+        name: "both.example.org",
+        type: "MX",
+        content: ".",
+        ttl: 300,
+        priority: 0,
+      },
+      {
+        id: "mx2",
+        name: "both.example.org",
+        type: "MX",
+        content: "mail.example.net",
+        ttl: 300,
+        priority: 10,
+      },
+    ],
+  });
+  const { records } = (await runtime.command({ action: "dns" })) as DnsReport;
+  for (const stored of records.filter(
+    (record) => record.zone === "example.org",
+  ))
+    expect(
+      await runtime.command({
+        action: "dns-update",
+        dns: {
+          zone: "example.org",
+          id: stored.id,
+          modifiedOn: stored.modifiedOn,
+          record: {
+            name: stored.name,
+            type: "MX",
+            content: stored.content,
+            priority: stored.priority,
+            ttl: 600,
+          },
+        },
+      }),
+    ).toMatchObject({ outcome: "updated" });
+});
+
+test("a long TXT record Cloudflare stored is read, and its TTL and comment edited, with its content as stored", async () => {
+  const content = [
+    ...Array.from({ length: 8 }, () => `"${"x".repeat(255)}"`),
+    '"xxxxxxxx"',
+  ].join(" ");
+  const { runtime, fake } = await world({
+    org: [
+      {
+        id: "t1",
+        name: "dkim.example.org",
+        type: "TXT",
+        content,
+        ttl: 300,
+      },
+    ],
+  });
+  const { records } = (await runtime.command({ action: "dns" })) as DnsReport;
+  const stored = records.find((record) => record.id === "t1")!;
+  expect(stored.content).toBe(content);
+  const command = {
+    action: "dns-update" as const,
+    dns: {
+      zone: "example.org",
+      id: "t1",
+      modifiedOn: stored.modifiedOn,
+      record: {
+        name: stored.name,
+        type: "TXT",
+        content,
+        ttl: 600,
+        comment: "dkim",
+      },
+    },
+  };
+  expect(commandSchema.safeParse(command).success).toBe(true);
+  expect(await runtime.command(command)).toMatchObject({
+    outcome: "updated",
+    record: { content, ttl: 600 },
+  });
+  expect(fake.requests.at(-1)).toMatchObject({
+    method: "PATCH",
+    body: { content, ttl: 600, comment: "dkim" },
+  });
+  // The control plane carries the longest content the schema accepts: every byte of 4096 written as \DDD.
+  const longest = Array.from(
+    { length: 16 },
+    () => `"${"\\065".repeat(255)}"`,
+  ).join(" ");
+  expect(
+    commandSchema.safeParse({
+      ...command,
+      dns: {
+        ...command.dns,
+        record: { ...command.dns.record, content: longest },
+      },
+    }).success,
+  ).toBe(true);
+  const failed = await refusal(
+    runtime.command({
+      action: "dns-create",
+      dns: {
+        zone: "example.org",
+        record: { ...command.dns.record, content: "x".repeat(4081) },
+      },
+    }),
+  );
+  expect(failed.code).toBe("DNS_RECORD");
+  expect(failed.message).toContain("4096 bytes");
 });

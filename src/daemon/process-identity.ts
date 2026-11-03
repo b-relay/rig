@@ -1,3 +1,5 @@
+import { nativeProcessStart } from "../providers/native-process-start";
+
 /** How a process recorded by pid relates to what is running now. */
 export type ProcessLiveness =
   /** The pid exists and its start time matches the record. */
@@ -37,13 +39,28 @@ export async function processStartTime(
   const startedAt = output.trim();
   return code === 0 && startedAt ? startedAt : undefined;
 }
+/** Whether the kernel's start time for the pid, printed as ps would print it here, reads exactly as the record does, which
+ * starts no process. Any other answer proves nothing. */
+async function kernelConfirms(record: ProcessRecord): Promise<boolean> {
+  const native = await nativeProcessStart();
+  try {
+    const seconds = native?.start(record.pid);
+    return (
+      seconds !== undefined && native?.printed(seconds) === record.startedAt
+    );
+  } catch {
+    return false;
+  }
+}
 /** Whether the recorded process is still the one running. Exit is decided by
- * signal 0; a record without a start time can only be unverified. */
+ * signal 0; a record without a start time can only be unverified. This runs before every request a client sends, so the
+ * kernel is asked first, and ps only when it does not confirm the record. */
 export async function recordedProcess(
   record: ProcessRecord,
 ): Promise<ProcessLiveness> {
   if (!processExists(record.pid)) return "exited";
   if (record.startedAt === undefined) return "unverified";
+  if (await kernelConfirms(record)) return "running";
   const startedAt = await processStartTime(record.pid);
   if (startedAt === undefined) return "exited";
   return startedAt === record.startedAt ? "running" : "replaced";

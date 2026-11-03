@@ -58,7 +58,7 @@ const DNS_PROVIDERS: Readonly<
 const OBSERVATION_BUDGET_MS = 2000;
 import {
   createProcessInspection,
-  platformKill,
+  platformInspection,
 } from "../providers/process-inspection";
 import { createProcessTiming } from "../providers/process-timing";
 import { elapsedNow, systemClock } from "../providers/system-clock";
@@ -156,10 +156,9 @@ export async function composeDaemon(
    * reported left behind) stops waiting then, instead of holding the drain for the Service's whole grace. */
   const shuttingDown = new AbortController();
   // The daemon owns the platform clock, command runner, and signal path; every supervisor receives them explicitly.
-  const processInspection = createProcessInspection({
-    run: runCommand,
-    kill: platformKill,
-  });
+  const processInspection = createProcessInspection(
+    await platformInspection(runCommand),
+  );
   // Writers read the Host's logs settings as they are now, so a change needs no daemon restart.
   const logRetention = hostLogRetention({
     read: () => readHostConfig(root),

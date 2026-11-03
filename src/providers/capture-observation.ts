@@ -162,21 +162,19 @@ async function readRecord(
   }
 }
 
-/** Wraps a publisher so unchanged evidence is rewritten only once per heartbeat of elapsed time (`elapsed`, monotonic
- * milliseconds), however the Mac's clock is corrected meanwhile, while any change is published at once. */
-export function throttledPublisher<Observation>(
+/** Wraps a publisher so only a change reaches it: an idle component does not rewrite its file. Nothing judges how old the
+ * evidence is; what matters is the wrapper's last word (see `survivingApplication`). */
+export function changePublisher<Observation>(
   publish: (
     observation: Observation,
     applicationIdentity?: string,
   ) => Promise<void>,
-  options: { heartbeatMs: number; elapsed: () => number },
 ): (observation: Observation, applicationIdentity?: string) => Promise<void> {
-  let last: { key: string; at: number } | undefined;
+  let last: string | undefined;
   return async (observation, applicationIdentity) => {
     const key = JSON.stringify([observation, applicationIdentity]);
-    const at = options.elapsed();
-    if (last && last.key === key && at - last.at < options.heartbeatMs) return;
+    if (key === last) return;
     await publish(observation, applicationIdentity);
-    last = { key, at };
+    last = key;
   };
 }

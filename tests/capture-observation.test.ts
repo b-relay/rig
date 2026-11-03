@@ -1,51 +1,28 @@
-import { expect, setSystemTime, test } from "bun:test";
-import { throttledPublisher } from "../src/providers/capture-observation";
+import { expect, test } from "bun:test";
+import { changePublisher } from "../src/providers/capture-observation";
 
-test("unchanged evidence is republished only at the heartbeat, so an idle component does not rewrite its file every poll", async () => {
-  let clock = 0;
+test("only a change is published, however long a component stays idle, so an idle wrapper writes no file", async () => {
   const writes: unknown[] = [];
-  const publish = throttledPublisher(
-    async (observation, applicationIdentity) => {
-      writes.push([observation, applicationIdentity]);
-    },
-    { heartbeatMs: 250, elapsed: () => clock },
-  );
+  const publish = changePublisher(async (observation, applicationIdentity) => {
+    writes.push([observation, applicationIdentity]);
+  });
   const running = { state: "running" as const, pid: 7 };
-  await publish(running, "id");
-  clock = 100;
-  await publish(running, "id");
-  clock = 200;
-  await publish({ ...running }, "id");
-  expect(writes).toHaveLength(1);
-  clock = 250;
-  await publish(running, "id");
+  for (let poll = 0; poll < 1000; poll++) await publish({ ...running }, "id");
+  expect(writes).toEqual([[running, "id"]]);
+  await publish({ state: "stopped", exitCode: 0 }, undefined);
+  await publish({ state: "stopped", exitCode: 0 }, undefined);
   expect(writes).toHaveLength(2);
-  clock = 260;
-  await publish({ state: "stopped", exitCode: 0 }, undefined);
-  expect(writes).toHaveLength(3);
-  clock = 270;
-  await publish({ state: "stopped", exitCode: 0 }, undefined);
-  expect(writes).toHaveLength(3);
 });
 
-test("the heartbeat goes on in elapsed time when the Mac's clock is set back", async () => {
-  setSystemTime(new Date("2026-10-13T12:00:00Z"));
-  try {
-    let elapsed = 0;
-    const writes: unknown[] = [];
-    const publish = throttledPublisher(
-      async (observation) => {
-        writes.push(observation);
-      },
-      { heartbeatMs: 250, elapsed: () => elapsed },
-    );
-    const running = { state: "running" as const, pid: 7 };
-    await publish(running);
-    setSystemTime(new Date("2026-10-13T11:00:00Z"));
-    elapsed = 250;
-    await publish(running);
-    expect(writes).toHaveLength(2);
-  } finally {
-    setSystemTime();
-  }
+test("evidence that could not be written is tried again at the next look", async () => {
+  let failing = true;
+  const writes: unknown[] = [];
+  const publish = changePublisher(async (observation) => {
+    if (failing) throw new Error("disk full");
+    writes.push(observation);
+  });
+  await expect(publish({ state: "running" })).rejects.toThrow("disk full");
+  failing = false;
+  await publish({ state: "running" });
+  expect(writes).toHaveLength(1);
 });

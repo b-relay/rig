@@ -8,7 +8,9 @@ import {
   canonicalName,
   inZone,
   normalizeRecordInput,
+  nullMxClash,
   sameContent,
+  zoneOf,
   type DnsRecord,
   type DnsRecordInput,
   type DnsZone,
@@ -59,19 +61,22 @@ const uncertain = (error: RigError, what: string) =>
     `${error.message} Rig could not tell whether ${what} was made.`,
     "Read the records again (reload the page, or rig dns list) before retrying.",
   );
-/** Pure: `items` mapped by `each`, at most `limit` at a time, each settled on its own. */
-async function settledInBatches<T, R>(
+/** `items` mapped by `each`, at most `limit` at a time, the next starting as soon as any finishes, each settled on its own.
+ * The results are in the order of `items`. */
+async function settledAtMost<T, R>(
   items: readonly T[],
   limit: number,
   each: (item: T) => Promise<R>,
 ): Promise<PromiseSettledResult<R>[]> {
   const results: PromiseSettledResult<R>[] = [];
-  for (let start = 0; start < items.length; start += limit)
-    results.push(
-      ...(await Promise.allSettled(
-        items.slice(start, start + limit).map(each),
-      )),
-    );
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const index = next++;
+      [results[index]] = await Promise.allSettled([each(items[index]!)]);
+    }
+  };
+  await Promise.all(Array.from({ length: limit }, worker));
   return results;
 }
 
@@ -130,6 +135,20 @@ export function createDnsControl(options: DnsControlOptions): DnsControl {
       );
     return record;
   };
+  const refuseNullMxClash = (
+    records: readonly DnsRecord[],
+    record: DnsRecordInput,
+    replacing?: string,
+  ) => {
+    const clash = nullMxClash(records, record, replacing);
+    if (clash)
+      throw new RigError(
+        "DNS_RECORD",
+        clash,
+        "Delete the name's other MX records first, or edit the one there into what you want.",
+        { field: "content" },
+      );
+  };
   /** The record as it is now, refused unless it still is what the caller read. */
   const unchanged = async (
     provider: DnsProvider,
@@ -181,32 +200,43 @@ export function createDnsControl(options: DnsControlOptions): DnsControl {
         connect(settings),
         hostAddress(settings),
       ]);
-      if (input.zone !== undefined) zoneNamed(managed, input.zone);
+      const selected =
+        input.zone === undefined ? undefined : zoneNamed(managed, input.zone);
+      const reads = new Map<DnsZone, PromiseSettledResult<DnsRecord[]>>();
       // Each zone is read on its own, so one zone the token cannot read (or a rate limit) leaves the others shown.
-      const reads = await settledInBatches(
-        managed,
-        ZONE_READS_AT_ONCE,
-        (zone) => provider.records(zone),
-      );
-      const zones = managed.filter(
-        (_, index) => reads[index]!.status === "fulfilled",
-      );
-      const failures = managed.flatMap((zone, index) => {
-        const read = reads[index]!;
-        return read.status === "rejected"
-          ? [{ zone, error: asRigError(read.reason) }]
-          : [];
-      });
-      // With no zone readable there is nothing to show: the first failure says why (a token without DNS read, say).
-      if (managed.length && !zones.length) throw failures[0]!.error;
-      const records = reads
-        .flatMap((read) => (read.status === "fulfilled" ? read.value : []))
-        .sort(
-          (a, b) =>
-            a.name.localeCompare(b.name) ||
-            a.type.localeCompare(b.type) ||
-            a.content.localeCompare(b.content),
+      const readZones = async (zones: readonly DnsZone[]) => {
+        const settled = await settledAtMost(zones, ZONE_READS_AT_ONCE, (zone) =>
+          provider.records(zone),
         );
+        zones.forEach((zone, index) => reads.set(zone, settled[index]!));
+      };
+      const readable = () =>
+        managed.filter((zone) => reads.get(zone)?.status === "fulfilled");
+      const failures = () =>
+        managed.flatMap((zone) => {
+          const read = reads.get(zone);
+          return read?.status === "rejected"
+            ? [{ zone, error: asRigError(read.reason) }]
+            : [];
+        });
+      const scope = selected ? [selected] : managed;
+      await readZones(scope);
+      // With nothing asked for readable there is nothing to show: the first failure says why (a token without DNS read,
+      // say). Zones outside the scope have no say in that.
+      if (scope.length && failures().length === scope.length)
+        throw failures()[0]!.error;
+      const records = () =>
+        managed
+          .flatMap((zone) => {
+            const read = reads.get(zone);
+            return read?.status === "fulfilled" ? read.value : [];
+          })
+          .sort(
+            (a, b) =>
+              a.name.localeCompare(b.name) ||
+              a.type.localeCompare(b.type) ||
+              a.content.localeCompare(b.content),
+          );
       const served = new Map<string, ServedHostname>();
       for (const entry of [
         ...input.hostnames,
@@ -221,35 +251,52 @@ export function createDnsControl(options: DnsControlOptions): DnsControl {
           sources: [...(known?.sources ?? []), ...entry.sources],
         });
       }
-      const hostnames = checkHostnames({
-        hostnames: [...served.values()],
-        zones,
-        records,
-        address: mac.address,
-        unreadable: failures.map((failure) => failure.zone),
-      });
-      const shown = (name: string) =>
-        input.zone === undefined || inZone(name, input.zone);
+      // A hostname belongs to the longest zone that holds it, so a parent zone's read leaves its child zones' hostnames out.
+      const owned = [...served.values()].filter(
+        (each) =>
+          !selected || zoneOf(each.hostname, managed)?.name === selected.name,
+      );
+      const check = () =>
+        checkHostnames({
+          hostnames: owned,
+          zones: readable(),
+          records: records(),
+          address: mac.address,
+          unreadable: managed.filter(
+            (zone) => reads.get(zone)?.status !== "fulfilled",
+          ),
+        });
+      // A zone outside the scope is read only when a CNAME of these hostnames leads into it.
+      let hostnames = check();
+      for (;;) {
+        const reached = managed.filter(
+          (zone) =>
+            !reads.has(zone) &&
+            hostnames.some((each) => each.unreadZone === zone.name),
+        );
+        if (!reached.length) break;
+        await readZones(reached);
+        hostnames = check();
+      }
+      const unreadable = failures();
       return {
         provider: settings.tls.dns,
         ...mac,
-        zones: zones.filter((zone) => shown(zone.name)),
+        zones: selected ? [selected] : readable(),
         ...(unseen ? { unseenZones: unseen } : {}),
-        ...(failures.length
+        ...(unreadable.length
           ? {
-              unreadableZones: failures
-                .filter((failure) => shown(failure.zone.name))
-                .map(({ zone, error }) => ({
-                  zone: zone.name,
-                  code: error.code,
-                  message: error.message,
-                })),
+              unreadableZones: unreadable.map(({ zone, error }) => ({
+                zone: zone.name,
+                code: error.code,
+                message: error.message,
+              })),
             }
           : {}),
-        records: records.filter(
-          (record) => input.zone === undefined || record.zone === input.zone,
+        records: records().filter(
+          (record) => !selected || record.zone === selected.name,
         ),
-        hostnames: hostnames.filter((check) => shown(check.hostname)),
+        hostnames,
       };
     },
     async prepare(action: DnsWriteAction, request): Promise<PreparedDnsWrite> {
@@ -258,15 +305,14 @@ export function createDnsControl(options: DnsControlOptions): DnsControl {
       const zone = zoneNamed(zones, request.zone);
       if (action === "dns-create") {
         const record = validRecord(request, zone);
-        if (request.absent) {
-          const conflicts = createConflicts(
-            await provider.records(zone),
-            record,
-          );
+        if (request.absent || record.type === "MX") {
+          const now = await provider.records(zone);
+          const conflicts = request.absent ? createConflicts(now, record) : [];
           if (conflicts.length)
             throw changed(
               `${record.name} gained ${conflicts.map((each) => `${each.type} ${each.content}`).join(", ")}`,
             );
+          refuseNullMxClash(now, record);
         }
         return {
           zone: zone.name,
@@ -332,6 +378,13 @@ export function createDnsControl(options: DnsControlOptions): DnsControl {
           "Delete it and add a new record instead.",
           { field: "type" },
         );
+      // Only a new name or exchange can clash: a TTL edit of records Cloudflare already holds adds nothing to what is there.
+      if (
+        record.type === "MX" &&
+        (current.name !== record.name ||
+          !sameContent("MX", current.content, record.content))
+      )
+        refuseNullMxClash(await provider.records(zone), record, current.id);
       const was = [
         current.name !== record.name ? `renamed from ${current.name}` : "",
         current.content !== record.content ? `was ${current.content}` : "",

@@ -343,7 +343,7 @@ proxy:
 
 ## Certificates: one wildcard per parent
 
-Rig knows every hostname, so there is no on-demand TLS and no ask endpoint. Each hostname is covered by `*.<hostname minus its first label>`, provided that parent has at least two labels.
+Rig knows every hostname, so there is no on-demand TLS and no ask endpoint. Each hostname is covered by `*.<hostname minus its first label>`, provided that parent is below a public suffix (`*.co.uk` and `*.github.io` are never asked for, and `example.co.uk` has its own certificate as `example.com` does). The suffixes come from the Public Suffix List in the `tldts` package, private ones included, so the list is as new as the build; a TLD it does not know is a suffix of one label, which keeps `*.example.test` for names tests and private networks use.
 
 | Hostnames                                                            | Covered by                                         |
 | -------------------------------------------------------------------- | -------------------------------------------------- |

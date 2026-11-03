@@ -9,6 +9,9 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createDnsControl } from "../src/adapters/dns-control";
+import { parseHostConfig } from "../src/config";
+import { RigError } from "../src/domain/errors";
 import { startControlPlane } from "../src/daemon/server";
 import { processStartTime } from "../src/daemon/process-identity";
 import type { RuntimeCommand } from "../src/daemon/protocol";
@@ -331,6 +334,91 @@ test("doctor, config, proxy and dns list fail as DAEMON_PROTOCOL through the rea
         stderr: "",
       });
     }
+  } finally {
+    await fixture.stop();
+  }
+}, 30000);
+
+test("rig dns list of a selected zone fails with its zone's error, whatever other zones do; a partial account-wide read keeps what it read", async () => {
+  const zone = (name: string) => ({ id: name[0]!, name, status: "active" });
+  const zones = ["ok.example", "bad.example", "empty.example"].map(zone);
+  const control = createDnsControl({
+    settings: async () =>
+      parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } }).proxy,
+    token: async () => "isolated-dns-token",
+    provider: () =>
+      ({
+        zones: async () => zones,
+        async records(each: { name: string }) {
+          if (each.name === "bad.example")
+            throw new RigError(
+              "DNS_AUTH",
+              "Cannot read bad.example.",
+              "Check token access.",
+            );
+          return each.name === "ok.example"
+            ? [
+                {
+                  id: "a1",
+                  zone: "ok.example",
+                  name: "app.ok.example",
+                  type: "A",
+                  content: "203.0.113.5",
+                  ttl: 1,
+                  modifiedOn: "m",
+                },
+              ]
+            : [];
+        },
+      }) as never,
+    address: { ipv4: async () => undefined },
+  });
+  const fixture = await fixtureDaemon((command) =>
+    control.read({
+      ...(command.dns?.zone !== undefined ? { zone: command.dns.zone } : {}),
+      hostnames: [],
+    }),
+  );
+  const list = async (...args: string[]) => {
+    const run = await finished(
+      spawnRig(
+        ["dns", "list", ...args, "--json"],
+        fixture.root,
+        fixture.directory,
+      ),
+    );
+    return { ...run, stdout: JSON.parse(run.stdout) };
+  };
+  try {
+    expect(await list("bad.example")).toEqual({
+      exit: 1,
+      stderr: "",
+      stdout: {
+        error: {
+          code: "DNS_AUTH",
+          message: "Cannot read bad.example.",
+          hint: "Check token access.",
+        },
+      },
+    });
+    const empty = await list("empty.example");
+    expect(empty).toMatchObject({
+      exit: 0,
+      stdout: { records: [], hostnames: [] },
+    });
+    expect(empty.stdout.zones).toMatchObject([{ name: "empty.example" }]);
+    expect(empty.stdout.unreadableZones).toBeUndefined();
+
+    const partial = await list();
+    expect(partial.exit).toBe(0);
+    expect(partial.stdout.records).toMatchObject([{ id: "a1" }]);
+    expect(partial.stdout.unreadableZones).toEqual([
+      {
+        zone: "bad.example",
+        code: "DNS_AUTH",
+        message: "Cannot read bad.example.",
+      },
+    ]);
   } finally {
     await fixture.stop();
   }

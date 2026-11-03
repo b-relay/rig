@@ -91,6 +91,15 @@ export function fixCommand(fix: PointFix): RuntimeCommand {
         },
       };
 }
+/** Pure: whether "Point at this Mac" has done its work: `result` is its success, sent from the check `sentFrom`, and that is
+ * still the one on screen. A refresh brings a new check, which says for itself whether the name needs the fix. */
+export function pointed(
+  check: HostnameCheck,
+  sentFrom: HostnameCheck | undefined,
+  result: unknown,
+): boolean {
+  return result !== undefined && sentFrom === check;
+}
 /** Pure: what "Point at this Mac" will do, said before it is pressed. */
 export function fixDescription(fix: PointFix): string {
   if (fix.op === "update")

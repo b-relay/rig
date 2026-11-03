@@ -13,18 +13,20 @@ export interface DnsReport {
   readonly address?: string;
   /** Where the address came from: `proxy.dns.address`, or Tailscale. */
   readonly addressSource?: "config" | "tailscale";
-  /** Zones whose records were read. */
+  /** The zones reported: the one asked for, or every zone whose records were read. */
   readonly zones: readonly DnsZone[];
   /** Zones `proxy.dns.zones` names that the token cannot see. */
   readonly unseenZones?: readonly string[];
-  /** Zones Rig manages whose records could not be read this time, and why; the rest are reported all the same. */
+  /** Zones read for this report whose records could not be read, and why; the rest are reported all the same. A zone asked
+   * for by name is never among them: the read fails with its error instead. */
   readonly unreadableZones?: readonly {
     readonly zone: string;
     readonly code: string;
     readonly message: string;
   }[];
-  /** Every record of the zones read, by name and then type. */
+  /** Every record of the zones reported, by name and then type. */
   readonly records: readonly DnsRecord[];
+  /** The hostnames those zones own: each is in the longest zone Rig manages that holds its name. */
   readonly hostnames: readonly HostnameCheck[];
 }
 export type DnsWriteAction = "dns-create" | "dns-update" | "dns-delete";

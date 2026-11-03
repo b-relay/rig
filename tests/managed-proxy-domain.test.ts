@@ -55,6 +55,62 @@ test("a name with no certificate of its own, or whose parent is a public suffix,
   ).toEqual(["*.example.com"]);
 });
 
+test("a wildcard is never asked for at or above a public suffix: an apex there has its own certificate", () => {
+  // ICANN's multi-label suffixes and private ones: each apex is the registrable name, so its parent is the suffix.
+  expect(
+    wildcardParents([
+      "example.co.uk",
+      "example.com.au",
+      "user.github.io",
+      "example.com",
+    ]),
+  ).toEqual([]);
+  // Names below the apex keep their wildcard.
+  expect(
+    wildcardParents([
+      "app.example.co.uk",
+      "app.example.com.au",
+      "pages.user.github.io",
+      "app.example.com",
+      "api.app.example.co.uk",
+    ]),
+  ).toEqual([
+    "*.app.example.co.uk",
+    "*.example.co.uk",
+    "*.example.com",
+    "*.example.com.au",
+    "*.user.github.io",
+  ]);
+  // A wildcard rule makes every name directly under it a suffix, except what an exception rule says.
+  expect(wildcardParents(["shop.example.ck"])).toEqual([]);
+  expect(wildcardParents(["app.shop.example.ck"])).toEqual([
+    "*.shop.example.ck",
+  ]);
+  expect(wildcardParents(["app.www.ck"])).toEqual(["*.www.ck"]);
+  // A name in a TLD the list does not know has the TLD as its suffix, as with the names tests and private networks use.
+  expect(wildcardParents(["example.test", "app.example.test"])).toEqual([
+    "*.example.test",
+  ]);
+  expect(wildcardParents(["app.home.internal"])).toEqual(["*.home.internal"]);
+});
+
+test("a main file for an apex under a public suffix closes no name under the suffix", () => {
+  const text = renderMainCaddyfile({
+    settings: settings({
+      tls: { ca: "internal" },
+      routes: { "example.co.uk": 3000, "app.example.com.au": 3001 },
+    }),
+    paths: proxyPaths("/r"),
+    generation: "/r/caddy/generations/g1",
+    hostnames: ["user.github.io"],
+  });
+  expect(text).toContain('"example.co.uk"');
+  expect(text).toContain('"*.example.com.au"');
+  expect(text).not.toContain("*.co.uk");
+  expect(text).not.toContain('"*.com.au"');
+  expect(text).not.toContain("*.github.io");
+});
+
 test("a generation's main file names only its own files, the socket, storage and one ACME issuer with the token as a placeholder, and serves proxy.routes as plain reverse proxies", () => {
   const paths = proxyPaths("/r");
   const text = renderMainCaddyfile({

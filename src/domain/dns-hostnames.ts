@@ -20,8 +20,9 @@ export interface ServedHostname {
   readonly sources: readonly HostnameSource[];
 }
 /** Whether DNS sends a hostname to this Mac:
- * - `mac`: every A record that answers for it is this Mac's address, unproxied.
- * - `elsewhere`: it answers with another address, or through the provider's proxy.
+ * - `mac`: every A record that answers for it is this Mac's address, and no address record at that name is proxied.
+ * - `elsewhere`: it answers with another address, or through the provider's proxy: Cloudflare proxies all of a name's A and
+ *   AAAA records when any one of them is.
  * - `missing`: nothing answers for it with an address.
  * - `unknown`: Rig cannot tell: no visible zone holds it, a CNAME leaves those zones, or this Mac's address is unknown. */
 export type HostnameVerdict = "mac" | "elsewhere" | "missing" | "unknown";
@@ -67,6 +68,8 @@ export interface HostnameCheck {
   readonly fix?: PointFix;
   /** Why no one-click change is offered for a hostname that does not point here. */
   readonly fixBlocked?: string;
+  /** The zone whose records could not be read, when that is why the verdict is `unknown`. */
+  readonly unreadZone?: string;
 }
 
 /** The most CNAMEs the check follows from a hostname to its address. */
@@ -134,7 +137,8 @@ export function checkHostnames(input: {
   readonly zones: readonly DnsZone[];
   readonly records: readonly DnsRecord[];
   readonly address: string | undefined;
-  /** Zones Rig manages whose records could not be read this time; a name in one is `unknown`, never `missing`. */
+  /** Zones Rig manages whose records are not in `records`, unreadable or not read this time; a name in one is `unknown`, never
+   * `missing`. */
   readonly unreadable?: readonly DnsZone[];
 }): HostnameCheck[] {
   return [...input.hostnames]
@@ -170,6 +174,7 @@ function checkHostname(
       ...base,
       zone,
       verdict: "unknown",
+      unreadZone: zone,
       reason: `Rig could not read the records of ${zone} just now, so it cannot tell where this name points.`,
     };
   const cut = delegation(hostname, zone, input.records);
@@ -206,6 +211,7 @@ function checkHostname(
         ...where,
         addresses: [],
         verdict: "unknown",
+        unreadZone: hopZone,
         reason: `It is a CNAME to ${name}, in ${hopZone}, whose records Rig could not read just now, so Rig cannot tell where that points.`,
       };
       break;
@@ -327,15 +333,20 @@ function judge(
       verdict: "missing",
       reason: `${by} has records, but no A record.`,
     };
-  if (!a.length)
-    return {
-      verdict: "elsewhere",
-      reason: `${by} has only AAAA records; this Mac is reached by its IPv4 address.`,
-    };
   if (a.some((record) => record.proxied))
     return {
       verdict: "elsewhere",
       reason: `${by} is proxied through Cloudflare, whose edge cannot reach this Mac's Tailscale address.`,
+    };
+  if (addresses.some((record) => record.proxied))
+    return {
+      verdict: "elsewhere",
+      reason: `${by} has a proxied AAAA record, so Cloudflare answers for all its addresses from its edge, which cannot reach this Mac's Tailscale address.`,
+    };
+  if (!a.length)
+    return {
+      verdict: "elsewhere",
+      reason: `${by} has only AAAA records; this Mac is reached by its IPv4 address.`,
     };
   const contents = [...new Set(a.map((record) => record.content))];
   if (!address)
@@ -378,6 +389,11 @@ function pointFix(
   if (cname)
     return {
       fixBlocked: `${hostname} is a CNAME to ${cname.content}; edit or delete that record to point the name at this Mac.`,
+    };
+  // Its own A record would stay behind the edge beside this. A wildcard's does not matter: the name's own record replaces it.
+  if (own.some((record) => record.type === "AAAA" && record.proxied))
+    return {
+      fixBlocked: `${hostname} has a proxied AAAA record, which keeps the whole name behind Cloudflare's edge: make it DNS only or delete it, and its A record can then point here.`,
     };
   const a = own.filter((record) => record.type === "A");
   if (a.length > 1)

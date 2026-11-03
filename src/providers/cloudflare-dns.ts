@@ -4,6 +4,7 @@ import { redactSecrets } from "../domain/managed-proxy";
 import {
   PROXIABLE_TYPES,
   caaParts,
+  canonicalExchange,
   canonicalName,
   type DnsRecord,
   type DnsRecordInput,
@@ -246,9 +247,11 @@ export function createCloudflareDns(
     name: canonicalName(raw.name),
     type: raw.type,
     content:
-      raw.type === "CNAME" || raw.type === "MX"
-        ? canonicalName(raw.content)
-        : raw.content,
+      raw.type === "MX"
+        ? canonicalExchange(raw.content)
+        : raw.type === "CNAME"
+          ? canonicalName(raw.content)
+          : raw.content,
     ttl: raw.ttl,
     ...(raw.proxied !== undefined ? { proxied: raw.proxied } : {}),
     ...(raw.priority !== undefined && raw.type === "MX"

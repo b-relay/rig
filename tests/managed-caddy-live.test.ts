@@ -73,6 +73,80 @@ async function get(
   };
 }
 
+test("real Caddy serving an apex under a public suffix automates its own certificate, never the suffix's wildcard, and the report names each", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const upstream = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("own"),
+  });
+  cleanups.push(async () => upstream.stop(true));
+  const https = freePort();
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+      routes: {
+        "example.co.uk": upstream.port!,
+        "app.example.co.uk": upstream.port!,
+      },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  await caddy.republish();
+  await job.install();
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("example.co.uk", https)).status === 0 && Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await get("example.co.uk", https)).toEqual({
+    status: 200,
+    body: "own",
+  });
+  const report = await proxyReport({
+    root,
+    requested: settings,
+    job,
+    admin,
+    targets: [],
+  });
+  expect(report.sites.map((site) => [site.hostname, site.certificate])).toEqual(
+    [
+      ["app.example.co.uk", "*.example.co.uk"],
+      ["example.co.uk", "example.co.uk"],
+    ],
+  );
+  const log = await readFile(paths.log, "utf8");
+  expect(log).toContain("example.co.uk");
+  expect(log).not.toContain("*.co.uk");
+}, 60_000);
+
 test("real Caddy runs Rig's generations: routes, a withdrawal and Rig's down page, the owner's own route, refused Host config kept pending, and a restart", async () => {
   const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
     existsSync,

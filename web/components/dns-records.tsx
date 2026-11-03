@@ -240,8 +240,8 @@ const CONTENT_HELP: Record<DnsRecordType, string> = {
   A: "An IPv4 address, such as 100.64.0.1.",
   AAAA: "An IPv6 address.",
   CNAME: "The hostname this name is an alias for.",
-  TXT: "Text up to 2048 characters, such as v=spf1 -all.",
-  MX: "The mail server's hostname.",
+  TXT: "Text up to 4080 bytes, such as v=spf1 -all.",
+  MX: "The mail server's hostname, or . with priority 0 if the name takes no mail.",
   CAA: 'Flags, tag and value, such as 0 issue "letsencrypt.org".',
 };
 /** Add or edit one record. The type is fixed once a record exists: changing it is a delete and an add. */

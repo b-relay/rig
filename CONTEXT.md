@@ -1135,7 +1135,9 @@ _Avoid_: DNS entries, zone file
 _Relationship_: The **hostname check** resolves every hostname Rig serves
 against those records, wildcards included, and says whether it points at
 this Mac's address (`proxy.dns.address`, else its Tailscale IPv4). Rig's
-Caddy never reads `proxy.dns`.
+Caddy never reads `proxy.dns`. A record is identified by its zone and id, and a
+name belongs to the longest managed zone that holds it, so a parent zone's
+record is not the child zone's.
 
 ### Config generation
 

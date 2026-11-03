@@ -359,6 +359,38 @@ test("CNAME and MX targets are read lowercase, without a trailing dot", async ()
   ]);
 });
 
+test("a null MX is read with its root exchange, and a write sends it as it is", async () => {
+  const { fake, provider } = world({
+    records: {
+      z1: [
+        {
+          id: "m1",
+          name: "example.com",
+          type: "MX",
+          content: ".",
+          ttl: 300,
+          priority: 0,
+        },
+      ],
+    },
+  });
+  const [read] = await provider.records(zone);
+  expect(read).toMatchObject({ content: ".", priority: 0 });
+  expect(await provider.record(zone, "m1")).toMatchObject({ content: "." });
+  const written = await provider.update(zone, "m1", {
+    name: "example.com",
+    type: "MX",
+    content: ".",
+    priority: 0,
+    ttl: 600,
+  });
+  expect(written).toMatchObject({ content: ".", priority: 0, ttl: 600 });
+  expect(fake.requests.at(-1)?.body).toMatchObject({
+    content: ".",
+    priority: 0,
+  });
+});
+
 test("an answer cut off mid-body is a lost reply (DNS_UNREACHABLE), while a whole body that is not JSON is malformed", async () => {
   const { fake, provider } = world();
   fake.cutOffNext("POST");

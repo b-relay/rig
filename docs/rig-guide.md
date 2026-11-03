@@ -359,7 +359,10 @@ another Caddy. Each hostname gets its certificate from the wildcard of its
 parent, so `*.example.com` covers `app.example.com` and every Preview beside it,
 such as `app-feat-x-1a2b3c4d.example.com`. A Preview therefore has TLS at once,
 and no branch name appears in the public certificate logs. A name under such a
-parent that no site serves has its connection closed.
+parent that no site serves has its connection closed. A name whose parent is a
+public suffix, such as `example.co.uk` or `user.github.io`, gets a certificate
+of its own, since no CA issues `*.co.uk`. Rig knows those suffixes from the
+Public Suffix List in its build, so a suffix added since needs a newer Rig.
 
 Every change is published as a new configuration generation under
 `<RIG_ROOT>/caddy/generations`: Caddy validates it, Rig switches one link to
@@ -491,13 +494,25 @@ zones, or `rig dns` refuses it rather than guess; `--zone` makes any name
 relative to that zone. Rig manages A, AAAA, CNAME, TXT, MX and CAA records
 (CAA as `0 issue "letsencrypt.org"`), and lists other types read-only.
 
+When you manage both a zone and a child zone split from it, such as
+`example.com` and `sub.example.com`, a name belongs to the longest zone that
+holds it. `set` and `delete` look only at that zone's records, so a leftover
+record of the same name in the parent changes nothing; `--zone example.com`
+acts on the parent's record instead. If that zone could not be read, the
+change fails and says why rather than falling to the parent. `rig dns list
+example.com` shows that zone alone, without its child zones' records or
+hostnames.
+
 `set` changes a record of that name and type with the same content in place.
 For A, AAAA and CNAME it otherwise replaces the one record there (`--add`
 adds another). TXT, MX and CAA records usually come several to a name, so
 `set` adds one unless `--replace` changes the one there. A record beside a
 CNAME, or a CNAME beside any record, is refused: DNS allows nothing beside a
-CNAME. Cloudflare may store TXT values quoted (`"v=spf1 -all"`), and Rig
-treats that and `v=spf1 -all` as one value. `--ttl` takes 60 to 86400 seconds
+CNAME. An MX of `.` is a null MX, which says the name takes no mail: its
+priority is 0, and it is refused beside any other MX record at that name.
+Cloudflare may store TXT values quoted (`"v=spf1 -all"`), and Rig treats that
+and `v=spf1 -all` as one value. A TXT record may take 4096 bytes in DNS, which
+is 4080 bytes of text, however it is quoted or split. `--ttl` takes 60 to 86400 seconds
 (30 on Enterprise) or `auto`; `--proxied` (A, AAAA and CNAME) answers through
 Cloudflare's proxy, which cannot reach a Tailscale address, so leave it off
 for names this Mac serves. `set` and `delete` show the change and ask before
@@ -513,8 +528,17 @@ write, so `rigd` reads the record again just before writing and refuses with
 of that name and type appeared. Read again and retry. When Cloudflare's
 answer to a write is lost, Rig reads the record back and reports the write as
 made when it was. Every change is in `rig activity` with its record's type and
-name. A zone the token cannot read is named in the output, and the others are
-still listed.
+name.
+
+`rig dns list` reads every zone, and a zone the token cannot read does not stop
+the rest: the output warns of it (`unreadableZones` with `--json`), the others
+are still listed, and the command exits 0, so check that field when your script
+needs them all. It fails only when no zone can be read. `rig dns list
+example.com` reads that one zone, and another only if a CNAME of its hostnames
+leads there. It exits 1 with the zone's own error when that zone cannot be
+read, whatever other zones do. A CNAME into a zone that cannot be read makes
+that hostname unknown and names the zone in the same way, and the read still
+succeeds.
 
 `rig dns list` and the dashboard also check every hostname Rig serves, each
 Target's and your `proxy.routes`: what the zone answers for it, following
@@ -525,7 +549,10 @@ reported as unknown. A name that does not point here gets a fix: the
 dashboard's Point at this Mac button (it asks first when it changes a record
 that exists), or the `rig dns set` line `rig dns list` prints. It rewrites
 the name's one A record to this Mac's address, unproxied, or adds an A record,
-which then answers for the name instead of a wildcard.
+which then answers for the name instead of a wildcard. Only IPv4 addresses are
+compared, but a proxied AAAA record counts: Cloudflare then proxies the name's
+A records too, so the name is reported as elsewhere, and no fix is offered until
+you make that AAAA record DNS only or delete it.
 
 This Mac's address is the Tailscale IPv4 address (`tailscale ip -4`). Set it
 in Host config when Tailscale is not the way in, and narrow the zones Rig

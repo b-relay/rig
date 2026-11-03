@@ -5,7 +5,8 @@
  *
  * The packages are read from node_modules, never listed here: the production dependencies with everything they depend on
  * (Next.js compiles the dashboard's into its chunks, which name no package) and whatever else the dashboard's own
- * node_modules holds. It fails when one has no license file, so a release cannot ship without its notice. */
+ * node_modules holds. It fails when one has no license file, so a release cannot ship without its notice. Code embedded in
+ * a vendored bundle has no license file to find, so what is known of it is listed in EMBEDDED_NOTICES. */
 import { readdir, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
@@ -52,6 +53,51 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`,
 };
+
+/** Code embedded in a file a package vendors, whose license no file there holds. */
+export interface EmbeddedNotice {
+  /** What is embedded. */
+  readonly name: string;
+  /** The package that vendors it. */
+  readonly package: string;
+  /** The file holding it, relative to the package. */
+  readonly file: string;
+  /** Text that file contains for as long as it embeds it. */
+  readonly marker: string;
+  readonly notice: string;
+}
+
+/** Notices of embedded code that license files miss. Rendering fails when an entry's file no longer embeds it, so this
+ * cannot go stale. */
+export const EMBEDDED_NOTICES: readonly EmbeddedNotice[] = [
+  {
+    name: "undici",
+    package: "next",
+    file: "dist/compiled/@edge-runtime/primitives/load.js",
+    marker: "node_modules/undici/",
+    notice: `MIT License
+
+Copyright (c) Matteo Collina and Undici contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`,
+  },
+];
 
 const LICENSE_FILE =
   /^(licen[cs]e|copying|notice)(-[\w.-]+)?(\.(md|markdown|txt))?$/i;
@@ -201,11 +247,18 @@ async function licenseFiles(directory: string): Promise<string[]> {
   return files.sort();
 }
 
-/** The text of the notices file. Fails naming every package with neither a license file of its own nor a stand-in, and
- * every stand-in no longer needed. */
+/** Whether `entry` still describes what the package `found` holds. */
+async function stillEmbedded(found: InstalledPackage, entry: EmbeddedNotice) {
+  const file = Bun.file(join(found.directory, entry.file));
+  return (await file.exists()) && (await file.text()).includes(entry.marker);
+}
+
+/** The text of the notices file. Fails naming every package with neither a license file of its own nor a stand-in, every
+ * stand-in no longer needed, and every embedded notice whose file no longer embeds its code. */
 export async function renderNotices(
   packages: readonly InstalledPackage[],
   standIns: Readonly<Record<string, string>> = NO_LICENSE_FILE,
+  embedded: readonly EmbeddedNotice[] = EMBEDDED_NOTICES,
 ): Promise<string> {
   const sorted = [...packages].sort((a, b) =>
     label(a) < label(b) ? -1 : label(a) > label(b) ? 1 : 0,
@@ -213,6 +266,9 @@ export async function renderNotices(
   const missing: string[] = [];
   const stale = Object.keys(standIns).filter(
     (name) => !sorted.some((found) => found.name === name),
+  );
+  const staleEmbedded = embedded.filter(
+    (entry) => !sorted.some((found) => found.name === entry.package),
   );
   const sections: string[] = [];
   for (const found of sorted) {
@@ -229,12 +285,23 @@ export async function renderNotices(
         return file.includes("/") ? `--- ${file} ---\n\n${text}` : text;
       }),
     );
+    const embeddedTexts: string[] = [];
+    for (const entry of embedded.filter(
+      (each) => each.package === found.name,
+    )) {
+      if (await stillEmbedded(found, entry))
+        embeddedTexts.push(
+          `--- ${entry.name}, embedded in ${entry.file} ---\n\n${entry.notice}`,
+        );
+      else staleEmbedded.push(entry);
+    }
     const declared = found.license ? ` (${found.license})` : "";
     sections.push(
       [
         `${SEPARATOR}\n${label(found)}${declared}\n${SEPARATOR}`,
         ...(hasOwn ? [] : [standIn]),
         ...texts,
+        ...embeddedTexts,
       ].join("\n\n"),
     );
   }
@@ -250,6 +317,16 @@ export async function renderNotices(
       "Remove them from scripts/third-party-notices.ts: the release no longer bundles them, or they now publish a license file.",
       { stale },
     );
+  if (staleEmbedded.length > 0) {
+    const names = staleEmbedded.map(
+      (entry) => `${entry.name} in ${entry.package}'s ${entry.file}`,
+    );
+    throw noticesError(
+      `EMBEDDED_NOTICES has entries no longer true: ${names.join(", ")}.`,
+      "Check where that code went: update the entry's file and marker if it moved, or remove the entry from scripts/third-party-notices.ts if it is gone.",
+      { stale: names },
+    );
+  }
   return `Rig bundles the third-party packages below. Each one's license follows its name.\n\n${sections.join("\n\n")}\n`;
 }
 

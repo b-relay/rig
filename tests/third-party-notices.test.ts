@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   productionPackages,
   releasePackages,
@@ -65,6 +65,7 @@ test("the notices hold the license of each production dependency and what it dep
   const notices = await renderNotices(
     await releasePackages(root, dashboard),
     {},
+    [],
   );
   expect(notices).toContain("first@1.0.0 (MIT)");
   expect(notices).toContain("first's license");
@@ -92,6 +93,7 @@ test("a package only the dashboard's node_modules holds gets its notice from the
   const notices = await renderNotices(
     await releasePackages(root, dashboard),
     {},
+    [],
   );
   expect(notices).toContain("traced@1.0.0 (MIT)");
   expect(notices).toContain("traced license");
@@ -115,7 +117,7 @@ test("a bundled package with no license file of its own fails, naming every one,
     "node_modules/vendors/dist/compiled/other/LICENSE": "another's license",
   });
   const packages = await productionPackages(root);
-  await expect(renderNotices(packages, {})).rejects.toThrow(
+  await expect(renderNotices(packages, {}, [])).rejects.toThrow(
     "bare@1.0.0, vendors@1.0.0 publish no license file.",
   );
 });
@@ -135,15 +137,46 @@ test("a stand-in serves a package published without a license file, and fails on
     "node_modules/licensed/LICENSE": "licensed license",
   });
   const packages = await productionPackages(root);
-  expect(await renderNotices(packages, { bare: "bare's stand-in" })).toContain(
-    "bare's stand-in",
-  );
+  expect(
+    await renderNotices(packages, { bare: "bare's stand-in" }, []),
+  ).toContain("bare's stand-in");
   await expect(
-    renderNotices(packages, { bare: "text", licensed: "text" }),
+    renderNotices(packages, { bare: "text", licensed: "text" }, []),
   ).rejects.toThrow("no longer needed: licensed.");
   await expect(
-    renderNotices(packages, { bare: "text", removed: "text" }),
+    renderNotices(packages, { bare: "text", removed: "text" }, []),
   ).rejects.toThrow("no longer needed: removed.");
+});
+
+test("an embedded notice goes in its package's section, and fails once its file no longer embeds the code or is gone", async () => {
+  const root = await tree({
+    "package.json": manifest("app", { host: "1" }),
+    "node_modules/host/package.json": manifest("host"),
+    "node_modules/host/LICENSE": "host license",
+    "node_modules/host/bundle.js": "// from node_modules/guest/index.js",
+    "node_modules/host/plain.js": "// nothing embedded",
+  });
+  const packages = await productionPackages(root);
+  const entry = {
+    name: "guest",
+    package: "host",
+    file: "bundle.js",
+    marker: "node_modules/guest/",
+    notice: "guest's notice",
+  };
+  expect(await renderNotices(packages, {}, [entry])).toContain(
+    "--- guest, embedded in bundle.js ---\n\nguest's notice",
+  );
+  const stale = "EMBEDDED_NOTICES has entries no longer true: guest in host's";
+  await expect(
+    renderNotices(packages, {}, [{ ...entry, file: "plain.js" }]),
+  ).rejects.toThrow(`${stale} plain.js.`);
+  await expect(
+    renderNotices(packages, {}, [{ ...entry, file: "gone.js" }]),
+  ).rejects.toThrow(`${stale} gone.js.`);
+  await expect(
+    renderNotices(packages, {}, [{ ...entry, package: "other" }]),
+  ).rejects.toThrow("guest in other's bundle.js.");
 });
 
 test("this repository's production dependencies all have a notice, with the license text of what rig, rigd and the dashboard bundle", async () => {
@@ -165,6 +198,32 @@ test("this repository's production dependencies all have a notice, with the lice
     expect(section!.split("=".repeat(80))[1]).toMatch(/copyright|ISC/i);
   }
   expect(notices).not.toContain("sharp@");
+});
+
+test("every license file vendored under next's dist/compiled is in the notices, under its path, with its text", async () => {
+  const next = join(REPOSITORY, "node_modules/next");
+  const vendored: string[] = [];
+  for await (const path of new Bun.Glob("dist/compiled/**/*").scan({
+    cwd: next,
+  })) {
+    if (/^licen[cs]e/i.test(basename(path))) vendored.push(path);
+  }
+  expect(vendored).toContain("dist/compiled/busboy/LICENSE");
+  const notices = await renderNotices(await productionPackages(REPOSITORY));
+  const absent: string[] = [];
+  for (const path of vendored) {
+    const text = (await Bun.file(join(next, path)).text()).trimEnd();
+    if (!notices.includes(`--- ${path} ---\n\n${text}`)) absent.push(path);
+  }
+  expect(absent).toEqual([]);
+});
+
+test("Undici's notice, for the copy embedded in a bundle next vendors with no license file of its own, is in the notices", async () => {
+  const notices = await renderNotices(await productionPackages(REPOSITORY));
+  const next = notices.split(/^next@.*$/m)[1]!.split("=".repeat(80))[1]!;
+  expect(next).toContain(
+    "--- undici, embedded in dist/compiled/@edge-runtime/primitives/load.js ---\n\nMIT License\n\nCopyright (c) Matteo Collina and Undici contributors",
+  );
 });
 
 test("everything rig and rigd bundle is a production dependency, so the notices cover it", async () => {

@@ -23,10 +23,13 @@ export class FileStateStore implements StateStore {
     this.path = join(root, "runtime", "state.json");
   }
 
-  /** Every write replaces the file, so a new inode and time; undefined when the file cannot be looked at. */
+  /** Every write replaces the file, so a new inode and time; undefined when the file cannot be looked at, or its time is a
+   * whole second, as on a filesystem too coarse (HFS+) to tell two writes apart. */
   async revision(): Promise<string | undefined> {
     const seen = await stat(this.path, { bigint: true }).catch(() => undefined);
-    return seen && `${seen.ino}:${seen.size}:${seen.mtimeNs}`;
+    return seen && seen.mtimeNs % 1_000_000_000n !== 0n
+      ? `${seen.ino}:${seen.size}:${seen.mtimeNs}`
+      : undefined;
   }
 
   async read(): Promise<RuntimeState> {

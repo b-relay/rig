@@ -1,7 +1,4 @@
-import {
-  lstartText,
-  nativeProcessStart,
-} from "../providers/native-process-start";
+import { nativeProcessStart } from "../providers/native-process-start";
 
 /** How a process recorded by pid relates to what is running now. */
 export type ProcessLiveness =
@@ -42,14 +39,14 @@ export async function processStartTime(
   const startedAt = output.trim();
   return code === 0 && startedAt ? startedAt : undefined;
 }
-/** Whether the kernel's start time for the pid reads exactly as the record does, which starts no process. Any other answer
- * proves nothing: a record is in the words and zone of the process that wrote it. */
+/** Whether the kernel's start time for the pid, printed as ps would print it here, reads exactly as the record does, which
+ * starts no process. Any other answer proves nothing. */
 async function kernelConfirms(record: ProcessRecord): Promise<boolean> {
-  const start = await nativeProcessStart();
+  const native = await nativeProcessStart();
   try {
-    const seconds = start?.(record.pid);
+    const seconds = native?.start(record.pid);
     return (
-      seconds !== undefined && lstartText(seconds, "local") === record.startedAt
+      seconds !== undefined && native?.printed(seconds) === record.startedAt
     );
   } catch {
     return false;

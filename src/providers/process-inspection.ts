@@ -47,8 +47,12 @@ export const platformKill: ProcessKill = (pid, signal) => {
 export async function platformInspection(
   run: CommandRunner,
 ): Promise<ProcessInspectionOptions> {
-  const start = await nativeProcessStart();
-  return { run, kill: platformKill, ...(start ? { start } : {}) };
+  const native = await nativeProcessStart();
+  return {
+    run,
+    kill: platformKill,
+    ...(native ? { start: native.start } : {}),
+  };
 }
 
 /** Owns OS probes, permission fallback and signal error translation. */

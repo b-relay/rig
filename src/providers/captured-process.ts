@@ -42,6 +42,8 @@ export async function runCapturedProcess(
     inspect?: ProcessIdentityReader;
     /** How the wrapper's own supervisor inspects and signals its application; the platform's when absent. */
     processInspection?: ProcessInspection;
+    /** What the wrapper waits on between looks at its application; `wakeablePause` when absent. */
+    pause?: ReturnType<typeof wakeablePause>;
     /** Ends this process by `signal` once its handlers are removed; the default raises it on the wrapper itself. */
     endBy?: (signal: NodeJS.Signals) => void;
   } = {},
@@ -58,6 +60,7 @@ async function runUntilStopped(
   dependencies: {
     inspect?: ProcessIdentityReader;
     processInspection?: ProcessInspection;
+    pause?: ReturnType<typeof wakeablePause>;
   },
 ): Promise<{ exitCode: number; signal?: NodeJS.Signals }> {
   const root = captureRequestRoot(requestPath);
@@ -66,7 +69,7 @@ async function runUntilStopped(
   const processInspection =
     dependencies.processInspection ??
     createProcessInspection(await platformInspection(runCommand));
-  const pause = wakeablePause();
+  const pause = dependencies.pause ?? wakeablePause();
   const supervisor = createChildSupervisor({
     stateRoot: dirname(requestPath),
     root,

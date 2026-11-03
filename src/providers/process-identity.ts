@@ -31,7 +31,7 @@ export function createProcessIdentityReader(
       }
       return seconds === undefined
         ? undefined
-        : identityOf(pid, lstartText(seconds, "utc"));
+        : identityOf(pid, lstartText(seconds));
     }
     const result = await run({
       command: ["/bin/ps", "-p", String(pid), "-o", "lstart="],

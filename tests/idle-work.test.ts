@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -52,22 +59,19 @@ const countingRun = () => {
 };
 
 describe("a process's start time", () => {
-  test("reads as ps prints it, with a single-digit day padded, in UTC or in the process's zone", () => {
-    const at = Date.UTC(2026, 9, 5, 7, 8, 9) / 1000;
-    expect(lstartText(at, "utc")).toBe("Mon Oct  5 07:08:09 2026");
-    expect(lstartText(Date.UTC(2026, 9, 12, 10, 0, 0) / 1000, "utc")).toBe(
-      "Mon Oct 12 10:00:00 2026",
+  test("reads as ps prints it in UTC, with a single-digit day padded", () => {
+    expect(lstartText(Date.UTC(2026, 9, 5, 7, 8, 9) / 1000)).toBe(
+      "Mon Oct  5 07:08:09 2026",
     );
-    const local = new Date(at * 1000);
-    expect(lstartText(at, "local")).toContain(
-      `${String(local.getMinutes()).padStart(2, "0")}:${String(local.getSeconds()).padStart(2, "0")}`,
+    expect(lstartText(Date.UTC(2026, 9, 12, 10, 0, 0) / 1000)).toBe(
+      "Mon Oct 12 10:00:00 2026",
     );
   });
 
   test.skipIf(process.platform !== "darwin")(
     "from the kernel makes the identity ps makes, for this process and for another user's, so a saved lease still reads, and starts no process",
     async () => {
-      const start = (await nativeProcessStart())!;
+      const { start } = (await nativeProcessStart())!;
       const byPs = createProcessIdentityReader(runCommand);
       const { commands, run } = countingRun();
       const native = createProcessIdentityReader(run, start);
@@ -206,6 +210,53 @@ describe("the runtime state", () => {
     }
   });
 
+  test("is read from the file once while it does not change, and again as soon as it does", async () => {
+    const { root } = await storeWith(empty);
+    // Its own process: a named import binds readFile as it is when the importing module first loads.
+    const script = `
+const fs = require("node:fs/promises");
+const readFile = fs.readFile;
+const path = ${JSON.stringify(join(root, "runtime", "state.json"))};
+let reads = 0;
+fs.readFile = (file, ...rest) => {
+  if (file === path) reads++;
+  return readFile(file, ...rest);
+};
+require("node:module").syncBuiltinESMExports();
+const { FileStateStore } = await import(${JSON.stringify(join(import.meta.dir, "../src/runtime/state-store.ts"))});
+const store = new FileStateStore(${JSON.stringify(root)});
+for (let i = 0; i < 20; i++) await store.read();
+const unchanged = reads;
+await Bun.write(path, JSON.stringify({ ...${JSON.stringify(empty)}, extra: 1 }));
+await store.read();
+await store.read();
+process.stdout.write(JSON.stringify({ unchanged, changed: reads }));
+`;
+    const child = Bun.spawn([process.execPath, "-e", script], {
+      stdout: "pipe",
+    });
+    expect(JSON.parse(await new Response(child.stdout).text())).toEqual({
+      unchanged: 1,
+      changed: 2,
+    });
+  });
+
+  test("written in place within a filesystem's coarse timestamp has no revision, so the change is read and refused", async () => {
+    const { root, store } = await storeWith(empty);
+    const path = join(root, "runtime", "state.json");
+    // HFS+ keeps whole seconds: the same inode, size and time after a second write within that second.
+    const second = new Date(Date.UTC(2026, 9, 12, 10, 0, 0));
+    await utimes(path, second, second);
+    expect(await store.revision()).toBeUndefined();
+    await store.read();
+    const text = await readFile(path, "utf8");
+    await writeFile(path, text.replace(`"targets": []`, `"targets": 1 `));
+    await utimes(path, second, second);
+    await expect(store.read()).rejects.toMatchObject({
+      code: "STATE_CORRUPT",
+    });
+  });
+
   test("written invalid after a good read is refused, whatever the size of the change, and stays refused", async () => {
     const { root, store } = await storeWith({ ...empty, activity: [] });
     await store.read();
@@ -324,6 +375,84 @@ describe("the capture wrapper", () => {
       { state: "stopped", exitCode: 3 },
     ]);
   });
+
+  /** A real wrapper over a real application, whose every pause lasts ten minutes unless something wakes it: `end` is given the
+   * pids once the application runs, and the wrapper is expected to end without that wait. Answers its exit code and the
+   * pause it asked for each time. */
+  async function wrapperPausing(
+    end: (pids: { wrapper: number; application: number }) => void,
+  ) {
+    const root = await tempRoot();
+    await mkdir(join(root, "capture"), { recursive: true, mode: 0o700 });
+    const requestPath = join(root, "capture", "request.json");
+    await writeFile(
+      requestPath,
+      JSON.stringify({
+        key: "capture",
+        componentName: "web",
+        command: ["/bin/sh", "-c", "exec /bin/sleep 600"],
+        cwd: root,
+        env: {},
+        logRoot: root,
+        incarnation: "start-1",
+      }),
+    );
+    const script = `
+import { runCapturedProcess, wakeablePause } from ${JSON.stringify(join(import.meta.dir, "../src/providers/captured-process.ts"))};
+const pause = wakeablePause();
+const asked = [];
+const code = await runCapturedProcess(process.argv[1], {
+  pause: { wake: pause.wake, wait: (ms) => { asked.push(ms); return pause.wait(600_000); } },
+  endBy: () => {},
+});
+process.stdout.write(JSON.stringify({ code, asked }));
+process.exit(0);
+`;
+    const wrapper = Bun.spawn([process.execPath, "-e", script, requestPath], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    let application: number | undefined;
+    const watchdog = setTimeout(() => {
+      wrapper.kill("SIGKILL");
+      if (application) process.kill(application, "SIGKILL");
+    }, 30_000);
+    try {
+      while (!application) {
+        const evidence = await readFile(
+          `${requestPath}.observation.json`,
+          "utf8",
+        )
+          .then((raw) => JSON.parse(raw))
+          .catch(() => undefined);
+        application = evidence?.observation?.pid;
+        if (!application) await Bun.sleep(10);
+      }
+      end({ wrapper: wrapper.pid, application });
+      return JSON.parse(await new Response(wrapper.stdout).text()) as {
+        code: number;
+        asked: number[];
+      };
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+
+  test("a running application is looked at once a second, and its exit ends the pause at once", async () => {
+    const { code, asked } = await wrapperPausing(({ application }) =>
+      process.kill(application, "SIGKILL"),
+    );
+    expect(code).toBe(1);
+    expect(asked.length).toBeGreaterThan(0);
+    for (const ms of asked) expect(ms).toBe(1000);
+  }, 60_000);
+
+  test("a stop ends the wrapper's pause at once", async () => {
+    const { code } = await wrapperPausing(({ wrapper }) =>
+      process.kill(wrapper, "SIGTERM"),
+    );
+    expect(code).toBe(0);
+  }, 60_000);
 
   test("a stop ends the pause at once, and a wake with nothing paused is kept for the next pause", async () => {
     const pause = wakeablePause();

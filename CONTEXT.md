@@ -887,7 +887,8 @@ start by comparing the boot and login session with the ones it last recorded.
 
 _Relationship_: after a Host restart, `rigd` starts each stable Target meant to
 run as `rig up` would; the working Target and Previews stay stopped until
-`rig up`, whatever their Automatic restart policy.
+`rig up`, whatever their Automatic restart policy, and the routes of what it
+stopped reach nothing until that start is verified.
 _Avoid_: reboot policy, restart_after_reboot
 
 ### Logs

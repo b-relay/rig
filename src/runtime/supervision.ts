@@ -19,6 +19,7 @@ import type {
 import type { ComponentReport } from "../domain/project-status";
 import { rigCommand } from "../domain/rig-command";
 import type { ProcessObservation } from "../providers/contracts";
+import { isStopDetached } from "../domain/stop-budget";
 import { boundedObservations } from "./bounded-observations";
 import { plannedRoutes } from "./ports";
 import type { RuntimeDependencies } from "./contracts";
@@ -515,6 +516,9 @@ export function intendRunning(target: TargetRecord): void {
  * stays as it was. No retry stays scheduled. A Service seen running survived and is left alone; one whose observation does
  * not answer within the status budget is counted as stopped, since a restart ends every process. A Service an operator
  * stopped, or whose automatic attempts are used up, keeps its record. Writes no Activity: the restart's own entry says why.
+ * The Caddy that came back with the Host still reaches the ports of the Services it stopped, which any program may bind
+ * now, so their paths are withheld first, until a verified start publishes them again; while they cannot be, nothing is
+ * recorded and the caller tries again.
  * The records, and whatever `alongside` records, are saved in one write. Returns whether they were saved; a failure goes
  * to the diagnostic log. */
 export async function recordStoppedByHostRestart(
@@ -545,6 +549,7 @@ export async function recordStoppedByHostRestart(
       return { kind: "unknown", hostRestart: restart, at: deps.now() };
     },
     alongside,
+    (services) => deps.lifecycle.withhold(target, services),
   );
 }
 
@@ -575,8 +580,9 @@ export async function recordFailedStart(
 
 /** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled
  * retry; `decide` returning nothing leaves the record alone. A Service whose observation does not answer within the status
- * budget counts as not running. The outcomes and whatever `alongside` records are saved in one write, so all of it is
- * saved or none is. Returns whether it was saved; a failure goes to the diagnostic log. */
+ * budget counts as not running. `beforeSaving` is told the Services about to get an outcome, and nothing is saved when it
+ * fails. The outcomes and whatever `alongside` records are saved in one write, so all of it is saved or none is. Returns
+ * whether it was saved; a failure goes to the diagnostic log. */
 async function settleStopped(
   target: TargetRecord,
   deps: Deps,
@@ -585,6 +591,7 @@ async function settleStopped(
     run: ServiceRun | undefined,
   ) => ServiceOutcome | undefined,
   alongside?: (state: RuntimeState) => void,
+  beforeSaving?: (services: string[]) => Promise<void>,
 ): Promise<boolean> {
   const runs: Record<string, ServiceRun> = {};
   try {
@@ -612,6 +619,7 @@ async function settleStopped(
       };
       runs[service] = { ...rest, outcome };
     }
+    if (Object.keys(runs).length) await beforeSaving?.(Object.keys(runs));
     if (Object.keys(runs).length || alongside)
       await saveRuns(target, runs, deps, alongside);
     return true;
@@ -770,6 +778,9 @@ async function superviseService(
   try {
     started = await deps.lifecycle.recover(target, service, journal);
   } catch (error) {
+    // rigd's shutdown cut the attempt short: it is left as a crash leaves it, already spent, for the next daemon to judge by
+    // how the process ended.
+    if (isStopDetached(error)) return undefined;
     const current = currentRun(target, service)!;
     const refusedBeforeStart = current.incarnation === run.incarnation;
     // A refusal for a dependency that is down spawned nothing: the Service waits for it without spending budget.

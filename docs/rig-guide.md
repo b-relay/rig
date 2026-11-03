@@ -225,6 +225,8 @@ operation waits for a Service to exit leaves that Service stopping the same way.
 For `rig down` and `rig restart` the Target was recorded as meant to be stopped
 before its stop began, so the next daemon's startup pass stops it again (a
 `restart` cut short this way leaves the Target stopped; run `rig up`). An
+automatic or health restart cut short this way is no failed attempt: Activity
+says nothing of it, and the next daemon decides from how the process ended. An
 interrupted deploy, Preview destroy or a `down` that was resolving an
 unfinished deploy is left for you to run again, and `rig status` says so.
 `rig down` on an interrupted deploy stops both recorded Deployments and any
@@ -1079,7 +1081,12 @@ registered repository.
 The working Target follows the repository's current `rig.yaml`: `rig up` on a
 stopped Target and `rig restart` re-plan it from the config on disk before
 starting, keeping its Target id, data root, and recorded ports where the config
-still allows them. `rig up` on a Target that is already running keeps the plan
+still allows them. `rig restart` plans before it stops anything, so one Rig
+refuses leaves the Target running as it was: a `rig.yaml` that cannot be read,
+a plan that cannot be made (a pinned port another Target holds, say), a route
+that could not be published, a deployed Target whose preparation is not
+complete, or an `env_file` that cannot be read (unless a build still runs
+before the start, which may write it). `rig up` on a Target that is already running keeps the plan
 its processes were started from; `rig doctor` reports `config-drift` for it and
 names `rig restart working` as the fix. A valid config
 that adds a Service the recorded plan has no port for is also reported as
@@ -1469,7 +1476,7 @@ reports it as a failing `rigd/diagnostics`, `rigd/monitor`, `rigd/health` or
 `rigd/jobs` check with what it means: operation outcomes are never changed by
 a logging failure; a Target whose supervision failed has its exits neither
 recorded nor acted on; a health check's result, or its Activity entry or Target
-log evidence, may be missing; a job's start, recorded end, timeout or clean-up
+log evidence, may be missing, or a health restart failed; a job's start, recorded end, timeout or clean-up
 did not happen. Each failure is kept under the work it is about (a Target, a
 Service's checks, a job) and cleared only when that same work succeeds again,
 or is no longer needed: another Target's or job's success, or a pass that
@@ -2200,8 +2207,11 @@ ones it recorded last time:
   `restart: always`. `rig status` reports their Services `stopped`, with
   `exit: unknown` and a reason that says they stopped when the Mac restarted
   (or when you logged out). Run `rig up` to start them. Until that start, no
-  unknown exit of that Target is retried automatically; after it, the usual
-  rules apply again. A Service that survived a logout is left running, and
+  unknown exit of that Target is retried automatically, and the paths of those
+  Services answer 503 instead of reaching their ports; after it, the usual
+  rules apply again. While such a path cannot be withheld (the proxy does not
+  answer yet), `rigd` tries again every second and nothing of that Target
+  starts. A Service that survived a logout is left running, and
   one whose earlier exit had already left it stopped (a clean exit under
   `on-failure`, say) keeps that status.
 - Targets meant to be stopped stay stopped.
@@ -2341,7 +2351,9 @@ without seeing it pass (one that survived a `rigd` restart, say) is checked as
 soon as `rigd` sees it running with its Target free, then every `interval`. Checks pause while an Operation (an `up`, `down`, `restart`,
 deploy, or a restart Rig makes itself) holds or waits for the Target, never
 overlap for one Service, and at most four run at once on the Host. A check that
-does not answer within its `timeout` failed.
+does not answer within its `timeout` failed. A check of a routed Service passes
+only while its own process also owns the routed listener, whatever the check
+is, so another program answering on that port never counts as healthy.
 
 After `retries` failures in a row the Service is unhealthy; Activity records
 it with the check's last output, cut to 200 characters (`web is unhealthy: 3
@@ -2378,8 +2390,9 @@ unhealthy, and Rig starts it again at the next step of the same back-off,
 whatever its `restart` policy and without spending the automatic-restart
 budget, until a start passes; it never gives up. `rig status` shows
 `unhealthy · restart failed its start check · next attempt in 5m`, Activity
-records each attempt, and `rig doctor` reports it. `rig restart` starts it at
-once, and `rig down` stops the attempts. After a Host restart such a Service
+records each attempt, and `rig doctor`'s `rigd/health` check names the failed
+restart and its reason until a later restart or check passes. `rig restart`
+starts it at once, and `rig down` stops the attempts. After a Host restart such a Service
 of the working Target or a Preview stays stopped until `rig up`, as every
 Service of theirs does; the stable Target is started by `rigd` as after any
 Host restart, which ends the stretch. A health restart records that it owns the
@@ -2806,8 +2819,8 @@ in it does, even after the command's own shell has ended, and a process a build
 leaves running in the background is stopped when the build ends (the build
 fails `PREPARATION_LEFTOVER`, its record kept, when it cannot be). So a build
 that outlives a `rigd` that died is never lost: the next daemon's startup pass
-stops it on a Target meant to be stopped, `rig down` stops it (and says
-`stopped`), the next build of the Target stops it before it begins, and
+stops it on every Target, `rig status` and the dashboard say so while it runs,
+`rig down` stops it (and says `stopped`), the next build of the Target stops it before it begins, and
 `rigd uninstall` refuses with `TARGETS_RUNNING` while one may still run. A
 Deployment with a failed or missing unit is refused as
 `PREPARATION_INCOMPLETE` the same way. Builds see `env_file` values when they

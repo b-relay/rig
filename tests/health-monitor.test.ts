@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { Clock } from "../src/domain/clock";
 import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
+import { RigError } from "../src/domain/errors";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
 import {
   UNWRITTEN_HEALTH_LIMIT,
@@ -114,6 +115,8 @@ function fixture(
   let busy = false;
   /** What the next restarts do: start a new process, fail to stop the old one, or find it already replaced. */
   let restartOutcome: HealthRestartResult["outcome"] = "restarted";
+  /** Why the next restarts fail. */
+  let restartError: unknown = new Error("the restart failed");
   /** How long a restart waits for its Target's lock before it is attempted (fake milliseconds). */
   let lockWait = 0;
   /** The next restarts never end, as one waiting out a long stop_timeout. */
@@ -196,7 +199,12 @@ function fixture(
         // It waited for its Target's lock, then was attempted.
         now += lockWait;
         elapsed += lockWait;
-        return { outcome: "failed", at: now, elapsed };
+        return {
+          outcome: "failed",
+          at: now,
+          elapsed,
+          error: restartError,
+        };
       }
       const next = incarnations.get(request.service)! + 1;
       incarnations.set(request.service, next);
@@ -299,6 +307,9 @@ function fixture(
     set restartOutcome(value: HealthRestartResult["outcome"]) {
       restartOutcome = value;
     },
+    set restartError(value: unknown) {
+      restartError = value;
+    },
     set lockWait(value: number) {
       lockWait = value;
     },
@@ -400,6 +411,79 @@ test("health restarts back off 1 min, 5 min, 15 min, then hourly while the Servi
   expect(
     f.activity().filter((message) => message.includes("is unhealthy")),
   ).toHaveLength(1);
+});
+
+/** A Service whose first health restart just failed with `reason`. */
+async function failedRestart(reason: unknown) {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  f.answer = () => false;
+  f.restartOutcome = "failed";
+  f.restartError = reason;
+  await f.runFor(10 * SECOND);
+  expect(f.restarts).toHaveLength(1);
+  return f;
+}
+const healthNotice = (f: ReturnType<typeof fixture>) =>
+  f.notices().find((notice) => notice.channel === "health")?.message;
+
+test("a failed health restart raises the Service's health notice with the reason, and a later restart that succeeds clears it", async () => {
+  const f = await failedRestart(
+    new RigError("HEALTH_FAILED", "web did not become ready.", "Inspect."),
+  );
+  expect(healthNotice(f)).toBe(
+    "Restarting web on stable of demo for its health failed: HEALTH_FAILED: web did not become ready.",
+  );
+  // The next one fails too: still raised, and with what is failing now.
+  f.restartError = new Error("the process could not be stopped");
+  await f.runFor(60 * SECOND);
+  expect(f.restarts).toHaveLength(2);
+  expect(healthNotice(f)).toBe(
+    "Restarting web on stable of demo for its health failed: the process could not be stopped",
+  );
+  f.restartOutcome = "restarted";
+  await f.runFor(300 * SECOND);
+  expect(f.restarts).toHaveLength(3);
+  expect(healthNotice(f)).toBeUndefined();
+});
+
+test("a failed health start raises the notice too, and the start that passes clears it", async () => {
+  const f = fixture({ interval: 5, retries: 1, onFailure: "restart" });
+  f.processState = "stopped";
+  f.state.targets[0]!.services!.web!.healthStretch = {
+    since: 0,
+    restarts: [0],
+    pendingStart: 0,
+  };
+  f.restartOutcome = "failed";
+  await f.runFor(61 * SECOND);
+  expect(f.restarts[0]).toMatchObject({ start: true });
+  expect(healthNotice(f)).toContain("for its health failed");
+  f.restartOutcome = "restarted";
+  await f.runFor(300 * SECOND);
+  expect(healthNotice(f)).toBeUndefined();
+});
+
+test("an explicit start clears a failed health restart's notice as it passes its start check", async () => {
+  const f = await failedRestart(new Error("no"));
+  expect(healthNotice(f)).toBeDefined();
+  f.replace("web");
+  f.monitor.started(f.state.targets[0]!, "web", "web-2");
+  expect(healthNotice(f)).toBeUndefined();
+});
+
+test("a check that passes after a failed health restart clears its notice: the Service is healthy, whoever made it so", async () => {
+  const f = await failedRestart(new Error("no"));
+  f.answer = () => true;
+  await f.runFor(10 * SECOND);
+  expect(f.result()).toMatchObject({ status: "healthy" });
+  expect(healthNotice(f)).toBeUndefined();
+});
+
+test("a failed health restart's notice goes once the Target is no longer meant to run", async () => {
+  const f = await failedRestart(new Error("no"));
+  f.state.targets[0]!.desired = "stopped";
+  await f.runFor(2 * SECOND);
+  expect(healthNotice(f)).toBeUndefined();
 });
 
 test("on_failure: report makes the Service unhealthy and never restarts it; one passing check makes it healthy again", async () => {

@@ -70,6 +70,9 @@ export function targetWarnings(target: TargetReport): string[] {
     ...(target.destructionPending
       ? ["Destruction did not finish; retry Destroy."]
       : []),
+    ...(target.leftoverBuild
+      ? ["A build an earlier rigd started is still running."]
+      : []),
   ];
 }
 /** Pure: whether a Target's route is the host the page was opened on, so stopping it cuts this very page off. */

@@ -15,6 +15,8 @@ import { hostTimeZone } from "../domain/cron";
 import { jobReports } from "./job-status";
 import { asRigError } from "../domain/errors";
 import { rigCommand } from "../domain/rig-command";
+import type { ProcessObservation } from "../providers/contracts";
+import { boundedObservations } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
 import {
   hostnameFields,
@@ -79,6 +81,11 @@ export async function projectStatus(
     stopping?(targetId: string): boolean;
     /** The Services of this Target an Operation is waiting on right now, with when each is killed. */
     serviceStops?(targetId: string): ServiceStopView[];
+    /** What runs of a build a daemon that died left for this Target; `stopped` for one this daemon runs itself. */
+    leftoverBuild?(
+      target: TargetRecord,
+      signal: AbortSignal,
+    ): Promise<ProcessObservation>;
   },
 ): Promise<ProjectStatusReport> {
   let configWarning: string | undefined;
@@ -200,8 +207,39 @@ export async function projectStatus(
       warnings.push(
         `${target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run ${rigCommand("down", { target }, "--destroy")} to finish cleanup.`,
       );
+  warnings.push(...(await markLeftoverBuilds(selected, reports, deps)));
   warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
   return { project: project.name, targets: reports, warnings };
+}
+/** A build a daemon that died left running is in no Service's state, so only its recorded process group shows it. One whose
+ * observation does not answer within the status budget is not said to run. */
+async function markLeftoverBuilds(
+  targets: readonly TargetRecord[],
+  reports: TargetReport[],
+  deps: Pick<
+    Parameters<typeof projectStatus>[3],
+    "leftoverBuild" | "observationBudgetMs" | "observationDeadline"
+  >,
+): Promise<string[]> {
+  const observe = deps.leftoverBuild;
+  if (!observe) return [];
+  const builds = await boundedObservations(
+    targets.map((target) => (signal: AbortSignal) => observe(target, signal)),
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
+  return targets.flatMap((target, index) => {
+    const build = builds[index]!;
+    if (build.kind !== "completed" || build.value.state === "stopped")
+      return [];
+    const report = reports.find(
+      (r) => r.kind === target.kind && r.name === target.name,
+    );
+    if (report) report.leftoverBuild = true;
+    return [
+      `${target.name}: a build an earlier rigd started is still running${build.value.pid ? ` (process group ${build.value.pid})` : ""}. rigd stops it as it starts and before the next build; ${rigCommand("down", { target })} stops it now, with the Target's Services.`,
+    ];
+  });
 }
 /** A route the host Caddy never loads is shown, but never presented as served. */
 async function markUnpublishedRoutes(

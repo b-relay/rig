@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import { createServer, type AddressInfo } from "node:net";
 import { createRuntimeFiles } from "../src/adapters/runtime-files";
 
 test("selected preferred port is released before another process acquires it", async () => {
@@ -24,6 +25,54 @@ test("selected preferred port is released before another process acquires it", a
   );
   expect(await child.exited).toBe(0);
   expect(await new Response(child.stdout).text()).toBe(String(selected.web));
+});
+
+test("a port the Target's own running Service holds is granted without a bind, since a restart frees it; another Target's still refuses it", async () => {
+  const files = createRuntimeFiles();
+  const server = createServer();
+  await new Promise<void>((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve()),
+  );
+  const port = (server.address() as AddressInfo).port;
+  try {
+    const request = { requests: [{ name: "web", preferred: port }] };
+    await expect(
+      files.selectPorts({
+        ...request,
+        occupied: new Map(),
+        policy: "configured",
+      }),
+    ).rejects.toMatchObject({ code: "PORT_UNAVAILABLE" });
+    expect(
+      await files.selectPorts({
+        ...request,
+        occupied: new Map(),
+        policy: "configured",
+        held: new Set([port]),
+      }),
+    ).toEqual({ web: port });
+    await expect(
+      files.selectPorts({
+        ...request,
+        occupied: new Map([[port, { target: "stable", project: "demo" }]]),
+        policy: "configured",
+        held: new Set([port]),
+      }),
+    ).rejects.toMatchObject({ code: "PORT_RESERVED" });
+    await expect(
+      files.selectPorts({
+        requests: [
+          { name: "web", preferred: port },
+          { name: "api", preferred: port },
+        ],
+        occupied: new Map(),
+        policy: "configured",
+        held: new Set([port]),
+      }),
+    ).rejects.toMatchObject({ code: "PORT_RESERVED" });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("empty, inventory collisions, dynamic preferences, and multiple selections preserve policy", async () => {

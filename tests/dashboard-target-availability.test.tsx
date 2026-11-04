@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import type { ReactNode } from "react";
 import { basic, local } from "./support/dashboard-site";
 import { elements, mountWithoutDom, textOf } from "./support/hook-harness";
 import type { RuntimeCommand } from "../src/daemon/protocol";
@@ -233,6 +234,12 @@ test("only what rigd runs for this Project's Target, on someone's asking, is its
   });
 });
 
+/** The card's mark and its dialog, as they would render from the props the card gave them. */
+function markShown(mark: ReturnType<typeof elements>[number]) {
+  const shown = mountWithoutDom(mark.type as (props: never) => ReactNode);
+  shown.render(mark.props as never);
+  return shown;
+}
 test("a reload does not lose how the last action ended: a failed shared build stays said until a later action ends", () => {
   const failed = record({ message: "BUILD_FAILED", id: "op-fail" });
   const work = projectWork("demo", undefined, {
@@ -299,11 +306,14 @@ test("a card marks a failure a reload would have lost, and says nothing of a suc
     target: stable(),
     work: { last: record({ outcome: "started" }) },
   });
+  // A success alone is no news on a card: the mark renders nothing.
   expect(
-    elements(fine.mounted.tree).find(
-      (each) => (each.type as { name?: string }).name === "OutcomeMark",
-    )?.props.last,
-  ).toBeUndefined();
+    markShown(
+      elements(fine.mounted.tree).find(
+        (each) => (each.type as { name?: string }).name === "OutcomeMark",
+      )!,
+    ).tree,
+  ).toBeNull();
 });
 
 /** Confirms Destroy in a Target's actions, as the dialog's button does. */
@@ -992,4 +1002,61 @@ test("a card marks a failure from either fact, and its tooltip says which is whi
   expect(rendered).toContain("started");
   expect(rendered).toContain("restart failed: BUILD_FAILED");
   expect(rendered).toContain("text-bad");
+});
+
+/** A card after this page's own Start ended as `reply` said, then a refresh brought `last`. */
+async function cardAfterOwnStart(
+  reply: (command: RuntimeCommand) => unknown,
+  last: ReturnType<typeof record>,
+) {
+  const props = {
+    project: "demo",
+    layout: "card",
+    stacked: false,
+    target: stable({ state: "stopped" }),
+  } as const;
+  const { mounted, controls } = actions(props);
+  answer = reply;
+  mounted.act(() =>
+    (
+      controls("Start").find((each) => each.props.onClick)!.props
+        .onClick as () => void
+    )(),
+  );
+  await until(() => mounted.refreshes.count > 0);
+  answer = undefined;
+  mounted.render({ ...props, work: { last } });
+  const dialog = markShown(
+    elements(mounted.tree).find(
+      (each) => (each.type as { name?: string }).name === "OutcomeMark",
+    )!,
+  );
+  const button = elements(dialog.tree).find((each) => each.type === "button")!;
+  return { text: textOf(dialog.tree), tone: String(button.props.className) };
+}
+const LATER_STOP = record({
+  id: "later-cli",
+  action: "down",
+  outcome: "stopped",
+});
+
+test("a card's dialog says Activity's distinct success beside this page's failure, and the failure keeps the mark red", async () => {
+  const { text, tone } = await cardAfterOwnStart(
+    refusing("BUILD_FAILED", "The shared build failed.", "Fix the build."),
+    LATER_STOP,
+  );
+  expect(text).toContain("This page's last command");
+  expect(text).toContain("Activity's last action: stopped");
+  expect(tone).toContain("text-bad");
+});
+
+test("a card's dialog says Activity's distinct success beside this page's success, and no failure leaves the mark green", async () => {
+  const { text, tone } = await cardAfterOwnStart(
+    replying("started"),
+    LATER_STOP,
+  );
+  expect(text).toContain("This page's last command");
+  expect(text).toContain("Activity's last action: stopped");
+  expect(tone).toContain("text-good");
+  expect(tone).not.toContain("text-bad");
 });

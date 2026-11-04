@@ -238,7 +238,7 @@ export function TargetActions({
         <OutcomeMark
           failure={act.failure}
           result={act.result}
-          last={last?.outcome === "failed" ? last : undefined}
+          last={last}
           target={target.name}
         />
       ) : (
@@ -391,8 +391,8 @@ function lastAction(last: NonNullable<TargetWork["last"]>) {
     </a>
   );
 }
-/** This page's last command and Activity's failed last action as one small mark, for a card with no room for words; the
- * tooltip and the dialog tell the rest. */
+/** This page's last command and Activity's last action as one small mark, for a card with no room for words, red only for
+ * a failure; the tooltip and the dialog tell the rest. */
 function OutcomeMark({
   failure,
   result,
@@ -403,7 +403,9 @@ function OutcomeMark({
   target: string;
 }) {
   const [open, setOpen] = useState(false);
-  if (!failure && !result && !last) return null;
+  const lastFailed = last?.outcome === "failed";
+  // Activity's success alone is no news on a card; beside this page's own outcome the dialog still says it.
+  if (!failure && !result && !lastFailed) return null;
   const own = failure
     ? `${failure.code}: ${failure.message}${failure.hint ? ` ${failure.hint}` : ""}`
     : result
@@ -413,7 +415,7 @@ function OutcomeMark({
     ...(own ? [`${OWN_COMMAND}: ${own}`] : []),
     ...(last ? [lastActionText(last)] : []),
   ].join(" ");
-  const bad = failure !== undefined || last !== undefined;
+  const bad = failure !== undefined || lastFailed;
   // A tooltip alone never reaches a phone, so a tap opens the whole outcome.
   return (
     <>

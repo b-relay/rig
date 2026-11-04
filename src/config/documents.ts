@@ -10,9 +10,11 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
+  type CST,
   isAlias,
   isMap,
   isScalar,
+  Parser,
   parseAllDocuments,
   stringify,
   visit,
@@ -116,17 +118,128 @@ function decodeDocument<T>(
 async function readDocument<T>(
   path: string,
   validate: (value: unknown) => T,
+  readText?: (path: string) => Promise<string>,
 ): Promise<ConfigDocument<T>> {
-  const { raw: _raw, ...document } = await readDocumentSource(path, validate);
+  const { raw: _raw, ...document } = await readDocumentSource(
+    path,
+    validate,
+    readText,
+  );
   return document;
+}
+const printablePath = (path: string) =>
+  path.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 240);
+/** A BOM stays in the text, as a read with replacement keeps it. */
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/** The length of the UTF-8 character at `at`; 0 when the byte there starts none. */
+function characterLength(bytes: Buffer, at: number): number {
+  const lead = bytes[at]!;
+  const length =
+    lead < 0x80
+      ? 1
+      : lead < 0xc2 || lead > 0xf4
+        ? 0
+        : lead < 0xe0
+          ? 2
+          : lead < 0xf0
+            ? 3
+            : 4;
+  if (!length) return 0;
+  try {
+    strictUtf8.decode(bytes.subarray(at, at + length));
+    return length;
+  } catch {
+    return 0;
+  }
+}
+/** Pure: `bytes` as text with each byte that is not UTF-8 replaced, and where in the text those replacements are, so a U+FFFD
+ * the file really holds is not taken for one. */
+function markInvalidBytes(bytes: Buffer): { text: string; invalid: number[] } {
+  let text = "";
+  const invalid: number[] = [];
+  let run = 0;
+  for (let at = 0; at < bytes.length;) {
+    const length = characterLength(bytes, at);
+    if (length) {
+      at += length;
+      continue;
+    }
+    text += strictUtf8.decode(bytes.subarray(run, at));
+    invalid.push(text.length);
+    text += "\uFFFD";
+    run = ++at;
+  }
+  return { text: text + strictUtf8.decode(bytes.subarray(run)), invalid };
+}
+/** Pure: the ranges of `text` that the YAML parser reads as comments. */
+function commentRanges(text: string): [number, number][] {
+  const ranges: [number, number][] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) node.forEach(walk);
+    else if (typeof node === "object" && node !== null) {
+      const { type, offset, source } = node as Partial<CST.SourceToken>;
+      if (type === "comment" && offset !== undefined && source !== undefined)
+        ranges.push([offset, offset + source.length]);
+      else Object.values(node).forEach(walk);
+    }
+  };
+  walk([...new Parser().parse(text)]);
+  return ranges;
+}
+const invalidBytes = (
+  path: string,
+  line: number,
+  comment: boolean,
+): ConfigError =>
+  new ConfigError(
+    `${printablePath(path)} has bytes that are not valid UTF-8 on line ${line}${comment ? ", in a comment" : ""}.`,
+    "invalid_yaml",
+    { path, line },
+    comment
+      ? "A comment changes no value, so Rig still reads this file, but an edit here could not keep those bytes. Save the file as UTF-8 in an editor, then retry."
+      : "Save the file as UTF-8 in an editor, then retry.",
+  );
+const lineAt = (text: string, position: number) =>
+  text.slice(0, position).split("\n").length;
+/** `invalid_yaml`, naming the file and the line, for the first of the replacements at `invalid` that the YAML parser does not
+ * find in a comment of `text`: a key or a value is never altered. */
+function assertOnlyInComments(
+  path: string,
+  text: string,
+  invalid: readonly number[],
+): void {
+  if (!invalid.length) return;
+  const comments = commentRanges(text);
+  const outside = invalid.find(
+    (position) =>
+      !comments.some(([start, end]) => start <= position && position < end),
+  );
+  if (outside !== undefined)
+    throw invalidBytes(path, lineAt(text, outside), false);
+}
+/** The text of a Project config, for a read: bytes that are not UTF-8 are replaced only in a comment, which changes no value,
+ * so a Commit that once deployed can still be deployed again. */
+async function readProjectText(path: string): Promise<string> {
+  const { text, invalid } = markInvalidBytes(await readFile(path));
+  assertOnlyInComments(path, text, invalid);
+  return text;
+}
+/** The text of a Project config, for an edit, which could not write back bytes that are not UTF-8: `invalid_yaml` wherever
+ * they lie. */
+async function readEditableText(path: string): Promise<string> {
+  const { text, invalid } = markInvalidBytes(await readFile(path));
+  assertOnlyInComments(path, text, invalid);
+  if (invalid.length) throw invalidBytes(path, lineAt(text, invalid[0]!), true);
+  return text;
 }
 /** One filesystem read owns source bytes, decoding, and safe path-aware failures. */
 async function readDocumentSource<T>(
   path: string,
   validate: (value: unknown) => T,
+  readText: (path: string) => Promise<string> = readProjectText,
 ): Promise<ConfigDocument<T> & { raw: string }> {
   try {
-    const raw = await readFile(path, "utf8");
+    const raw = await readText(path);
     return { ...decodeDocument(raw, path, validate), raw };
   } catch (error) {
     if (error instanceof ConfigError)
@@ -134,7 +247,7 @@ async function readDocumentSource<T>(
         error.message,
         error.code,
         { ...error.context, path },
-        `In ${path.replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 240)}: ${error.hint}`,
+        `In ${printablePath(path)}: ${error.hint}`,
       );
     throw new ConfigError("Unable to read config document.", "read_failed", {
       path,
@@ -197,11 +310,16 @@ export async function discoverProject(
     directory = parent;
   }
 }
-/** Reads Host configuration from config.yaml, returning defaults only when no Host document exists. */
+/** Reads Host configuration from config.yaml, returning defaults only when no Host document exists. Bytes that are not UTF-8
+ * are replaced here, unlike in a Project config: rigd cannot start without this file, so refusing them would stop it. */
 export async function readHostConfig(stateRoot: string): Promise<HostConfig> {
   const path = await locateConfig(resolve(stateRoot), "config");
   return path
-    ? (await readDocument(path, parseHostConfig)).config
+    ? (
+        await readDocument(path, parseHostConfig, (file) =>
+          readFile(file, "utf8"),
+        )
+      ).config
     : parseHostConfig({});
 }
 /** Creates a new YAML document exclusively; an existing document remains untouched. */
@@ -237,13 +355,14 @@ export interface ProjectConfigPreview extends ProjectConfigSource {
 /** Reads the exact source and decoded config from the same bytes. */
 export async function readProjectConfigSource(
   repoPath: string,
+  readText?: (path: string) => Promise<string>,
 ): Promise<ProjectConfigSource> {
   const path = await locateConfig(resolve(repoPath), "rig");
   if (!path)
     throw new ConfigError("No rig.yaml found.", "missing_config", {
       repoPath,
     });
-  return readDocumentSource(path, parseProjectConfig);
+  return readDocumentSource(path, parseProjectConfig, readText);
 }
 function prepareEdit(
   raw: string,
@@ -270,7 +389,10 @@ function prepareEdit(
 export async function previewProjectConfig(
   input: ConfigEditInput,
 ): Promise<ProjectConfigPreview> {
-  const document = await readProjectConfigSource(input.repoPath);
+  const document = await readProjectConfigSource(
+    input.repoPath,
+    readEditableText,
+  );
   return prepareEdit(document.raw, document.path, input);
 }
 /** Optimistic revision checked filesystem editor. YAML edits preserve existing AST comments/order.
@@ -289,7 +411,7 @@ export async function editProjectConfig(
   const { lock } = acquired;
   let temporary: string | undefined;
   try {
-    const raw = await readFile(file, "utf8");
+    const raw = await readEditableText(file);
     const prepared = prepareEdit(raw, document.path, input);
     const output = prepared.raw;
     // One backup per file, replaced on every edit: the text before the latest change, never a growing set.
@@ -302,7 +424,7 @@ export async function editProjectConfig(
       flag: "wx",
       mode: (await stat(file)).mode,
     });
-    if (revisionOf(await readFile(file, "utf8")) !== input.expectedRevision)
+    if (revisionOf(await readEditableText(file)) !== input.expectedRevision)
       throw new ConfigError(
         "Config changed during editing.",
         "revision_conflict",

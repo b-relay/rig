@@ -89,7 +89,8 @@ The old checkout is **held** while any process that runs in it is or may be aliv
 ### Failure modes
 
 - **Build fails.** Nothing has been stopped, as today.
-- **The decision cannot be made for a Service** (a git diff fails, an env file cannot be read, a process cannot be observed). That Service is restarted. If restarting it then fails, the ordinary rollback follows.
+- **An env file a Service would start from is refused** (missing, unreadable, unparsable, in conflict with a command, or holding a value Rig refuses). The deploy fails with that refusal before anything stops, once its builds have run, since the rollback's starts could read the same file and fail too (added after #753).
+- **The decision cannot be made for a Service** (a git diff fails, a process cannot be observed). That Service is restarted. If restarting it then fails, the ordinary rollback follows.
 - **Failure partway through activation** (a stop, a start or a start check fails). Rollback stops what the candidate started and restarts the previous plan's restart set from the previous checkout. Kept Services were never touched. The `DEPLOY_ROLLBACK_BLOCKED` and `DEPLOY_RESTORE_FAILED` paths are unchanged.
 - **rigd crashes or shuts down mid-deploy.** The kept set is written into the candidate's record (with `recovery: pending`) before the first stop, so the next rigd knows which processes belong to which plan. Recovery is unchanged: the pending transition is reported, and `rig down` settles it by stopping every Service, kept ones included. Held checkouts stay until the sweep sees their processes gone.
 - **A kept Service crashes later.** Restart policy starts it from the current plan, and the old checkout is released within 30 seconds.

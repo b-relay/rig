@@ -18,7 +18,7 @@ import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
 import { isStopDetached } from "../domain/stop-budget";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
-import { uncertainAttempt } from "./lifecycle";
+import { assertServiceEnvironments, uncertainAttempt } from "./lifecycle";
 import { prepareTarget } from "./preparation";
 /** Unresolved recovery must be rejected before accepting any deployment outcome. */
 export function assertDeploymentRecovered(
@@ -117,9 +117,10 @@ async function activate(
     await prepareTarget(candidate, "all", deps);
     // Before anything stops: a route that cannot be published would leave neither Deployment serving.
     await deps.lifecycle.checkRoute(candidate);
-    // Before anything stops: a value Rig refuses would refuse the rollback's starts too, leaving neither Deployment running.
+    // Before anything stops, with every build run: an env file Rig refuses would refuse the rollback's starts too, leaving
+    // neither Deployment running.
     if (intent.activation === "start")
-      await deps.lifecycle.checkEnvironmentValues(candidate);
+      await assertServiceEnvironments(candidate, deps.lifecycle);
     const decision = previous
       ? await decideKeeping(candidate, previous, intent, deps)
       : firstDecision(candidate);

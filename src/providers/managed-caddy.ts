@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   chmod,
-  mkdir,
   readFile,
   readdir,
   readlink,
@@ -13,9 +12,12 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import {
+  flushDirectoryOf,
+  makeDirectoryFlushed,
   privateDirectory,
   removeFileDurably,
   replacePrivateFile,
+  writeFlushedFile,
 } from "./private-files";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import {
@@ -876,7 +878,9 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
   }
 
   /** Writes the route file whole, through a symlink and keeping its mode, as the external router does: the emergency
-   * rollback hands this same file to the old router Caddy, which must still find and read it. */
+   * rollback hands this same file to the old router Caddy, which must still find and read it. The bytes of it and its backup,
+   * then the directory that names them, are on disk before this resolves, so an effect journal never records a route a crash
+   * could still take back. */
   async function writeRoutes(
     text: string,
     before: string,
@@ -885,15 +889,16 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
      * such as another root's that a link swapped in meanwhile points to. */
     file: string,
   ): Promise<void> {
-    await mkdir(dirname(paths.routes), { recursive: true, mode: 0o700 });
+    await makeDirectoryFlushed(dirname(paths.routes), 0o700);
     const mode = (await stat(file).catch(() => undefined))?.mode ?? 0o600;
     const temporary = `${file}.${randomUUID()}.tmp`;
     if ((await realPath(paths.routes)) !== file)
       throw routeFileChanged(paths.routes, file);
-    await writeFile(`${file}.rig-backup`, before, { mode });
-    await writeFile(temporary, text, { mode });
+    await writeFlushedFile(`${file}.rig-backup`, before, mode);
+    await writeFlushedFile(temporary, text, mode);
     await chmod(temporary, mode & 0o777);
     await rename(temporary, file);
+    await flushDirectoryOf(file);
   }
   /** The route file read for a change: its real path, resolved once (the one file the change may write, through
    * `writeRoutes`), and its text. */

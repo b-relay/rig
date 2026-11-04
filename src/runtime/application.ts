@@ -93,6 +93,7 @@ import { plannedSites } from "./ports";
 import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
 import {
   assertPrepared,
+  assertServiceEnvironments,
   assertSourceBuildsKnown,
   type TargetLifecycle,
   withStops,
@@ -2974,14 +2975,7 @@ async function checkedRestartPlan(
     await deps.lifecycle.checkFirstBuild(planned);
     return planned;
   }
-  for (const component of planned.plan.components)
-    if (component.kind === "managed")
-      await deps.lifecycle
-        .environmentDigest(planned, component.name)
-        .catch((error: unknown) => {
-          // A start never fails for its digest, only for its environment.
-          if (diagnosticErrorCode(error) !== "ENV_DIGEST") throw error;
-        });
+  await assertServiceEnvironments(planned, deps.lifecycle);
   return planned;
 }
 /** A stopped working Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */

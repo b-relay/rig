@@ -43,6 +43,17 @@ export async function privateDirectory(
   await walk(root, directory, "make");
 }
 
+/** `privateDirectory` for `directory` alone: a missing directory above it fails ENOENT and is not made, so a writer that may
+ * outlive what its directory lives in cannot bring that back. */
+export async function privateDirectoryWithin(
+  root: string,
+  directory: string,
+): Promise<void> {
+  await walk(root, dirname(directory), "check");
+  await mkdirOnce(directory);
+  await checkDirectory(directory, await lstat(directory), "make");
+}
+
 /** Replaces `path` whole: the bytes go to a new private file beside it (created exclusively, never through a link), which is
  * then renamed over whatever `path` was, so a reader sees the old file or the new one and a link at `path` is replaced, not
  * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename, and after it every

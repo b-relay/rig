@@ -241,21 +241,26 @@ process.stdout.write(JSON.stringify({ unchanged, changed: reads }));
     });
   });
 
-  test("written in place within a filesystem's coarse timestamp has no revision, so the change is read and refused", async () => {
-    const { root, store } = await storeWith(empty);
-    const path = join(root, "runtime", "state.json");
-    // HFS+ keeps whole seconds: the same inode, size and time after a second write within that second.
-    const second = new Date(Date.UTC(2026, 9, 12, 10, 0, 0));
-    await utimes(path, second, second);
-    expect(await store.revision()).toBeUndefined();
-    await store.read();
-    const text = await readFile(path, "utf8");
-    await writeFile(path, text.replace(`"targets": []`, `"targets": 1 `));
-    await utimes(path, second, second);
-    await expect(store.read()).rejects.toMatchObject({
-      code: "STATE_CORRUPT",
-    });
-  });
+  // The same inode, size and time after a second write within one tick: HFS+ keeps whole seconds, exFAT ten milliseconds.
+  test.each([
+    ["HFS+", new Date(Date.UTC(2026, 9, 12, 10, 0, 0))],
+    ["exFAT", new Date(Date.UTC(2026, 9, 12, 10, 0, 0, 250))],
+  ])(
+    "written in place within the coarse timestamp of %s has no revision, so the change is read and refused",
+    async (_filesystem, tick) => {
+      const { root, store } = await storeWith(empty);
+      const path = join(root, "runtime", "state.json");
+      await utimes(path, tick, tick);
+      expect(await store.revision()).toBeUndefined();
+      await store.read();
+      const text = await readFile(path, "utf8");
+      await writeFile(path, text.replace(`"targets": []`, `"targets": 1 `));
+      await utimes(path, tick, tick);
+      await expect(store.read()).rejects.toMatchObject({
+        code: "STATE_CORRUPT",
+      });
+    },
+  );
 
   test("written invalid after a good read is refused, whatever the size of the change, and stays refused", async () => {
     const { root, store } = await storeWith({ ...empty, activity: [] });

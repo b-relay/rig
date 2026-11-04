@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { destroyPreview } from "../src/adapters/preview-storage";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
@@ -24,7 +25,7 @@ import {
 } from "../src/providers/process-inspection";
 import { createProcessTiming } from "../src/providers/process-timing";
 import { processLeasePath } from "../src/providers/process-lease";
-import type { Supervisor } from "../src/providers/contracts";
+import type { CommandResult, Supervisor } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { InstalledComponent } from "../src/config/types";
 import { RigError, userCorrectable } from "../src/domain/errors";
@@ -1332,6 +1333,127 @@ test("an HTTP health probe treats a redirect as ready, reports a failed status, 
   } finally {
     server.stop(true);
   }
+});
+
+test("health evidence remembered for Targets long gone is let go, while a live Service's still holds each change to one line", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-churn-"));
+  roots.push(root);
+  const adapter = effects(root);
+  const record = target(root);
+  // A Service with neither a check nor a port: it answers at once, without a process, and its evidence never changes.
+  const check = (id: string, name: string) =>
+    adapter.observations.health(
+      { ...record, id },
+      {
+        name,
+        kind: "managed" as const,
+        command: "serve",
+        readyTimeout: 1,
+        env: {},
+        dependsOn: [],
+      },
+      new AbortController().signal,
+    );
+  const lines = async (name: string) =>
+    (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .filter((line) => JSON.parse(line).component === name).length;
+  const destroyed = 1100;
+  // Each Preview that comes and goes leaves its evidence; the working copy's Service is checked throughout.
+  for (let i = 0; i < destroyed; i++) {
+    if (i % 100 === 0) await check("working", "live");
+    await check(`preview-${i}`, "gone");
+  }
+  expect(await lines("live")).toBe(1);
+  expect(await lines("gone")).toBe(destroyed);
+  // The newest is still remembered; the oldest was let go, so asked again it writes its evidence once more.
+  await check(`preview-${destroyed - 1}`, "gone");
+  expect(await lines("gone")).toBe(destroyed);
+  await check("preview-0", "gone");
+  expect(await lines("gone")).toBe(destroyed + 1);
+  await check("preview-0", "gone");
+  expect(await lines("gone")).toBe(destroyed + 1);
+}, 60_000);
+
+test("a health check still in flight as its Preview is destroyed brings none of its storage back and remembers nothing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-late-"));
+  roots.push(root);
+  const base = join(root, "targets", "p", "t");
+  const plain = target(root);
+  const record: TargetRecord = {
+    ...plain,
+    kind: "preview",
+    name: "feature",
+    logRoot: join(base, "logs"),
+    sourceRoot: join(base, "revisions"),
+    plan: {
+      ...plain.plan,
+      target: "preview",
+      workspacePath: join(base, "revisions", "r1"),
+      dataRoot: join(base, "data"),
+    },
+  };
+  await mkdir(record.plan.workspacePath, { recursive: true });
+  let entered = () => {};
+  let answer = (_result: CommandResult) => {};
+  const started = new Promise<void>((resolve) => (entered = resolve));
+  const answered = new Promise<CommandResult>((resolve) => (answer = resolve));
+  const adapter = createTargetEffects({
+    ...localActivation(),
+    root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map(),
+    run: async () => {
+      entered();
+      return await answered;
+    },
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: noRoutes(),
+    environment: { PATH: process.env.PATH! },
+  });
+  const check = (name: string) =>
+    adapter.observations.health(
+      record,
+      {
+        name,
+        kind: "managed" as const,
+        command: "serve",
+        health: "/usr/bin/true",
+        readyTimeout: 1,
+        env: {},
+        dependsOn: [],
+      },
+      new AbortController().signal,
+    );
+  const present = (path: string) =>
+    stat(path).then(
+      () => true,
+      () => false,
+    );
+  const late = check("web");
+  await started;
+  await destroyPreview({
+    root,
+    target: record,
+    state: { projects: [], targets: [record] },
+  });
+  answer({ exitCode: 0, stdout: "", stderr: "" });
+  // The check still answers, and its evidence, with no Target to belong to, is not called a failure.
+  expect(await late).toEqual({ ready: true });
+  expect(await present(base)).toBe(false);
+  // Nothing was remembered of the evidence it dropped: a directory that is there again gets it.
+  await mkdir(base, { recursive: true });
+  await check("web");
+  const log = join(record.logRoot, "target.jsonl");
+  expect(await readFile(log, "utf8")).toContain(`"line":"ready"`);
+  // A Target still there gets back a log directory removed underneath it.
+  await rm(record.logRoot, { recursive: true });
+  await check("api");
+  expect(await readFile(log, "utf8")).toContain(`"component":"api"`);
 });
 
 test("a failed health command's output has every env-file value redacted before it is cut to one log line", async () => {

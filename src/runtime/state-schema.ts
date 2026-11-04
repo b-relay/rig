@@ -745,6 +745,11 @@ const deployment = z.object({
   projectId: text.describe("The Project's identity."),
   project: text.describe("The Project's name when it deployed."),
   target: text.describe("The Target's name: stable or the Preview's name."),
+  targetId: text
+    .optional()
+    .describe(
+      "The Target's id, which a Preview made again under the same name does not share; absent on a deploy recorded before Rig kept it, and on one that failed before its Target existed.",
+    ),
   kind: z.enum(["stable", "preview"]).describe("The Target's role."),
   branch: text.optional().describe("The Branch deployed."),
   commit: text

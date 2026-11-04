@@ -4,26 +4,39 @@ import type { DeploymentReport, RuntimeCommand, TargetReport } from "./types";
 export interface DeploymentRow extends DeploymentReport {
   /** This deploy put the Commit the Target runs now (its newest successful deploy of that Commit). */
   current: boolean;
-  /** Deploying this Commit again would change the Target: it deployed successfully, its Target still
-   * exists, and the Target runs another Commit now. */
+  /** Deploying this Commit again would change the Target: it deployed successfully, to the very Target
+   * that exists now, which rigd would deploy to and which runs another Commit now. */
   rollback: boolean;
 }
+/** Pure: whether `deploy` was of `target` itself and not of an earlier Target by its name. rigd's read gives a deploy from
+ * before it kept Target ids its Target's id where that can be told; one still without is taken to be of the stable Target,
+ * which is never destroyed, and of no Preview, which may have been. */
+function deployedTo(
+  deploy: Pick<DeploymentReport, "targetId" | "kind">,
+  target: Pick<TargetReport, "id">,
+): boolean {
+  return deploy.targetId === undefined
+    ? deploy.kind === "stable"
+    : deploy.targetId === target.id;
+}
 /** Pure: the history newest first, each deploy marked as the one running now or one the Target can
- * be rolled back to. A deploy whose Target was destroyed stays in the list, but cannot be rolled back. */
+ * be rolled back to. A deploy whose Target was destroyed stays in the list, but cannot be rolled back,
+ * even when a new Target has its name. */
 export function deploymentRows(
   history: readonly DeploymentReport[],
-  targets: readonly Pick<TargetReport, "name" | "commit">[],
+  targets: readonly Pick<TargetReport, "id" | "name" | "commit" | "refusals">[],
 ): DeploymentRow[] {
-  const running = new Map(targets.map((each) => [each.name, each.commit]));
+  const byName = new Map(targets.map((each) => [each.name, each]));
   const marked = new Set<string>();
   return [...history].reverse().map((deploy) => {
     const succeeded =
       deploy.outcome === "deployed" || deploy.outcome === "unchanged";
-    const now = running.get(deploy.target);
+    const found = byName.get(deploy.target);
+    const target = found && deployedTo(deploy, found) ? found : undefined;
     const current =
       succeeded &&
       deploy.commit !== undefined &&
-      deploy.commit === now &&
+      deploy.commit === target?.commit &&
       !marked.has(deploy.target);
     if (current) marked.add(deploy.target);
     return {
@@ -31,21 +44,27 @@ export function deploymentRows(
       current,
       rollback:
         succeeded &&
-        running.has(deploy.target) &&
+        target !== undefined &&
+        !target.refusals?.deploy &&
         deploy.commit !== undefined &&
         deploy.branch !== undefined &&
-        deploy.commit !== now,
+        deploy.commit !== target.commit,
     };
   });
 }
-/** Pure: the deploy command that puts an earlier deploy's Commit back on its Target. */
+/** Pure: the deploy command that puts an earlier deploy's Commit back on its Target, and only that Target: rigd refuses it
+ * should a new Target have taken the name since the page was drawn. */
 export function rollbackCommand(
   project: string,
-  deploy: Pick<DeploymentReport, "target" | "kind" | "branch" | "commit">,
+  deploy: Pick<
+    DeploymentReport,
+    "target" | "targetId" | "kind" | "branch" | "commit"
+  >,
 ): RuntimeCommand {
   return {
     action: "deploy",
     project,
+    ...(deploy.targetId ? { targetId: deploy.targetId } : {}),
     ...(deploy.kind === "preview"
       ? { target: "preview", deployment: deploy.target }
       : { target: "stable" }),

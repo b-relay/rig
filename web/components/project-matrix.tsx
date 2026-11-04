@@ -8,6 +8,7 @@ import {
 } from "@/lib/matrix";
 import { targetWarnings } from "@/lib/present";
 import { targetHref } from "@/lib/target";
+import type { ProjectWork } from "@/lib/target-work";
 import type { TargetReport } from "@/lib/types";
 import {
   CARD,
@@ -53,10 +54,13 @@ const ROW_KIND_ICON = { job: CalendarClock } as const;
 
 export function ProjectMatrix({
   matrix,
+  work = {},
   now,
   corner = "project",
 }: {
   matrix: Matrix;
+  /** What rigd is doing to each Target and how its last action ended. */
+  work?: ProjectWork;
   /** The instant job times are measured from, so a render is stable. */
   now: number;
   /** On a Project's own page the corner names the rows instead of repeating the Project. */
@@ -105,6 +109,7 @@ export function ProjectMatrix({
                       key={target.name}
                       project={matrix.project}
                       target={target}
+                      work={work[target.name]}
                     />
                   ))
                 )}
@@ -217,9 +222,11 @@ function Gap({
 function TargetCard({
   project,
   target,
+  work,
 }: {
   project: string;
   target: TargetReport;
+  work: ProjectWork[string];
 }) {
   const warnings = targetWarnings(target);
   return (
@@ -262,7 +269,12 @@ function TargetCard({
           ) : null}
         </span>
         <div className="-my-1.5 -mr-1.5 shrink-0">
-          <TargetActions project={project} target={target} layout="card" />
+          <TargetActions
+            project={project}
+            target={target}
+            work={work}
+            layout="card"
+          />
         </div>
       </div>
       <div className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">

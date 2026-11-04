@@ -1,6 +1,10 @@
-import type { TargetReport } from "./types";
+import type { Refusal, TargetReport } from "./types";
 /** A Service's cached health check result on one line, as `rig status` prints it. */
 export { healthSummary } from "../../src/domain/project-status";
+
+/** Pure: why rigd refuses a command now, then what to do about it, for a tooltip or a line beneath a control. */
+export const refusalText = (refusal: Refusal): string =>
+  `${refusal.message} ${refusal.hint}`;
 
 /** Pure: the colour a lifecycle or outcome word carries; words rigd has not taught the page read as idle. */
 export type Tone = "good" | "warn" | "bad" | "busy" | "idle";

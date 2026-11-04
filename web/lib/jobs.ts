@@ -1,3 +1,4 @@
+import { refusalText } from "./present";
 import { targetSelector } from "./target";
 import type {
   JobReport,
@@ -18,16 +19,19 @@ export type JobRunView = JobRunReport;
 export function targetJobs(target: TargetReport): JobView[] {
   return target.jobs ?? [];
 }
-/** Pure: whether "Run now" can start `job`: not while a run of it goes (runs never overlap), not for a job the
- * Target's plan no longer has, and not in a Target only rig.yaml names yet, which rig run refuses until it exists. The
- * schedule's own `scheduled` does not matter otherwise: rig run runs a job in any Target. */
-export function canRunNow(
+/** Pure: why "Run now" cannot start `job`, or undefined when it can: whatever rigd refuses of the Target now, a job the
+ * Target's plan no longer has, and a run of it still going (runs never overlap). The schedule's own `scheduled` does not
+ * matter otherwise: rig run runs a job its targets do not name. */
+export function runBlocked(
   job: JobView,
-  target: Pick<TargetReport, "state">,
-): boolean {
-  return (
-    target.state !== "configured" && job.state !== "running" && !job.removed
-  );
+  target: Pick<TargetReport, "refusals">,
+): string | undefined {
+  if (target.refusals?.run) return refusalText(target.refusals.run);
+  if (job.removed)
+    return "This job is no longer in rig.yaml; its last run finishes on its own.";
+  if (job.state === "running")
+    return `${job.name} is running; runs never overlap.`;
+  return undefined;
 }
 /** Pure: the command that runs one job of a Target now, as `rig run <job> <target>` sends it. */
 export function runJobCommand(

@@ -2,27 +2,47 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Failure, Field, OperationNotice, Section } from "./bits";
+import { refusalText } from "@/lib/present";
+import type { Failure as FailureShape } from "@/lib/outcome";
+import type { ProjectStatusReport } from "@/lib/types";
+import { Failure, Field, OperationNotice, Section, Warning } from "./bits";
 import { Confirm } from "./confirm";
-import { useRun } from "./operations";
+import { loadFresh, useRun } from "./operations";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
+const onlyOnFailure = (_command: unknown, ok: boolean) => !ok;
+/** Why rigd would refuse this change now, beneath its control; rigd decides again when it is asked. */
+function Refused({
+  refusal,
+}: {
+  refusal: NonNullable<ProjectStatusReport["refusals"]>["forget"];
+}) {
+  return refusal ? <Warning>{refusalText(refusal)}</Warning> : null;
+}
 export function SettingsForms({
   project,
   repoPath,
+  refusals,
+  statusFailure,
 }: {
   project: string;
   repoPath: string;
+  /** What rigd refuses of this Project's registration now; absent when none is. */
+  refusals?: ProjectStatusReport["refusals"];
+  /** Why its status could not be read, so what rigd would refuse is not known. Nothing is offered until a read succeeds. */
+  statusFailure?: FailureShape;
 }) {
   const router = useRouter();
-  const rename = useRun({ refresh: false });
+  const rename = useRun({ refresh: onlyOnFailure });
   const repoint = useRun();
-  const forget = useRun({ refresh: false });
+  const forget = useRun({ refresh: onlyOnFailure });
   const [newName, setNewName] = useState("");
   const [newPath, setNewPath] = useState("");
+  const unknown = statusFailure !== undefined;
   return (
     <>
+      <Failure failure={statusFailure} />
       <Section
         title="Rename"
         description="Every Target must be stopped first. The operator env files move to the new name."
@@ -51,10 +71,15 @@ export function SettingsForms({
               onChange={(event) => setNewName(event.target.value)}
             />
           </Field>
-          <Button type="submit" variant="outline" disabled={rename.busy}>
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={unknown || rename.busy || refusals?.rename !== undefined}
+          >
             Rename
           </Button>
         </form>
+        <Refused refusal={refusals?.rename} />
         <Failure failure={rename.failure} />
         {rename.result?.warnings?.length ? (
           <>
@@ -94,10 +119,17 @@ export function SettingsForms({
               onChange={(event) => setNewPath(event.target.value)}
             />
           </Field>
-          <Button type="submit" variant="outline" disabled={repoint.busy}>
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={
+              unknown || repoint.busy || refusals?.repoint !== undefined
+            }
+          >
             Repoint
           </Button>
         </form>
+        <Refused refusal={refusals?.repoint} />
         <Failure failure={repoint.failure} />
         <OperationNotice result={repoint.result} />
       </Section>
@@ -114,15 +146,24 @@ export function SettingsForms({
             destructive
             onConfirm={() =>
               void forget.run({ action: "forget", project }).then((result) => {
-                if (result) router.push("/");
+                if (result)
+                  loadFresh(
+                    `/?operation=${encodeURIComponent(result.operationId)}`,
+                  );
               })
             }
           >
-            <Button variant="destructive" disabled={forget.busy}>
+            <Button
+              variant="destructive"
+              disabled={
+                unknown || forget.busy || refusals?.forget !== undefined
+              }
+            >
               Forget Project
             </Button>
           </Confirm>
         </div>
+        <Refused refusal={refusals?.forget} />
         <Failure failure={forget.failure} />
       </Section>
     </>

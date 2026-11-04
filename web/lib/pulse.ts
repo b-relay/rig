@@ -14,6 +14,9 @@ export interface Pulse {
   /** rigd is in the middle of an Operation, so the pages it touches change from tick to tick. */
   busy: boolean;
 }
+/** Pure: whether an Operation is a command someone asked for, not rigd's own brief supervision passes. */
+export const isCommand = (operation: { action: string }): boolean =>
+  operation.action !== "supervise" && operation.action !== "reconcile";
 /** Pure: a stamp from rigd's identity, its queue and its newest recorded Operation. A restarted
  * rigd, a started or finished Operation, or a crash rigd recorded each change it; a page whose
  * stamp is unchanged has nothing new to draw. */
@@ -25,10 +28,7 @@ export function pulseStamp(readings: PulseReadings): Pulse {
   // Several Operations run at once on different Targets; each one starting, finishing or changing phase (a Target
   // beginning to stop) is news. rigd's own brief supervision passes are not.
   const commands = readings.queue.ok
-    ? (readings.queue.value.operations ?? []).filter(
-        (operation) =>
-          operation.action !== "supervise" && operation.action !== "reconcile",
-      )
+    ? (readings.queue.value.operations ?? []).filter(isCommand)
     : [];
   const queue = readings.queue.ok
     ? `${

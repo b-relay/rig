@@ -24,6 +24,8 @@ import {
   resolveTargetPlan as resolvePlanWithHost,
 } from "../src/config";
 import { STATE_VERSION } from "../src/runtime/state-schema";
+import { deploymentRows, rollbackCommand } from "../web/lib/deployments";
+import type { DeploymentReport } from "../web/lib/types";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
   resolvePlanWithHost(input, RESOLVE_HOST);
@@ -4162,7 +4164,14 @@ test("list reads the inventory without observing any Target", async () => {
     throw new Error("list must not observe Targets");
   };
   expect(await runtime.command({ action: "list" })).toEqual({
-    projects: [{ name: "demo", repoPath: "/tmp/developer", targetCount: 1 }],
+    projects: [
+      {
+        id: expect.any(String),
+        name: "demo",
+        repoPath: "/tmp/developer",
+        targetCount: 1,
+      },
+    ],
   });
 });
 
@@ -5193,5 +5202,659 @@ test("doctor tells how to separate two Projects whose names differ only in case 
   expect(hint).not.toContain("--project");
   expect(hint).toContain(
     "Rename all but one of 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...' and 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA...': in /tmp/upper, change name in rig.yaml to at most 128 characters, then run rig rename <that name> there.",
+  );
+});
+
+/** Every refusal status reports must be the one the command answers: this is what lets the dashboard disable a control
+ * instead of offering it and failing. */
+async function expectRefusal(
+  runtime: ReturnType<typeof fixture>["runtime"],
+  action: "up" | "restart" | "deploy" | "run" | "restore",
+  selection: Record<string, unknown>,
+  report: { refusals?: Record<string, unknown> } | undefined,
+  code: string,
+) {
+  const refusal = report?.refusals?.[action] as { code: string };
+  expect(refusal?.code).toBe(code);
+  await expect(
+    runtime.command({
+      action,
+      project: "demo",
+      ...selection,
+      ...(action === "run" || action === "restore" ? { job: "nightly" } : {}),
+    } as never),
+  ).rejects.toMatchObject({
+    code,
+    message: (refusal as unknown as { message: string }).message,
+    hint: (refusal as unknown as { hint: string }).hint,
+  });
+}
+type StatusOf = {
+  projectId?: string;
+  refusals?: Record<string, { code: string; hint: string; message: string }>;
+  targets: {
+    id?: string;
+    name: string;
+    state: string;
+    refusals?: Record<string, { code: string; message: string; hint: string }>;
+  }[];
+};
+const statusOf = async (runtime: ReturnType<typeof fixture>["runtime"]) =>
+  (await runtime.command({ action: "status", project: "demo" })) as StatusOf;
+const withJob = (f: ReturnType<typeof fixture>) => {
+  for (const target of f.state.targets)
+    target.plan.jobs = [
+      {
+        name: "nightly",
+        command: "true",
+        schedule: "0 3 * * *",
+        scheduled: true,
+      } as never,
+    ];
+};
+const stableSelection = { target: "stable" };
+
+test("status and list name each Project and Target by its id, and a Target's commands are refused as status said while it stands", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  // Only rig.yaml names them yet: no id, and what needs a recorded Target says so.
+  let status = await statusOf(f.runtime);
+  const unrecorded = status.targets.find((t) => t.name === "stable");
+  expect(unrecorded?.id).toBeUndefined();
+  await expectRefusal(
+    f.runtime,
+    "run",
+    stableSelection,
+    unrecorded,
+    "TARGET_MISSING",
+  );
+  expect(unrecorded?.refusals?.deploy).toBeUndefined();
+  expect(
+    status.targets.find((t) => t.name === "working")?.refusals?.up,
+  ).toBeUndefined();
+
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+  });
+  withJob(f);
+  const project = f.state.projects[0]!;
+  const record = f.state.targets.find((t) => t.kind === "stable")!;
+  status = await statusOf(f.runtime);
+  expect(status.projectId).toBe(project.id);
+  const running = status.targets.find((t) => t.name === "stable");
+  expect(running?.id).toBe(record.id);
+  expect(running?.refusals).toBeUndefined();
+  expect(await f.runtime.command({ action: "list" })).toMatchObject({
+    projects: [{ id: project.id, name: "demo" }],
+  });
+
+  // Stopped: jobs are refused and nothing else is.
+  await f.runtime.command({
+    action: "down",
+    project: "demo",
+    target: "stable",
+  });
+  let report = (await statusOf(f.runtime)).targets.find(
+    (t) => t.name === "stable",
+  );
+  expect(Object.keys(report?.refusals ?? {}).sort()).toEqual([
+    "restore",
+    "run",
+  ]);
+  for (const action of ["run", "restore"] as const)
+    await expectRefusal(
+      f.runtime,
+      action,
+      stableSelection,
+      report,
+      "JOB_UNAVAILABLE",
+    );
+
+  // Meant to run, but its last deploy did not complete.
+  const stored = () => f.state.targets.find((t) => t.kind === "stable")!;
+  stored().desired = "running";
+  stored().deploymentIncomplete = true;
+  report = (await statusOf(f.runtime)).targets.find((t) => t.name === "stable");
+  await expectRefusal(
+    f.runtime,
+    "run",
+    stableSelection,
+    report,
+    "JOB_UNAVAILABLE",
+  );
+  expect(report?.refusals?.up).toBeUndefined();
+  delete stored().deploymentIncomplete;
+
+  // An unresolved transition: every command but down.
+  stored().recovery = {
+    plan: structuredClone(stored().plan),
+    desired: "running",
+    stage: "blocked",
+  };
+  report = (await statusOf(f.runtime)).targets.find((t) => t.name === "stable");
+  for (const action of ["up", "restart", "deploy", "run", "restore"] as const)
+    await expectRefusal(
+      f.runtime,
+      action,
+      stableSelection,
+      report,
+      "DEPLOY_RECOVERY",
+    );
+  delete stored().recovery;
+
+  // Off in rig.yaml, whatever it records; it says so at once, and turning it back on takes the refusals away.
+  const on = f.config.targets;
+  f.config.targets = { working: true };
+  report = (await statusOf(f.runtime)).targets.find((t) => t.name === "stable");
+  for (const action of ["up", "restart", "deploy", "run", "restore"] as const)
+    await expectRefusal(
+      f.runtime,
+      action,
+      stableSelection,
+      report,
+      "TARGET_OFF",
+    );
+  f.config.targets = on;
+  report = (await statusOf(f.runtime)).targets.find((t) => t.name === "stable");
+  expect(report?.refusals).toBeUndefined();
+});
+
+test("a Preview whose destruction did not finish is refused everything but down and destroy, as status says", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+    deployment: "feature",
+  });
+  withJob(f);
+  f.state.targets.find((t) => t.kind === "preview")!.destructionPending = true;
+  const report = (await statusOf(f.runtime)).targets.find(
+    (t) => t.name === "feature",
+  );
+  for (const action of ["up", "restart", "deploy", "run", "restore"] as const)
+    await expectRefusal(
+      f.runtime,
+      action,
+      { target: "preview", deployment: "feature" },
+      report,
+      "DESTROY_PENDING",
+    );
+});
+
+test("status says when a registration change would be refused and which Targets stand in its way, until they are stopped", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  expect((await statusOf(f.runtime)).refusals).toBeUndefined();
+  await f.runtime.command({ action: "up", project: "demo" });
+  const active = (await statusOf(f.runtime)).refusals;
+  expect(active?.rename?.code).toBe("PROJECT_ACTIVE");
+  expect(active?.repoint?.code).toBe("PROJECT_ACTIVE");
+  expect(active?.forget).toMatchObject({
+    code: "PROJECT_ACTIVE",
+    hint: "Stop working and retry.",
+  });
+  await expect(
+    f.runtime.command({ action: "forget", project: "demo" }),
+  ).rejects.toMatchObject(active!.forget!);
+  await expect(
+    f.runtime.command({ action: "rename", project: "demo", newName: "other" }),
+  ).rejects.toMatchObject(active!.rename!);
+
+  // A status narrowed to one Target did not observe the others, so it says nothing of the Project.
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+    deployment: "feature",
+  });
+  const narrowed = (await f.runtime.command({
+    action: "status",
+    project: "demo",
+    target: "working",
+  })) as StatusOf;
+  expect(narrowed.refusals).toBeUndefined();
+
+  await f.runtime.command({ action: "down", project: "demo" });
+  await f.runtime.command({
+    action: "down",
+    project: "demo",
+    target: "preview",
+    deployment: "feature",
+  });
+  // Stopped: renaming and repointing are open; forgetting still waits for the Preview, with its own reason.
+  const previewed = (await statusOf(f.runtime)).refusals;
+  expect(previewed?.rename).toBeUndefined();
+  expect(previewed?.repoint).toBeUndefined();
+  expect(previewed?.forget?.code).toBe("PROJECT_TARGETS");
+  await expect(
+    f.runtime.command({ action: "forget", project: "demo" }),
+  ).rejects.toMatchObject(previewed!.forget!);
+});
+
+test("a job run a stopped Target left going stands in a registration change's way, and rig.yaml's own additions do not", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await f.runtime.command({ action: "up", project: "demo" });
+  await f.runtime.command({ action: "down", project: "demo" });
+  // A Service rig.yaml added since is listed as configured; nothing runs it.
+  f.config.services = {
+    ...f.config.services,
+    later: { command: "serve --later" },
+  };
+  expect((await statusOf(f.runtime)).refusals).toBeUndefined();
+  const target = f.state.targets[0]!;
+  f.state.jobs = [
+    {
+      target: target.id,
+      project: target.projectId,
+      job: "nightly",
+      running: {
+        id: "run-1",
+        trigger: "manual",
+        startedAt: "2026-10-10T10:00:00.000Z",
+      },
+    } as never,
+  ];
+  expect((await statusOf(f.runtime)).refusals?.forget).toMatchObject({
+    code: "PROJECT_ACTIVE",
+    hint: "Stop working and retry.",
+  });
+});
+
+test("each deploy records its Target's id, so a Preview made again under the same name has a history of its own, and a rollback meant for the old one is refused", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = (extra: Record<string, unknown> = {}) =>
+    f.runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature",
+      deployment: "feature",
+      ...extra,
+    } as never);
+  await deploy();
+  const old = f.state.targets.find((t) => t.kind === "preview")!.id;
+  expect(f.state.deployments?.at(-1)?.targetId).toBe(old);
+  await deploy({ force: true, targetId: old });
+  await f.runtime.command({
+    action: "destroy",
+    project: "demo",
+    target: "preview",
+    deployment: "feature",
+  });
+  // Destroyed: a rollback of it has no Target to land on, and never creates one.
+  await expect(deploy({ targetId: old })).rejects.toMatchObject({
+    code: "TARGET_REPLACED",
+  });
+  expect(f.state.targets.some((t) => t.kind === "preview")).toBe(false);
+  await deploy();
+  const replacement = f.state.targets.find((t) => t.kind === "preview")!;
+  expect(replacement.id).not.toBe(old);
+  expect(f.state.deployments?.at(-1)?.targetId).toBe(replacement.id);
+  const before = f.state.deployments?.length;
+  await expect(deploy({ targetId: old })).rejects.toMatchObject({
+    code: "TARGET_REPLACED",
+    hint: expect.stringContaining("Nothing was deployed"),
+  });
+  expect(f.state.deployments?.length).toBe(before);
+  // The history reports the id; a deploy meant for the Target there now goes on.
+  expect(
+    await f.runtime.command({ action: "deployments", project: "demo" }),
+  ).toMatchObject({
+    deployments: expect.arrayContaining([
+      expect.objectContaining({ targetId: old }),
+      expect.objectContaining({ targetId: replacement.id }),
+    ]),
+  });
+  await expect(deploy({ targetId: replacement.id })).resolves.toBeDefined();
+});
+
+/** A Project whose Preview `feature` was deployed at the Commits given, with what rigd read back of its history. */
+async function previewHistory() {
+  const f = fixture();
+  let commit = "a".repeat(40);
+  f.deps.sources.preflight = async () => ({ commit, warnings: [] });
+  f.deps.sources.prepare = async (request) => ({
+    workspacePath: request.destination,
+    commit: request.ref,
+  });
+  f.deps.sources.resolve = async (_repo, ref) => ref;
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = (next: string) => {
+    commit = next.repeat(40);
+    return f.runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature",
+      deployment: "feature",
+    });
+  };
+  const destroy = () =>
+    f.runtime.command({
+      action: "destroy",
+      project: "demo",
+      target: "preview",
+      deployment: "feature",
+    });
+  /** The Preview's rows, as both Deployments pages draw them from the two reads. */
+  const rows = async () => {
+    const { deployments } = (await f.runtime.command({
+      action: "deployments",
+      project: "demo",
+    })) as { deployments: DeploymentReport[] };
+    return deploymentRows(
+      deployments.filter((each) => each.target === "feature"),
+      (await statusOf(f.runtime)).targets,
+    );
+  };
+  /** The records as a rigd before Target ids wrote them, finished at the times given, oldest first. */
+  const beforeIds = (finished: readonly string[]) =>
+    f.state.deployments!.forEach((record, index) => {
+      delete record.targetId;
+      record.startedAt = record.finishedAt = finished[index]!;
+    });
+  const created = (at: string) => {
+    f.state.targets.find((t) => t.kind === "preview")!.createdAt = at;
+  };
+  return { ...f, deploy, destroy, rows, beforeIds, created };
+}
+const marks = (rows: Awaited<ReturnType<typeof deploymentRows>>) =>
+  rows.map((row) => [row.commit?.slice(0, 1), row.current, row.rollback]);
+
+test("a Preview whose whole history predates Target ids keeps its current deploy and its rollback, which names it", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  f.created("2026-10-01T00:00:00.000Z");
+  f.beforeIds(["2026-10-01T00:00:05.000Z", "2026-10-02T00:00:00.000Z"]);
+  const rows = await f.rows();
+  expect(marks(rows)).toEqual([
+    ["b", true, false],
+    ["a", false, true],
+  ]);
+  const id = f.state.targets.find((t) => t.kind === "preview")!.id;
+  const rollback = rollbackCommand("demo", rows[1]!);
+  expect(rollback).toMatchObject({ targetId: id });
+  expect(await f.runtime.command(rollback)).toMatchObject({
+    outcome: "deployed",
+    commit: "a".repeat(40),
+  });
+  // Told at read time: what rigd recorded is left as it was written.
+  expect(f.state.deployments![0]!.targetId).toBeUndefined();
+});
+
+test("a replaced Preview's deploys from before Target ids stay listed and never become a rollback of the replacement", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.destroy();
+  await f.deploy("b");
+  await f.deploy("c");
+  f.created("2026-10-02T00:00:00.000Z");
+  f.beforeIds([
+    "2026-10-01T00:00:00.000Z",
+    "2026-10-02T00:00:05.000Z",
+    "2026-10-03T00:00:00.000Z",
+  ]);
+  expect(marks(await f.rows())).toEqual([
+    ["c", true, false],
+    ["b", false, true],
+    ["a", false, false],
+  ]);
+});
+
+for (const [clock, old, replaced, finished] of [
+  [
+    "equal timestamps",
+    "2026-10-01T00:00:00.100Z",
+    "2026-10-01T00:00:00.100Z",
+    undefined,
+  ],
+  [
+    "a 100 ms clock setback",
+    "2026-10-01T00:00:00.500Z",
+    "2026-10-01T00:00:00.400Z",
+    "2026-10-01T00:00:00.900Z",
+  ],
+] as const)
+  for (const history of ["only old records", "old and new records"] as const)
+    test(`a destroyed Preview's deploy never becomes a rollback of its replacement, with ${clock} and ${history}`, async () => {
+      const f = await previewHistory();
+      await f.deploy("a");
+      const oldId = f.state.targets.find((t) => t.kind === "preview")!.id;
+      await f.destroy();
+      await f.deploy("b");
+      expect(f.state.targets.find((t) => t.kind === "preview")!.id).not.toBe(
+        oldId,
+      );
+      const [first, second] = f.state.deployments!;
+      delete first!.targetId;
+      first!.startedAt = first!.finishedAt = old;
+      second!.startedAt = replaced;
+      second!.finishedAt = finished ?? replaced;
+      f.created(replaced);
+      if (history === "only old records") delete second!.targetId;
+      const rows = await f.rows();
+      expect(marks(rows)).toEqual([
+        ["b", true, false],
+        ["a", false, false],
+      ]);
+      expect(rows[1]!.targetId).toBeUndefined();
+    });
+
+test("a replacement whose first deploy left no record is still no owner of the old deploys, by the destroy Activity recorded", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  await f.destroy();
+  // Its first deploy, of the same Commit the old Preview ran, ended with rigd before it could record itself.
+  await f.deploy("b");
+  f.state.deployments!.pop();
+  f.beforeIds(["2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"]);
+  expect(marks(await f.rows())).toEqual([
+    ["b", false, false],
+    ["a", false, false],
+  ]);
+});
+
+test("with the destroy gone from Activity, a replacement's first deploy still ends what it owns, failed old deploys included", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.destroy();
+  await f.deploy("b");
+  f.beforeIds([
+    "2026-10-01T00:00:00.000Z",
+    "2026-10-01T00:00:01.000Z",
+    "2026-10-02T00:00:00.000Z",
+  ]);
+  f.state.activity = f.state.activity.filter((e) => e.action !== "destroy");
+  const rows = await f.rows();
+  expect(marks(rows)).toEqual([
+    ["b", true, false],
+    ["c", false, false],
+    ["a", false, false],
+  ]);
+  expect(rows.slice(1).map((row) => row.targetId)).toEqual([
+    undefined,
+    undefined,
+  ]);
+});
+
+test("with the destroy gone from Activity and the replacement's first deploy unrecorded, another Commit breaks the chain", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  await f.destroy();
+  await f.deploy("c");
+  f.state.deployments!.pop();
+  f.beforeIds(["2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"]);
+  f.state.activity = f.state.activity.filter((e) => e.action !== "destroy");
+  const rows = await f.rows();
+  expect(rows.map((row) => row.targetId)).toEqual([undefined, undefined]);
+  expect(rows.map((row) => row.rollback)).toEqual([false, false]);
+});
+
+test("a Preview's first deploy ends what it owns: a deploy that failed before it existed, which replaced nothing either, is not its own", async () => {
+  const f = await previewHistory();
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("a").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.deploy("b");
+  f.state.deployments!.forEach((record) => delete record.targetId);
+  const rows = await f.rows();
+  expect(rows.map((row) => row.commit?.slice(0, 1))).toEqual(["b", "a"]);
+  expect(rows.map((row) => row.targetId !== undefined)).toEqual([true, false]);
+});
+
+test("a failed old deploy is no bridge from a replacement running another Commit into the old Preview's history", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.destroy();
+  // The replacement completed, but rigd died before its deploy was recorded, and the destroy's entry is gone.
+  await f.deploy("d");
+  const first = f.state.deployments!.pop()!;
+  f.state.activity = f.state.activity.filter(
+    (e) => e.action !== "destroy" && e.id !== first.id,
+  );
+  f.state.deployments!.forEach((record) => delete record.targetId);
+  const rows = await f.rows();
+  expect(rows.map((row) => row.commit?.slice(0, 1))).toEqual(["c", "b", "a"]);
+  expect(rows.map((row) => row.targetId)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(rows.map((row) => row.rollback)).toEqual([false, false, false]);
+});
+
+test("a Preview never replaced keeps its rollback from before Target ids when its latest deploy failed", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  f.state.deployments!.forEach((record) => delete record.targetId);
+  expect(f.state.targets.find((t) => t.kind === "preview")!.commit).toBe(
+    "b".repeat(40),
+  );
+  expect(marks(await f.rows())).toEqual([
+    ["c", false, false],
+    ["b", true, false],
+    ["a", false, true],
+  ]);
+});
+
+test("a Preview never replaced keeps its rollback from before Target ids through a failed deploy and whatever the clock did", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.deploy("d");
+  // Every time is before the Preview was created, and out of order.
+  f.created("2026-10-09T00:00:00.000Z");
+  f.beforeIds([
+    "2026-10-04T00:00:00.000Z",
+    "2026-10-03T00:00:00.000Z",
+    "2026-10-02T00:00:00.000Z",
+    "2026-10-01T00:00:00.000Z",
+  ]);
+  expect(marks(await f.rows())).toEqual([
+    ["d", true, false],
+    ["c", false, false],
+    ["b", false, true],
+    ["a", false, true],
+  ]);
+});
+
+test("a deploy from before Target ids is no rollback of a Preview made since, whose own deploys carry ids", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  f.beforeIds(["2026-10-01T00:00:00.000Z"]);
+  await f.destroy();
+  await f.deploy("b");
+  await f.deploy("c");
+  f.created("2026-10-02T00:00:00.000Z");
+  for (const [index, at] of [
+    "2026-10-02T00:00:05.000Z",
+    "2026-10-03T00:00:00.000Z",
+  ].entries())
+    f.state.deployments![index + 1]!.finishedAt = at;
+  expect(marks(await f.rows())).toEqual([
+    ["c", true, false],
+    ["b", false, true],
+    ["a", false, false],
+  ]);
+});
+
+test("a stable deploy from before Target ids is read as the stable Target's, so its rollback names it too", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+  });
+  delete f.state.deployments![0]!.targetId;
+  expect(
+    await f.runtime.command({ action: "deployments", project: "demo" }),
+  ).toMatchObject({
+    deployments: [
+      { targetId: f.state.targets.find((t) => t.kind === "stable")!.id },
+    ],
+  });
+});
+
+test("a status narrowed to the only recorded Target says nothing of the Project; one of the whole Project does", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+    deployment: "feature",
+  });
+  expect(f.state.targets).toHaveLength(1);
+  const narrowed = (await f.runtime.command({
+    action: "status",
+    project: "demo",
+    target: "preview",
+    deployment: "feature",
+  })) as StatusOf;
+  expect(narrowed.refusals).toBeUndefined();
+  expect((await statusOf(f.runtime)).refusals?.forget?.code).toBe(
+    "PROJECT_ACTIVE",
   );
 });

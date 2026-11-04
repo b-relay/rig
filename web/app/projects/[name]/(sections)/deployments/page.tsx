@@ -31,6 +31,8 @@ export default async function DeploymentsPage({
             newest first
           </span>
         </h2>
+        {/* Without a status nothing says what a deploy may roll back to, so none is offered; this says why. */}
+        {status.ok ? null : <Failure failure={status.failure} />}
         {history.ok ? (
           <DeploymentList
             project={found.name}

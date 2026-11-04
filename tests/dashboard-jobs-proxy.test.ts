@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { canRunNow, runJobCommand, targetJobs } from "../web/lib/jobs";
+import { runBlocked, runJobCommand, targetJobs } from "../web/lib/jobs";
 import { commandSchema } from "../src/daemon/protocol";
 import {
   managedProxyRoutes,
@@ -79,12 +79,35 @@ test("Run now sends rig run's command for the Target, and is offered unless a ru
     state: "idle" as const,
     scheduled: false,
   };
-  const stable = { state: "running" as const };
-  expect(canRunNow(job, stable)).toBe(true);
-  expect(canRunNow({ ...job, state: "running" }, stable)).toBe(false);
-  expect(canRunNow({ ...job, removed: true }, stable)).toBe(false);
-  // rig run refuses a Target only rig.yaml names until it is up or deployed.
-  expect(canRunNow(job, { state: "configured" })).toBe(false);
+  expect(runBlocked(job, {})).toBeUndefined();
+  expect(runBlocked({ ...job, state: "running" }, {})).toContain(
+    "runs never overlap",
+  );
+  expect(runBlocked({ ...job, removed: true }, {})).toContain(
+    "no longer in rig.yaml",
+  );
+});
+
+test("Run now says what rigd refuses of the Target, ahead of anything about the job", () => {
+  const job = {
+    name: "backup",
+    state: "running" as const,
+    scheduled: false,
+  };
+  for (const code of [
+    "TARGET_MISSING",
+    "TARGET_OFF",
+    "DESTROY_PENDING",
+    "DEPLOY_RECOVERY",
+    "JOB_UNAVAILABLE",
+  ])
+    expect(
+      runBlocked(job, {
+        refusals: {
+          run: { code, message: `Refused by ${code}.`, hint: "Do this." },
+        },
+      }),
+    ).toBe(`Refused by ${code}. Do this.`);
 });
 
 test("every hostname and path on the Host leads to its Target's Service, by host then longest prefix", () => {

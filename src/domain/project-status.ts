@@ -285,8 +285,37 @@ const jobReportSchema = z
       ),
   })
   .passthrough();
+const refusalSchema = z
+  .object({
+    code: z.string().describe("The error code the command fails with."),
+    message: z.string().describe("Why it is refused, as the command says it."),
+    hint: z.string().describe("What to do about it, as the command says it."),
+  })
+  .passthrough();
+const targetRefusalsSchema = z
+  .object({
+    up: refusalSchema.optional(),
+    restart: refusalSchema.optional(),
+    deploy: refusalSchema.optional(),
+    run: refusalSchema.optional(),
+    restore: refusalSchema.optional(),
+  })
+  .passthrough();
+const projectRefusalsSchema = z
+  .object({
+    rename: refusalSchema.optional(),
+    repoint: refusalSchema.optional(),
+    forget: refusalSchema.optional(),
+  })
+  .passthrough();
 const targetReportSchema = z
   .object({
+    id: z
+      .string()
+      .optional()
+      .describe(
+        "The Target's stable id, the targetId of its monitor series. A Preview destroyed and created again under the same name has a new one. Absent for a Target rig.yaml names and nothing has recorded yet.",
+      ),
     name: z.string().describe("Target identity used for selection."),
     kind: z
       .enum(["working", "stable", "preview"])
@@ -378,6 +407,11 @@ const targetReportSchema = z
       .describe(
         "False when the host Caddy does not load Rig's route file, so the route is inert; absent when published or unknown.",
       ),
+    refusals: targetRefusalsSchema
+      .optional()
+      .describe(
+        "The commands rigd refuses on this Target as it stands now, each with the code, message and hint the command fails with: the Target is off in rig.yaml, not recorded yet, mid-destruction or in an unresolved transition, or for run and restore, stopped or incompletely deployed. Absent when none is. A command not listed can still fail for what only running it finds out, such as a job already running.",
+      ),
     components: z
       .array(componentReportSchema)
       .describe("Configured and observed component capabilities."),
@@ -392,9 +426,20 @@ const targetReportSchema = z
 export const projectStatusSchema = z
   .object({
     project: z.string().describe("Registered Project identity."),
+    projectId: z
+      .string()
+      .optional()
+      .describe(
+        "The Project's stable id, the projectId of its monitor series; a Project forgotten and registered again has a new one.",
+      ),
     targets: z
       .array(targetReportSchema)
       .describe("Available Targets; an empty array is valid."),
+    refusals: projectRefusalsSchema
+      .optional()
+      .describe(
+        "The registration changes rigd refuses as the Project stands now, each with the code, message and hint the command fails with: a Target runs, is meant to run, is mid-transition or runs a job, or for forget, a Preview remains. Absent when none is, and from a status narrowed to one Target, which does not observe the others.",
+      ),
     warnings: z
       .array(z.string())
       .optional()

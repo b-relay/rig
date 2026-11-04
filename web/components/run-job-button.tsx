@@ -1,7 +1,7 @@
 "use client";
 
 import { Archive, Play } from "lucide-react";
-import { canRunNow, runJobCommand, type JobView } from "@/lib/jobs";
+import { runBlocked, runJobCommand, type JobView } from "@/lib/jobs";
 import type { TargetReport } from "@/lib/types";
 import { Failure } from "./bits";
 import { useRun } from "./operations";
@@ -15,28 +15,23 @@ export function RunJobButton({
   job,
 }: {
   project: string;
-  target: Pick<TargetReport, "kind" | "name" | "state">;
+  target: Pick<TargetReport, "kind" | "name" | "refusals">;
   job: JobView;
 }) {
   const act = useRun();
-  const allowed = canRunNow(job, target);
+  const blocked = runBlocked(job, target);
   return (
     <div className="flex flex-col items-end gap-1">
       <Button
         size="sm"
         variant="outline"
         className="h-7 px-2 text-xs"
-        disabled={!allowed || act.busy}
+        disabled={blocked !== undefined || act.busy}
         title={
-          target.state === "configured"
-            ? `${target.name} does not exist yet, so no job runs in it`
-            : job.removed
-              ? "This job is no longer in rig.yaml; its last run finishes on its own"
-              : job.state === "running"
-                ? `${job.name} is running; runs never overlap`
-                : job.backup
-                  ? `Back up ${job.name} now in ${target.name}: a fresh backup, kept if the run succeeds`
-                  : `Run ${job.name} now in ${target.name}`
+          blocked ??
+          (job.backup
+            ? `Back up ${job.name} now in ${target.name}: a fresh backup, kept if the run succeeds`
+            : `Run ${job.name} now in ${target.name}`)
         }
         onClick={() => void act.run(runJobCommand(project, target, job.name))}
       >

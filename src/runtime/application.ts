@@ -17,6 +17,7 @@ import { doctor, hostDoctor } from "./doctor";
 import {
   assertRecordedStopped,
   forgetProject,
+  projectBusyError,
   updateRegistration,
 } from "./registration";
 import { recordActivity } from "../domain/activity";
@@ -117,6 +118,12 @@ import {
 import { prepareTarget } from "./preparation";
 import { observeTargets, type TargetReport } from "./status";
 import { projectStatus } from "./project-status";
+import {
+  assertJobsCanRun,
+  assertNotDestroying,
+  assertTransitionSettled,
+  missingTarget,
+} from "./target-refusals";
 import {
   assertDeploymentRecovered,
   deployCandidate,
@@ -454,6 +461,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         ...deps,
         inProgress,
         stopping,
+        projectBusy: () => locks.busy(projectTargetsScope(project.id)),
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
         // Only an up, restart or deploy builds: while one holds or waits for the Target, what runs may be its own.
         leftoverBuild: (target, signal) =>
@@ -802,6 +810,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         return {
           projects: await Promise.all(
             state.projects.map(async (p) => ({
+              id: p.id,
               name: p.name,
               repoPath: p.repoPath,
               targetCount: state.targets.filter((t) => t.projectId === p.id)
@@ -983,6 +992,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             state.deployments,
             project.id,
             command.lines ?? 100,
+            targets,
+            state.activity,
           ),
         };
       if (command.action === "doctor")
@@ -1146,15 +1157,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           "The selected Target kind does not match its recorded identity.",
           "Select the correct Target kind and name.",
         );
-      if (
-        target?.destructionPending &&
-        !["destroy", "logs", "down"].includes(command.action)
-      )
-        throw new RigError(
-          "DESTROY_PENDING",
-          "Preview destruction is incomplete.",
-          `Run ${rigCommand("down", { target }, "--destroy")} to finish it.`,
-        );
+      if (target && !["destroy", "logs", "down"].includes(command.action))
+        assertNotDestroying(target);
       if (command.action === "logs") {
         if (!target) throw missingTarget(command, name, project!.name);
         // Checked on the first page only: a follow carries on when a deploy removes a Service it filters by.
@@ -1266,6 +1270,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       if (command.action === "deploy") {
         if (kind === "working") throw deployTargetError(project!.name);
+        if (command.targetId !== undefined && target?.id !== command.targetId)
+          throw new RigError(
+            "TARGET_REPLACED",
+            `${name} is not the Target this deploy was asked for: it was destroyed${target ? " and made again" : ""} since.`,
+            "Nothing was deployed. Reload the page and choose from the Target as it is now.",
+            { target: name },
+          );
         const document = selection.document!;
         const branch =
           command.branch ??
@@ -1445,12 +1456,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       // What a recovery stopped is this down's outcome too: the stop after it finds those processes gone.
       let recovered: OperationRecord["outcome"] = "unchanged";
       if (target.recovery) {
-        if (command.action !== "down")
-          throw new RigError(
-            "DEPLOY_RECOVERY",
-            "This Target has an unresolved deployment transition.",
-            `Run ${rigCommand("down", { target })} to stop both recorded plans first.`,
-          );
+        if (command.action !== "down") assertTransitionSettled(target);
         admission.phase("stopping", target);
         ({ target, outcome: recovered } = await stopForRecovery(target, deps));
       }
@@ -1641,6 +1647,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             projectId: project.id,
             project: project.name,
             target: target?.name ?? aimed ?? String(command.target),
+            ...(target ? { targetId: target.id } : {}),
             kind: command.target === PREVIEW_SELECTOR ? "preview" : "stable",
             ...(source?.branch ? { branch: source.branch } : {}),
             ...(source?.commit ? { commit: source.commit } : {}),
@@ -1725,11 +1732,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         assertRecordedStopped(targets);
         // A stop records its Target stopped before it waits for the exit, so the record alone does not show it.
         if (locks.busy(projectTargetsScope(project!.id)))
-          throw new RigError(
-            "PROJECT_ACTIVE",
-            "Project registration can only change while no Target of the Project has an operation running.",
-            "Wait for the running operations to finish (rig status shows a stopping Target), then retry.",
-          );
+          throw projectBusyError();
       } catch (error) {
         attempted = true;
         throw error;
@@ -2862,25 +2865,7 @@ function runnableJob(
   name: string | undefined,
   document: ConfigDocument<ProjectConfig> | undefined,
 ): PlanJob {
-  if (target.recovery)
-    throw new RigError(
-      "DEPLOY_RECOVERY",
-      "This Target has an unresolved deployment transition.",
-      `Run ${rigCommand("down", { target })} to stop both recorded plans first.`,
-    );
-  // A stopped Target runs no job: rigd's next start would stop the run again as one of a Target meant to be stopped.
-  if (target.desired !== "running")
-    throw new RigError(
-      "JOB_UNAVAILABLE",
-      `${target.name} is stopped, so it runs no jobs.`,
-      `Run ${rigCommand("up", { target })} first.`,
-    );
-  if (target.deploymentIncomplete)
-    throw new RigError(
-      "JOB_UNAVAILABLE",
-      `${target.name}'s last deploy did not complete, so its checkout may not be ready to run a job.`,
-      `Run ${rigCommand("up", { target })} to finish it, or deploy again.`,
-    );
+  assertJobsCanRun(target);
   const jobs = target.plan.jobs ?? [];
   const job = jobs.find((candidate) => candidate.name === name);
   if (job) return job;
@@ -2910,26 +2895,6 @@ function deployTargetError(project: string): RigError {
     "DEPLOY_TARGET",
     "Deploy needs the stable Target or a Preview.",
     `Use ${rigCommand("up", { project, target: { kind: "working", name: "working" } })} for the working Target.`,
-  );
-}
-/** Names the Preview by the Branch or deployment the user typed; the hashed slug stays internal. The hint makes the very
- * Target the command selected: a deploy of the stable Target or the Preview, or rig up for the working Target. */
-function missingTarget(
-  command: Pick<RuntimeCommand, "target" | "deployment" | "branch">,
-  name: string,
-  project: string,
-): RigError {
-  const label =
-    command.target === PREVIEW_SELECTOR
-      ? `Preview '${command.deployment ?? command.branch ?? name}'`
-      : `Target '${name}'`;
-  const target = selectedTarget(command, name);
-  return new RigError(
-    "TARGET_MISSING",
-    `${label} has no recorded deployment.`,
-    target.kind === "working"
-      ? `Start it with ${rigCommand("up", { project, target })}.`
-      : `Deploy it first: ${rigCommand("deploy", { project, target })}.`,
   );
 }
 /** A --no-up deploy leaves nothing serving; the warning carries the exact command that starts the new deployment. */

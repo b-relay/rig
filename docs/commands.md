@@ -175,6 +175,13 @@ status` takes no Target.
   and to the current Branch for `preview`. The stable Target accepts only the
   Production branch; `preview` refuses it.
 - Deploying the Commit that is already deployed does nothing without `--force`.
+- A deploy's line says what it did with each Service, and its Activity entry
+  says the same:
+  `melody stable deployed main@470a510 (was 83496f8): restarted api (files), db (definition); kept search`.
+  `started` names a Service new to the plan. Each restart gives its reason:
+  `definition`, `environment`, `files`, `dependency <Service>`, `unhealthy`,
+  `not-running`, `unobserved`, `unrecorded`, or `requested` (`--force`). A
+  `--no-up` deploy starts nothing, so its line has no such part.
 - `--project` is needed only outside the Project's repository.
 - Reads take `--json`; actions do not. `list`, `status`, `doctor`, `config`,
   `monitor`, `proxy`, `proxy verify`, `dns list` and `backup list` print one
@@ -290,7 +297,10 @@ this:
   only for an internal fault. Text mode prints the message and hint on stderr.
 - rig checks each reply from rigd against the report it expects, so a reply
   from a mismatched or faulty rigd fails as `DAEMON_PROTOCOL` with exit 1,
-  never as a partial, empty or `null` report.
+  never as a partial, empty or `null` report. A reply that never arrived whole
+  is not that: past the read's deadline it fails as `DAEMON_TIMEOUT`, whether
+  or not rigd had begun answering, and a connection that closes part-way
+  through it fails as `DAEMON_INTERRUPTED`.
 - Exit 0: the report is complete. Exit 1: the read failed (`doctor` also exits
   1 when a check failed, with its whole report on stdout). Exit 130: it was
   interrupted. Ctrl-C or SIGTERM before rigd answered prints a `CANCELLED`

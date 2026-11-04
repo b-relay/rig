@@ -38,6 +38,12 @@ _Relationship_: The local control-plane auth token belongs in Host/user Rig
 state, not committed Project config, because it is a machine credential for
 talking to local `rigd`.
 
+_Relationship_: Every control-plane route refuses a request the same way: one
+tagged error document with a hint that echoes nothing it carried, for a body
+that is not `application/json`, is over 1 MiB, is not uploaded within ten seconds
+or is not JSON. Each refusal and failure is Diagnostic log evidence: bounded,
+rate-limited, and without credentials, URLs or bodies.
+
 ### rigd CLI
 
 The daemon administration CLI for installing, uninstalling, and checking the
@@ -997,8 +1003,10 @@ argument, or the current Branch when omitted.
 _Relationship_: Deploy never deploys the working Target.
 
 _Relationship_: Successful deploy output is one line,
-`<project> <target> deployed <branch>@<sha> (was <sha>)`, ending with
-`, kept <services>` when it kept any, plus any warnings and a line per retired
+`<project> <target> deployed <branch>@<sha> (was <sha>)`, ending with what it
+did with each Service when it started its Target
+(`: started <services>; restarted <service> (<reason>), ...; kept <services>`,
+as its Activity entry says too), plus any warnings and a line per retired
 Preview.
 
 ### Kept Service

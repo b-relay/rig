@@ -7,6 +7,33 @@ export const REFERENCE_VARIABLE_PREFIX = "_RIG_";
 /** Why a name with REFERENCE_VARIABLE_PREFIX is refused, for every place that refuses one. */
 export const RESERVED_NAME_RULE = `names starting with ${REFERENCE_VARIABLE_PREFIX} are reserved for the variables that carry references into shell commands`;
 
+/** What in `value` a process environment cannot carry exactly, for "holds ...", or undefined when it can carry all of it. A NUL
+ * ends a native environment string, and an unpaired surrogate has no UTF-8 form. Never quotes the value. */
+export function unrepresentableValue(value: string): string | undefined {
+  if (value.includes("\0"))
+    return "a NUL character, which a process environment cannot carry";
+  if (!value.isWellFormed())
+    return "an unpaired surrogate, which UTF-8 cannot store";
+  return undefined;
+}
+/** Refuses an environment about to be handed to a process when a value in it would not arrive exactly, whichever plan or file
+ * it came from, as ENV_VALUE naming the variable and never its value. */
+export function assertRepresentableEnvironment(
+  env: Readonly<Record<string, string>>,
+  component?: string,
+): void {
+  for (const [key, value] of Object.entries(env)) {
+    const problem = unrepresentableValue(value);
+    if (problem)
+      throw new RigError(
+        "ENV_VALUE",
+        `${key} of ${component ?? "the Project"} holds ${problem}.`,
+        `Correct the value in rig.yaml and plan the Target again; a process gets a value exactly or does not start.`,
+        { key, ...(component ? { component } : {}) },
+      );
+  }
+}
+
 /** `env` without the variables that carry references' values: the environment the same command gets from a plan with its
  * values written into its commands (see `withValuesWritten`). */
 export function withoutReferenceVariables(

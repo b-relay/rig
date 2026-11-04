@@ -98,6 +98,7 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "WORKING_DIR_OUTSIDE",
   "ENV_FILE",
   "ENV_FILE_MISSING",
+  "ENV_VALUE",
   "PORT_RESERVED",
   "PORT_UNAVAILABLE",
   "HEALTH_FAILED",

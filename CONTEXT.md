@@ -627,7 +627,7 @@ operator env files (`<RIG_ROOT>/env/<project>[/<service or job>]/{all,<role>}.en
 `read` names each file's keys and revision without values, `reveal` answers one
 value with the revision it was read from, and `write` changes names atomically
 only if the file still has the revision the changes were made against, keeping
-the file 0600; a file that moved is refused, naming what it assigns now. It takes a Project and a scope, never a path. Each write is an Activity
+the file 0600; a file that moved is refused, naming what it assigns now. A value is saved so it reads back exactly or refused by name (`ENV_VALUE`). It takes a Project and a scope, never a path. Each write is an Activity
 entry (`env`, `updated`) naming who asked and which names changed, never a
 value. The CLI does not expose it; the dashboard's Environment tab uses it.
 

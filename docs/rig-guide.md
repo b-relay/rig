@@ -1095,7 +1095,8 @@ refuses leaves the Target running as it was: a `rig.yaml` that cannot be read,
 a plan that cannot be made (a pinned port another Target holds, say), a route
 that could not be published, a deployed Target whose preparation is not
 complete, or an `env_file` that cannot be read (the first build's always, and
-any other unless an earlier build could write it). `rig up` on a Target that is already running keeps the plan
+any other unless an earlier build could write it; a [value Rig refuses](#environment-builds-and-startup)
+in a file that exists always). `rig up` on a Target that is already running keeps the plan
 its processes were started from; `rig doctor` reports `config-drift` for it and
 names `rig restart working` as the fix. A valid config
 that adds a Service the recorded plan has no port for is also reported as
@@ -2818,6 +2819,29 @@ a quoted one; a `#` inside quotes is part of the value). Anything else, such as
 a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
 `ENV_FILE` naming the file and line. Its contents are plain data and never
 take part in `${...}` references.
+
+A value reaches a process exactly or is refused. An env file must be UTF-8 (a
+BOM and CRLF line ends are fine), and a value or other text whose bytes are
+not, a value holding a NUL character, or the name `__proto__` is refused as
+`ENV_VALUE`, naming the file, the line and the name, never the value. Bytes in
+a comment, on its own line or after a value, change no value, so a process
+still starts from such a file (a `#` inside quotes is part of the value, not a
+comment); the dashboard refuses to edit it, since saving could not keep them.
+The same refusal covers a NUL or an unpaired surrogate in a value in
+`rig.yaml`, in `environment` or reached through a `${...}` reference, when the
+config is read; and a plan recorded earlier that holds one, when a process
+would start from it.
+
+A file written before Rig refused these keeps its bytes: nothing rewrites it. A
+Service already running keeps running, since a process reads its environment
+only when it starts, and its shell health check goes on with the rest of the
+file, reading it as Rig always did (the invalid bytes replaced, `__proto__` and
+a value with a NUL left out, as no process ever got them) and noting the
+refusal once in the Target log. Anything that would start from the file is
+refused until that line is fixed in an editor: a `rig restart` or a deploy that
+starts its Target before either stops anything, and a start after a crash, a
+job run or a restore when its turn comes. The dashboard shows the file's names
+and the refusal, and neither reveals nor changes anything in it until then.
 
 Each declared `build` is one build unit: the top-level `build` is the shared
 unit, and every Service and Tool `build` is its own. Units run one at a time,

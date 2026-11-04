@@ -1476,8 +1476,12 @@ with a hint naming the line that turns it on (such as "Add `working: true`
 under targets in rig.yaml") and the `rig down` that stops it; once it is
 stopped the check passes. `doctor` is read-only by default. One report reads the repository config once, so the
 identity check and every working Target comparison see the same revision even
-while the file is being edited. A config the parser rejects is
-`config-invalid` and carries the parser's message; a config that could not be
+while the file is being edited. A config the parser rejects, a `rig.yaml` with
+bytes that are not UTF-8 in a key or a value included (named by file and line), is
+`config-invalid` and carries the parser's message; such bytes only in a comment
+change nothing, so the file still reads and a Commit holding it can still be
+deployed, but the dashboard refuses to edit it, since saving could not keep them.
+A config that could not be
 read at all (permissions, I/O) is `config-unreadable`; a config that names
 another Project is `identity-drift` and is not compared. Host, ownership,
 recovery and deployed-Target checks still run in each of these cases. A failing component check carries what was observed
@@ -2800,8 +2804,11 @@ just the Services whose composed environment changed (it compares a keyed
 digest, never a value); a changed file does not rerun a completed build.
 
 A listed `env_file` is required: when it is missing the command fails as
-`ENV_FILE_MISSING` naming the path before any build or process runs. The
-operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
+`ENV_FILE_MISSING` naming the path before any build or process runs. A deploy
+that starts its Target composes each Service's environment once its builds have
+run, which may write such a file, and before it stops anything: an env file
+refused for any reason (the codes below) fails the deploy with that refusal,
+with the previous Deployment still running. The operator files under `<RIG_ROOT>/env/` are optional and are the usual home for
 secrets, since they sit outside every checkout and so work for the Stable
 Target and Previews too. The dashboard's Environment tab edits them, the
 Project's, each Service's and each job's, with values masked until revealed,
@@ -2809,7 +2816,10 @@ and keeps them mode 600; Activity records which names changed, never a value.
 A save lands only on the file its changes were made against: when the file
 changed meanwhile (in an editor, or another dashboard), the save is refused,
 the unsaved changes are kept, and the tab names what changed until you review
-them against the current file. A listed path may be absolute, start with `~/` (the
+them against the current file. A value field holds one line, so text with line
+breaks is refused when pasted or dropped there, and a revealed value that has
+them does not open for editing; edit the file in an editor for those, written
+as `NAME="first\nsecond"`. A listed path may be absolute, start with `~/` (the
 operator's home; `~user` is rejected as `invalid_path`), or be relative to the
 Target workspace (never to a Service's `working_dir`). On the stable Target and Previews a relative path must stay
 inside that workspace (`path_outside_target` otherwise) and is read from the

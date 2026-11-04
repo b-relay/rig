@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseProjectConfig } from "../src/config";
+import { parseProjectConfig, readProjectConfig } from "../src/config";
 import type { ProjectConfig } from "../src/config/types";
 import { RigError } from "../src/domain/errors";
 import type { HostSession } from "../src/domain/host-session";
@@ -15,6 +15,7 @@ import { liveUpstreams, ownedBlock } from "../src/providers/route-file";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import { checkIdentity } from "../src/runtime/health-monitor";
 import { preparationProcessKey } from "../src/runtime/lifecycle";
+import { rollbackCommand } from "../web/lib/deployments";
 import { runtimeWorld } from "./support/runtime-world";
 
 /** What Rig reports and does after a restart or a failure, through the real runtime, lifecycle, effects, route file and
@@ -480,6 +481,208 @@ async function fixtureReading(make: (root: string) => ProjectConfig) {
   });
   return f;
 }
+
+test.each([
+  [
+    "cannot be parsed",
+    "ENV_FILE",
+    (file: string) => writeFile(file, "not an assignment\n"),
+  ],
+  ["is missing", "ENV_FILE_MISSING", (file: string) => rm(file)],
+  [
+    "contradicts a command",
+    "ENV_CONFLICT",
+    (file: string) => writeFile(file, "MODE=other\n"),
+  ],
+] as const)(
+  "a deploy whose env file %s is refused as that before anything stops, with the previous Deployment still running",
+  async (_why, code, refuse) => {
+    const f = await fixtureReading((root) =>
+      shop({
+        environment: { MODE: "live" },
+        services: {
+          web: {
+            command: "web ${environment.MODE}",
+            restart: "always",
+            ports: { http: WEB },
+            env_file: join(root, "web.env"),
+          },
+          api: { command: "api", restart: "no", ports: { http: API } },
+        },
+      }),
+    );
+    const file = join(f.world.root, "web.env");
+    await writeFile(file, "A=1\n");
+    await f.command({ action: "deploy", project: "shop", target: "stable" });
+    const pids = await f.pids("stable");
+    const before = await f.target("stable");
+    await refuse(file);
+    f.events.length = 0;
+    await expect(
+      f.command({
+        action: "deploy",
+        project: "shop",
+        target: "stable",
+        force: true,
+      }),
+    ).rejects.toMatchObject({ code });
+    expect(f.events).toEqual([]);
+    expect(await f.pids("stable")).toEqual(pids);
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+    const after = await f.target("stable");
+    expect(after.desired).toBe("running");
+    expect(after.recovery).toBeUndefined();
+    expect(after.services).toEqual(before.services);
+  },
+);
+
+test("a deploy goes on when its own build writes the env file a Service reads, since every build has run by the check", async () => {
+  const f = await fixtureReading((root) =>
+    shop({
+      build: `echo A=1 > ${join(root, "generated.env")}`,
+      services: {
+        web: {
+          command: "web",
+          restart: "always",
+          ports: { http: WEB },
+          env_file: join(root, "generated.env"),
+        },
+        api: { command: "api", restart: "no", ports: { http: API } },
+      },
+    }),
+  );
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  await rm(join(f.world.root, "generated.env"));
+  f.events.length = 0;
+  await f.command({
+    action: "deploy",
+    project: "shop",
+    target: "stable",
+    force: true,
+  });
+  expect(f.events).toEqual(["stop api", "stop web", "start web", "start api"]);
+});
+
+// A rig.yaml refused for its bytes (#754)
+
+test("a Commit that deployed with bytes that are not UTF-8 only in a comment of its rig.yaml can be rolled back to from the dashboard", async () => {
+  const f = await fixture();
+  const valid = [
+    "name: shop",
+    "services:",
+    `  web: { command: web, restart: always, ports: { http: ${WEB} } }`,
+    `  api: { command: api, restart: "no", ports: { http: ${API} } }`,
+    "targets: { stable: true }",
+    "",
+  ].join("\n");
+  const commented = Buffer.concat([
+    Buffer.from(valid),
+    Buffer.from("# caf\xe9\n", "latin1"),
+  ]);
+  await writeFile(join(f.world.repo, "rig.yaml"), valid);
+  f.deps.documents.read = readProjectConfig;
+  let head = "c1";
+  f.deps.sources.preflight = async () => ({ commit: head, warnings: [] });
+  f.deps.sources.resolve = async (_repo: string, ref: string) => ref;
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async (request) => {
+    const prepared = await prepare.call(f.deps.sources, request);
+    await writeFile(
+      join(request.destination, "rig.yaml"),
+      request.ref === "c1" ? commented : valid,
+    );
+    return { ...prepared, commit: request.ref };
+  };
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  head = "c2";
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  expect((await f.target("stable")).commit).toBe("c2");
+
+  await f.command(
+    rollbackCommand("shop", {
+      target: "stable",
+      kind: "stable",
+      branch: "main",
+      commit: "c1",
+    }),
+  );
+  const stable = await f.target("stable");
+  expect(stable.commit).toBe("c1");
+  expect(stable.desired).toBe("running");
+  expect(await f.pids("stable")).toHaveLength(2);
+});
+
+test("a rig.yaml that starts being refused for its bytes stops nothing: the working Target's restart and a deploy are refused, status and doctor say why, and recorded plans go on", async () => {
+  const f = await fixture();
+  const path = join(f.world.repo, "rig.yaml");
+  const valid = [
+    "name: shop",
+    "domain: shop.test",
+    'proxy: { "/": "${services.web.ports.http}" }',
+    "services:",
+    `  web: { command: web, restart: always, ports: { http: ${WEB} } }`,
+    `  api: { command: api, restart: "no", ports: { http: ${API} } }`,
+    "targets:",
+    "  working: { domain: dev.shop.test }",
+    "  stable: true",
+    "",
+  ].join("\n");
+  const refused = Buffer.concat([
+    Buffer.from(valid),
+    Buffer.from("environment: { LABEL: caf\xe9 }\n", "latin1"),
+  ]);
+  await writeFile(path, valid);
+  f.deps.documents.read = readProjectConfig;
+  let committed: string | Buffer = valid;
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async (request) => {
+    const prepared = await prepare.call(f.deps.sources, request);
+    await writeFile(join(request.destination, "rig.yaml"), committed);
+    return prepared;
+  };
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  const stable = await f.pids("stable");
+
+  await refusedWithEverythingRunning(
+    f,
+    "working",
+    () => writeFile(path, refused),
+    "invalid_yaml",
+  );
+  const { warnings } = await f.status("working");
+  expect(warnings.join()).toContain("not valid UTF-8 on line 10");
+  const report = (await f.command({
+    action: "doctor",
+    project: "shop",
+  })) as { checks: { name: string; reason?: string; message: string }[] };
+  expect(
+    report.checks.find((check) => check.name === "project-config"),
+  ).toMatchObject({
+    reason: "config-invalid",
+    message: expect.stringContaining("not valid UTF-8 on line 10"),
+  });
+
+  // A Commit whose own rig.yaml is refused never gets to stop what runs.
+  committed = refused;
+  f.events.length = 0;
+  await expect(
+    f.command({
+      action: "deploy",
+      project: "shop",
+      target: "stable",
+      force: true,
+    }),
+  ).rejects.toMatchObject({ code: "invalid_yaml" });
+  expect(f.events).toEqual([]);
+  expect(await f.pids("stable")).toEqual(stable);
+
+  // The stable Target restarts from its recorded plan, and the working Target can still be stopped.
+  await f.command({ action: "restart", project: "shop", target: "stable" });
+  expect(await f.pids("stable")).toHaveLength(2);
+  await f.command({ action: "down", project: "shop", target: "working" });
+  expect((await f.target("working")).desired).toBe("stopped");
+});
 
 test.each([
   ["a NUL", Buffer.from("TOKEN=v\0\n")],

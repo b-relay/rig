@@ -18,6 +18,7 @@ import { isStopDetached, serviceGraceMs } from "../domain/stop-budget";
 import type { ListenerEvidence } from "../providers/listener-inspection";
 import {
   RigError,
+  diagnosticErrorCode,
   failureCauses,
   failureReason,
   retainFailureCauses,
@@ -1273,6 +1274,21 @@ export function uncertainAttempt(
         unit: unit.id,
       }
     : undefined;
+}
+/** Fails as composing a Service's environment fails (an env file refused for any reason), so a start that could not happen
+ * is refused before anything stops. Starts nothing, and needs every build that may write such a file to have run. */
+export async function assertServiceEnvironments(
+  target: TargetRecord,
+  lifecycle: Pick<TargetLifecycle, "environmentDigest">,
+): Promise<void> {
+  for (const component of target.plan.components)
+    if (component.kind === "managed")
+      await lifecycle
+        .environmentDigest(target, component.name)
+        .catch((error: unknown) => {
+          // A start never fails for its digest, only for its environment.
+          if (diagnosticErrorCode(error) !== "ENV_DIGEST") throw error;
+        });
 }
 /** A deployed Target starts only from a preparation whose every unit is recorded as succeeded for this workspace. */
 export function assertPrepared(target: TargetRecord): void {

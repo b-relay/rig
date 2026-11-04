@@ -77,10 +77,21 @@ const refusalSchema = z.object({
       .optional(),
   }),
 });
-/** Posts one editor request and answers its result only once it matches the action's reply schema. */
+/** rigd began its answer and the connection closed before it was whole: nothing arrived malformed, and a write may have
+ * happened before the reply was lost. */
+const interrupted = (editor: string, write: boolean) =>
+  new RigError(
+    "DAEMON_INTERRUPTED",
+    `The connection to rigd closed before it finished answering the ${editor}${write ? "; the change may have been saved" : ""}.`,
+    write
+      ? "Read the page again to see whether it was saved, and run 'rigd status' to inspect the daemon."
+      : "Run 'rigd status' to inspect the daemon.",
+  );
+/** Posts one editor request and answers its result only once it matches the action's reply schema. A reply cut off part-way
+ * is DAEMON_INTERRUPTED; only one that arrived whole can be DAEMON_PROTOCOL. */
 async function postEditor(
   path: "/v1/config" | "/v1/env",
-  request: unknown,
+  request: ConfigEditorRequest | EnvEditorRequest,
   reply: z.ZodType,
   root: string,
 ): Promise<unknown> {
@@ -111,7 +122,18 @@ async function postEditor(
       "This rigd does not offer that editor yet.",
       "Run rigd install from this version of Rig to upgrade the daemon.",
     );
-  const payload: unknown = await response.json().catch(() => undefined);
+  const text = await response.text().catch(() => {
+    throw interrupted(
+      editor,
+      request.action === "apply" || request.action === "write",
+    );
+  });
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = undefined;
+  }
   if (!response.ok) {
     const refusal = refusalSchema.safeParse(payload);
     if (!refusal.success) throw protocolFailure(`${editor} refusal`);

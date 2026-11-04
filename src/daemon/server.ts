@@ -275,7 +275,11 @@ export function startControlPlane(options: ControlPlaneOptions) {
         edit(input, editor, true),
       );
     }
-    if (url.pathname === "/v1/env" && request.method === "POST" && options.env) {
+    if (
+      url.pathname === "/v1/env" &&
+      request.method === "POST" &&
+      options.env
+    ) {
       const editor = options.env;
       return await withBody(request, invalidEdit("env editor"), (input) =>
         edit(input, editor),

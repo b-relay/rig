@@ -82,13 +82,14 @@ export async function forgetProject(
       `Destroy ${previews.length === 1 ? "it" : "them"} with ${previews.map((target) => rigCommand("down", { target }, "--destroy")).join(", ")}, then run rig forget ${shellWord(project.name)}.`,
       { previews: previews.map((t) => t.name) },
     );
+  // Read before anything changes: a failure here has no route to put back.
+  const toolCheckouts = await checkoutsToolsRunFrom(targets, deps);
   let withdrawal;
   try {
     withdrawal = await deps.lifecycle.withdrawRoutes(targets);
   } catch (error) {
     throw notForgotten(project, error);
   }
-  const toolCheckouts = await checkoutsToolsRunFrom(targets, deps);
   // Its backups stay on disk, as its data does; their records go, since nothing could reach them by a forgotten Project.
   const kept = new Set<string>();
   try {

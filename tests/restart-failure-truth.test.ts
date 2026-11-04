@@ -711,6 +711,31 @@ test.each(["unknown", "unanswered"] as const)(
   },
 );
 
+test("the diagnostic log says when a Service's state cannot be established, naming it, and when it can, not at every pass", async () => {
+  const f = await settledByAnEarlierRigd();
+  const observe = f.deps.observations.process;
+  const said: { outcome: string; evidence?: string }[] = [];
+  f.deps.diagnostic = async ({ outcome, evidence }) => {
+    if (outcome.startsWith("routes-")) said.push({ outcome, evidence });
+  };
+  f.deps.observations.process = async () => ({ state: "unknown" });
+  f.reopen();
+  await f.reconcile();
+  for (let pass = 0; pass < 5; pass++) await f.supervise();
+  expect(said).toEqual([
+    {
+      outcome: "routes-unchecked",
+      evidence: expect.stringContaining("Whether web still run"),
+    },
+  ]);
+
+  f.deps.observations.process = observe;
+  for (let pass = 0; pass < 3; pass++) await f.supervise();
+  expect(said.at(-1)).toEqual({ outcome: "routes-checked" });
+  expect(said).toHaveLength(2);
+  expect(await f.livePorts("stable")).toEqual([]);
+});
+
 test("a daemon's first pass leaves the paths of a running Service published", async () => {
   const f = await fixture();
   await f.command({ action: "deploy", project: "shop", target: "stable" });

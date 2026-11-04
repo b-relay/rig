@@ -695,6 +695,27 @@ test("managed: a ROUTE_CONFLICT hint's forget asks for the Project's Previews to
   expect(await w.routes()).not.toContain("# rig begin");
 });
 
+test("a forget that cannot read which checkouts its Tools run from withdraws no route", async () => {
+  const w = await rigWorld("external");
+  await w.deployedThenStopped();
+  const before = await w.routes();
+  // The read after the forget's look at its Services, which is the last thing it does before it withdraws.
+  const read = w.deps.store.read;
+  const observe = w.deps.observations.process;
+  w.deps.observations.process = async (...args) => {
+    w.deps.store.read = async () => {
+      w.deps.store.read = read;
+      throw new Error("state read failed");
+    };
+    return await observe(...args);
+  };
+  await expect(
+    w.runtime.command({ action: "forget", project: "ledger" }),
+  ).rejects.toThrow("state read failed");
+  expect(w.state.projects.map((p) => p.name)).toEqual(["ledger"]);
+  expect(await w.routes()).toBe(before);
+});
+
 test("forget of a Project whose Targets have no route never asks the proxy", async () => {
   const w = await rigWorld("managed");
   w.deps.documents.read = async (path) => ({

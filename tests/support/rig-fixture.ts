@@ -23,14 +23,35 @@ async function recordedTargets(root: string) {
     return [];
   }
 }
-/** The pid of the rigd `root` records, while that process is alive and still a rigd. */
-async function recordedDaemon(root: string): Promise<number | undefined> {
+/** When the process `pid` started and what it runs, while it is alive and a rigd: a later process of that pid differs. */
+function daemonIdentity(pid: number): string | undefined {
+  const seen = Bun.spawnSync(
+    ["ps", "-p", String(pid), "-o", "lstart=", "-o", "command="],
+    { stdout: "pipe", stderr: "ignore" },
+  ).stdout.toString();
+  return seen.includes("rigd") ? seen : undefined;
+}
+/** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits. */
+async function recordedDaemon(root: string) {
   const { pid } = (await readFile(join(root, "daemon", "address.json"), "utf8")
     .then((text) => JSON.parse(text))
     .catch(() => ({}))) as { pid?: number };
-  if (pid === undefined) return undefined;
-  const seen = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
-  return seen.stdout.toString().includes("rigd") ? pid : undefined;
+  const identity = pid === undefined ? undefined : daemonIdentity(pid);
+  return identity === undefined ? undefined : { pid: pid!, identity };
+}
+/** How long a rigd may take to exit once it has been told to, on a machine as loaded as a test run makes it. */
+const DAEMON_EXIT_MS = 15_000;
+/** Whether `daemon` is gone by the deadline; it answers as soon as it is. */
+async function daemonExited(daemon: {
+  pid: number;
+  identity: string;
+}): Promise<boolean> {
+  const deadline = Date.now() + DAEMON_EXIT_MS;
+  while (daemonIdentity(daemon.pid) === daemon.identity) {
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(20);
+  }
+  return true;
 }
 /** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
  * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. `HOME` does the same for the home
@@ -104,14 +125,18 @@ export async function rigFixture(
           : ["down", target.kind, ...target.project],
         base,
       ).catch(() => {});
+    const daemon = await recordedDaemon(root);
     const uninstall = await rigd(["uninstall"]).catch(() => undefined);
     // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up.
-    const left = await recordedDaemon(root);
-    if (left !== undefined) process.kill(left, "SIGKILL");
+    const left =
+      daemon !== undefined && !(await daemonExited(daemon))
+        ? daemon
+        : undefined;
+    if (left !== undefined) process.kill(left.pid, "SIGKILL");
     await rm(base, { recursive: true, force: true });
     if (left !== undefined)
       throw new Error(
-        `rigd ${left} outlived its fixture: rigd uninstall said ${uninstall?.stderr}`,
+        `rigd ${left.pid} outlived its fixture: rigd uninstall said ${uninstall?.stderr}`,
       );
   };
   return {

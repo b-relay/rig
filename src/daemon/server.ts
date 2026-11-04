@@ -195,7 +195,7 @@ export function startControlPlane(options: ControlPlaneOptions) {
     hostname: "127.0.0.1",
     port: options.port,
     // Off: Bun's own limit answers a bare 413 before any of this runs. receiveJson holds MAX_REQUEST_BYTES instead.
-    maxRequestBodySize: Number.MAX_SAFE_INTEGER,
+    maxRequestBodySize: Infinity,
     // Mutations legitimately run for minutes; the runtime owns their budgets.
     // Bun would otherwise reset a request that is still being handled after 10 s.
     // Receiving a request has its own deadline (BODY_DEADLINE_MS).

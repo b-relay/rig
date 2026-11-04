@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { startControlPlane } from "../src/daemon/server";
 import { RigError } from "../src/domain/errors";
 import { RIG_BUILD } from "../src/domain/version";
@@ -127,6 +127,31 @@ test("a stalled or dripping upload is refused at the receive deadline and its co
   }
 });
 
+test("an upload's timer runs for the documented 10 s, or the deadline the control plane is given", async () => {
+  const real = globalThis.setTimeout;
+  const delays: (number | undefined)[] = [];
+  const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
+    ...args: Parameters<typeof setTimeout>
+  ) => {
+    delays.push(args[1]);
+    return real(...args);
+  }) as typeof setTimeout);
+  const documented = controlPlane();
+  const given = controlPlane({ bodyDeadlineMs: 50 });
+  try {
+    const command = JSON.stringify({ action: "list" });
+    await post(documented.server.port!, "/v1/command", command);
+    expect(delays).toEqual([10_000]);
+    delays.length = 0;
+    await post(given.server.port!, "/v1/command", command);
+    expect(delays).toEqual([50]);
+  } finally {
+    timers.mockRestore();
+    await documented.server.stop(true);
+    await given.server.stop(true);
+  }
+});
+
 test("a request refused before its body is read closes its connection, so an unfinished upload holds nothing", async () => {
   const { server } = controlPlane();
   try {
@@ -243,18 +268,19 @@ test("an oversized upload gets a tagged refusal however it declares itself, and 
   const { server, reached } = controlPlane();
   const max = 1024 * 1024;
   try {
-    for (const path of routes) {
-      // Declared: refused from its headers, without a byte of the body.
-      const declared = parsedReply(
-        await untilClosed(server.port!, head(path, max + 1)),
-      );
-      expect(declared.status).toBe(413);
-      expect(declared.body.error).toMatchObject({
-        code: "REQUEST_TOO_LARGE",
-        message: expect.stringContaining("1 MiB"),
-        hint: expect.any(String),
-      });
-    }
+    for (const path of routes)
+      // Declared: refused from its headers, without a byte of the body. 2^53 is past any limit Bun could be given but Infinity.
+      for (const length of [max + 1, 2 ** 53]) {
+        const declared = parsedReply(
+          await untilClosed(server.port!, head(path, length)),
+        );
+        expect(declared.status).toBe(413);
+        expect(declared.body.error).toMatchObject({
+          code: "REQUEST_TOO_LARGE",
+          message: expect.stringContaining("1 MiB"),
+          hint: expect.any(String),
+        });
+      }
     const whole = await post(
       server.port!,
       "/v1/command",

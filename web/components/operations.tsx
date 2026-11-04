@@ -63,8 +63,6 @@ export type SendCommand = (
 ) => Promise<Outcome<unknown>>;
 export interface Run<T> {
   busy: boolean;
-  /** The Operation id of the command sent last, as Activity records it. */
-  operationId?: string;
   failure?: Failure;
   result?: T;
   /** Sends one command with a fresh Operation id; answers the reply, or `undefined` after a shown failure. `send` replaces
@@ -91,7 +89,6 @@ export function useRun<T = OperationResult>(
   const refresh = options.refresh ?? true;
   const [state, setState] = useState<{
     busy: boolean;
-    operationId?: string;
     failure?: Failure;
     result?: T;
   }>({
@@ -105,8 +102,7 @@ export function useRun<T = OperationResult>(
         ...command,
         operationId: command.operationId ?? crypto.randomUUID(),
       };
-      const operationId = sent.operationId;
-      setState({ busy: true, operationId });
+      setState({ busy: true });
       inFlight += 1;
       notify();
       let outcome: Outcome<unknown>;
@@ -119,9 +115,8 @@ export function useRun<T = OperationResult>(
         notify();
       }
       if (turn !== latest.current) return undefined;
-      if (outcome.ok)
-        setState({ busy: false, operationId, result: outcome.value as T });
-      else setState({ busy: false, operationId, failure: outcome.failure });
+      if (outcome.ok) setState({ busy: false, result: outcome.value as T });
+      else setState({ busy: false, failure: outcome.failure });
       if (typeof refresh === "function" ? refresh(sent, outcome.ok) : refresh)
         router.refresh();
       return outcome.ok ? (outcome.value as T) : undefined;
@@ -131,7 +126,6 @@ export function useRun<T = OperationResult>(
   const clear = useCallback(() => setState({ busy: false }), []);
   return {
     busy: state.busy,
-    ...(state.operationId ? { operationId: state.operationId } : {}),
     failure: state.failure,
     result: state.result,
     run,

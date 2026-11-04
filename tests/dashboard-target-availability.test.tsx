@@ -17,7 +17,6 @@ import {
   completedNotice,
   lastActionText,
   projectWork,
-  recordedFailure,
 } from "../web/lib/target-work";
 import type { ActivityResult, TargetReport } from "../web/lib/types";
 
@@ -256,18 +255,14 @@ test("a reload does not lose how the last action ended: a failed shared build st
   });
   expect(work.stable?.last).toEqual(failed);
   expect(lastActionText(failed)).toBe(
-    "Last action: restart failed: BUILD_FAILED",
+    "Activity's last action: restart failed: BUILD_FAILED",
   );
-  expect(recordedFailure(failed)).toMatchObject({
-    message: "BUILD_FAILED",
-    operationId: "op-fail",
-  });
   const { mounted } = actions({
     target: stable({ state: "stopped" }),
     work: work.stable!,
   });
   expect(textOf(mounted.tree)).toContain(
-    "Last action: restart failed: BUILD_FAILED",
+    "Activity's last action: restart failed: BUILD_FAILED",
   );
 
   const ok = projectWork("demo", undefined, {
@@ -282,8 +277,9 @@ test("a reload does not lose how the last action ended: a failed shared build st
     ],
   });
   expect(ok.stable?.last?.id).toBe("op-new");
-  expect(recordedFailure(ok.stable!.last!)).toBeUndefined();
-  expect(lastActionText(ok.stable!.last!)).toBe("Last action: started");
+  expect(lastActionText(ok.stable!.last!)).toBe(
+    "Activity's last action: started",
+  );
 });
 
 test("a card marks a failure a reload would have lost, and says nothing of a success", () => {
@@ -296,7 +292,7 @@ test("a card marks a failure a reload would have lost, and says nothing of a suc
   const mark = elements(failing.mounted.tree).find(
     (each) => (each.type as { name?: string }).name === "OutcomeMark",
   );
-  expect(mark?.props.failure).toMatchObject({ message: "BUILD_FAILED" });
+  expect(mark?.props.last).toMatchObject({ message: "BUILD_FAILED" });
   const fine = actions({
     layout: "card",
     stacked: false,
@@ -306,7 +302,7 @@ test("a card marks a failure a reload would have lost, and says nothing of a suc
   expect(
     elements(fine.mounted.tree).find(
       (each) => (each.type as { name?: string }).name === "OutcomeMark",
-    )?.props.failure,
+    )?.props.last,
   ).toBeUndefined();
 });
 
@@ -702,7 +698,9 @@ test("the last action is the last Activity recorded, even when the clock was set
     ],
   });
   expect(work.stable?.last?.id).toBe("later-success");
-  expect(lastActionText(work.stable!.last!)).toBe("Last action: started");
+  expect(lastActionText(work.stable!.last!)).toBe(
+    "Activity's last action: started",
+  );
 });
 
 const TIMEOUT = {
@@ -812,6 +810,7 @@ async function afterOwnStart(
     ...(before ? { work: { last: before } } : {}),
   } as const;
   let sent: string | undefined;
+  let refreshedBefore = 0;
   answer = (command) => {
     sent = command.operationId;
     return reply(command);
@@ -836,6 +835,21 @@ async function afterOwnStart(
     id: sent!,
     refreshed: (work: Props["work"]) =>
       mounted.render({ ...props, ...(work ? { work } : {}) }),
+    /** Presses Start again, leaving its command in flight until `settled`. */
+    sendAgain: () => {
+      answer = replying("started");
+      refreshedBefore = mounted.refreshes.count;
+      mounted.act(() =>
+        (
+          controls("Start").find((each) => each.props.onClick)!.props
+            .onClick as () => void
+        )(),
+      );
+    },
+    settled: async () => {
+      await until(() => mounted.refreshes.count > refreshedBefore);
+      answer = undefined;
+    },
     notice: () => shown("OperationNotice", "result"),
     failure: () => shown("Failure", "failure"),
     text: () => textOf(mounted.tree),
@@ -846,46 +860,136 @@ const LATER = record({
   message: "BUILD_FAILED",
   occurredAt: "2026-11-04T20:00:00.000Z",
 });
+const OWN_LABEL = "This page's last command";
+const LATER_LINE = "Activity's last action: restart failed: BUILD_FAILED";
+const DRAINING = refusing(
+  "DAEMON_DRAINING",
+  "rigd is preparing to stop.",
+  "Wait for administration to complete before retrying.",
+);
 
-test("a later action run elsewhere replaces this page's own outcome: running, then failed", async () => {
+test("a later CLI failure is visible beside this page's own result, each saying what it is", async () => {
   const f = await afterOwnStart(replying("started"));
   expect(f.notice()).toMatchObject({ outcome: "started" });
+  expect(f.text()).toContain(OWN_LABEL);
   f.refreshed({
     running: { operationId: "later-cli", action: "restart", phase: "building" },
   });
   expect(f.text()).toContain("restart is running (building)");
   f.refreshed({ last: LATER });
-  expect(f.notice()).toBeUndefined();
-  expect(f.text()).toContain("Last action: restart failed: BUILD_FAILED");
+  expect(f.text()).toContain(LATER_LINE);
+  expect(f.notice()).toMatchObject({ outcome: "started" });
+  expect(f.text()).toContain(OWN_LABEL);
 });
 
-test("a later success elsewhere replaces this page's own failure, which is no longer the state of things", async () => {
-  const f = await afterOwnStart(
-    refusing("BUILD_FAILED", "The shared build failed.", "Read its logs."),
-  );
-  expect(f.failure()).toMatchObject({ code: "BUILD_FAILED" });
-  f.refreshed({ last: record({ id: "later-cli", outcome: "started" }) });
-  expect(f.failure()).toBeUndefined();
-  expect(f.text()).toContain("Last action: started");
-});
-
-test("this page's own outcome keeps its richer words until something later: before its refresh, and once Activity records it", async () => {
+test("a fresh refusal stays visible with its full words, whatever Activity reports beside it", async () => {
   const before = record({ id: "earlier", message: "OLD_FAILURE" });
-  const own = await afterOwnStart(
-    refusing("BUILD_FAILED", "The shared build failed.", "Read its logs."),
-    before,
+  const f = await afterOwnStart(DRAINING, before);
+  const refused = {
+    code: "DAEMON_DRAINING",
+    hint: "Wait for administration to complete before retrying.",
+  };
+  expect(f.failure()).toMatchObject(refused);
+  // An action the page had not seen, such as the command before this one recorded late; a later success; none at all.
+  for (const work of [
+    { last: record({ id: "first-of-two", outcome: "started" }) },
+    { last: LATER },
+    {},
+    undefined,
+  ]) {
+    f.refreshed(work);
+    expect(f.failure()).toMatchObject(refused);
+  }
+});
+
+test("a refusal sent while Activity was unknown stays when Activity comes back", async () => {
+  const f = await afterOwnStart(DRAINING);
+  f.refreshed({ last: record({ id: "older", outcome: "started" }) });
+  expect(f.failure()).toMatchObject({ code: "DAEMON_DRAINING" });
+  expect(f.text()).toContain("Activity's last action: started");
+});
+
+test("a failed work read revives nothing false: only what this page got back stays, under its label", async () => {
+  const f = await afterOwnStart(replying("started"));
+  f.refreshed({ last: LATER });
+  expect(f.text()).toContain(LATER_LINE);
+  // projectWork answers no work when its reads fail.
+  f.refreshed(projectWork("demo", undefined, undefined).stable);
+  expect(f.notice()).toMatchObject({ outcome: "started" });
+  expect(f.text()).toContain(OWN_LABEL);
+  expect(f.text()).not.toContain("Activity's last action");
+  f.refreshed({ last: LATER });
+  expect(f.text()).toContain(LATER_LINE);
+});
+
+test("Activity's line is left out only when it is the very Operation this page's result or failure names", async () => {
+  const succeeded = await afterOwnStart(replying("started"));
+  succeeded.refreshed({
+    last: record({ id: succeeded.id, action: "up", outcome: "started" }),
+  });
+  expect(succeeded.notice()).toMatchObject({ outcome: "started" });
+  expect(succeeded.text()).not.toContain("Activity's last action");
+  const named = await afterOwnStart((command) => {
+    throw Object.assign(new Error("It failed."), {
+      code: "INTERNAL",
+      details: { operationId: command.operationId },
+    });
+  });
+  named.refreshed({ last: record({ id: named.id, message: "INTERNAL" }) });
+  expect(named.failure()).toMatchObject({ code: "INTERNAL" });
+  expect(named.text()).not.toContain("Activity's last action");
+  // A refusal that names no Operation cannot be proved the same, so both are said.
+  const unnamed = await afterOwnStart(DRAINING);
+  unnamed.refreshed({ last: record({ id: unnamed.id, message: "X" }) });
+  expect(unnamed.failure()).toMatchObject({ code: "DAEMON_DRAINING" });
+  expect(unnamed.text()).toContain("Activity's last action: restart failed: X");
+});
+
+test("this page's own outcome goes when the next command is sent, and a reload has none", async () => {
+  const f = await afterOwnStart(replying("started"));
+  expect(f.notice()).toBeDefined();
+  f.sendAgain();
+  expect(f.notice()).toBeUndefined();
+  expect(f.text()).not.toContain(OWN_LABEL);
+  await f.settled();
+  const { mounted } = actions({
+    target: stable({ state: "stopped" }),
+    work: { last: LATER },
+  });
+  expect(textOf(mounted.tree)).not.toContain(OWN_LABEL);
+  expect(textOf(mounted.tree)).toContain(LATER_LINE);
+});
+
+test("a card marks a failure from either fact, and its tooltip says which is which", async () => {
+  const { mounted, controls } = actions({
+    layout: "card",
+    stacked: false,
+    target: stable({ state: "stopped" }),
+    work: { last: LATER },
+  });
+  const mark = () =>
+    elements(mounted.tree).find(
+      (each) => (each.type as { name?: string }).name === "OutcomeMark",
+    )!;
+  answer = replying("started");
+  const before = mounted.refreshes.count;
+  mounted.act(() =>
+    (
+      controls("Start").find((each) => each.props.onClick)!.props
+        .onClick as () => void
+    )(),
   );
-  // rigd's record has not caught up: the earlier action must not take over from what just happened.
-  own.refreshed({ last: before });
-  expect(own.failure()).toMatchObject({
-    code: "BUILD_FAILED",
-    hint: "Read its logs.",
-  });
-  expect(own.text()).not.toContain("OLD_FAILURE");
-  // Activity keeps only the code; the page keeps the message and hint it was answered with.
-  own.refreshed({
-    last: record({ id: own.id, message: "BUILD_FAILED" }),
-  });
-  expect(own.failure()).toMatchObject({ hint: "Read its logs." });
-  expect(own.text()).not.toContain("Last action");
+  await until(() => mounted.refreshes.count > before);
+  answer = undefined;
+  mounted.render();
+  expect(mark().props.result).toMatchObject({ outcome: "started" });
+  expect(mark().props.last).toEqual(LATER);
+  const rendered = renderToStaticMarkup(
+    <AppRouterContext.Provider value={{ refresh() {}, push() {} } as never}>
+      {mark() as never}
+    </AppRouterContext.Provider>,
+  );
+  expect(rendered).toContain("started");
+  expect(rendered).toContain("restart failed: BUILD_FAILED");
+  expect(rendered).toContain("text-bad");
 });

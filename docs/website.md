@@ -89,8 +89,11 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   and Stop and Destroy never are. While `rigd` runs a command on the Target,
   whoever asked and whatever page sent it, its actions wait and a dot says what
   runs (from the `queue` read), so a reload neither hides it nor allows a
-  duplicate. How its last action ended comes from Activity: a failure is marked
-  on the card and said on the Target's page until a later action ends. Destroying
+  duplicate. Two facts are shown side by side, each labelled: what this page's
+  last command got back, with its full message and hint, until the next command
+  or a reload; and Activity's last action, which a reload keeps. The page cannot
+  know their order, so neither hides the other unless they are the same Operation.
+  A card marks a failure of either. Destroying
   a Preview, from its card or its own page, loads its Project's page afresh
   (`?operation=`), which says what Activity recorded of it; a refusal stays
   where it was.

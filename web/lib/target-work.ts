@@ -1,6 +1,4 @@
-import type { Failure } from "./outcome";
 import { isCommand } from "./pulse";
-import { resolveSettlement } from "./reconcile";
 import type { ActivityResult, OperationResult, QueueResult } from "./types";
 
 type Recorded = ActivityResult["operations"][number];
@@ -50,28 +48,14 @@ export function projectWork(
   }
   return work;
 }
-/** Pure: a recorded action's failure, as a lost reply is reported from the same record; undefined unless it failed. */
-export function recordedFailure(last: Recorded): Failure | undefined {
-  const resolved = resolveSettlement(
-    {
-      state: "finished",
-      outcome: last.outcome,
-      occurredAt: last.occurredAt,
-      ...(last.message ? { message: last.message } : {}),
-    },
-    { operationId: last.id, action: last.action },
-    "",
-  );
-  return resolved && !resolved.ok ? resolved.failure : undefined;
-}
-/** Pure: a recorded action as one line, plainly from before this page: `Last action: started`, or
- * `Last action: restart failed: BUILD_FAILED`. */
+/** Pure: a recorded action as one line, saying where it comes from: `Activity's last action: started`, or
+ * `Activity's last action: restart failed: BUILD_FAILED`. */
 export function lastActionText(
   last: Pick<Recorded, "action" | "outcome" | "message">,
 ): string {
   return last.outcome === "failed"
-    ? `Last action: ${last.action} failed${last.message ? `: ${last.message}` : ""}`
-    : `Last action: ${last.outcome}`;
+    ? `Activity's last action: ${last.action} failed${last.message ? `: ${last.message}` : ""}`
+    : `Activity's last action: ${last.outcome}`;
 }
 /** Pure: what a command that removed something left, for the page it lands on, from the Activity record of the Operation
  * the link names; undefined for any other record, so the link alone never claims anything. `project` is the Project whose

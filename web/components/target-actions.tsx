@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   CircleAlert,
@@ -20,11 +20,7 @@ import {
   targetHref,
   targetSelector,
 } from "@/lib/target";
-import {
-  lastActionText,
-  recordedFailure,
-  type TargetWork,
-} from "@/lib/target-work";
+import { lastActionText, type TargetWork } from "@/lib/target-work";
 import { targetVerbs, verbRefusal, type TargetVerb } from "@/lib/target-verbs";
 import type { Failure as FailureShape } from "@/lib/outcome";
 import type { OperationResult, TargetReport } from "@/lib/types";
@@ -103,20 +99,14 @@ export function TargetActions({
   const workingLabel = running
     ? `${running.action} is running (${running.phase})`
     : "Working";
-  // What Activity's newest was when this page last sent a command: until that changes, nothing later has been recorded.
-  const latestWhenSent = useRef<string | undefined>(undefined);
-  const latest = work?.last?.id;
-  // This page's own outcome says more, for as long as it is the latest; one Activity records after it replaces it.
-  const ownIsLatest =
-    latest === undefined ||
-    latest === latestWhenSent.current ||
-    latest === act.operationId;
-  const ownFailure = ownIsLatest ? act.failure : undefined;
-  const ownResult = ownIsLatest ? act.result : undefined;
-  // What Activity recorded stands in once a reload lost this page's own, or something later replaced it.
+  // Two facts, side by side: what this page's last command got back, until the next one or a reload, and Activity's last
+  // action. The page cannot know their order, so neither hides the other unless they are the same Operation.
   const last =
-    act.busy || ownFailure || ownResult || running ? undefined : work?.last;
-  const failure = ownFailure ?? (last && recordedFailure(last));
+    work?.last &&
+    work.last.id !== act.result?.operationId &&
+    work.last.id !== act.failure?.operationId
+      ? work.last
+      : undefined;
   // The host is only known in the browser; until hydration nothing serves this page.
   const [host, setHost] = useState("");
   useEffect(() => setHost(window.location.host), []);
@@ -131,8 +121,7 @@ export function TargetActions({
   const refusedWords = [
     ...new Set(verbs.all.flatMap((verb) => refusalTitle(target, verb) ?? [])),
   ];
-  const send = (verb: TargetVerb) => {
-    latestWhenSent.current = latest;
+  const send = (verb: TargetVerb) =>
     void act
       .run(
         verb === "deploy"
@@ -153,7 +142,6 @@ export function TargetActions({
             `${projectHref(project)}?operation=${encodeURIComponent(result.operationId)}`,
           );
       });
-  };
   const choose = (verb: TargetVerb) => {
     const risky =
       verb === "destroy" ||
@@ -248,12 +236,13 @@ export function TargetActions({
     >
       {stacked ? null : layout === "card" ? (
         <OutcomeMark
-          failure={failure}
-          result={ownResult}
+          failure={act.failure}
+          result={act.result}
+          last={last?.outcome === "failed" ? last : undefined}
           target={target.name}
         />
       ) : (
-        <Outcome failure={failure} result={ownResult} />
+        <Outcome failure={act.failure} result={act.result} />
       )}
       <div className="flex items-center gap-1">
         {layout === "card" && verbs.primary.includes("up") ? (
@@ -320,22 +309,8 @@ export function TargetActions({
           {refusedWords.map((text) => (
             <Warning key={text}>{text}</Warning>
           ))}
-          <Failure failure={ownFailure} />
-          <OperationNotice result={ownResult} />
-          {last ? (
-            <a
-              href={`/activity?operation=${encodeURIComponent(last.id)}`}
-              title={last.occurredAt}
-              className={cn(
-                "text-xs no-underline hover:underline",
-                last.outcome === "failed"
-                  ? "text-bad"
-                  : "text-muted-foreground",
-              )}
-            >
-              {lastActionText(last)}
-            </a>
-          ) : null}
+          {ownOutcome(act.failure, act.result)}
+          {last ? lastAction(last) : null}
         </>
       ) : null}
       <AlertDialog
@@ -389,34 +364,70 @@ interface Outcomes {
   failure: FailureShape | undefined;
   result: OperationResult | undefined;
 }
-/** The last outcome as one small mark, for a card with no room for words; the tooltip and the
- * Operation link tell the rest. */
+const OWN_COMMAND = "This page's last command";
+/** What this page's last command got back, in full, under what it is. */
+function ownOutcome(failure: Outcomes["failure"], result: Outcomes["result"]) {
+  if (!failure && !result) return null;
+  return (
+    <>
+      <p className="text-xs text-muted-foreground">{OWN_COMMAND}</p>
+      <Failure failure={failure} />
+      <OperationNotice result={result} />
+    </>
+  );
+}
+/** Activity's last action on the Target, linked to its record. */
+function lastAction(last: NonNullable<TargetWork["last"]>) {
+  return (
+    <a
+      href={`/activity?operation=${encodeURIComponent(last.id)}`}
+      title={last.occurredAt}
+      className={cn(
+        "text-xs no-underline hover:underline",
+        last.outcome === "failed" ? "text-bad" : "text-muted-foreground",
+      )}
+    >
+      {lastActionText(last)}
+    </a>
+  );
+}
+/** This page's last command and Activity's failed last action as one small mark, for a card with no room for words; the
+ * tooltip and the dialog tell the rest. */
 function OutcomeMark({
   failure,
   result,
+  last,
   target,
 }: Outcomes & {
+  last: TargetWork["last"];
   target: string;
 }) {
   const [open, setOpen] = useState(false);
-  if (!failure && !result) return null;
-  const text = failure
+  if (!failure && !result && !last) return null;
+  const own = failure
     ? `${failure.code}: ${failure.message}${failure.hint ? ` ${failure.hint}` : ""}`
-    : `${result?.outcome}${result?.warnings?.length ? `. ${result.warnings.join(" ")}` : ""}`;
+    : result
+      ? `${result.outcome}${result.warnings?.length ? `. ${result.warnings.join(" ")}` : ""}`
+      : undefined;
+  const text = [
+    ...(own ? [`${OWN_COMMAND}: ${own}`] : []),
+    ...(last ? [lastActionText(last)] : []),
+  ].join(" ");
+  const bad = failure !== undefined || last !== undefined;
   // A tooltip alone never reaches a phone, so a tap opens the whole outcome.
   return (
     <>
       <button
         type="button"
         title={text}
-        aria-label={`Last action on ${target}: ${text}`}
+        aria-label={`${target}: ${text}`}
         onClick={() => setOpen(true)}
         className={cn(
           "inline-flex size-7 items-center justify-center rounded-md hover:bg-muted",
-          failure ? "text-bad" : "text-good",
+          bad ? "text-bad" : "text-good",
         )}
       >
-        {failure ? (
+        {bad ? (
           <CircleAlert className="size-4" aria-hidden />
         ) : (
           <CircleCheck className="size-4" aria-hidden />
@@ -425,13 +436,13 @@ function OutcomeMark({
       <AlertDialog open={open} onOpenChange={setOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Last action on {target}</AlertDialogTitle>
+            <AlertDialogTitle>Outcomes on {target}</AlertDialogTitle>
             <AlertDialogDescription className="sr-only">
               {text}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <Failure failure={failure} />
-          <OperationNotice result={result} />
+          {ownOutcome(failure, result)}
+          {last ? lastAction(last) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>

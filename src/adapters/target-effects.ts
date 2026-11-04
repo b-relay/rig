@@ -42,7 +42,7 @@ import { liveUpstreams, parseOwnedSites } from "../providers/route-file";
 import { routeUpstream, upstreamPort } from "../domain/route-upstream";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
-import { declaredPorts, plannedSites } from "../runtime/ports";
+import { declaredPorts, plannedRoutes, plannedSites } from "../runtime/ports";
 import {
   ownedListeners,
   preparationProcessKey,
@@ -397,15 +397,21 @@ export function createTargetEffects(
       target,
     );
   /** An ongoing check, as status and the health monitor run it: the start gate's check, except that a check of the Service's
-   * ports passes only on listeners its own running process owns, so a program that took a port it left never answers
-   * for it. */
+   * ports, and any check of a routed Service, passes only on listeners its own running process owns, so a program that took
+   * a port it left never answers for it. */
   const ongoingHealth = async (
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
   ): Promise<HealthObservation> => {
-    if (component.health) return await health(component, target, signal);
-    const reached = await connections(component, signal);
+    const routed = plannedRoutes(target.plan).some(
+      (route) => route.service === component.name,
+    );
+    if (component.health && !routed)
+      return await health(component, target, signal);
+    const reached = component.health
+      ? await probe(component, target, signal)
+      : await connections(component, signal);
     const owned = reached.ready
       ? await ownedListeners(
           component,

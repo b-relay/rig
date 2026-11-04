@@ -191,6 +191,9 @@ export interface RuntimeFiles {
     requests: readonly { name: string; preferred?: number }[];
     occupied: ReadonlyMap<number, { target: string; project: string }>;
     policy: "configured" | "dynamic";
+    /** Ports the Target's own running Services hold, about to be freed by the restart this plan is for: a preference for
+     * one is granted without a probe, which could only fail. */
+    held?: ReadonlySet<number>;
   }): Promise<Record<string, number>>;
   /** The newest `lines` entries `filter` keeps, or with `after` the next ones past that cursor; see `readTargetLogs`. */
   logs(

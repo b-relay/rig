@@ -15,10 +15,13 @@ import { hostTimeZone } from "../domain/cron";
 import { jobReports } from "./job-status";
 import { asRigError } from "../domain/errors";
 import { rigCommand } from "../domain/rig-command";
+import type { ProcessObservation } from "../providers/contracts";
+import type { ObservationResult } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
 import {
+  OBSERVATION_EXPIRED,
   hostnameFields,
-  observeTargets,
+  observeTargetsAndBuilds,
   type ComponentReport,
   type TargetReport,
 } from "./status";
@@ -79,6 +82,11 @@ export async function projectStatus(
     stopping?(targetId: string): boolean;
     /** The Services of this Target an Operation is waiting on right now, with when each is killed. */
     serviceStops?(targetId: string): ServiceStopView[];
+    /** What runs of a build a daemon that died left for this Target; `stopped` for one this daemon runs itself. */
+    leftoverBuild?(
+      target: TargetRecord,
+      signal: AbortSignal,
+    ): Promise<ProcessObservation>;
   },
 ): Promise<ProjectStatusReport> {
   let configWarning: string | undefined;
@@ -98,12 +106,13 @@ export async function projectStatus(
   const selects = targetSelection(command);
   const selected = targets.filter(selects);
   const warnings: string[] = [];
-  const reports: TargetReport[] = await observeTargets(
+  const { reports, builds } = await observeTargetsAndBuilds(
     selected,
     deps.observations,
     deps.observationBudgetMs,
     deps.observationDeadline,
     deps.healthResults,
+    deps.leftoverBuild,
   );
   if (configWarning) warnings.push(configWarning);
   const clock = { timeZone: deps.timeZone ?? hostTimeZone };
@@ -200,8 +209,42 @@ export async function projectStatus(
       warnings.push(
         `${target.name}: Preview destruction is incomplete; its stopped inventory is retained. Run ${rigCommand("down", { target }, "--destroy")} to finish cleanup.`,
       );
+  warnings.push(...markLeftoverBuilds(selected, builds, reports));
   warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
   return { project: project.name, targets: reports, warnings };
+}
+/** A build a daemon that died left running is in no Service's state, so only its recorded process group shows it. Only one
+ * seen running is said to run; one that could not be observed is said to be uncertain. `builds` is by `targets`' order. */
+function markLeftoverBuilds(
+  targets: readonly TargetRecord[],
+  builds: readonly ObservationResult<ProcessObservation>[],
+  reports: TargetReport[],
+): string[] {
+  return targets.flatMap((target, index) => {
+    const build = builds[index];
+    if (!build) return [];
+    if (build.kind === "completed" && build.value.state === "stopped")
+      return [];
+    const stop = `rigd stops one as it starts and before the next build; ${rigCommand("down", { target })} stops it now, with the Target's Services.`;
+    if (build.kind !== "completed" || build.value.state !== "running") {
+      const why =
+        build.kind === "completed"
+          ? build.value.reason
+          : build.kind === "expired"
+            ? OBSERVATION_EXPIRED
+            : "Observation failed.";
+      return [
+        `${target.name}: whether a build an earlier rigd started is still running could not be established${why ? ` (${why})` : ""}. ${stop}`,
+      ];
+    }
+    const report = reports.find(
+      (r) => r.kind === target.kind && r.name === target.name,
+    );
+    if (report) report.leftoverBuild = true;
+    return [
+      `${target.name}: a build an earlier rigd started is still running${build.value.pid ? ` (process group ${build.value.pid})` : ""}. ${stop}`,
+    ];
+  });
 }
 /** A route the host Caddy never loads is shown, but never presented as served. */
 async function markUnpublishedRoutes(

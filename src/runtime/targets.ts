@@ -158,6 +158,8 @@ export async function planTarget(
     existing?: TargetRecord;
     /** The Commit a deploy resolved; its revision is prepared from exactly this, not from the Branch again. */
     commit?: string;
+    /** `existing` still runs and is about to stop, so the ports its plan records are free for this plan. */
+    replacesRunning?: boolean;
   },
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
@@ -254,6 +256,9 @@ export async function planTarget(
         ...portOwners((await deps.store.read()).targets, id),
       ]),
       policy: kind === "preview" ? "dynamic" : "configured",
+      ...(input.replacesRunning
+        ? { held: new Set(Object.values(recorded)) }
+        : {}),
     });
   const selected = deps.ports
     ? await deps.ports.reserve({ target: name, project: project.name }, choose)

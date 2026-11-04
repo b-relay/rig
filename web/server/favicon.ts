@@ -16,6 +16,11 @@ export interface IconSource {
   host: string;
 }
 const MAX_BYTES = 100_000;
+/** How many icon answers, found or not, are kept at once, and the bytes of their icons together: a hundred of the largest. */
+const KEPT_ICONS = 256;
+const KEPT_ICON_BYTES = 10_000_000;
+/** The Project names whose icon source is kept at once. */
+const KEPT_ICON_SOURCES = 256;
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
 /** Pure: the favicon source of a stable Target: the port its route map sends `/` to (or, for an
@@ -106,18 +111,71 @@ async function boundedBody(
   }
   return body;
 }
+/** Answers kept for `ttlMs`, within `maxEntries` and `maxBytes` as `bytes` measures them; past a budget the oldest answer
+ * goes first. Each use lets go of what no longer belongs, so an answer nobody asks for again goes without a sweep, and an
+ * idle dashboard does nothing. */
+function keptAnswers<Answer>({
+  now,
+  ttlMs,
+  maxEntries,
+  maxBytes = Infinity,
+  bytes = () => 0,
+}: {
+  now(): number;
+  ttlMs: number;
+  maxEntries: number;
+  maxBytes?: number;
+  bytes?(answer: Answer): number;
+}) {
+  const kept = new Map<string, { at: number; answer: Answer }>();
+  let held = 0;
+  const drop = (key: string, answer: Answer) => {
+    kept.delete(key);
+    held -= bytes(answer);
+  };
+  const evict = () => {
+    for (const [key, { at, answer }] of kept)
+      if (now() - at >= ttlMs || kept.size > maxEntries || held > maxBytes)
+        drop(key, answer);
+  };
+  return {
+    /** The answer for `key` while it is fresh, otherwise what `read` answers now, kept. */
+    async answer(key: string, read: () => Promise<Answer>): Promise<Answer> {
+      evict();
+      const hit = kept.get(key);
+      if (hit) return hit.answer;
+      const answer = await read();
+      // A read for the same key that finished meanwhile is replaced, its bytes with it.
+      const earlier = kept.get(key);
+      if (earlier) drop(key, earlier.answer);
+      kept.set(key, { at: now(), answer });
+      held += bytes(answer);
+      evict();
+      return answer;
+    },
+    /** What is held now. */
+    retained: () => ({ entries: kept.size, bytes: held }),
+  };
+}
 /** The favicons of the Projects' stable sites, read by the server from each site's loopback
  * upstream so the page's Content-Security-Policy keeps images to its own origin. A source that is
  * not loopback is refused before anything is sent; redirects are not followed; the bytes decide
  * the type. Each answer (an icon or none) is kept for `ttlMs`, so a Service that is down costs one
- * slow read per window, not one per page. */
+ * slow read per window, not one per page, and all of them together stay within KEPT_ICONS and
+ * KEPT_ICON_BYTES however many sources come and go. */
 export function faviconCache({
   fetch,
   now,
   ttlMs = 10 * 60_000,
   timeoutMs = 2_000,
 }: FaviconDependencies) {
-  const kept = new Map<string, { at: number; icon: Icon | undefined }>();
+  const kept = keptAnswers<Icon | undefined>({
+    now,
+    ttlMs,
+    maxEntries: KEPT_ICONS,
+    maxBytes: KEPT_ICON_BYTES,
+    bytes: (icon) => icon?.body.byteLength ?? 0,
+  });
   async function read({ url, host }: IconSource): Promise<Icon | undefined> {
     if (!isLoopbackUrl(url)) return undefined;
     try {
@@ -138,14 +196,32 @@ export function faviconCache({
   }
   return {
     /** The icon at `source`, from the cache while it is fresh. */
-    async get(source: IconSource): Promise<Icon | undefined> {
-      const key = `${source.host} ${source.url}`;
-      const hit = kept.get(key);
-      if (hit && now() - hit.at < ttlMs) return hit.icon;
-      const icon = await read(source);
-      kept.set(key, { at: now(), icon });
-      return icon;
-    },
+    get: (source: IconSource): Promise<Icon | undefined> =>
+      kept.answer(`${source.host} ${source.url}`, () => read(source)),
+    retained: kept.retained,
+  };
+}
+/** Each Project's icon source, from `read` (rigd's status), kept for `ttlMs` so a page of icons is not one status read each.
+ * A name with no Project is kept like any other, so one unavailable Project costs one read per window, and the names kept
+ * stay within KEPT_ICON_SOURCES however many are asked for. */
+export function iconSourceCache({
+  read,
+  now,
+  ttlMs = 60_000,
+}: {
+  read(project: string): Promise<IconSource | undefined>;
+  now(): number;
+  ttlMs?: number;
+}) {
+  const kept = keptAnswers<IconSource | undefined>({
+    now,
+    ttlMs,
+    maxEntries: KEPT_ICON_SOURCES,
+  });
+  return {
+    get: (project: string): Promise<IconSource | undefined> =>
+      kept.answer(project, () => read(project)),
+    retained: kept.retained,
   };
 }
 export interface ProjectIconDependencies {

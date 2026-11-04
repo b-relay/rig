@@ -285,6 +285,10 @@ serving daemon as above. The latest release is the one GitHub's latest-release
 page names, and its script must name the same release. Like the install script,
 it leaves alone a `rig` or `rigd` that a Rig Project's Target published.
 
+Rolling back to 1.0.3 or earlier gives up the checkout a published source-file
+Tool still runs from after `rig deploy --no-up`: those releases do not keep it,
+so that Tool fails with `Module not found` until its Target's next `rig up`.
+
 The release installed is the one the Rig root's own `rigd` reports, and it is
 complete only with `rig` of that release, its dashboard as released, and `rigd`
 installed and serving it. The install script writes the dashboard's file list,

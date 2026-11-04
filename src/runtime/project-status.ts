@@ -27,6 +27,8 @@ import {
 } from "./status";
 import { roleHostname, roleServiceDomains } from "../config/hostnames";
 import { previewName, selectTarget } from "./targets";
+import { registrationRefusals } from "./registration";
+import { targetRefusals, unrecordedRefusals } from "./target-refusals";
 import {
   DEFAULT_JOB_TARGETS,
   PREVIEW_SELECTOR,
@@ -57,7 +59,7 @@ function targetSelection(
 }
 /** Adds configured-only capabilities without interpreting configuration as runtime evidence. */
 export async function projectStatus(
-  project: Pick<ProjectRecord, "name" | "repoPath">,
+  project: Pick<ProjectRecord, "id" | "name" | "repoPath">,
   targets: readonly TargetRecord[],
   command: StatusSelection,
   deps: Pick<
@@ -78,6 +80,8 @@ export async function projectStatus(
     documents: Pick<RuntimeDependencies["documents"], "read">;
     /** Whether the daemon is executing this operation right now. */
     inProgress(operationId: string): boolean;
+    /** Whether an Operation holds or waits for any Target of the Project right now. */
+    projectBusy?(): boolean;
     /** Whether an Operation is waiting for this Target's Services to exit right now. */
     stopping?(targetId: string): boolean;
     /** The Services of this Target an Operation is waiting on right now, with when each is killed. */
@@ -143,6 +147,7 @@ export async function projectStatus(
           ...(configured.hostnames.length
             ? { hostnames: configured.hostnames }
             : {}),
+          refusals: unrecordedRefusals(role, project.name),
           components: definitions,
           ...(configured.jobs.length ? { jobs: configured.jobs } : {}),
         });
@@ -211,7 +216,34 @@ export async function projectStatus(
       );
   warnings.push(...markLeftoverBuilds(selected, builds, reports));
   warnings.push(...(await markUnpublishedRoutes(reports, deps.inspectProxy)));
-  return { project: project.name, targets: reports, warnings };
+  for (const target of selected) {
+    const refusals = targetRefusals(
+      target,
+      document?.config,
+      transitionInProgress(target, deps.inProgress),
+    );
+    const report = reports.find(
+      (r) => r.kind === target.kind && r.name === target.name,
+    );
+    if (report && Object.keys(refusals).length) report.refusals = refusals;
+  }
+  const refusals =
+    selected.length === targets.length
+      ? registrationRefusals(
+          project,
+          targets,
+          deps.jobRecords,
+          reports,
+          deps.projectBusy?.() ?? false,
+        )
+      : undefined;
+  return {
+    project: project.name,
+    projectId: project.id,
+    targets: reports,
+    ...(refusals ? { refusals } : {}),
+    warnings,
+  };
 }
 /** A build a daemon that died left running is in no Service's state, so only its recorded process group shows it. Only one
  * seen running is said to run; one that could not be observed is said to be uncertain. `builds` is by `targets`' order. */

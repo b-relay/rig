@@ -13,12 +13,23 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { servesHost } from "@/lib/present";
-import { targetHostnames, targetHref, targetSelector } from "@/lib/target";
-import { targetVerbs, type TargetVerb } from "@/lib/target-verbs";
+import { refusalText, servesHost } from "@/lib/present";
+import {
+  projectHref,
+  targetHostnames,
+  targetHref,
+  targetSelector,
+} from "@/lib/target";
+import {
+  lastActionText,
+  recordedFailure,
+  type TargetWork,
+} from "@/lib/target-work";
+import { targetVerbs, verbRefusal, type TargetVerb } from "@/lib/target-verbs";
+import type { Failure as FailureShape } from "@/lib/outcome";
 import type { OperationResult, TargetReport } from "@/lib/types";
 import { Failure, OperationNotice } from "./bits";
-import { useRun, type Run } from "./operations";
+import { loadFresh, useRun } from "./operations";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -57,29 +68,45 @@ const ICON = {
 };
 type Shown = Pick<
   TargetReport,
-  "name" | "kind" | "route" | "hostnames" | "branch" | "state"
+  "name" | "kind" | "route" | "hostnames" | "branch" | "state" | "refusals"
 >;
 /** Start, Restart, Stop, Deploy latest and, for a Preview, Destroy. `menu` puts them all behind one
  * button; `card` adds a Start button beside it while the Target is not running, for the matrix's
  * Target cards; `buttons` shows the ones the Target's state calls for as buttons with the rest in a
- * menu, for headers. An action that would cut this very page off,
+ * menu, for headers. One rigd refuses now is disabled and says why; all wait while rigd works on the
+ * Target, whoever asked. An action that would cut this very page off,
  * deploy, or destroy data is confirmed first; the outcome shows beside the controls, or beneath
- * them when `stacked`. */
+ * them when `stacked`. A destroyed Preview's page is gone, so its outcome shows on the Project's. */
 export function TargetActions({
   project,
   target,
+  work,
   layout = "menu",
   stacked = false,
   compact = false,
 }: {
   project: string;
   target: Shown;
+  /** What rigd is doing to this Target, whoever asked, and how its last action ended, so neither is lost to a reload. */
+  work?: TargetWork;
   layout?: "menu" | "card" | "buttons";
   stacked?: boolean;
   /** Icon buttons without their words, for a narrow card. */
   compact?: boolean;
 }) {
-  const act = useRun();
+  // A destroyed Preview's page has nothing to refresh to.
+  const act = useRun({
+    refresh: (command, ok) => command.action !== "destroy" || !ok,
+  });
+  const running = work?.running;
+  const busy = act.busy || running !== undefined;
+  const workingLabel = running
+    ? `${running.action} is running (${running.phase})`
+    : "Working";
+  // This page's own outcome says more; what Activity recorded stands in once a reload lost it.
+  const last =
+    act.busy || act.failure || act.result || running ? undefined : work?.last;
+  const failure = act.failure ?? (last && recordedFailure(last));
   // The host is only known in the browser; until hydration nothing serves this page.
   const [host, setHost] = useState("");
   useEffect(() => setHost(window.location.host), []);
@@ -92,19 +119,26 @@ export function TargetActions({
   const [asked, setAsked] = useState<TargetVerb>("down");
   const verbs = targetVerbs(target);
   const send = (verb: TargetVerb) =>
-    void act.run(
-      verb === "deploy"
-        ? {
-            action: "deploy",
-            project,
-            ...targetSelector(target),
-            // A Preview is deployed again from its own Branch; the stable Target from the Production Branch.
-            ...(target.kind === "preview" && target.branch
-              ? { branch: target.branch }
-              : {}),
-          }
-        : { action: verb, project, ...targetSelector(target) },
-    );
+    void act
+      .run(
+        verb === "deploy"
+          ? {
+              action: "deploy",
+              project,
+              ...targetSelector(target),
+              // A Preview is deployed again from its own Branch; the stable Target from the Production Branch.
+              ...(target.kind === "preview" && target.branch
+                ? { branch: target.branch }
+                : {}),
+            }
+          : { action: verb, project, ...targetSelector(target) },
+      )
+      .then((result) => {
+        if (verb === "destroy" && result)
+          loadFresh(
+            `${projectHref(project)}?operation=${encodeURIComponent(result.operationId)}`,
+          );
+      });
   const choose = (verb: TargetVerb) => {
     const risky =
       verb === "destroy" ||
@@ -125,8 +159,9 @@ export function TargetActions({
           size="icon-sm"
           disabled={act.busy}
           aria-label={`Actions for ${target.name}`}
+          title={running ? workingLabel : undefined}
         >
-          {act.busy && layout !== "buttons" ? (
+          {busy && layout !== "buttons" ? (
             <span
               aria-hidden
               className="busy-dot size-2 rounded-full bg-busy"
@@ -141,9 +176,22 @@ export function TargetActions({
           .filter((verb) => verb !== "destroy")
           .map((verb) => {
             const Icon = ICON[verb];
+            const refusal = verbRefusal(target, verb);
             return (
-              <DropdownMenuItem key={verb} onSelect={() => choose(verb)}>
-                <Icon /> {LABEL[verb]}
+              <DropdownMenuItem
+                key={verb}
+                disabled={busy || refusal !== undefined}
+                {...(refusal ? { title: refusalText(refusal) } : {})}
+                onSelect={() => choose(verb)}
+              >
+                <Icon />
+                <span className="flex max-w-56 flex-col">
+                  {LABEL[verb]}
+                  {/* A tooltip never reaches a phone, and a disabled item takes no hover. */}
+                  {refusal ? (
+                    <span className="text-xs">{refusal.message}</span>
+                  ) : null}
+                </span>
               </DropdownMenuItem>
             );
           })}
@@ -160,6 +208,7 @@ export function TargetActions({
             <DropdownMenuSeparator />
             <DropdownMenuItem
               variant="destructive"
+              disabled={busy}
               onSelect={() => choose("destroy")}
             >
               <Trash2 /> Destroy
@@ -178,18 +227,22 @@ export function TargetActions({
       }
     >
       {stacked ? null : layout === "card" ? (
-        <OutcomeMark act={act} target={target.name} />
+        <OutcomeMark
+          failure={failure}
+          result={act.result}
+          target={target.name}
+        />
       ) : (
-        <Outcome act={act} />
+        <Outcome failure={failure} result={act.result} />
       )}
       <div className="flex items-center gap-1">
         {layout === "card" && verbs.primary.includes("up") ? (
           <Button
             variant="outline"
             size="xs"
-            disabled={act.busy}
+            disabled={busy || verbRefusal(target, "up") !== undefined}
             onClick={() => choose("up")}
-            title={`Start ${target.name}`}
+            title={refusalTitle(target, "up") ?? `Start ${target.name}`}
             className="h-7 px-2"
           >
             <Play className="size-3" />
@@ -205,9 +258,12 @@ export function TargetActions({
                   key={verb}
                   variant="outline"
                   size="sm"
-                  disabled={act.busy}
+                  disabled={busy || verbRefusal(target, verb) !== undefined}
                   onClick={() => choose(verb)}
-                  title={`${LABEL[verb]} ${target.name}`}
+                  title={
+                    refusalTitle(target, verb) ??
+                    `${LABEL[verb]} ${target.name}`
+                  }
                   className="h-7 px-2 text-xs"
                 >
                   <Icon className="size-3.5" />
@@ -226,9 +282,10 @@ export function TargetActions({
               );
             })
           : null}
-        {layout === "buttons" && act.busy ? (
+        {layout === "buttons" && busy ? (
           <span
-            aria-label="Working"
+            aria-label={workingLabel}
+            title={workingLabel}
             className="busy-dot mx-1 size-2 rounded-full bg-busy"
           />
         ) : null}
@@ -238,6 +295,20 @@ export function TargetActions({
         <>
           <Failure failure={act.failure} />
           <OperationNotice result={act.result} />
+          {last ? (
+            <a
+              href={`/activity?operation=${encodeURIComponent(last.id)}`}
+              title={last.occurredAt}
+              className={cn(
+                "text-xs no-underline hover:underline",
+                last.outcome === "failed"
+                  ? "text-bad"
+                  : "text-muted-foreground",
+              )}
+            >
+              {lastActionText(last)}
+            </a>
+          ) : null}
         </>
       ) : null}
       <AlertDialog
@@ -287,18 +358,20 @@ export function TargetActions({
     </div>
   );
 }
+interface Outcomes {
+  failure: FailureShape | undefined;
+  result: OperationResult | undefined;
+}
 /** The last outcome as one small mark, for a card with no room for words; the tooltip and the
  * Operation link tell the rest. */
 function OutcomeMark({
-  act,
+  failure,
+  result,
   target,
-}: {
-  act: Run<OperationResult>;
+}: Outcomes & {
   target: string;
 }) {
   const [open, setOpen] = useState(false);
-  const failure = act.failure;
-  const result = act.result;
   if (!failure && !result) return null;
   const text = failure
     ? `${failure.code}: ${failure.message}${failure.hint ? ` ${failure.hint}` : ""}`
@@ -341,33 +414,36 @@ function OutcomeMark({
   );
 }
 /** The last outcome in a few words; the Operation link tells the rest. */
-function Outcome({ act }: { act: Run<OperationResult> }) {
-  if (act.failure)
+function Outcome({ failure, result }: Outcomes) {
+  if (failure)
     return (
       <a
         href={
-          act.failure.operationId
-            ? `/activity?operation=${encodeURIComponent(act.failure.operationId)}`
+          failure.operationId
+            ? `/activity?operation=${encodeURIComponent(failure.operationId)}`
             : "/activity"
         }
         className="max-w-56 truncate text-xs text-bad no-underline hover:underline"
-        title={[act.failure.message, act.failure.hint]
-          .filter(Boolean)
-          .join(" ")}
+        title={[failure.message, failure.hint].filter(Boolean).join(" ")}
       >
-        {act.failure.code}: {act.failure.message}
+        {failure.code}: {failure.message}
       </a>
     );
-  if (act.result)
+  if (result)
     return (
       <a
-        href={`/activity?operation=${encodeURIComponent(act.result.operationId)}`}
+        href={`/activity?operation=${encodeURIComponent(result.operationId)}`}
         className="text-xs text-good no-underline hover:underline"
-        title={act.result.warnings?.join(" ")}
+        title={result.warnings?.join(" ")}
       >
-        {act.result.outcome}
-        {act.result.warnings?.length ? " ⚠" : ""}
+        {result.outcome}
+        {result.warnings?.length ? " ⚠" : ""}
       </a>
     );
   return null;
+}
+/** A verb's tooltip when rigd refuses it now. */
+function refusalTitle(target: Shown, verb: TargetVerb): string | undefined {
+  const refusal = verbRefusal(target, verb);
+  return refusal && refusalText(refusal);
 }

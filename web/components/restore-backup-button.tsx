@@ -39,14 +39,14 @@ export function RestoreBackupButton({
   backup,
 }: {
   project: string;
-  target: Pick<TargetReport, "kind" | "name">;
+  target: Pick<TargetReport, "kind" | "name" | "refusals">;
   job: Pick<JobReport, "name" | "state" | "backup" | "removed">;
   backup: BackupView;
 }) {
   const act = useRun();
   const [typed, setTyped] = useState("");
   const field = useId();
-  const blocked = restoreBlocked(job, backup);
+  const blocked = restoreBlocked(job, backup, target);
   return (
     <div className="flex shrink-0 flex-col items-end gap-1">
       <AlertDialog onOpenChange={(open) => (open ? setTyped("") : undefined)}>

@@ -31,6 +31,7 @@ export function ProjectMonitor({
   initialFailure,
   range,
   target,
+  targetId,
   inventory,
   operations,
   now,
@@ -44,8 +45,14 @@ export function ProjectMonitor({
   range: UsageRange;
   /** The Target shown, by name, or `all`. */
   target: string;
+  /** The id of the Target shown, when it exists now. */
+  targetId?: string;
   /** What gets a card even before it is sampled: the Target's Services and Jobs, or with `all` every Target. */
-  inventory: readonly { readonly name: string; readonly kind?: string }[];
+  inventory: readonly {
+    readonly name: string;
+    readonly kind?: string;
+    readonly targetId?: string;
+  }[];
   operations: readonly Operation[];
   /** The page's render instant, for Activity's "ago". */
   now: number;
@@ -65,6 +72,7 @@ export function ProjectMonitor({
           (each) =>
             each.series.scope === "target" && each.series.target === target,
         ),
+    target === "all" ? undefined : targetId,
   );
   const sampled =
     target === "all"

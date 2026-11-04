@@ -231,6 +231,7 @@ export async function observeTargetsAndBuilds(
       };
     });
     return {
+      id: target.id,
       name: target.name,
       kind: target.kind,
       branch: target.branch,

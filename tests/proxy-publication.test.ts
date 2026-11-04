@@ -208,7 +208,7 @@ test("rig status marks a route unpublished when the host Caddy does not load it"
   };
   const status = (state: "imported" | "unpublished") =>
     projectStatus(
-      { name: "app", repoPath: "/repo" },
+      { id: "project-id", name: "app", repoPath: "/repo" },
       [target],
       { target: "stable" },
       {

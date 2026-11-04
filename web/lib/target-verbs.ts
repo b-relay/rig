@@ -1,8 +1,19 @@
-import type { TargetReport } from "./types";
+import type { Refusal, TargetReport } from "./types";
 
 /** What the dashboard can ask rigd to do to one Target. `deploy` deploys the head Commit again:
  * the Production Branch's for the stable Target, the Preview's own Branch for a Preview. */
 export type TargetVerb = "up" | "restart" | "down" | "deploy" | "destroy";
+
+/** Pure: why rigd refuses `verb` on `target` now, as status reports it; stop and destroy are never refused for what the
+ * Target is, so a config change never strands a running process. */
+export function verbRefusal(
+  target: Pick<TargetReport, "refusals">,
+  verb: TargetVerb,
+): Refusal | undefined {
+  return verb === "down" || verb === "destroy"
+    ? undefined
+    : target.refusals?.[verb];
+}
 
 /** Pure: the actions a Target offers. `all` is every one that applies to its role; `primary` the
  * few its state calls for, shown as buttons: a stopped Target is started, a running one restarted or

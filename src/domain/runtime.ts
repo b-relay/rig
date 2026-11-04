@@ -211,6 +211,9 @@ export interface DeploymentRecord {
   project: string;
   /** The Target's name: `stable` or the Preview's name. */
   target: string;
+  /** The Target's id, which a Preview made again under the same name does not share; absent on a deploy rigd recorded
+   * before it kept this, and on one that failed before its Target existed. */
+  targetId?: string;
   kind: "stable" | "preview";
   branch?: string;
   /** The Commit deployed, or the one asked for when the deploy failed after resolving it. */

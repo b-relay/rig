@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 /** A client component driven without a DOM: it is called as a function with React's hooks answered here, so a test can
  * run its handlers and render it again with new props, as a refresh does, and read what it would show. Child components
  * are not rendered; their elements and props are what the test reads. State and effects persist between renders, as
- * they do for a mounted component; `router.refresh()` is recorded. */
+ * they do for a mounted component; `router.refresh()` and `router.push()` are recorded. */
 export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
   const states: unknown[] = [];
   const effectDeps: (readonly unknown[] | undefined)[] = [];
@@ -16,7 +16,11 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
   let props: P;
   let tree: ReactNode;
   const refreshes = { count: 0 };
-  const router = { refresh: () => void refreshes.count++ };
+  const pushes: string[] = [];
+  const router = {
+    refresh: () => void refreshes.count++,
+    push: (href: string) => void pushes.push(href),
+  };
   const dispatcher = {
     useState(initial: unknown) {
       const index = cursor++;
@@ -50,6 +54,11 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
       return context === (AppRouterContext as React.Context<unknown>)
         ? router
         : (context as unknown as { _currentValue: unknown })._currentValue;
+    },
+    useRef(initial: unknown) {
+      const index = cursor++;
+      if (!(index in states)) states[index] = { current: initial };
+      return states[index];
     },
     useMemo: (make: () => unknown) => make(),
     useCallback: (callback: unknown) => callback,
@@ -95,6 +104,7 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
     render,
     act,
     refreshes,
+    pushes,
     get tree() {
       return tree;
     },

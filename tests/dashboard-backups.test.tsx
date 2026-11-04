@@ -59,20 +59,37 @@ test("a card lists its own job's backups in its own Target, newest first as the 
 });
 
 test("Restore is offered only for a job with a restore command, while nothing of it runs, for a backup that is there", () => {
-  expect(restoreBlocked(job(), backup({}))).toBeUndefined();
+  expect(restoreBlocked(job(), backup({}), {})).toBeUndefined();
   expect(
     restoreBlocked(
       job({ backup: { keep: 3, restore: false, count: 1, bytes: 0 } }),
       backup({}),
+      {},
     ),
   ).toContain("no restore command");
-  expect(restoreBlocked(job({ state: "running" }), backup({}))).toContain(
+  expect(restoreBlocked(job({ state: "running" }), backup({}), {})).toContain(
     "never overlaps",
   );
-  expect(restoreBlocked(job(), backup({ missing: true }))).toContain("gone");
-  expect(restoreBlocked(job({ removed: true }), backup({}))).toContain(
+  expect(restoreBlocked(job(), backup({ missing: true }), {})).toContain(
+    "gone",
+  );
+  expect(restoreBlocked(job({ removed: true }), backup({}), {})).toContain(
     "no longer in rig.yaml",
   );
+});
+
+test("Restore says what rigd refuses of the Target, ahead of anything about the job", () => {
+  expect(
+    restoreBlocked(job({ removed: true }), backup({}), {
+      refusals: {
+        restore: {
+          code: "JOB_UNAVAILABLE",
+          message: "stable is stopped, so it runs no jobs.",
+          hint: "Run rig up stable first.",
+        },
+      },
+    }),
+  ).toBe("stable is stopped, so it runs no jobs. Run rig up stable first.");
 });
 
 test("the typed confirmation is the job's name exactly, and the restore sends rig backup restore's command", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   CircleAlert,
@@ -103,10 +103,20 @@ export function TargetActions({
   const workingLabel = running
     ? `${running.action} is running (${running.phase})`
     : "Working";
-  // This page's own outcome says more; what Activity recorded stands in once a reload lost it.
+  // What Activity's newest was when this page last sent a command: until that changes, nothing later has been recorded.
+  const latestWhenSent = useRef<string | undefined>(undefined);
+  const latest = work?.last?.id;
+  // This page's own outcome says more, for as long as it is the latest; one Activity records after it replaces it.
+  const ownIsLatest =
+    latest === undefined ||
+    latest === latestWhenSent.current ||
+    latest === act.operationId;
+  const ownFailure = ownIsLatest ? act.failure : undefined;
+  const ownResult = ownIsLatest ? act.result : undefined;
+  // What Activity recorded stands in once a reload lost this page's own, or something later replaced it.
   const last =
-    act.busy || act.failure || act.result || running ? undefined : work?.last;
-  const failure = act.failure ?? (last && recordedFailure(last));
+    act.busy || ownFailure || ownResult || running ? undefined : work?.last;
+  const failure = ownFailure ?? (last && recordedFailure(last));
   // The host is only known in the browser; until hydration nothing serves this page.
   const [host, setHost] = useState("");
   useEffect(() => setHost(window.location.host), []);
@@ -121,7 +131,8 @@ export function TargetActions({
   const refusedWords = [
     ...new Set(verbs.all.flatMap((verb) => refusalTitle(target, verb) ?? [])),
   ];
-  const send = (verb: TargetVerb) =>
+  const send = (verb: TargetVerb) => {
+    latestWhenSent.current = latest;
     void act
       .run(
         verb === "deploy"
@@ -142,6 +153,7 @@ export function TargetActions({
             `${projectHref(project)}?operation=${encodeURIComponent(result.operationId)}`,
           );
       });
+  };
   const choose = (verb: TargetVerb) => {
     const risky =
       verb === "destroy" ||
@@ -237,11 +249,11 @@ export function TargetActions({
       {stacked ? null : layout === "card" ? (
         <OutcomeMark
           failure={failure}
-          result={act.result}
+          result={ownResult}
           target={target.name}
         />
       ) : (
-        <Outcome failure={failure} result={act.result} />
+        <Outcome failure={failure} result={ownResult} />
       )}
       <div className="flex items-center gap-1">
         {layout === "card" && verbs.primary.includes("up") ? (
@@ -308,8 +320,8 @@ export function TargetActions({
           {refusedWords.map((text) => (
             <Warning key={text}>{text}</Warning>
           ))}
-          <Failure failure={act.failure} />
-          <OperationNotice result={act.result} />
+          <Failure failure={ownFailure} />
+          <OperationNotice result={ownResult} />
           {last ? (
             <a
               href={`/activity?operation=${encodeURIComponent(last.id)}`}

@@ -147,6 +147,8 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
 - **Settings**: Rename, Repoint and Forget, each disabled with the reason beneath
   it while `rigd` would refuse it (status's project `refusals`: which Targets
   run, or for Forget, which Previews remain); `rigd` decides again when asked.
+  While status cannot be read, what `rigd` would refuse is not known: the page
+  shows the failure and offers none of them until a read succeeds.
   Forgetting loads the overview afresh (`/?operation=`), so neither it, the
   sidebar nor Back shows the Project from the router's cache.
 - **Environment**: the Project's secrets (below), and on a Target, each

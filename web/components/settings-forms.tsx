@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { refusalText } from "@/lib/present";
+import type { Failure as FailureShape } from "@/lib/outcome";
 import type { ProjectStatusReport } from "@/lib/types";
 import { Failure, Field, OperationNotice, Section, Warning } from "./bits";
 import { Confirm } from "./confirm";
@@ -23,11 +24,14 @@ export function SettingsForms({
   project,
   repoPath,
   refusals,
+  statusFailure,
 }: {
   project: string;
   repoPath: string;
-  /** What rigd refuses of this Project's registration now; absent when none is, or when its status could not be read. */
+  /** What rigd refuses of this Project's registration now; absent when none is. */
   refusals?: ProjectStatusReport["refusals"];
+  /** Why its status could not be read, so what rigd would refuse is not known. Nothing is offered until a read succeeds. */
+  statusFailure?: FailureShape;
 }) {
   const router = useRouter();
   const rename = useRun({ refresh: onlyOnFailure });
@@ -35,8 +39,10 @@ export function SettingsForms({
   const forget = useRun({ refresh: onlyOnFailure });
   const [newName, setNewName] = useState("");
   const [newPath, setNewPath] = useState("");
+  const unknown = statusFailure !== undefined;
   return (
     <>
+      <Failure failure={statusFailure} />
       <Section
         title="Rename"
         description="Every Target must be stopped first. The operator env files move to the new name."
@@ -68,7 +74,7 @@ export function SettingsForms({
           <Button
             type="submit"
             variant="outline"
-            disabled={rename.busy || refusals?.rename !== undefined}
+            disabled={unknown || rename.busy || refusals?.rename !== undefined}
           >
             Rename
           </Button>
@@ -116,7 +122,9 @@ export function SettingsForms({
           <Button
             type="submit"
             variant="outline"
-            disabled={repoint.busy || refusals?.repoint !== undefined}
+            disabled={
+              unknown || repoint.busy || refusals?.repoint !== undefined
+            }
           >
             Repoint
           </Button>
@@ -147,7 +155,9 @@ export function SettingsForms({
           >
             <Button
               variant="destructive"
-              disabled={forget.busy || refusals?.forget !== undefined}
+              disabled={
+                unknown || forget.busy || refusals?.forget !== undefined
+              }
             >
               Forget Project
             </Button>

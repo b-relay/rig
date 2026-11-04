@@ -14,9 +14,11 @@ export default async function SettingsPage({
       <SettingsForms
         project={found.name}
         repoPath={found.repoPath}
-        {...(status.ok && status.value.refusals
-          ? { refusals: status.value.refusals }
-          : {})}
+        {...(!status.ok
+          ? { statusFailure: status.failure }
+          : status.value.refusals
+            ? { refusals: status.value.refusals }
+            : {})}
       />
     </div>
   );

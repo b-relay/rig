@@ -9,6 +9,8 @@ import { Confirm } from "../web/components/confirm";
 import { ProjectMonitor } from "../web/components/project-monitor";
 import { projectMonitor } from "../web/server/monitor";
 import { JobCards } from "../web/components/job-cards";
+import SettingsPage from "../web/app/projects/[name]/(sections)/settings/page";
+import DeploymentsPage from "../web/app/projects/[name]/(sections)/deployments/page";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -402,7 +404,7 @@ test("once everything is stopped Rename and Repoint open, and Forget still waits
   expect(button("Forget Project")?.props.disabled).toBe(true);
 });
 
-test("with nothing refused, or no status to tell, every registration control is enabled and rigd decides", () => {
+test("with nothing refused, every registration control is enabled and rigd decides", () => {
   const { button } = settings();
   for (const word of ["Rename", "Repoint", "Forget Project"])
     expect(button(word)?.props.disabled).toBe(false);
@@ -701,4 +703,189 @@ test("the last action is the last Activity recorded, even when the clock was set
   });
   expect(work.stable?.last?.id).toBe("later-success");
   expect(lastActionText(work.stable!.last!)).toBe("Last action: started");
+});
+
+const TIMEOUT = {
+  code: "DAEMON_TIMEOUT",
+  message: "The status read timed out.",
+  hint: "Retry the read.",
+};
+/** rigd for a Project's pages: `status` is what its status read answers, or throws. */
+const projectReads =
+  (status: () => unknown) =>
+  (command: RuntimeCommand): unknown => {
+    if (command.action === "list")
+      return {
+        projects: [
+          { id: "p", name: "demo", repoPath: "/repo", targetCount: 1 },
+        ],
+      };
+    if (command.action === "status") return status();
+    if (command.action === "deployments")
+      return {
+        project: "demo",
+        deployments: [
+          {
+            id: "op-a",
+            project: "demo",
+            target: "stable",
+            kind: "stable",
+            branch: "main",
+            commit: "a".repeat(40),
+            outcome: "deployed",
+            startedAt: "2026-10-10T10:00:00.000Z",
+            finishedAt: "2026-10-10T10:00:05.000Z",
+            durationMs: 5000,
+          },
+        ],
+      };
+    return {
+      project: "demo",
+      repoPath: "/repo",
+      productionBranch: "main",
+      currentBranch: "main",
+      on: { working: true, stable: true, preview: true },
+    };
+  };
+const timingOut = () => {
+  throw Object.assign(new Error(TIMEOUT.message), TIMEOUT);
+};
+const inRouter = (page: Parameters<typeof renderToStaticMarkup>[0]) =>
+  renderToStaticMarkup(
+    <AppRouterContext.Provider value={{ refresh() {}, push() {} } as never}>
+      {page}
+    </AppRouterContext.Provider>,
+  );
+const params = Promise.resolve({ name: "demo" });
+async function settingsPage(status: () => unknown) {
+  answer = projectReads(status);
+  const html = inRouter(await SettingsPage({ params }));
+  answer = undefined;
+  const disabled = Object.fromEntries(
+    [...html.matchAll(/<button\b([^>]*)>([^<]*)<\/button>/g)].map((match) => [
+      match[2],
+      /\sdisabled(?:=|\s|$)/.test(match[1]!),
+    ]),
+  );
+  return { text: readable(html), disabled };
+}
+
+test("a failed status leaves Settings unable to say what is allowed: it shows the failure and offers nothing, until a read succeeds", async () => {
+  const blocked = await settingsPage(() => ({
+    project: "demo",
+    targets: [],
+    refusals: { rename: ACTIVE, repoint: ACTIVE, forget: ACTIVE },
+  }));
+  expect(blocked.text).toContain(ACTIVE.message);
+  const failed = await settingsPage(timingOut);
+  expect(failed.text).toContain(TIMEOUT.message);
+  expect(failed.text).toContain(TIMEOUT.code);
+  for (const word of ["Rename", "Repoint", "Forget Project"])
+    expect(failed.disabled[word]).toBe(true);
+  // A status that succeeded with nothing refused is another thing: everything is open.
+  const open = await settingsPage(() => ({ project: "demo", targets: [] }));
+  expect(open.text).not.toContain(TIMEOUT.message);
+  for (const word of ["Rename", "Repoint", "Forget Project"])
+    expect(open.disabled[word]).toBe(false);
+});
+
+test("a failed status on the Deployments page says why no rollback is offered, and keeps the history", async () => {
+  answer = projectReads(timingOut);
+  const html = inRouter(await DeploymentsPage({ params }));
+  answer = undefined;
+  const text = readable(html);
+  expect(text).toContain(TIMEOUT.message);
+  expect(text).toContain("aaaaaaa");
+  expect(text).not.toContain("Roll back to this");
+});
+
+/** A Target's actions after this page's own Start ended as `reply` said, with what rigd's record held before it. */
+async function afterOwnStart(
+  reply: (command: RuntimeCommand) => unknown,
+  before?: ReturnType<typeof record>,
+) {
+  const props = {
+    project: "demo",
+    target: stable({ state: "stopped" }),
+    layout: "buttons",
+    stacked: true,
+    ...(before ? { work: { last: before } } : {}),
+  } as const;
+  let sent: string | undefined;
+  answer = (command) => {
+    sent = command.operationId;
+    return reply(command);
+  };
+  const { mounted, controls } = actions(props);
+  mounted.act(() =>
+    (
+      controls("Start").find((each) => each.props.onClick)!.props
+        .onClick as () => void
+    )(),
+  );
+  await until(() => mounted.refreshes.count > 0);
+  answer = undefined;
+  mounted.render();
+  const shown = (name: string, prop: string) =>
+    elements(mounted.tree).find(
+      (each) =>
+        (each.type as { name?: string }).name === name &&
+        each.props[prop] !== undefined,
+    )?.props[prop];
+  return {
+    id: sent!,
+    refreshed: (work: Props["work"]) =>
+      mounted.render({ ...props, ...(work ? { work } : {}) }),
+    notice: () => shown("OperationNotice", "result"),
+    failure: () => shown("Failure", "failure"),
+    text: () => textOf(mounted.tree),
+  };
+}
+const LATER = record({
+  id: "later-cli",
+  message: "BUILD_FAILED",
+  occurredAt: "2026-11-04T20:00:00.000Z",
+});
+
+test("a later action run elsewhere replaces this page's own outcome: running, then failed", async () => {
+  const f = await afterOwnStart(replying("started"));
+  expect(f.notice()).toMatchObject({ outcome: "started" });
+  f.refreshed({
+    running: { operationId: "later-cli", action: "restart", phase: "building" },
+  });
+  expect(f.text()).toContain("restart is running (building)");
+  f.refreshed({ last: LATER });
+  expect(f.notice()).toBeUndefined();
+  expect(f.text()).toContain("Last action: restart failed: BUILD_FAILED");
+});
+
+test("a later success elsewhere replaces this page's own failure, which is no longer the state of things", async () => {
+  const f = await afterOwnStart(
+    refusing("BUILD_FAILED", "The shared build failed.", "Read its logs."),
+  );
+  expect(f.failure()).toMatchObject({ code: "BUILD_FAILED" });
+  f.refreshed({ last: record({ id: "later-cli", outcome: "started" }) });
+  expect(f.failure()).toBeUndefined();
+  expect(f.text()).toContain("Last action: started");
+});
+
+test("this page's own outcome keeps its richer words until something later: before its refresh, and once Activity records it", async () => {
+  const before = record({ id: "earlier", message: "OLD_FAILURE" });
+  const own = await afterOwnStart(
+    refusing("BUILD_FAILED", "The shared build failed.", "Read its logs."),
+    before,
+  );
+  // rigd's record has not caught up: the earlier action must not take over from what just happened.
+  own.refreshed({ last: before });
+  expect(own.failure()).toMatchObject({
+    code: "BUILD_FAILED",
+    hint: "Read its logs.",
+  });
+  expect(own.text()).not.toContain("OLD_FAILURE");
+  // Activity keeps only the code; the page keeps the message and hint it was answered with.
+  own.refreshed({
+    last: record({ id: own.id, message: "BUILD_FAILED" }),
+  });
+  expect(own.failure()).toMatchObject({ hint: "Read its logs." });
+  expect(own.text()).not.toContain("Last action");
 });

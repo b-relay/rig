@@ -231,6 +231,37 @@ describe("favicon cache", () => {
     expect(calls).toHaveLength(151);
     expect(icons.retained().bytes).toBe(10_000_000);
   });
+  test("two reads of one source at once hold only the later icon's bytes, which it reuses and later lets go", async () => {
+    let now = 0;
+    const answers: ((response: Response) => void)[] = [];
+    const icons = faviconCache({
+      now: () => now,
+      ttlMs: 1000,
+      fetch: (url) =>
+        url === source(1).url
+          ? new Promise((resolve) => answers.push(resolve))
+          : Promise.resolve(new Response(null, { status: 404 })),
+    });
+    const sized = (size: number) => {
+      const body = new Uint8Array(size);
+      body.set(PNG);
+      return new Response(body);
+    };
+    const first = icons.get(source(1));
+    const second = icons.get(source(1));
+    expect(answers).toHaveLength(2);
+    answers[0]!(sized(1_000));
+    await first;
+    expect(icons.retained()).toEqual({ entries: 1, bytes: 1_000 });
+    answers[1]!(sized(3_000));
+    await second;
+    expect(icons.retained()).toEqual({ entries: 1, bytes: 3_000 });
+    expect((await icons.get(source(1)))?.body.byteLength).toBe(3_000);
+    expect(answers).toHaveLength(2);
+    now += 2000;
+    await icons.get(source(2));
+    expect(icons.retained()).toEqual({ entries: 1, bytes: 0 });
+  });
   test("holds a bounded number of answers when no source has an icon, and still reuses the recent ones", async () => {
     const { icons, calls } = setup({});
     for (let port = 1; port <= 1000; port++) await icons.get(source(port));

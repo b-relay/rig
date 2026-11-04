@@ -380,8 +380,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     unmarked.delete(target.id);
     return true;
   };
-  /** The routed Services of each Target meant to run that this daemon has seen running, or seen stopped and had withheld,
-   * since it started (see `superviseJob`), by Target id. */
+  /** The routed Services of each Target meant to run that this daemon saw stopped and had withheld, while their record keeps
+   * them stopped (see `withholdStoppedServices`), by Target id. */
   const routesChecked = new Map<string, Set<string>>();
   /** The Services of each Target whose state `routesChecked` could not establish at its last look, as last recorded. */
   const routesUnchecked = new Map<string, string>();
@@ -2601,9 +2601,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           unmarked.delete(targetId);
         }
         settled?.add(targetId);
-        // Once per daemon for each Service: one left stopped is not looked at again, so paths an earlier rigd left published
-        // to it go now rather than at the Target's next rig up. One whose state cannot be established yet, or a proxy that
-        // does not answer yet, is tried again by the next pass.
+        // A Service its record keeps stopped is not withheld by supervision, so paths an earlier rigd left published to it go
+        // here rather than at the Target's next rig up, once for each stop. One whose state cannot be established yet, or a
+        // proxy that does not answer yet, is tried again by the next pass.
         const checked = routesChecked.get(targetId) ?? new Set<string>();
         routesChecked.set(targetId, checked);
         await withholdStoppedServices(target, checked, {

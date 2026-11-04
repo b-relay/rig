@@ -583,11 +583,12 @@ export async function recordFailedStart(
   );
 }
 
-/** Withholds the paths of each Service of `target` seen stopped now, whatever its record says: nothing listens on its ports,
- * which any program may bind, and an earlier rigd may have settled it with its paths still published. Each routed Service
- * seen running or stopped, once any such paths are withheld, joins `checked` and is not looked at again. Resolves the
- * Services whose state could not be established (unknown, or no answer within the status budget), which decide nothing, for
- * a later call. Fails as withholding a route fails. */
+/** Withholds the paths of each Service of `target` seen stopped now whose record says supervision will not (see
+ * `recordKeepsStopped`): nothing listens on its ports, which any program may bind, and an earlier rigd may have settled it
+ * with its paths still published. A Service withheld so joins `checked` and is not looked at again until its record no
+ * longer keeps it stopped; one seen running is looked at again by the next call, so its later stop is seen too. Resolves
+ * the Services whose state could not be established (unknown, or no answer within the status budget), which decide nothing,
+ * for a later call. Fails as withholding a route fails. */
 export async function withholdStoppedServices(
   target: TargetRecord,
   checked: Set<string>,
@@ -597,12 +598,19 @@ export async function withholdStoppedServices(
   >,
 ): Promise<string[]> {
   const routed = target.plan.components.filter(
-    (component): component is ManagedComponent =>
-      component.kind === "managed" &&
-      !checked.has(component.name) &&
-      plannedRoutes(target.plan).some(
-        (route) => route.service === component.name,
-      ),
+    (component): component is ManagedComponent => {
+      if (
+        component.kind !== "managed" ||
+        !plannedRoutes(target.plan).some(
+          (route) => route.service === component.name,
+        )
+      )
+        return false;
+      if (recordKeepsStopped(currentRun(target, component.name)))
+        return !checked.has(component.name);
+      checked.delete(component.name);
+      return false;
+    },
   );
   if (!routed.length) return [];
   const observed = await boundedObservations(
@@ -622,10 +630,23 @@ export async function withholdStoppedServices(
     });
   const [running, stopped] = [seenAs("running"), seenAs("stopped")];
   if (stopped.length) await deps.lifecycle.withhold(target, stopped);
-  for (const service of [...running, ...stopped]) checked.add(service);
+  for (const service of stopped) checked.add(service);
   return routed
     .map((component) => component.name)
-    .filter((service) => !checked.has(service));
+    .filter(
+      (service) => !running.includes(service) && !stopped.includes(service),
+    );
+}
+
+/** Whether `run` makes a pass over its Service return before it withholds the paths of a Service it sees stopped: an outcome
+ * already recorded, an operator's stop, used-up attempts, or a health restart still to come. */
+function recordKeepsStopped(run: ServiceRun | undefined): boolean {
+  return (
+    run?.outcome !== undefined ||
+    run?.exhausted === true ||
+    run?.intent === "stopped" ||
+    run?.healthStretch?.pendingStart !== undefined
+  );
 }
 
 /** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled
@@ -745,7 +766,7 @@ async function superviseService(
   );
   if (observed?.kind === "rejected") throw observed.error;
   if (observed?.kind === "completed" && observed.value.state === "running")
-    await clearHostRestartOutcome(target, service, deps);
+    await clearRunningOutcome(target, service, deps);
   if (observed?.kind !== "completed" || observed.value.state !== "stopped")
     return undefined;
   const observation = observed.value;
@@ -897,16 +918,22 @@ async function superviseService(
   return undefined;
 }
 
-/** Drops the outcome a Host restart left on a Service seen running after all (its observation had not answered when the
- * restart was recorded), so its later exit is recorded and judged like any other. */
-async function clearHostRestartOutcome(
+/** Drops the outcome a Host restart or a failed start left on a Service seen running after all (its observation had not
+ * answered when that was recorded, or its start could not stop it), so its later exit is recorded and judged like any
+ * other. */
+async function clearRunningOutcome(
   target: TargetRecord,
   service: string,
   deps: Deps,
 ): Promise<void> {
   const run = currentRun(target, service);
-  if (run?.outcome?.kind !== "unknown" || !run.outcome.hostRestart) return;
-  const { outcome: _outcome, ...rest } = run;
+  const outcome = run?.outcome;
+  if (
+    outcome?.kind !== "start-failed" &&
+    (outcome?.kind !== "unknown" || !outcome.hostRestart)
+  )
+    return;
+  const { outcome: _outcome, ...rest } = run!;
   await saveRun(target, service, rest, deps);
 }
 

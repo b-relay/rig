@@ -654,6 +654,64 @@ test.each(["unknown", "unanswered"] as const)(
 );
 
 test.each(["unknown", "unanswered"] as const)(
+  "a stable Service %s when its start fails after a new login, then seen running, has a later exit handled as any crash",
+  async (first) => {
+    const { f, settle } = await failedStartWhileUncertain(first);
+    settle();
+    await f.supervise();
+    const target = await f.target("stable");
+    const key = `${target.id}:web`;
+    const run = target.services!.web!;
+    expect(run.outcome).toBeUndefined();
+
+    f.processes.set(key, {
+      state: "stopped",
+      incarnation: run.incarnation!,
+      exitCode: 1,
+    });
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([]);
+    expect((await f.target("stable")).services?.web?.outcome).toMatchObject({
+      kind: "exited",
+    });
+    // restart: always takes it from here, and its verified start publishes its paths again.
+    f.world.clock.ms += 1000;
+    await f.supervise();
+    expect(f.processes.get(key)?.state).toBe("running");
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+  },
+);
+
+test("a Service whose record keeps it stopped has its paths withheld once when it stops, however long it ran with that record", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  const { id } = await f.target("stable");
+  await f.store.update((state) => {
+    const stable = state.targets.find((target) => target.id === id)!;
+    stable.services!.web = {
+      ...stable.services!.web!,
+      outcome: {
+        kind: "activation-failed",
+        errorCode: "HEALTH_FAILED",
+        at: "2026-11-03T08:00:00.000Z",
+      },
+    };
+  });
+  f.withholds.count = 0;
+  f.reopen();
+  await f.reconcile();
+  await f.supervise();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  expect(f.withholds.count).toBe(0);
+
+  f.processes.delete(`${id}:web`);
+  await f.supervise();
+  await f.supervise();
+  expect(await f.livePorts("stable")).toEqual([]);
+  expect(f.withholds.count).toBe(1);
+});
+
+test.each(["unknown", "unanswered"] as const)(
   "a stable Service %s when its start fails after a new login, then seen running, keeps its paths",
   async (first) => {
     const { f, pids, settle } = await failedStartWhileUncertain(first);

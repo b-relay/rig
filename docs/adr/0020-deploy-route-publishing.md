@@ -4,9 +4,9 @@ status: proposed
 
 # A deploy keeps a Target's paths up while its Services restart
 
-One plan in two parts, for the owner to approve before any code: the **tail rule** (1.1.0), then **rollovers** (a later minor). Rollovers build on the tail rule and do not change it, so either can stop after its own slices.
+One plan in two parts, for the owner to approve before any code: the **tail rule** (1.1.0), then **rollovers** of a whole Target (a later minor). Rollovers fall back on the tail rule and do not change it, so the plan can stop after the tail rule's slices.
 
-The owner has decided: the tail rule on both sides, 1.1.0, and the name `servedAt`. "Tail" stays internal, out of user-facing text and CONTEXT.md. Rolling back on a tail Service's late failure is the working answer, and [Rollovers](#rollovers) says what they change about it.
+The owner has decided: the tail rule on both sides, 1.1.0, the name `servedAt`, and that a late failure rolls back. "Tail" stays internal, out of user-facing text and CONTEXT.md.
 
 ## Problem
 
@@ -23,7 +23,7 @@ The [#725](https://github.com/b-relay/rig/issues/725) incident on Melody, whose 
 
 Melody's `rig.yaml` already says what it expects: "`search` comes last on purpose ... so the site is up first". Rig does not do that.
 
-The 1.0.2 fix for #725 stops the false restart, so this is no longer every Melody deploy. It remains every real restart of `search`: a changed definition, `--force`, `rig restart`, a Mac restart. Fletcher is worse on the stop side. Its schedulers have `stop_timeout: 25m` and `2m` and no `watch`, so every deploy can answer 503 for up to 27 minutes while `web` runs.
+The 1.0.2 fix for #725 stops the false restart, so this is no longer every Melody deploy. It remains whenever `search` really restarts along with `api` or `web`: both changed in one deploy, `--force`, `rig restart`, a Mac restart. A change to `search` alone already costs no 503, because ADR 0016 keeps `api` and `web`. Fletcher is worse on the stop side. Its schedulers have `stop_timeout: 25m` and `2m` and no `watch`, so every deploy can answer 503 for up to 27 minutes while `web` runs.
 
 [#242](https://github.com/b-relay/rig/issues/242) does not require all-at-end. It requires that a path reach only a verified activation. That a failed start served nothing new is a consequence of the implementation, though the guide does promise it ("before anything is published").
 
@@ -117,114 +117,151 @@ Per-path would help one case the tail does not: a slow routed Service in the mid
 
 ## Rollovers
 
-A rollover starts a Service's new instance beside the old one, waits until it passes its start check, switches the route, then stops the old one. It is feasible for stateless routed Services and not for `db` or `search`. Only a deploy rolls over: `rig restart`, a health restart and a crash restart have no new plan and, for the last two, nothing to replace.
+A rollover deploy starts the whole new version beside the old one and switches routes once, only when every Service of the new version is healthy, including ones no route needs. Until then the old version keeps serving, untouched. If anything fails its check, the new copies stop and the route never changed. **A rollover deploy has no late failure and no second rollback step:** nothing new is served until everything is verified, and after the switch the deploy is decided. The owner chose this over rolling each Service on its own. Only a deploy can roll over: `rig restart`, a Mac restart and `rig up` have no new plan, or no old version to keep serving.
 
-### Which Services: a key, because inference is not safe
+1. Build and make the keep decision, as today. A Service this deploy leaves unchanged is kept and shared by both versions ([ADR 0016](0016-keep-unchanged-services.md)).
+2. Start a new copy of every changed Service, in plan order, each passing its start check and its listener check on its own port. The route does not change.
+3. Verify all of them again and install Tools.
+4. Publish once, which sets `servedAt`, and commit.
+5. After the drain, stop the old copies, dependents first, and any Service the new plan dropped.
 
-The `rig.yaml` files on this Mac show that `${rig.data}` does not decide it:
+After step 4 a new copy that exits is an ordinary crash, handled by restart policy. An old copy that will not stop is a warning on the deploy line and is retried, not a failed deploy. While the wait runs, the operation holds the Target, so the guard above watches old copies and kept Services: one that exits has its paths withheld and the wait goes on, so those paths answer 503 until the switch.
 
-| Service         | `${rig.data}`                                                         | What Rig cannot see                         |
-| --------------- | --------------------------------------------------------------------- | ------------------------------------------- |
-| melody `web`    | no                                                                    | Nothing known against it                    |
-| melody `api`    | yes: a cover cache, safe to share                                     | Runs migrations before it listens           |
-| pantry `server` | no                                                                    | Migrates on every start                     |
-| vitals `web`    | no, but reads the recorder's SQLite through another Service's setting | That it only reads                          |
-| podcast `web`   | yes: its database and uploads                                         | Migrates and imports content on every start |
-| share `server`  | yes: its store and audit log                                          | Whether two copies may share them           |
-| fletcher `web`  | yes: a SQLite index                                                   | Whether two copies may share it             |
+**Simpler** than rolling each Service: one flip, no tail inside the deploy, and no version mix or rollback after the switch. **Costlier:** every changed Service runs twice for as long as the new version takes to start, one Service after another.
 
-The check would block `api`, which is safe, and pass pantry's `server`, which migrates. A `command` is shell, so Rig cannot see an in-process schedule or a lock either. So a Service opts in with a key, working name `rollover: true`, which says two copies may run together for a moment. Without it nothing changes. Rig refuses at parse only what it can prove: the key on a Service with a pinned port.
+### The stateful problem
 
-A deploy rolls over only when every restarting Service outside the tail has the key. Otherwise the whole deploy uses the tail rule, and its line says why. A `db` that must stop is an outage for its dependents anyway, so a partial rollover buys nothing. The candidate's `rig.yaml` decides, so a Commit with a breaking migration turns the key off in that Commit.
+Two copies of `db` or `search` cannot share one data directory. On Melody's usual code-only deploy that does not arise, because both are kept and shared. When one of them itself changes, there are three options:
 
-### Ports: the new plan gets a new port
+| Option                                                             | What happens                                                                                                                                                                                      |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Fall back to the tail rule, with a clear message (recommended)** | The deploy works as an ordinary restart: a short outage, then `search` loads last with the site up. Nothing new to learn or remember                                                              |
+| Refuse without a flag                                              | Blocks the dashboard's rollback, an ordinary deploy that must not be refused in an incident, and the flag soon gets passed by habit                                                               |
+| Restart it first, while the old version serves                     | Stop old `search`, start new, wait until healthy, then roll over the rest. No 503, but the old version is no longer untouched, and a later failure of new `api` means restarting old `search` too |
 
-A Deployment's plan is already a generation. The candidate's plan records a fresh `auto` port for each rolling Service, and `${port}`, `${services.api.port}`, the health check and the route all resolve from it. The old instance keeps the previous plan's port until it stops.
+Restarting first is worth being honest about, because it nearly works for `search`. Melody's API falls back to Postgres when Typesense does not answer (`services/api/src/server.ts`), so for about 6 minutes the site stays up with slower, poorer search, each search possibly waiting out its Typesense timeout, while the old API talks to a `search` it was not deployed with. A Project without that fallback shows errors for those minutes, and Rig cannot tell which kind it has. For `db` it does not work at all: the old code loses its database, every request fails, and that is no better than a 503. It could be added later for Services nothing depends on. Until then Melody can deploy a `search` change alone, which already costs no 503 because `api` and `web` are kept, and then deploy its code.
 
-- **A pinned port blocks a rollover.** It is a promise outside Rig. Fletcher's says so: "Bookmarks and local observers use these ports". Melody's `web` (3400) and `api` (3401) are referenced in `rig.yaml` only through `${services...}`, so `ports: { http: auto }` is its one-line change. Anything else that knows those numbers must be checked first.
-- **Ports are chosen once, before the build,** from a first keep decision, because a build can write a port into its output: pantry's `web` build uses `${services.server.port}`. A Service the first decision keeps does not move. If the final decision restarts a Service that got no new port, that deploy uses the tail rule.
-- **Restarts spread along port references** as they do along `depends_on`: whatever holds `${services.api.port}` in a command, environment or build must move too. A holder without the key means the tail rule. A Project-level `environment` naming a port would put it in every Service, so it blocks rollovers. Melody's names only `db` and `search`, which do not move.
-- **A number copied into an env file** is invisible to Rig and breaks at the first rollover. The key's documentation says so.
+### Which Services can have a second copy
 
-Rejected: a Caddy listener on the pinned port in front of a private one, since every start then runs privately, Caddy joins internal traffic, and only HTTP works. Alternating between the pinned port and a private one, since it breaks the promise half the time. `SO_REUSEPORT`, since the application would have to ask for it.
+Rig infers this from ports, with no list to maintain. A changed Service can have a second copy only if it has at least one port and every port is `auto`. Otherwise that deploy falls back.
 
-### Service-to-Service traffic
+- **A pinned port** cannot be held twice, as the owner agreed. Fletcher's comment shows why Rig must not move one: "Bookmarks and local observers use these ports".
+- **No port** means a background worker, and running two is often exactly the hazard: Fletcher's schedulers would spend their search quota twice, and Vitals' recorder would write every sample twice.
+- **`${rig.data}` does not decide it.** Melody's `api` uses it for a cover cache that is safe to share.
+- **A Service new to the plan** has no old copy, so it may pin a port or have none.
 
-Generations do not cross. Old `web` holds old `api`'s port and new `web` holds new `api`'s, because each resolved its references from its own plan. Old instances stop dependents first, so old `web`'s calls finish on old `api`. Crossing happens only through a public hostname or a page loaded before the switch: an old page calling `api.melody.b-relay.com` reaches new `api`, as it does after any deploy today. Both generations share `db` and other kept Services, so they also share its connection limit.
+The gap is a data owner on an `auto` port, such as pantry's `db`. Rig would start a second Postgres on the same directory. Postgres's own lock should refuse that (not tried), which fails the deploy with nothing interrupted, but other software may not refuse. So the setting's documentation says to pin the port of whatever owns data.
 
-### The sequence
+**What the user sees.** Before anything stops: `melody stable: not rolling over: web pins port 3400; its paths answer 503 while it restarts`. The deploy line and Activity repeat the reason, which is one of: a pinned port, no port, `--force`, or no old version running. `rig doctor` names a Project that has opted in with a routed Service that pins a port, since it would never roll over.
 
-1. Start the new instances of the Services outside the tail, in plan order, each passing its start check, including the listener check on its own port. The route does not change.
-2. Install Tools and verify the new instances again.
-3. Publish once: every path moves to the new ports. `servedAt` is set here.
-4. Stop the old tail and start the new tail, under the guard. The old instances stay running, unrouted.
-5. Verify everything again.
-6. After the drain, stop the old instances, dependents first, then commit.
+### Ports and traffic between Services
+
+A Deployment's plan is already a generation. The candidate's plan records a fresh `auto` port for each changed Service, and `${port}`, `${services.api.port}`, the health check and the route all resolve from it.
+
+- **Ports are chosen before the build,** from a first keep decision, because a build can write a port into its output: pantry's `web` build uses `${services.server.port}`. If the final decision restarts a Service that got no new port, that deploy falls back.
+- **Restarts spread along port references** as they do along `depends_on`: whatever holds a moving port must have a new copy too. A Project-level `environment` naming a moving port puts it in every Service. Melody's names only `db` and `search`, which do not move.
+- **A number copied into an env file** is invisible to Rig and breaks at the first rollover.
+
+Old `web` calls old `api` and new `web` calls new `api` for the whole wait, because each resolved its own plan. Versions cross only through a public hostname or a page loaded before the switch, as after any deploy today. Both versions share kept Services, including `db`'s connection limit.
+
+Rejected: a Caddy listener on the pinned port in front of a private one (every start runs privately, Caddy joins internal traffic, HTTP only); alternating between a pinned and a private port (it breaks the promise half the time); `SO_REUSEPORT` (the application must ask for it).
+
+### Opting in
+
+A Project-level setting, off by default, that a role can patch as it patches `domain`, with working name `rollover: true`. Not per Service, because the whole version decides together. A Preview can turn it off to save memory, and a working Target never deploys. The candidate's `rig.yaml` decides, so a Commit with a breaking migration turns it off in that Commit.
+
+It cannot be inferred, because Rig cannot see the main thing it promises. Pantry's `server` migrates on every start, and Melody's `api` before it listens, while the old code goes on serving for the **whole wait**, potentially minutes: Melody's `api` has `start_period: 30m`, and its `rig.yaml` estimates its largest migration so far at 3 to 10 minutes.
+
+- **Every migration must work with the old code for that whole window** (expand first, remove later), or that Commit turns the setting off.
+- **"Users never noticed" holds only then.** A failed new version leaves the old code on a migrated database, and any table lock a migration takes blocks real requests instead of a 503.
+- **Old and new code run together.** Anything else they share (a cache, files, a queue) must tolerate that too.
+
+### Projects on this Mac
+
+From each `rig.yaml`, read-only. None of them changes unless it opts in.
+
+| Project  | A usual deploy restarts                 | Qualifies                                                   | What it would have to change                                                                                                                           |
+| -------- | --------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| melody   | `api`, `web` (`watch` keeps the others) | Yes, after the change                                       | `ports: { http: auto }` on `api` and `web`, once nothing outside `rig.yaml` needs 3400 or 3401, and the setting. A changed `db` or `search` falls back |
+| pantry   | all three (no `watch`)                  | Yes, after the change                                       | `watch` on `db` so a code deploy keeps it, a pinned port on `db`, and the setting. `server`'s migrations must follow the rule above                    |
+| vitals   | `recorder`, `web` (no `watch`)          | Only for a deploy that keeps `recorder`, which has no port  | `watch` on `recorder`, narrow enough to keep it; both run one binary, so few deploys would qualify                                                     |
+| podcast  | `web`                                   | By config, yes; it should not without its owner's judgement | Only the setting, but two copies would share its database and uploads, and every start migrates and imports                                            |
+| share    | `server`, `explorer` (no `watch`)       | No                                                          | Unpin 8787, and decide whether two `server`s may share its store and audit log                                                                         |
+| fletcher | all four (no `watch`)                   | No                                                          | Give up 4187 and 4188, which its bookmarks use, and `watch` on the schedulers, which have no port. The tail rule is its fix                            |
+| rig      | Previews only (`stable: false`)         | Not needed                                                  | Nothing                                                                                                                                                |
+
+Melody is the case worth doing first.
+
+### Two whole versions in the records
+
+A process key is `<target id>:<service>`, and a lease, capture request and exit records all derive from it, so a second key gets its own with no new provider capability. A key cannot be renamed while its process runs, so a new copy keeps its key for life, and the next rollover alternates back. `ServiceRun` records its key, and one function answers it, in place of the template built about 20 times across `lifecycle.ts`, `supervision.ts` and `target-effects.ts`. `recovery` names each old key and incarnation before the first spawn. An older rigd would look under the wrong key and lose a process, so this is state version 11.
+
+**rigd dies with two versions running.** Today's answer, `rig down`, would stop a healthy site for nothing. Here the route file says who won, so the next rigd's first pass settles it without being asked, once Caddy confirms what it serves:
+
+- **The route names the old ports:** stop the new copies, put back the previous record, and record in Activity that the deploy was interrupted and the old version kept serving.
+- **The route names the new ports:** finish the commit and stop the old copies.
+- **Already committed:** the record names the old copies still to retire, and the pass stops them.
+- **After a Mac restart** every copy is gone: the Target settles the same way, then starts from that plan as after any Mac restart.
+
+A deploy that fell back keeps the tail rule's recovery. A Caddy that does not answer, or a process that cannot be observed, decides nothing until a later pass.
+
+### During the wait
+
+- **`rig status` and the dashboard.** The candidate is already the Target's record, so they must say so plainly: `serving main@83496f8, starting main@470a510: web starting, api healthy`, showing both copies of a Service. Status JSON gains this additively.
+- **`rig logs`.** Both copies write under the Service's name, as Services already share `target.jsonl`, each line tagged with its Commit, which the capture request carries. `--service` is unchanged. Capture wrappers need no other change.
+- **`rig monitor`.** One series per Service, summing both copies, so the overlap shows as what it costs.
+- **Jobs.** No scheduled run starts during the wait, as during any deploy, so a time that falls in a long wait is missed and not caught up. The first run after the switch uses the new plan. A run already going keeps the old version's environment and fails if it calls an old copy's port after that copy stops, a port that never comes back. Melody's `db-backup` takes `API_PORT` this way.
+- **Tools** install at step 3, under the existing checkpoint, so a failure restores them and the route never moved. Superseded Tools retire at the commit.
+- **Receipts.** A rollover that succeeds is `deployed`, with `servedAt` at the switch. One that fails is `failed` with no `servedAt`, and Activity says the new copies stopped and the old version kept serving. The record says whether a deploy rolled over and why not. A failed deploy carries `servedAt` only when it fell back to the tail rule.
 
 ### Route and Caddy
 
-One publish per deploy, not per Service: fewer than the three a restart makes. A probe on this Host's Caddy 2.10.2, on high ports with a private socket, gave:
+One publish per deploy, against three for a restart. A probe on this Host's Caddy 2.10.2, on high ports with a private socket, gave:
 
 - A `POST /load` returned in 1 to 9 ms and did not wait for traffic. A request made right after it reached the new upstream.
 - A request in flight (6 s, over HTTPS) and a 6 s streamed response both finished normally on the old upstream.
 - 16 clients through one load a second for 12 s: 185,590 answers of 200 and no other status. 4 HTTPS requests failed with a closed socket, from a client that does not retry; 0 of the 93,835 over HTTP did. This is close to seamless, not perfectly so, and any publish today does the same.
 - A WebSocket is closed (1001) by every load, even one that adds an unrelated site. That already happens on any route change on the Host ([#762](https://github.com/b-relay/rig/issues/762)), and a rollover does not avoid it.
 
-**Drain.** Caddy cannot say when an old upstream is idle: `/reverse_proxy/upstreams` forgets it as soon as the load returns, while its request is still in flight. So Rig waits a fixed 5 s after the publish, or the time step 4 took if longer, then stops the old instance within its `stop_timeout`. A longer request then depends on how the application handles SIGTERM, as it does today. Melody's `web` exited with status 143 in #725, so that may cut it. The 5 s is a starting number, not a measured one.
+**Drain.** Caddy cannot say when an old upstream is idle: `/reverse_proxy/upstreams` forgets it as soon as the load returns, with its request still in flight. So Rig waits a fixed 5 s, then stops the old copy within its `stop_timeout`. A longer request depends on how the application handles SIGTERM, as it does today; Melody's `web` exited with status 143 in #725, so that may cut it. The 5 s is a starting number, not a measured one.
 
-### Failure
+### Cost
 
-| It fails at                   | Traffic                            | Rollback                                                                          | Receipts                                                                    |
-| ----------------------------- | ---------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Steps 1 to 3                  | Old instances serve, uninterrupted | Stop the new instances. The route never changed                                   | `failed`, no `servedAt`; Activity says the previous Deployment kept serving |
-| Steps 4 and 5                 | New, then old again, with no 503   | Publish back, stop the new instances, restart the old tail                        | `failed`, `servedAt`; Activity says how long it served                      |
-| Step 6: an old one won't stop | New instances serve                | As an unverified stop today: `DEPLOY_ROLLBACK_BLOCKED`, and `rig down` settles it | As above                                                                    |
+Memory is the new cost: every changed Service twice, from its new copy's start until the old copy stops. For Melody's usual deploy that is `api` and `web` for about 30 s. The worst case is its budgets added together, `api`'s 30 minutes and `web`'s 2, which is longer than the 15 minutes of `search`, since `search` never gets a second copy. Builds are unaffected: they already run beside the old version ([ADR 0004](0004-builds-belong-to-deployments.md)). The CPU of each start is what it is today, plus what the old copies serve meanwhile, so on b-mini, which overheats, this adds memory pressure more than heat. No build or test process is added. Nothing here was measured, and `rig monitor` will show it on the first real rollover.
 
-This is what rollovers change about a late tail failure: rolling back stays the answer, and holding the old instances makes it one publish instead of a second outage. For Melody that holds old `web` and `api` for `search`'s load, 5 minutes usually and 15 at most. New code was still served and then reverted, so the data caveat above stands. If an old instance exited during the hold, rollback is the ordinary start of the previous plan.
+### Does this still build on the tail rule?
 
-### Two instances in the records
+Yes, and the approved order still holds, with one thing to weigh.
 
-A process key is `<target id>:<service>`, and a lease, capture request and exit records all derive from the key, so a second key gets its own without any new provider capability. Capture wrappers need no change: each serves one key, and `stop` already takes an incarnation. A key cannot be renamed while its process runs, so the new instance keeps its key for life, and the next rollover alternates back.
+- **Rollovers need from it:** the fallback for every deploy that cannot roll over, the guard, the recovery duty and `servedAt`.
+- **Rollovers do not use:** its publication point or its stop side, because a rollover deploy has no tail.
+- **It is not made unnecessary.** `rig restart`, a Mac restart, `rig up`, a changed `db` or `search`, and every Project that has not opted in, including all of Fletcher's deploys, can never roll over.
+- **To weigh:** on Melody's usual code-only deploy the tail rule changes nothing and rollovers remove all of it, so rollovers are what the owner will feel most often. But without the tail rule, a deploy that falls back still costs 6m51s. So the tail rule still goes first.
 
-- **`ServiceRun` records its key.** One function answers a Service's key from its run, in place of the template built about 20 times across `lifecycle.ts`, `supervision.ts` and `target-effects.ts`.
-- **`recovery` names each old key and incarnation,** written before the first spawn, as `journal.starting` already records a start before it spawns. A recorded key that never spawned is simply seen stopped.
-- **rigd dies with two instances running.** Both keep running and the route stays where it was, on old or new. The tail rule's recovery duty observes the Service behind each live path by its key. `rig down` withholds everything and stops every key named, as `stopForRecovery` does for both plans today.
-- **State version 11.** An older rigd would look under the wrong key and lose a process, which is the case that note says needs a version.
+The earlier approval of holding old copies and rolling back a late failure maps like this: a rollover deploy holds old copies by construction and has no late failure, and a deploy that falls back rolls back a late failure as the tail rule says, with no old copies to hold. The earlier design's hold through the tail and publish-back step are gone.
 
-### Limits
+### What each deploy costs
 
-**Old and new code run together.** With `web` that lasts seconds. With a migration it decides safety: `api` and pantry's `server` migrate before they listen, while the old instance is still serving. So every migration must work with the code before it (expand first, remove later), or the Commit turns the key off. A long migration runs under live traffic: Melody's `rig.yaml` estimates its largest so far, 0021, at 3 to 10 minutes, and any table lock such a migration takes now blocks real requests instead of a 503. A failed new instance leaves the old one serving on a migrated database. Rig cannot detect any of this, which is the main reason for the key. `db`, `search`, or anything else that owns a data directory never rolls over.
+Worked out from the #725 log and each `rig.yaml`: none of these was measured, and no rollover has run. Outage means 503s. The rollover column assumes Melody has made its change.
 
-**Cost.** Builds are unaffected: they already run beside the old Deployment ([ADR 0004](0004-builds-belong-to-deployments.md)). The added cost is the old instance's memory during the new one's start, and during a tail's load when held. The CPU of a start is the same as today plus whatever the old instance serves meanwhile, so memory, not heat, is the new cost on b-mini. It was not measured. No build or test process is added.
-
-### Interactions
-
-- **The tail rule** is what runs whenever a deploy cannot roll over. A rollover deploy uses the same publication point and guard, but stops its tail after the publish, since nothing needs withholding.
-- **Kept Services (ADR 0016)** are not in the restart set and do not move. An old instance is held like a kept process's checkout until it stops.
-- **`rig logs`.** Both instances write under the Service's name, interleaved, as Services already share `target.jsonl`. Rig adds a line each at the start of the new instance, the switch and the stop of the old. No new filter.
-- **`rig monitor`.** One series per Service, summing both process trees, so the overlap shows as the real cost. No second series. `monitored-processes` lists the old instance from `recovery`.
-- **Jobs.** No scheduled run starts during a deploy, as today. A run already in progress keeps the old port in its environment, and that port does not come back when the old instance stops, unlike a restart on a stable port. It fails if it calls the Service afterwards. Melody's `db-backup` takes `API_PORT` this way.
-- **`rig status`** shows the deploy in progress and the plan's port. The deploy line and Activity name each Service rolled over beside `restarted`, with the same reasons.
-
-### What it removes
-
-Worked out from the #725 log and each `rig.yaml`; no rollover has been run. The 32 s left by the tail rule was `db` 2 s, `api` 27 s and `web` 3 s.
-
-| Deploy                                  | With the tail rule                             | With rollovers | Needs                                                                                                                     |
-| --------------------------------------- | ---------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Melody, code only (`db`, `search` kept) | about 30 s                                     | about 0        | The key and `auto` on `api` and `web`                                                                                     |
-| Melody, also a real `search` restart    | about 30 s                                     | about 0        | The same; `search` loads afterwards                                                                                       |
-| Melody, `db` restarts (#725's shape)    | 32 s                                           | 32 s           | Nothing helps: `db` must stop                                                                                             |
-| Fletcher, as configured                 | at most 30 s of `web`'s start check, not timed | unchanged      | Dropping the pinned 4187 and 4188 its bookmarks use, and `watch` so `comparison-refresh` stays kept, or the key on it too |
-
-So rollovers remove most of what is left on an ordinary Melody deploy, none of a `db` restart, and nothing on Fletcher unless it gives up its ports.
+| Deploy                                                           | Today                                 | Tail rule                                                 | Rollovers on                               | Two copies               |
+| ---------------------------------------------------------------- | ------------------------------------- | --------------------------------------------------------- | ------------------------------------------ | ------------------------ |
+| Melody, code only                                                | about 30 s                            | about 30 s                                                | about 0                                    | `api`, `web`, about 30 s |
+| Melody, code only, new version fails                             | about 1 min, up to the check's budget | the same                                                  | 0 (see migrations)                         | until the check fails    |
+| Melody, `search` change alone                                    | 0; `search` absent about 6 min        | the same                                                  | the same (falls back)                      | none                     |
+| Melody, code and `search` together                               | about 6m50s                           | about 30 s; `search` absent about 6 min                   | the same (falls back), or 0 as two deploys | none                     |
+| Melody, `db` changes (#725's shape)                              | 6m51s                                 | 32 s                                                      | 32 s (falls back)                          | none                     |
+| Melody, `rig restart`                                            | 6m51s                                 | 32 s                                                      | 32 s (never rolls over)                    | none                     |
+| Fletcher, every deploy as configured                             | up to 27 min, plus `web`'s start      | `web`'s stop and start, at most its 30 s check, not timed | the same (does not qualify)                | none                     |
+| Fletcher, web-only, after giving up its ports and adding `watch` | as above                              | as above                                                  | about 0                                    | `web`, up to 30 s        |
 
 ## Open questions for the owner
 
-1. **Approve this plan and its order: the tail rule in 1.1.0, then rollovers in a later minor?** Recommendation: yes. They are independent, and the tail rule gives the larger gain with no change to any `rig.yaml`.
-2. **Accept an opt-in key, and name it.** Inference is not safe (see above), so rollovers need one. Recommendation: `rollover: true` on the Service.
-3. **Refuse the key on a pinned port?** Recommendation: yes. Melody changes `web` and `api` to `auto`, after checking nothing outside `rig.yaml` uses 3400 or 3401. Fletcher stays out. The alternative is a Caddy listener on the pinned port, which is much more to build and carry.
-4. **Hold the old instances until the tail is verified, and confirm rollback as the answer to a late tail failure?** Recommendation: yes to both. A late failure then costs one publish and no outage, for the price of old instances' memory through the tail's load, up to Melody's 15 minutes.
+Decided: the order (tail rule in 1.1.0, rollovers in a later minor), all-or-nothing rollovers at the Target level, no rollover where a changed Service pins a port, and rolling back a late failure.
+
+1. **The setting: Project-level with a role patch, and what name?** Recommendation: `rollover: true`, off by default. It cannot be inferred, because Rig cannot see whether migrations work with the old code.
+2. **When a stateful Service changes: fall back or refuse?** Recommendation: fall back to the tail rule with a clear message before anything stops, and no flag. The deploy then has a short outage the owner did not explicitly accept. Refusing would block the dashboard's rollback in an incident. Restarting `search` first can come later.
+3. **Decide who gets a second copy from ports alone: every port `auto`?** Recommendation: yes, with no list of Services. The cost is that a data owner on an `auto` port, such as pantry's `db`, must be pinned by hand. The alternative is a list in the setting, which is safer against that one mistake but is one more thing to maintain and to get wrong.
 
 ## Implementation slices
 
@@ -242,14 +279,15 @@ Slices 1 and 2 can ship alone. Slices 3 and 4 ship in one release, because 3 wid
 
 ### Rollovers (a later minor)
 
-These need the tail rule's publication point and guard, and change neither. Slices 6 and 7 change no behaviour for any Project, so they can land early.
+Slices 6 and 7 change no behaviour for any Project, so they can land early. Slice 8 onwards needs the tail rule's fallback and guard. The setting is off until slice 10 lands.
 
 6. **One function for a Service's process key,** read from its run. Tests: the existing suite unchanged; a run recorded under the second key is observed, stopped and supervised under it.
-7. **Two instances in the records:** `recovery` names the old keys, state version 11, and `stopForRecovery` stops both. Tests: with rigd killed at each step of the sequence, `rig down` withholds first and stops both; a version 10 state reads; the recovery duty follows the key.
-8. **The key, the first keep decision, port choice and spreading along references.** Pure where it can be. Tests: the key on a pinned port is refused; each Project shape decides as the tables say; a port reference spreads a restart; a holder without the key falls back; pantry's build sees the new port; a kept Service does not move.
-9. **The sequence.** Tests: the route is unchanged until every new instance is verified; a new instance that fails leaves the old one unsignalled and the route untouched, with no `servedAt`; a late tail failure publishes back without stopping an old instance; old instances stop dependents first, after the drain. One live Caddy test: continuous requests through a rollover, every answer 200, and a slow request finishing on the old instance.
-10. **Reports:** the deploy line, Activity, log lines, the Monitor's summed series, status and docs. Tests: both trees sum into one series; a held old instance is shown; the guide states the migration rule.
+7. **Two versions in the records:** `recovery` names the old keys, and state version 11. Tests: a version 10 state reads; `rig down` and `stopForRecovery` stop every key named, route first.
+8. **The setting, eligibility, port choice and spreading along references.** Pure where it can be. Tests: each Project shape in the table decides as it says; a changed pinned or portless Service falls back with its reason before anything stops; a new pinned Service does not; a port reference spreads a restart; pantry's build sees the new port; a kept Service does not move.
+9. **The sequence.** Tests: the route is unchanged until every new copy, one no route needs included, is verified; a copy that fails leaves the old version unsignalled and the route untouched, with no `servedAt`; a failed Tool does the same; an old copy that exits during the wait is withheld and the wait goes on; an old copy that will not stop leaves the deploy `deployed` with a warning. One live Caddy test: continuous requests through a rollover, every answer 200, and a slow request finishing on the old copy.
+10. **Settling after a crash.** Tests: rigd killed at each step settles from the route, old or new, with no `rig down`; a commit with old copies left retires them; a Mac restart settles and starts; a Caddy that does not answer decides nothing.
+11. **Reports:** status, the dashboard, tagged log lines, the Monitor's summed series, the deploy line and Activity, `rig doctor`'s note and the docs, including the migration rule. Tests: both copies sum into one series; status names what is serving and what is starting; each fallback reason is shown.
 
-On acceptance, CONTEXT.md's route relationship needs no change: "from its verified start until just before it stops" is what the tail rule makes true. Rollovers add one term to CONTEXT.md, once its name is chosen.
+On acceptance, CONTEXT.md's route relationship needs no change: "from its verified start until just before it stops" is what the tail rule makes true. Rollovers add one term to CONTEXT.md, once the setting's name is chosen.
 
 Claude Opus 5.5 on behalf of Brendon

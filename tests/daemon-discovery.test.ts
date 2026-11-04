@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, expect, mock, spyOn, test } from "bun:test";
 import { basic, local } from "./support/dashboard-site";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -180,6 +180,104 @@ test("an editor reply that does not match its action's schema is refused as a pr
     code: "CONFIG_INVALID",
     details: { issues: [{ path: ["services"], message: "Required" }] },
   });
+});
+
+test("an editor reply cut off mid-body reports the interruption, and that a write may have finished; only a whole reply that is not JSON is DAEMON_PROTOCOL", async () => {
+  const root = await rootRecording({ pid: process.pid, startedAt });
+  let headers = Promise.withResolvers<void>();
+  const real = globalThis.fetch;
+  const fetching = spyOn(globalThis, "fetch").mockImplementation((async (
+    ...args: Parameters<typeof fetch>
+  ) => {
+    const response = await real(...args);
+    headers.resolve();
+    return response;
+  }) as typeof fetch);
+  /** The start of a reply whose headers promise `length` bytes. */
+  const answer = (status: string, length: number) =>
+    `HTTP/1.1 ${status}\r\nContent-Type: application/json\r\nContent-Length: ${length}\r\nConnection: close\r\n\r\n{"result":`;
+  let reply = "";
+  const rigd = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data(socket) {
+        socket.write(reply);
+        socket.flush();
+        // Cut off only once the relay holds the headers, so the failure is the body's.
+        void headers.promise.then(() => socket.end());
+      },
+    },
+  });
+  await writeFile(
+    join(root, "daemon", "address.json"),
+    JSON.stringify({
+      port: rigd.port,
+      instanceId: "fixture",
+      pid: process.pid,
+      startedAt,
+    }),
+  );
+  const fails = async (
+    call: () => Promise<unknown>,
+    failure: Record<string, unknown>,
+  ) => {
+    headers = Promise.withResolvers<void>();
+    await expect(call()).rejects.toMatchObject(failure);
+  };
+  const expectedRevision = "a".repeat(64);
+  const read = () => editEnv({ action: "read", project: "demo" }, root);
+  const mutation = { project: "demo", expectedRevision, patch: [] };
+  const preview = () => editConfig({ action: "preview", ...mutation }, root);
+  const apply = () => editConfig({ action: "apply", ...mutation }, root);
+  const write = () =>
+    editEnv(
+      {
+        action: "write",
+        project: "demo",
+        scope: {},
+        expectedRevision,
+        changes: [{ op: "remove", key: "A" }],
+        actor: "test",
+      },
+      root,
+    );
+  try {
+    reply = answer("200 OK", 100);
+    for (const call of [read, preview])
+      await fails(call, {
+        code: "DAEMON_INTERRUPTED",
+        message: expect.not.stringContaining("may have"),
+        hint: expect.stringContaining("rigd status"),
+      });
+    for (const [call, editor] of [
+      [apply, "config editor"],
+      [write, "env editor"],
+    ] as const)
+      await fails(call, {
+        code: "DAEMON_INTERRUPTED",
+        message: `The connection to rigd closed before it finished answering the ${editor}; the change may have been saved.`,
+        hint: expect.stringContaining("whether it was saved"),
+      });
+    // A refusal cut off is an interruption too, not a malformed refusal.
+    reply = answer("422 Unprocessable Entity", 100);
+    await fails(read, { code: "DAEMON_INTERRUPTED" });
+
+    // Everything arrived, and it is not JSON.
+    reply = answer("200 OK", 10);
+    await fails(read, {
+      code: "DAEMON_PROTOCOL",
+      message: "rigd returned an invalid env editor reply.",
+    });
+    reply = answer("422 Unprocessable Entity", 10);
+    await fails(preview, {
+      code: "DAEMON_PROTOCOL",
+      message: "rigd returned an invalid config editor refusal.",
+    });
+  } finally {
+    fetching.mockRestore();
+    rigd.stop(true);
+  }
 });
 
 test("a status read is abandoned when its caller goes away, not held until rigd answers", async () => {

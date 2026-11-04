@@ -2228,6 +2228,13 @@ ones it recorded last time:
   `on-failure`, say) keeps that status.
 - Targets meant to be stopped stay stopped.
 
+On stable, working and Preview Targets alike, a Service `rigd` could not see
+either running or stopped as it acts on the restart (its state is unknown, or the
+check does not answer) may have survived a logout. It counts as not running, but
+its paths stay published until a later pass, every second, sees it stopped and
+withholds them, or sees it running and leaves them. The diagnostic log records
+`routes-unchecked`, naming those Services, and `routes-checked` once none is left.
+
 A plain `rigd` restart in the same boot and login session detects nothing and
 follows the rules above. A `rigd` run as a detached process under `RIG_ROOT`
 (not as a launchd job in your login) and its Services outlive a logout and

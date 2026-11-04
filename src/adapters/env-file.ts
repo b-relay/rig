@@ -5,9 +5,15 @@ import type { EnvFileRef } from "../config/types";
 import {
   REFERENCE_VARIABLE_PREFIX,
   RESERVED_NAME_RULE,
+  unrepresentableValue,
   type LoadedEnvFile,
 } from "../domain/process-environment";
 import type { CommandRunner } from "../providers/contracts";
+
+/** The name a line assigns, read without its value. */
+export const ASSIGNED_NAME = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+const LOSSLESS_HINT =
+  "Rig hands a process a value exactly or refuses it. Correct that line in an editor: save the file as UTF-8, and keep binary data base64-encoded. A process already running keeps running; whatever reads this file cannot start until then.";
 
 /** Whether Git ignores a path inside a workspace; undefined when the workspace is verified not to be a Git checkout. A tracked file is never ignored.
  * Rejects ENV_FILE_UNVERIFIED when Git is there but cannot answer, so an unchecked file never loads. */
@@ -49,11 +55,14 @@ export function gitIgnoreCheck(
 }
 /** Loads one invocation's env files in order. A listed file must exist (ENV_FILE_MISSING); an optional one is skipped when absent.
  * A file inside the workspace that Git does not ignore is refused as ENV_FILE_TRACKED before it is read.
- * `warnings` name files other users can access. Contents go to the caller only; no error or warning carries a value. */
+ * `warnings` name files other users can access. Contents go to the caller only; no error or warning carries a value.
+ * `forRunningProcess` is for a command that checks a process already running, which must not fail for a value it was started
+ * with before Rig refused such values: a file `parseEnvironmentFile` refuses for one is read as it always was, with a warning. */
 export async function loadEnvironmentFiles(
   refs: readonly EnvFileRef[],
   workspace: string,
   ignored: IgnoredByGit,
+  forRunningProcess = false,
 ): Promise<{ files: LoadedEnvFile[]; warnings: string[] }> {
   const files: LoadedEnvFile[] = [],
     warnings: string[] = [];
@@ -82,19 +91,33 @@ export async function loadEnvironmentFiles(
           `Environment file ${ref.path} is accessible to other users (mode ${(info.mode & 0o777).toString(8).padStart(3, "0")}); run chmod 600 on it.`,
         );
     }
-    files.push({ path: ref.path, values: await readEnvironmentFile(ref.path) });
+    files.push({
+      path: ref.path,
+      values: await readEnvironmentFile(
+        ref.path,
+        forRunningProcess
+          ? (refusal) =>
+              warnings.push(
+                `${refusal} What already runs keeps running; what reads this file cannot start until that line is fixed.`,
+              )
+          : undefined,
+      ),
+    });
   }
   return { files, warnings };
 }
 
-/** Reads a dotenv-style file for a Target. A file that does not exist is ENV_FILE_MISSING,
- * one that cannot be read is ENV_FILE, and each parse rejection names the path and line. */
+/** Reads a dotenv-style file for a Target. A file that does not exist is ENV_FILE_MISSING, one that cannot be read is ENV_FILE,
+ * each parse rejection names the path and line, and a value Rig cannot pass on exactly is ENV_VALUE. With `tolerated`, ENV_VALUE
+ * is told to it instead and the file reads as it did before such values were refused: bytes that are not UTF-8 replaced, and
+ * what no process could get left out. */
 export async function readEnvironmentFile(
   path: string,
+  tolerated?: (refusal: string) => void,
 ): Promise<Record<string, string>> {
-  let text: string;
+  let bytes: Uint8Array;
   try {
-    text = await readFile(path, "utf8");
+    bytes = await readFile(path);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT")
@@ -111,26 +134,72 @@ export async function readEnvironmentFile(
       { path, cause: code ?? String(error) },
     );
   }
-  return parseEnvironmentFile(text, path);
+  try {
+    return parseEnvironmentFile(decodeEnvironmentFile(bytes, path), path);
+  } catch (error) {
+    if (!tolerated || (error as RigError).code !== "ENV_VALUE") throw error;
+    tolerated((error as RigError).message);
+    return parseEnvironmentFile(lossyEnvironmentText(bytes), path, "skip");
+  }
+}
+
+/** A BOM stays in the text, where the parser reads it as leading space and an edit keeps it. */
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const lossyUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
+/** Pure: a file's bytes as text with anything that is not UTF-8 replaced, for what never depends on a value, such as its names. */
+export function lossyEnvironmentText(bytes: Uint8Array): string {
+  return lossyUtf8.decode(bytes);
+}
+/** Pure: a file's bytes as exactly the text they hold, or ENV_VALUE naming the path, the first line that is not UTF-8 and
+ * the name it assigns, never a value. */
+export function decodeEnvironmentFile(bytes: Uint8Array, path: string): string {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    const line = invalidLine(bytes);
+    const key = ASSIGNED_NAME.exec(line.text)?.[1];
+    throw new RigError(
+      "ENV_VALUE",
+      `The environment file ${path} has bytes that are not valid UTF-8 on line ${line.number}${key ? `, in the assignment of ${key}` : ""}.`,
+      LOSSLESS_HINT,
+      { path, line: line.number, ...(key ? { key } : {}) },
+    );
+  }
+}
+/** The first line of `bytes` that is not UTF-8, which holds its first invalid byte: no multi-byte sequence holds a newline. */
+function invalidLine(bytes: Uint8Array): { number: number; text: string } {
+  let start = 0;
+  for (let number = 1; ; number++) {
+    const end = bytes.indexOf(0x0a, start);
+    const line = bytes.subarray(start, end < 0 ? bytes.length : end);
+    try {
+      strictUtf8.decode(line);
+    } catch {
+      return { number, text: lossyEnvironmentText(line) };
+    }
+    start = end + 1;
+  }
 }
 
 /** dotenv-style single-line assignments: `KEY=value`, optional `export`, single or double
  * quotes, and a `# comment` after the value (after the closing quote of a quoted one).
- * Unsupported syntax is rejected by path and line instead of silently altering secrets. */
+ * Unsupported syntax is rejected by path and line instead of silently altering secrets, and as ENV_VALUE, naming the name too,
+ * an assignment whose value could not reach a process exactly; `unrepresentable: "skip"` leaves such an assignment out instead. */
 export function parseEnvironmentFile(
   text: string,
   path: string,
+  unrepresentable: "refuse" | "skip" = "refuse",
 ): Record<string, string> {
   const values: Record<string, string> = {};
   const lines = text.split(/\r?\n/);
   for (const [index, line] of lines.entries()) {
     if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    const reject = (problem: string, hint: string) =>
+    const reject = (problem: string, hint: string, key?: string) =>
       new RigError(
-        "ENV_FILE",
+        key === undefined ? "ENV_FILE" : "ENV_VALUE",
         `The environment file ${path} has ${problem} on line ${index + 1}.`,
         hint,
-        { path, line: index + 1 },
+        { path, line: index + 1, ...(key === undefined ? {} : { key }) },
       );
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(
       line,
@@ -140,15 +209,35 @@ export function parseEnvironmentFile(
         "an unsupported assignment",
         "Use one KEY=value assignment per line; a bare KEY without = is not an assignment.",
       );
-    if (match[1]!.startsWith(REFERENCE_VARIABLE_PREFIX))
+    const key = match[1]!;
+    if (key.startsWith(REFERENCE_VARIABLE_PREFIX))
       throw reject(
-        `the reserved name ${match[1]}`,
+        `the reserved name ${key}`,
         `Rename it: ${RESERVED_NAME_RULE}.`,
       );
+    // An environment here is a plain object, where assigning this name keeps nothing.
+    if (key === "__proto__") {
+      if (unrepresentable === "skip") continue;
+      throw reject(
+        "the name __proto__, which Rig cannot keep,",
+        `Rename it or remove the line; no value under this name has ever reached a process. ${LOSSLESS_HINT}`,
+        key,
+      );
+    }
+    const assign = (value: string) => {
+      const problem = unrepresentableValue(value);
+      if (problem === undefined) values[key] = value;
+      else if (unrepresentable === "refuse")
+        throw reject(
+          `a value for ${key} that holds ${problem},`,
+          LOSSLESS_HINT,
+          key,
+        );
+    };
     const raw = match[2]!.trim();
     const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
     if (!quote) {
-      values[match[1]!] = raw.replace(/\s+#.*$/, "").trimEnd();
+      assign(raw.replace(/\s+#.*$/, "").trimEnd());
       continue;
     }
     const closing = closingQuote(raw, quote);
@@ -164,13 +253,14 @@ export function parseEnvironmentFile(
         "Put a space and # before a trailing comment, or quote the whole value.",
       );
     const inner = raw.slice(1, closing);
-    values[match[1]!] =
+    assign(
       quote === '"'
         ? // One pass, so an escaped backslash before n, r or a quote stays a backslash and that letter.
           inner.replace(/\\([nr"\\])/g, (_escape, letter: string) =>
             letter === "n" ? "\n" : letter === "r" ? "\r" : letter,
           )
-        : inner;
+        : inner,
+    );
   }
   return values;
 }

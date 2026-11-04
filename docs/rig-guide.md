@@ -2819,6 +2819,27 @@ a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
 `ENV_FILE` naming the file and line. Its contents are plain data and never
 take part in `${...}` references.
 
+A value reaches a process exactly or is refused. An env file must be UTF-8 (a
+BOM and CRLF line ends are fine), and a line whose bytes are not, a value
+holding a NUL character, or the name `__proto__` is refused as `ENV_VALUE`,
+naming the file, the line and the name, never the value. The whole file is
+refused, including for bytes in a comment, since saving an edit could not keep
+them. The same refusal covers a NUL or an unpaired surrogate in a value in
+`rig.yaml`, in `environment` or reached through a `${...}` reference, when the
+config is read; and a plan recorded earlier that holds one, when a process
+would start from it.
+
+A file written before Rig refused these keeps its bytes: nothing rewrites it. A
+Service already running keeps running, since a process reads its environment
+only when it starts, and its shell health check goes on with the rest of the
+file, reading it as Rig always did (the invalid bytes replaced, `__proto__` and
+a value with a NUL left out, as no process ever got them) and noting the
+refusal once in the Target log. Anything that would start from the file is
+refused until that line is fixed in an editor: a `rig restart` or a deploy that
+starts its Target before either stops anything, and a start after a crash, a
+job run or a restore when its turn comes. The dashboard shows the file's names
+and the refusal, and neither reveals nor changes anything in it until then.
+
 Each declared `build` is one build unit: the top-level `build` is the shared
 unit, and every Service and Tool `build` is its own. Units run one at a time,
 the shared unit first, then Service units in dependency order, then Tool units

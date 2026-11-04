@@ -422,6 +422,43 @@ test("a restart that cannot read a Service's env file is refused before anything
   expect(f.events).toEqual(["stop api", "stop web", "start web", "start api"]);
 });
 
+test("a deploy whose env file holds a value Rig refuses is refused before anything stops, since its rollback could not start either", async () => {
+  const f = await fixture();
+  const file = join(f.world.root, "web.env");
+  await writeFile(file, "A=1\n");
+  const config = shop({
+    services: {
+      web: {
+        command: "web",
+        restart: "always",
+        ports: { http: WEB },
+        env_file: file,
+      },
+      api: { command: "api", restart: "no", ports: { http: API } },
+    },
+  });
+  const read = f.deps.documents.read;
+  f.deps.documents.read = async (path) => ({
+    ...(await read.call(f.deps.documents, path)),
+    config,
+  });
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  const pids = await f.pids("stable");
+  await writeFile(file, "A=1\0\n");
+  f.events.length = 0;
+  await expect(
+    f.command({
+      action: "deploy",
+      project: "shop",
+      target: "stable",
+      force: true,
+    }),
+  ).rejects.toMatchObject({ code: "ENV_VALUE" });
+  expect(f.events).toEqual([]);
+  expect(await f.pids("stable")).toEqual(pids);
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+});
+
 test("a restart is refused before anything stops when the first build's own env file is missing, shared or a Service's, since nothing could write it first", async () => {
   const web = (extra: Record<string, unknown>) => ({
     command: "web",

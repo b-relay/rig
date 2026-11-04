@@ -3,7 +3,11 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { RigError } from "../domain/errors";
 import { replacePrivateFile } from "../providers/private-files";
 import type { TargetRole } from "../config/schema";
-import { parseEnvironmentFile } from "./env-file";
+import {
+  decodeEnvironmentFile,
+  lossyEnvironmentText,
+  parseEnvironmentFile,
+} from "./env-file";
 import {
   editEnvText,
   envKeys,
@@ -29,7 +33,7 @@ export interface EnvFileView {
   keys: string[];
   /** Permission bits, such as 0o600. */
   mode?: number;
-  /** Why the file cannot be read or edited: a line the reader refuses (by number, never its value). */
+  /** Why the file cannot be read or edited: a line the reader refuses, or that is not UTF-8 (by number and name, never its value). */
   problem?: string;
 }
 /** Pure: the operator file a scope names: `<envRoot>/<project>[/<service or job>]/<role or all>.env`, the files
@@ -47,9 +51,9 @@ export function envScopeFile(
     `${scope.role ?? "all"}.env`,
   );
 }
-async function readText(path: string): Promise<string | undefined> {
+async function readBytes(path: string): Promise<Uint8Array | undefined> {
   try {
-    return await readFile(path, "utf8");
+    return await readFile(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw new RigError(
@@ -60,22 +64,28 @@ async function readText(path: string): Promise<string | undefined> {
     );
   }
 }
-const problemOf = (text: string, path: string): string | undefined => {
+/** The values a file holds, read exactly; what cannot be is refused (see `parseEnvironmentFile`). */
+const valuesOf = (bytes: Uint8Array, path: string): Record<string, string> =>
+  parseEnvironmentFile(decodeEnvironmentFile(bytes, path), path);
+const problemOf = (bytes: Uint8Array, path: string): string | undefined => {
   try {
-    parseEnvironmentFile(text, path);
+    valuesOf(bytes, path);
     return undefined;
   } catch (error) {
-    // The reader's messages name the path and line, never a value.
+    // The reader's messages name the path, line and key, never a value.
     return error instanceof RigError ? error.message : "It cannot be parsed.";
   }
 };
+/** The names a file assigns, whatever its values hold. */
+const namesOf = (bytes: Uint8Array): string[] =>
+  envKeys(lossyEnvironmentText(bytes));
 /** The file a scope names, described without its values. */
 export async function describeEnvFile(
   path: string,
   scope: EnvScope,
 ): Promise<EnvFileView> {
-  const text = await readText(path);
-  if (text === undefined)
+  const bytes = await readBytes(path);
+  if (bytes === undefined)
     return {
       scope,
       path,
@@ -84,13 +94,13 @@ export async function describeEnvFile(
       keys: [],
     };
   const mode = (await stat(path)).mode & 0o777;
-  const problem = problemOf(text, path);
+  const problem = problemOf(bytes, path);
   return {
     scope,
     path,
     exists: true,
-    revision: envRevision(text),
-    keys: envKeys(text),
+    revision: envRevision(bytes),
+    keys: namesOf(bytes),
     mode,
     ...(problem ? { problem } : {}),
   };
@@ -101,8 +111,8 @@ export async function revealEnvValue(
   path: string,
   key: string,
 ): Promise<{ value: string; revision: string }> {
-  const text = await readText(path);
-  const values = text === undefined ? {} : parseEnvironmentFile(text, path);
+  const bytes = await readBytes(path);
+  const values = bytes === undefined ? {} : valuesOf(bytes, path);
   if (!Object.hasOwn(values, key))
     throw new RigError(
       "ENV_KEY_MISSING",
@@ -110,7 +120,7 @@ export async function revealEnvValue(
       "Reload the page; the file may have changed.",
       { path, key },
     );
-  return { value: values[key]!, revision: envRevision(text) };
+  return { value: values[key]!, revision: envRevision(bytes) };
 }
 /** Applies `changes` to the file if it still has `expectedRevision`, keeping its comments and order. The new
  * content is written to a private temporary file beside it and renamed over it, so a reader sees the old file
@@ -125,14 +135,14 @@ export async function writeEnvFile(
   privateRoot?: string,
 ): Promise<EnvFileView> {
   // Names what the file holds now, never a value, so whoever wrote against the older read sees what moved.
-  const conflict = (now: string | undefined) =>
+  const conflict = (now: Uint8Array | undefined) =>
     new RigError(
       "ENV_REVISION_CONFLICT",
-      `${path} changed since it was read, so nothing was written: ${now === undefined ? "it no longer exists" : `it now assigns ${envKeys(now).join(", ") || "nothing"}`}.`,
+      `${path} changed since it was read, so nothing was written: ${now === undefined ? "it no longer exists" : `it now assigns ${namesOf(now).join(", ") || "nothing"}`}.`,
       "Read the file again, check your changes against it, and save them on the current file.",
       { path, revision: envRevision(now) },
     );
-  const current = await readText(path);
+  const current = await readBytes(path);
   if (envRevision(current) !== expectedRevision) throw conflict(current);
   if (current !== undefined) {
     const problem = problemOf(current, path);
@@ -144,7 +154,10 @@ export async function writeEnvFile(
         { path },
       );
   }
-  const next = editEnvText(current ?? "", changes);
+  const next = editEnvText(
+    current === undefined ? "" : decodeEnvironmentFile(current, path),
+    changes,
+  );
   // The env tree is the operator's alone: directories they made by hand are made private here, as they always were, before
   // the replacement below checks them and makes what is missing.
   for (const directory of privateDirectories(privateRoot, dirname(path)))
@@ -155,7 +168,7 @@ export async function writeEnvFile(
       durable: true,
       // Checked again just before the rename, so an edit saved meanwhile in an editor is not overwritten.
       confirm: async () => {
-        const now = await readText(path);
+        const now = await readBytes(path);
         if (envRevision(now) !== expectedRevision) throw conflict(now);
       },
     });

@@ -14,7 +14,12 @@ import {
   type KeepDecision,
   type KeepFacts,
 } from "./keep-decision";
-import { RigError, failureCauses, retainFailureCauses } from "../domain/errors";
+import {
+  RigError,
+  diagnosticErrorCode,
+  failureCauses,
+  retainFailureCauses,
+} from "../domain/errors";
 import { isStopDetached } from "../domain/stop-budget";
 import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
@@ -117,6 +122,15 @@ async function activate(
     await prepareTarget(candidate, "all", deps);
     // Before anything stops: a route that cannot be published would leave neither Deployment serving.
     await deps.lifecycle.checkRoute(candidate);
+    // Before anything stops: a value Rig refuses would refuse the rollback's starts too, leaving neither Deployment running.
+    if (intent.activation === "start")
+      for (const component of candidate.plan.components)
+        if (component.kind === "managed")
+          await deps.lifecycle
+            .environmentDigest(candidate, component.name)
+            .catch((error: unknown) => {
+              if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
+            });
     const decision = previous
       ? await decideKeeping(candidate, previous, intent, deps)
       : firstDecision(candidate);

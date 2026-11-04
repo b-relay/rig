@@ -565,3 +565,102 @@ test("an env file in a repository Git cannot inspect is refused rather than load
   });
   expect(JSON.stringify([failure.message, failure.hint])).not.toContain(SECRET);
 });
+
+test.each([
+  [
+    "invalid UTF-8",
+    Buffer.concat([Buffer.from(`TOK=${SECRET}`), Buffer.from([0xff, 0x0a])]),
+  ],
+  ["a NUL", Buffer.from(`TOK=${SECRET}\0\n`)],
+  ["__proto__", Buffer.from(`__proto__=${SECRET}\n`)],
+])(
+  "a start refuses an env file holding %s by path and line, while a check of what already runs gets the rest",
+  async (_kind, content) => {
+    const { adapter, record, api, root, logged } = await selected("", {
+      name: "app",
+      services: {
+        api: {
+          command: "api",
+          ports: { http: "auto" },
+          healthcheck: { test: '[ "$OTHER" = "kept" ]' },
+        },
+      },
+    });
+    const file = join(root, "env", "app", "working.env");
+    await writeFile(
+      file,
+      Buffer.concat([content, Buffer.from("OTHER=kept\n")]),
+    );
+    const failure = (await adapter
+      .environment(record, api)
+      .catch((error: unknown) => error)) as RigError;
+    expect(failure).toMatchObject({
+      code: "ENV_VALUE",
+      details: { path: file, line: 1 },
+    });
+    expect(
+      JSON.stringify([failure.message, failure.hint, failure.details]),
+    ).not.toContain(SECRET);
+
+    const signal = new AbortController().signal;
+    expect(
+      await adapter.observations.health(record, api, signal),
+    ).toMatchObject({ ready: true });
+    await adapter.observations.health(record, api, signal);
+    const lines = await logged();
+    const notes = lines.filter((line) => line.includes(`${file} has`));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("What already runs keeps running");
+    expect(lines.join("\n")).not.toContain(SECRET);
+  },
+);
+
+test.each([
+  ["a NUL", `${SECRET}\0tail`],
+  ["an unpaired surrogate", `${SECRET}\ud800tail`],
+])(
+  "a recorded plan holding %s in a public value or a _RIG_ variable is refused by name before a process gets it",
+  async (_kind, value) => {
+    const { adapter, record, api } = await selected("", REFERENCING);
+    const inPublic = {
+      ...record,
+      plan: {
+        ...record.plan,
+        components: record.plan.components.map((component) =>
+          component.name === "api"
+            ? { ...component, env: { ...component.env, PLAIN: value } }
+            : component,
+        ),
+      },
+    } as TargetRecord;
+    const inVariable = {
+      ...record,
+      plan: {
+        ...record.plan,
+        referenceValues: {
+          ...record.plan.referenceValues,
+          _RIG_environment_ONE: value,
+        },
+      },
+    } as TargetRecord;
+    for (const [recorded, key] of [
+      [inPublic, "PLAIN"],
+      [inVariable, "_RIG_environment_ONE"],
+    ] as const) {
+      const component = recorded.plan.components.find(
+        (each) => each.name === api.name,
+      ) as ManagedComponent;
+      const failure = (await adapter
+        .environment(recorded, component)
+        .catch((error: unknown) => error)) as RigError;
+      expect(failure).toMatchObject({
+        code: "ENV_VALUE",
+        details: { key, component: "api" },
+      });
+      expect(failure.message).toContain(key);
+      expect(
+        JSON.stringify([failure.message, failure.hint, failure.details]),
+      ).not.toContain(SECRET);
+    }
+  },
+);

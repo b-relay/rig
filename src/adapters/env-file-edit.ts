@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { RigError } from "../domain/errors";
-import { parseEnvironmentFile } from "./env-file";
-import { RESERVED_NAME_RULE } from "../domain/process-environment";
+import { ASSIGNED_NAME, parseEnvironmentFile } from "./env-file";
+import {
+  RESERVED_NAME_RULE,
+  unrepresentableValue,
+} from "../domain/process-environment";
 
-/** A name an env file may assign, as the env-file reader accepts it. */
-/** `__proto__` is refused too: the reader keeps values in a plain object, where that name assigns nothing; so is a name
- * with the reserved `_RIG_` prefix (see REFERENCE_VARIABLE_PREFIX), which the reader refuses. */
+/** A name an env file may assign, as the env-file reader accepts it: not `__proto__` and not one with the reserved `_RIG_`
+ * prefix (see REFERENCE_VARIABLE_PREFIX), both of which the reader refuses. */
 export const ENV_KEY = /^(?!__proto__$)(?!_RIG_)[A-Za-z_][A-Za-z0-9_]*$/;
 /** One change to an env file: set a name to a value, or remove every assignment of it. */
 export type EnvChange =
@@ -13,33 +15,42 @@ export type EnvChange =
 /** The revision of a file that does not exist yet; a write against it creates the file. */
 export const ABSENT_REVISION = "absent";
 
-/** Pure: the revision of an env file's text, or of no file at all. A write names the revision it read, so
- * a file changed in between is refused rather than overwritten. */
-export function envRevision(text: string | undefined): string {
-  return text === undefined
+/** Pure: the revision of an env file's content, or of no file at all. A write names the revision it read, so
+ * a file changed in between is refused rather than overwritten. Taken of its bytes, so even a change in bytes that are not
+ * text moves it; UTF-8 text has the revision of its bytes. */
+export function envRevision(content: string | Uint8Array | undefined): string {
+  return content === undefined
     ? ABSENT_REVISION
-    : createHash("sha256").update(text).digest("hex");
+    : createHash("sha256").update(content).digest("hex");
 }
-const ASSIGNMENT = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 /** Pure: the names a file assigns, in the order they first appear. Comments and blank lines are skipped. */
 export function envKeys(text: string): string[] {
   const keys: string[] = [];
   for (const line of text.split(/\r?\n/)) {
     if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    const key = ASSIGNMENT.exec(line)?.[1];
+    const key = ASSIGNED_NAME.exec(line)?.[1];
     if (key && !keys.includes(key)) keys.push(key);
   }
   return keys;
 }
 /** Pure: `KEY=value` as one line the env-file reader reads back to exactly `value`. A value without a single
  * quote or a line break is single-quoted, which the reader takes literally; anything else is double-quoted
- * with escapes. A value the reader cannot read back exactly is refused, naming the key and never the value. */
+ * with escapes. A value no process could get or the reader cannot read back exactly is refused as ENV_VALUE, naming the key
+ * and never the value. */
 export function encodeEnvAssignment(key: string, value: string): string {
   if (!ENV_KEY.test(key))
     throw new RigError(
       "ENV_KEY",
       `${JSON.stringify(key)} is not a name an env file can assign.`,
       `Use letters, digits and underscores, starting with a letter or underscore, such as API_KEY; ${RESERVED_NAME_RULE}.`,
+      { key },
+    );
+  const unrepresentable = unrepresentableValue(value);
+  if (unrepresentable)
+    throw new RigError(
+      "ENV_VALUE",
+      `The value for ${key} holds ${unrepresentable}, so it cannot be saved.`,
+      "Rig hands a process a value exactly or refuses it. Remove that character; keep binary data base64-encoded.",
       { key },
     );
   const line =
@@ -84,7 +95,7 @@ export function editEnvText(
       );
     const assigns = (line: string) =>
       !line.trimStart().startsWith("#") &&
-      ASSIGNMENT.exec(line)?.[1] === change.key;
+      ASSIGNED_NAME.exec(line)?.[1] === change.key;
     if (change.op === "remove") {
       lines = lines.filter((line) => !assigns(line));
       continue;

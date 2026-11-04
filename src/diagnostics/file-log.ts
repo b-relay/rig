@@ -24,6 +24,11 @@ const metadataKeys = [
   "target",
   "outcome",
   "code",
+  "route",
+  "status",
+  "durationMs",
+  "cause",
+  "repeated",
 ] as const;
 const dayMilliseconds = 86_400_000;
 

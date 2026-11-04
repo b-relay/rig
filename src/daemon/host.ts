@@ -7,6 +7,7 @@ import {
 import { join } from "node:path";
 import { writeStartupFailure } from "./startup-failure";
 import { startControlPlane } from "./server";
+import type { TransportOutcome } from "./transport-evidence";
 import { readDaemonToken, ownerSchema } from "./files";
 import type { RuntimeCommand } from "./protocol";
 import { RigError } from "../domain/errors";
@@ -45,6 +46,8 @@ export interface DaemonHostOptions {
   /** Why the dashboard it runs is not served now (see Dashboard.problem), or is published elsewhere than Host config asks,
    * reported by /health. */
   dashboardProblem?: () => string | undefined | Promise<string | undefined>;
+  /** Told how each request ended that the control plane refused or failed. Must not throw. */
+  report?(outcome: TransportOutcome): void;
 }
 /** Exclusive startup guard serializes stale-lease reclamation. Ambiguous ownership fails closed. */
 export async function runDaemonHost(options: DaemonHostOptions): Promise<void> {
@@ -174,6 +177,7 @@ async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
       ...(options.dashboardProblem
         ? { dashboardProblem: options.dashboardProblem }
         : {}),
+      ...(options.report ? { report: options.report } : {}),
     });
     await replacePrivateFile(
       options.root,

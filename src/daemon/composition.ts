@@ -6,10 +6,12 @@ import {
   JOB_SCHEDULER,
   USAGE_SAMPLER,
   createNoticeBoard,
+  recordOrNote,
   recordingDiagnostic,
   startFailureMonitor,
   workReport,
 } from "./notices";
+import { transportEvidence } from "./transport-evidence";
 import {
   HEALTH_MONITOR_TICK_MS,
   createHealthMonitor,
@@ -520,6 +522,9 @@ export async function composeDaemon(
     handle: runtime.command,
     editor,
     env,
+    report: transportEvidence(
+      (entry) => void recordOrNote(diagnostic, notices, entry),
+    ),
     // Not once a stop has stopped it: rigd install then sees a rigd that serves no dashboard, and starts it anew.
     ...((opened) =>
       opened

@@ -9,6 +9,16 @@ export interface DiagnosticEntry extends FailureCauses {
   target?: string;
   outcome?: string;
   code?: string;
+  /** Which control-plane route a transport entry is about: a fixed category, never a URL. */
+  route?: string;
+  /** The HTTP status a transport entry answered with. */
+  status?: string;
+  /** How long the request took to answer, in whole milliseconds. */
+  durationMs?: string;
+  /** A transport failure's class of error, never its message. */
+  cause?: string;
+  /** How many more of the same outcome this entry stands for since the last one like it. */
+  repeated?: string;
   /** Bounded provider output the failure opted into sharing, such as Caddy's rejection line. */
   evidence?: string;
 }

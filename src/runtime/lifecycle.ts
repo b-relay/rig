@@ -103,6 +103,9 @@ export interface TargetEffects {
     unit: BuildUnit,
     target: TargetRecord,
   ): Promise<Record<string, string>>;
+  /** The directory `unit`'s command runs in, checked now: it fails WORKING_DIR_MISSING as the build would. Absent: not
+   * checked ahead of the build. */
+  buildDirectory?(unit: BuildUnit, target: TargetRecord): Promise<string>;
   /** Publishes a Tool's executable; never builds. */
   install(
     component: InstalledComponent,
@@ -906,7 +909,9 @@ export function createTargetLifecycle(
     },
     async checkFirstBuild(target) {
       const first = target.plan.builds?.[0];
-      if (first) await effects.buildEnvironment?.(first, target);
+      if (!first) return;
+      await effects.buildEnvironment?.(first, target);
+      await effects.buildDirectory?.(first, target);
     },
     async checkEnvironmentValues(target) {
       await effects.checkEnvironmentValues?.(target);

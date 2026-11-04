@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { loopbackListeners } from "./support/activation-doubles";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { controlledDeadline } from "./controlled-observation-deadline";
 import { createRuntime } from "../src/runtime/application";
@@ -62,6 +62,11 @@ const configs: Record<string, ProjectConfig> = {
     targets: { stable: true },
   }),
 };
+configs["/tmp/shim"] = parseProjectConfig({
+  name: "shim",
+  tools: { shim: { bin: "shim.ts" } },
+  targets: { stable: true },
+});
 // Another clone of Rig's repository, and an unrelated repository that also calls itself `rig`.
 configs["/tmp/rig-clone"] = configs["/tmp/rig"]!;
 configs["/tmp/impostor"] = configs["/tmp/rig"]!;
@@ -94,6 +99,8 @@ async function rigWorld() {
   const root = await mkdtemp(join(tmpdir(), "rig-tools-"));
   roots.push(root);
   let build = "v1";
+  /** The checkouts given back, in order. */
+  const released: string[] = [];
   /** Whether git answers in checkouts; false is a Host whose records predate provenance, or a checkout git cannot read. */
   let gitWorks = true;
   /** Which repository each prepared checkout was made from, so its committed config is that repository's. */
@@ -236,7 +243,7 @@ async function rigWorld() {
         // The checkout of this deploy: every Tool's bin, as `build` makes it.
         await mkdir(request.destination, { recursive: true });
         checkouts.set(request.destination, request.repository);
-        for (const name of ["ledger.sh", "rig.sh", "rigd.sh"])
+        for (const name of ["ledger.sh", "rig.sh", "rigd.sh", "shim.ts"])
           await writeFile(
             join(request.destination, name),
             `#!/bin/sh\necho ${name} ${build}\n`,
@@ -250,7 +257,9 @@ async function rigWorld() {
       async currentBranch() {
         return "main";
       },
-      async release() {},
+      async release({ workspacePath }) {
+        released.push(workspacePath);
+      },
       async changed() {
         return true;
       },
@@ -291,6 +300,7 @@ async function rigWorld() {
     state,
     deps,
     bin,
+    released,
     /** The next deploy's checkout holds Tools that print `next`. */
     rebuild(next: string) {
       build = next;
@@ -354,6 +364,48 @@ async function rigWorld() {
     },
   };
 }
+
+test("a forget keeps the checkout a source-file Tool left installed runs from, and the sweep gives back only what no Tool needs", async () => {
+  const w = await rigWorld();
+  await w.registerAndDeploy("shim");
+  const id = w.stableId("shim")!;
+  const running = () => w.state.targets.find((t) => t.id === id)!;
+  const first = running().plan.workspacePath;
+  expect(await w.tool("shim")).toContain(`${first}/shim.ts`);
+  await w.runtime.command({
+    action: "deploy",
+    project: "shim",
+    target: "stable",
+    force: true,
+    noUp: true,
+  });
+  expect(w.state.heldCheckouts).toEqual([
+    expect.objectContaining({ workspace: first }),
+  ]);
+  await w.stop("shim");
+  // A checkout nothing runs from any more, as a job run's end leaves one.
+  const other = join(dirname(first), "other");
+  w.state.heldCheckouts!.push({
+    target: id,
+    project: running().projectId,
+    workspace: other,
+  });
+
+  const forgotten = (await w.runtime.command({
+    action: "forget",
+    project: "shim",
+  })) as { warnings?: string[] };
+  expect(forgotten.warnings).toContainEqual(
+    expect.stringContaining(`Its checkout at ${first} was kept on disk`),
+  );
+  expect(w.state.heldCheckouts!.map((held) => held.workspace)).toEqual([other]);
+
+  w.released.length = 0;
+  await w.runtime.releaseHeldCheckouts(id);
+  expect(w.released).toEqual([other]);
+  expect(w.state.heldCheckouts).toEqual([]);
+  expect(await readFile(join(first, "shim.ts"), "utf8")).toContain("shim.ts");
+});
 
 test("forget, register the same repository again, deploy: its Tool is published again under the new Target", async () => {
   const w = await rigWorld();

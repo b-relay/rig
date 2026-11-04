@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseProjectConfig } from "../src/config";
@@ -62,7 +62,11 @@ async function fixture(config: ProjectConfig = shop()) {
     routeCheck?: () => unknown;
     /** Each withhold throws this. */
     withhold?: () => unknown;
+    /** The preparation at the head of a start throws this. */
+    prepare?: () => unknown;
   } = {};
+  /** How many withholds have reached the effects. */
+  const withholds = { count: 0 };
   /** Held open while a Target's build runs, and said running under its recorded key, as a live daemon's own build is. */
   const build: { hold?: Promise<void>; running?: () => void } = {};
   let pid = 7000;
@@ -137,7 +141,12 @@ async function fixture(config: ProjectConfig = shop()) {
     },
     wrapEffects: (effects) => ({
       ...effects,
+      async prepare(target, composed) {
+        if (fail.prepare) throw fail.prepare();
+        await effects.prepare(target, composed);
+      },
       async withhold(target, ports) {
+        withholds.count++;
         if (fail.withhold) throw fail.withhold();
         await effects.withhold(target, ports);
       },
@@ -210,6 +219,7 @@ async function fixture(config: ProjectConfig = shop()) {
     processes,
     events,
     fail,
+    withholds,
     build,
     host,
     store: world.store,
@@ -598,6 +608,55 @@ test("a restart is refused before anything stops when the first build's own env 
   }
 });
 
+test("a restart is refused before anything stops when the first build's working_dir is missing, since nothing could make it first", async () => {
+  const f = await fixture(
+    shop({
+      services: {
+        web: {
+          command: "web",
+          restart: "always",
+          ports: { http: WEB },
+          working_dir: "app",
+          build: "true",
+        },
+        api: { command: "api", restart: "no", ports: { http: API } },
+      },
+    }),
+  );
+  const directory = join(f.world.repo, "app");
+  await mkdir(directory);
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await refusedWithEverythingRunning(
+    f,
+    "working",
+    () => rm(directory, { recursive: true }),
+    "WORKING_DIR_MISSING",
+  );
+});
+
+test("a restart goes on when an earlier build can make a later build's missing working_dir", async () => {
+  const f = await fixture(
+    shop({
+      build: "mkdir -p app",
+      services: {
+        web: {
+          command: "web",
+          restart: "always",
+          ports: { http: WEB },
+          working_dir: "app",
+          build: "true",
+        },
+        api: { command: "api", restart: "no", ports: { http: API } },
+      },
+    }),
+  );
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await rm(join(f.world.repo, "app"), { recursive: true });
+  f.events.length = 0;
+  await f.command({ action: "restart", project: "shop", target: "working" });
+  expect(f.events).toEqual(["stop api", "stop web", "start web", "start api"]);
+});
+
 // After a Host restart (#702)
 
 test("after a Host restart no route of a working Target or Preview reaches its port until a verified start; a stable Target's comes back with its start", async () => {
@@ -655,6 +714,349 @@ test("while a Host restart's route cannot be withheld its stop is not recorded, 
   expect(f.processes.size).toBe(0);
 });
 
+test("a stable Target whose start after a Host restart fails keeps no path to a port nothing owns, however early it failed", async () => {
+  const refused = () =>
+    new RigError("PREPARE_FAILED", "The disk said no.", "Check it.");
+  for (const failing of ["prepare", "start"] as const) {
+    const f = await fixture();
+    await f.command({ action: "deploy", project: "shop", target: "stable" });
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+    f.processes.clear();
+    f.host.session = REBOOTED;
+    f.fail[failing] = refused;
+    f.reopen();
+    await f.reconcile();
+
+    expect(f.processes.size).toBe(0);
+    expect(await f.livePorts("stable")).toEqual([]);
+    expect((await f.target("stable")).services?.web?.outcome).toMatchObject({
+      kind: "start-failed",
+    });
+
+    // Its next start publishes them again.
+    delete f.fail[failing];
+    await f.command({ action: "up", project: "shop", target: "stable" });
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+  }
+});
+
+/** A stable Service left running through a new login, whose start then fails while its state is `first`; `settle` makes its
+ * state known again. */
+async function failedStartWhileUncertain(first: "unknown" | "unanswered") {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  const pids = await f.pids("stable");
+  f.withholds.count = 0;
+  f.host.session = { ...f.host.session, login: "100099" };
+  f.fail.prepare = () =>
+    new RigError("PREPARE_FAILED", "The disk said no.", "Check it.");
+  const observe = f.deps.observations.process;
+  const deadline = f.deps.observationDeadline;
+  f.deps.observations.process = async () =>
+    first === "unknown" ? { state: "unknown" } : new Promise(() => {});
+  if (first === "unanswered")
+    f.deps.observationDeadline = {
+      schedule(_ms, expiry) {
+        setTimeout(expiry, 0);
+        return () => {};
+      },
+    };
+  f.reopen();
+  await f.reconcile();
+  expect(await f.pids("stable")).toEqual(pids);
+  expect(f.withholds.count).toBe(0);
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  return {
+    f,
+    pids,
+    settle() {
+      f.deps.observations.process = observe;
+      f.deps.observationDeadline = deadline;
+      delete f.fail.prepare;
+    },
+  };
+}
+
+test.each(["unknown", "unanswered"] as const)(
+  "a stable Service %s when its start fails after a new login keeps its paths until a pass sees it stopped",
+  async (first) => {
+    const { f, settle } = await failedStartWhileUncertain(first);
+    // Still uncertain: the next pass looks again and leaves the paths as they are.
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+
+    settle();
+    f.processes.delete(`${(await f.target("stable")).id}:web`);
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([]);
+  },
+);
+
+test.each(["unknown", "unanswered"] as const)(
+  "a stable Service %s when its start fails after a new login, then seen running, has a later exit handled as any crash",
+  async (first) => {
+    const { f, settle } = await failedStartWhileUncertain(first);
+    settle();
+    await f.supervise();
+    const target = await f.target("stable");
+    const key = `${target.id}:web`;
+    const run = target.services!.web!;
+    expect(run.outcome).toBeUndefined();
+
+    f.processes.set(key, {
+      state: "stopped",
+      incarnation: run.incarnation!,
+      exitCode: 1,
+    });
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([]);
+    expect((await f.target("stable")).services?.web?.outcome).toMatchObject({
+      kind: "exited",
+    });
+    // restart: always takes it from here, and its verified start publishes its paths again.
+    f.world.clock.ms += 1000;
+    await f.supervise();
+    expect(f.processes.get(key)?.state).toBe("running");
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+  },
+);
+
+test("a Service whose record keeps it stopped has its paths withheld once when it stops, however long it ran with that record", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  const { id } = await f.target("stable");
+  await f.store.update((state) => {
+    const stable = state.targets.find((target) => target.id === id)!;
+    stable.services!.web = {
+      ...stable.services!.web!,
+      outcome: {
+        kind: "activation-failed",
+        errorCode: "HEALTH_FAILED",
+        at: "2026-11-03T08:00:00.000Z",
+      },
+    };
+  });
+  f.withholds.count = 0;
+  f.reopen();
+  await f.reconcile();
+  await f.supervise();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  expect(f.withholds.count).toBe(0);
+
+  f.processes.delete(`${id}:web`);
+  await f.supervise();
+  await f.supervise();
+  expect(await f.livePorts("stable")).toEqual([]);
+  expect(f.withholds.count).toBe(1);
+});
+
+test.each(["unknown", "unanswered"] as const)(
+  "a stable Service %s when its start fails after a new login, then seen running, keeps its paths",
+  async (first) => {
+    const { f, pids, settle } = await failedStartWhileUncertain(first);
+    settle();
+    await f.supervise();
+    await f.supervise();
+    expect(await f.pids("stable")).toEqual(pids);
+    expect(f.withholds.count).toBe(0);
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+  },
+);
+
+describe.each(["working", "preview"] as const)(
+  "a %s Service whose state is uncertain after a new login",
+  (kind) => {
+    test.each([
+      ["unknown", "running"],
+      ["unknown", "stopped"],
+      ["unanswered", "running"],
+      ["unanswered", "stopped"],
+    ] as const)(
+      "%s, later seen %s, keeps its paths until a pass sees it stopped",
+      async (uncertain, later) => {
+        const f = await fixture();
+        if (kind === "working")
+          await f.command({ action: "up", project: "shop", target: kind });
+        else await f.preview();
+        const pids = await f.pids(kind);
+        f.host.session = { ...f.host.session, login: "100099" };
+        const observe = f.deps.observations.process;
+        const deadline = f.deps.observationDeadline;
+        f.deps.observations.process = async () =>
+          uncertain === "unknown"
+            ? { state: "unknown" }
+            : new Promise(() => {});
+        if (uncertain === "unanswered")
+          f.deps.observationDeadline = {
+            schedule(_ms, expiry) {
+              setTimeout(expiry, 0);
+              return () => {};
+            },
+          };
+        f.reopen();
+        await f.reconcile();
+        expect(await f.pids(kind)).toEqual(pids);
+        expect(await f.livePorts(kind)).toEqual([WEB]);
+
+        f.deps.observations.process = observe;
+        f.deps.observationDeadline = deadline;
+        if (later === "stopped")
+          f.processes.delete(`${(await f.target(kind)).id}:web`);
+        await f.supervise();
+        await f.supervise();
+        expect(await f.livePorts(kind)).toEqual(
+          later === "running" ? [WEB] : [],
+        );
+      },
+    );
+  },
+);
+
+test("while a stable Target's route cannot be withheld its failed start after a Host restart is not recorded, each pass tries again, and nothing starts", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  f.processes.clear();
+  f.host.session = REBOOTED;
+  f.fail.prepare = () =>
+    new RigError("PREPARE_FAILED", "The disk said no.", "Check it.");
+  f.fail.withhold = () =>
+    new RigError("ROUTE_RELOAD", "The proxy did not answer.", "Check it.");
+  f.reopen();
+  await f.reconcile();
+  const outcome = async () => (await f.target("stable")).services?.web?.outcome;
+  expect(await outcome()).toBeUndefined();
+  await f.supervise();
+  expect(await outcome()).toBeUndefined();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+
+  delete f.fail.withhold;
+  await f.supervise();
+  expect(await outcome()).toMatchObject({ kind: "start-failed" });
+  expect(await f.livePorts("stable")).toEqual([]);
+  expect(f.processes.size).toBe(0);
+});
+
+/** A stable Target an earlier rigd settled for the reboot: its start recorded as failed, its paths still published. */
+async function settledByAnEarlierRigd() {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  f.processes.clear();
+  f.host.session = REBOOTED;
+  const id = (await f.target("stable")).id;
+  await f.store.update((state) => {
+    const stable = state.targets.find((target) => target.id === id)!;
+    stable.services = Object.fromEntries(
+      Object.entries(stable.services ?? {}).map(([service, run]) => [
+        service,
+        {
+          ...run,
+          outcome: {
+            kind: "start-failed" as const,
+            errorCode: "HEALTH_FAILED",
+            at: "2026-11-03T08:00:00.000Z",
+          },
+        },
+      ]),
+    );
+    state.host!.restart = {
+      kind: "reboot",
+      boot: REBOOTED.boot,
+      login: REBOOTED.login,
+      seq: state.startSeq ?? 0,
+      settled: [id],
+    };
+  });
+  return f;
+}
+
+test("paths an earlier rigd left published to a stable Target's stopped Services go with the next daemon's first pass, not its next rig up", async () => {
+  const f = await settledByAnEarlierRigd();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  f.reopen();
+  await f.reconcile();
+  expect(await f.livePorts("stable")).toEqual([]);
+  expect(f.processes.size).toBe(0);
+  await f.command({ action: "up", project: "shop", target: "stable" });
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+});
+
+test("paths the first pass could not withhold from stopped Services are withheld by a later pass once the proxy answers", async () => {
+  const f = await settledByAnEarlierRigd();
+  f.fail.withhold = () =>
+    new RigError("ROUTE_RELOAD", "The proxy did not answer.", "Check it.");
+  f.reopen();
+  await f.reconcile();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  delete f.fail.withhold;
+  await f.supervise();
+  expect(await f.livePorts("stable")).toEqual([]);
+});
+
+test.each(["unknown", "unanswered"] as const)(
+  "a Service %s on the first pass has its paths withheld by the pass that sees it stopped, and is not asked about again",
+  async (first) => {
+    const f = await settledByAnEarlierRigd();
+    const observe = f.deps.observations.process;
+    const deadline = f.deps.observationDeadline;
+    f.deps.observations.process = async () =>
+      first === "unknown" ? { state: "unknown" } : new Promise(() => {});
+    if (first === "unanswered")
+      f.deps.observationDeadline = {
+        schedule(_ms, expiry) {
+          setTimeout(expiry, 0);
+          return () => {};
+        },
+      };
+    f.reopen();
+    await f.reconcile();
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+    expect(f.withholds.count).toBe(0);
+
+    f.deps.observations.process = observe;
+    f.deps.observationDeadline = deadline;
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([]);
+    expect(f.withholds.count).toBe(1);
+    await f.supervise();
+    expect(f.withholds.count).toBe(1);
+  },
+);
+
+test("the diagnostic log says when a Service's state cannot be established, naming it, and when it can, not at every pass", async () => {
+  const f = await settledByAnEarlierRigd();
+  const observe = f.deps.observations.process;
+  const said: { outcome: string; evidence?: string }[] = [];
+  f.deps.diagnostic = async ({ outcome, evidence }) => {
+    if (outcome.startsWith("routes-")) said.push({ outcome, evidence });
+  };
+  f.deps.observations.process = async () => ({ state: "unknown" });
+  f.reopen();
+  await f.reconcile();
+  for (let pass = 0; pass < 5; pass++) await f.supervise();
+  expect(said).toEqual([
+    {
+      outcome: "routes-unchecked",
+      evidence: expect.stringContaining("Whether web still run"),
+    },
+  ]);
+
+  f.deps.observations.process = observe;
+  for (let pass = 0; pass < 3; pass++) await f.supervise();
+  expect(said.at(-1)).toEqual({ outcome: "routes-checked" });
+  expect(said).toHaveLength(2);
+  expect(await f.livePorts("stable")).toEqual([]);
+});
+
+test("a daemon's first pass leaves the paths of a running Service published", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  f.withholds.count = 0;
+  f.reopen();
+  await f.reconcile();
+  expect(f.withholds.count).toBe(0);
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+});
+
 test("a Service that survived a new login keeps its route after the Host restart", async () => {
   const f = await fixture();
   await f.command({ action: "up", project: "shop", target: "working" });
@@ -663,6 +1065,28 @@ test("a Service that survived a new login keeps its route after the Host restart
   await f.reconcile();
   expect((await f.target("working")).services?.web?.outcome).toBeUndefined();
   expect(await f.livePorts("working")).toEqual([WEB]);
+});
+
+// rigd uninstall (#678)
+
+test("rigd uninstall is refused for a Service whose process cannot be ruled out, naming it and how to stop it", async () => {
+  const f = await fixture();
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await f.command({ action: "down", project: "shop", target: "working" });
+  const stopped = await f.target("working");
+  f.processes.set(`${stopped.id}:api`, { state: "unknown" });
+  await expect(
+    f.command({ action: "prepare-uninstall" }),
+  ).rejects.toMatchObject({
+    code: "TARGETS_RUNNING",
+    message: expect.stringContaining("shop working (api is unknown)"),
+    hint: expect.stringContaining("rig down working --project shop"),
+  });
+  await f.command({ action: "cancel-uninstall" });
+  f.processes.clear();
+  expect(await f.command({ action: "prepare-uninstall" })).toEqual({
+    ready: true,
+  });
 });
 
 // Builds left running (#705)

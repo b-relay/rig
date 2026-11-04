@@ -59,6 +59,7 @@ const { createProcessInspection, platformKill } =
   await import("../src/providers/process-inspection");
 const { createProcessTiming } = await import("../src/providers/process-timing");
 const { runCommand } = await import("../src/providers/command-runner");
+const { createCaddyRouter } = await import("../src/providers/caddy-router");
 const { unreloadedCaddy, noRoutes } = await import("./support/router-doubles");
 const { localActivation } = await import("./support/activation-doubles");
 
@@ -114,6 +115,96 @@ const is = (entry: string) => (seen: string) => seen === entry;
 /** A file written whole through a temporary file beside `path`, flushed before it is renamed over `path`. */
 const temporaryOf = (path: string) => (seen: string) =>
   seen.startsWith(`sync ${path}.`) && seen.endsWith(".tmp");
+
+/** An external Caddy's route file in a directory of its own yet to be made, with its router. Each caddy command is traced by
+ * its verb, and `reloads` says how each reload ends. */
+async function externalRoutes(options: { hostCaddyfile?: boolean } = {}) {
+  const root = await real.realpath(
+    await real.mkdtemp(join(tmpdir(), "rig-durability-")),
+  );
+  roots.push(root);
+  const file = join(root, "new", "deep", "routes.caddy");
+  const reloads: number[] = [];
+  const router = createCaddyRouter({
+    caddyfile: file,
+    run: async ({ command }) => {
+      trace.push(`caddy ${command[1]}`);
+      return {
+        exitCode: command[1] === "reload" ? (reloads.shift() ?? 0) : 0,
+        stdout: "",
+        stderr: "",
+      };
+    },
+    ...(options.hostCaddyfile
+      ? { hostCaddyfile: async () => join(root, "Caddyfile") }
+      : {}),
+  });
+  const route = (port: number) => ({
+    key: "target",
+    sites: [
+      {
+        hostname: "app.test",
+        routes: [{ prefix: "/", upstream: `127.0.0.1:${port}` }],
+      },
+    ],
+  });
+  return { root, file, router, reloads, route };
+}
+const routeOnDiskBeforeReload = (file: string) => {
+  const directory = dirname(file);
+  const written = at(temporaryOf(file));
+  const backup = at(is(`sync ${file}.rig-backup`));
+  const renamed = at(is(`rename ${file}`), Math.max(written, backup));
+  const flushed = at(is(`sync ${directory}`), renamed);
+  expect(flushed).toBeLessThan(at(is("caddy reload")));
+};
+
+test("an external Caddy's route file and its backup are on disk, with the directory that names them, before Caddy reloads them", async () => {
+  for (const hostCaddyfile of [false, true]) {
+    const f = await externalRoutes({ hostCaddyfile });
+    trace.length = 0;
+    await f.router.apply(f.route(3000));
+    // The directories made for it are named on disk too.
+    expect(at(is(`sync ${join(f.root, "new")}`))).toBeGreaterThan(-1);
+    expect(at(is(`sync ${f.root}`))).toBeLessThan(at(is(`rename ${f.file}`)));
+    routeOnDiskBeforeReload(f.file);
+    trace.length = 0;
+    await f.router.apply(f.route(3001));
+    routeOnDiskBeforeReload(f.file);
+    expect(await real.readFile(`${f.file}.rig-backup`, "utf8")).toContain(
+      "127.0.0.1:3000",
+    );
+    expect(await real.readFile(f.file, "utf8")).toContain("127.0.0.1:3001");
+  }
+});
+
+test("a reload Caddy refuses puts the external route file back on disk before Caddy is reloaded again", async () => {
+  const f = await externalRoutes();
+  await f.router.apply(f.route(3000));
+  f.reloads.push(1);
+  trace.length = 0;
+  await expect(f.router.apply(f.route(3001))).rejects.toMatchObject({
+    code: "ROUTE_RELOAD",
+  });
+  const refused = at(is("caddy reload"));
+  const written = at(temporaryOf(f.file), refused);
+  const renamed = at(is(`rename ${f.file}`), written);
+  const flushed = at(is(`sync ${dirname(f.file)}`), renamed);
+  expect(flushed).toBeLessThan(at(is("caddy reload"), refused + 1));
+  expect(await real.readFile(f.file, "utf8")).toContain("127.0.0.1:3000");
+});
+
+test("a route file whose directory cannot be flushed fails FILE_NOT_DURABLE before Caddy is reloaded", async () => {
+  const f = await externalRoutes();
+  await f.router.apply(f.route(3000));
+  failingFlush = dirname(f.file);
+  trace.length = 0;
+  await expect(f.router.apply(f.route(3001))).rejects.toMatchObject({
+    code: "FILE_NOT_DURABLE",
+    details: { published: true },
+  });
+  expect(trace).not.toContain("caddy reload");
+});
 
 test("an effect checkpoint is on disk, its claim, directory, backups and journal, before the change it records; a commit is on disk before the checkpoint goes", async () => {
   const f = await fixture();

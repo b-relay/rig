@@ -216,6 +216,12 @@ export interface MainCaddyfileInput {
   /** The dashboard's route, served beside `proxy.routes` (see hostRoutes). */
   readonly dashboard?: PublishedDashboard;
 }
+/** Refuses (PROXY_PATH) a Rig root Caddy's configuration cannot hold, as rendering a generation from it would. Every path
+ * Rig's Caddy is given lies under the root, so these two stand for all of them, with and without a file's own name. */
+export function checkProxyRoot(paths: ProxyPaths): void {
+  checkCaddyValue("admin", `unix/${paths.socket}|0600`);
+  checkCaddyValue("path", paths.data);
+}
 /** The main Caddyfile of one generation. Pure: the same input renders the same text. Every value from config or the Rig
  * root reaches it through `caddyValue`, checked against its field's shape and quoted, so no value can carry Caddyfile
  * syntax: not a placeholder, an `{$ENV}` expansion, a directive or a comment. */

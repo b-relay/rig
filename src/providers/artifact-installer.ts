@@ -1,9 +1,11 @@
 import { constants } from "node:fs";
-import { access, readFile, stat } from "node:fs/promises";
-import { dirname, resolve, extname } from "node:path";
+import { access, open, readFile, stat } from "node:fs/promises";
+import { dirname, join, resolve, extname } from "node:path";
 import { replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 import type { CommandRunner } from "./contracts";
+/** How a source-file Tool's shim begins; the bun it runs and its source follow, each quoted. */
+const SHIM_START = "#!/bin/sh\nexec ";
 export interface InstallRequest {
   readonly cwd: string;
   readonly entrypoint: string;
@@ -66,7 +68,7 @@ export function createArtifactInstaller(options: {
         options.root ?? dirname(request.destination),
         request.destination,
         shimBun !== undefined
-          ? `#!/bin/sh\nexec ${shellQuote(shimBun)} ${shellQuote(source)} "$@"\n`
+          ? `${SHIM_START}${shellQuote(shimBun)} ${shellQuote(source)} "$@"\n`
           : await readFile(source),
         {
           mode:
@@ -127,6 +129,35 @@ async function runnableBun(
       { entrypoint, bun },
     );
   return bun;
+}
+
+/** Whether the executable at `path` is a source-file Tool's shim whose source lies in `directory`, which it needs for as long
+ * as it stays published. A copied executable needs nothing once published, and an absent one needs nothing at all. */
+export async function shimRunsFrom(
+  path: string,
+  directory: string,
+): Promise<boolean> {
+  const file = await open(path, "r").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  });
+  if (!file) return false;
+  try {
+    // A shim is two short lines; the rest of a copied binary is not worth reading.
+    const { buffer, bytesRead } = await file.read(
+      Buffer.alloc(16_384),
+      0,
+      16_384,
+    );
+    const text = buffer.subarray(0, bytesRead).toString();
+    // The source's quoted path, up to its closing quote.
+    return (
+      text.startsWith(SHIM_START) &&
+      text.includes(` ${shellQuote(join(directory, "/")).slice(0, -1)}`)
+    );
+  } finally {
+    await file.close();
+  }
 }
 
 function shellQuote(value: string): string {

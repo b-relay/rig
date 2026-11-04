@@ -37,6 +37,10 @@ export const CADDY_PATTERNS: Record<CaddyField, RegExp> = {
  * backslash, comments and control characters. */
 const FORBIDDEN = /[{}\s"'`\\#\u0000-\u001f\u007f]/;
 
+/** The fields Rig makes from the Rig root rather than reads from config.yaml, so a refusal sends the user to the root. */
+const fromRigRoot = (field: CaddyField) =>
+  field === "path" || field === "admin";
+
 /** `value` when it is a well-formed `field`, unquoted; otherwise a refusal naming the field. The one gate every value
  * passes on its way into a generated Caddyfile. */
 export function checkCaddyValue(
@@ -50,10 +54,10 @@ export function checkCaddyValue(
     (field === "port" && Number(text) > 65535)
   )
     throw new RigError(
-      field === "path" ? "PROXY_PATH" : "PROXY_CONFIG_INVALID",
+      fromRigRoot(field) ? "PROXY_PATH" : "PROXY_CONFIG_INVALID",
       `Rig cannot write the ${field} ${JSON.stringify(text)} into Caddy's configuration.`,
-      field === "path"
-        ? "Use a Rig root whose path has only letters, digits and . _ @ + / -."
+      fromRigRoot(field)
+        ? "Rig makes this value from the Rig root, not from config.yaml. Rig's Caddy needs a Rig root whose path has only letters, digits and . _ @ + / -: set RIG_ROOT to such a directory, or leave Rig's Caddy off."
         : `Fix the value in the proxy section of config.yaml: a ${field} with no braces, whitespace, quotes, backslash or '#'.`,
       { field, value: text },
     );

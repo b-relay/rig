@@ -2,7 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createChildSupervisor } from "../src/providers/child-supervisor";
+import { PassThrough } from "node:stream";
+import {
+  captureOutput,
+  createChildSupervisor,
+  type OwnedProcess,
+} from "../src/providers/child-supervisor";
+import type { ManagedProcess } from "../src/providers/contracts";
+import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import { runCommand } from "../src/providers/command-runner";
 import {
   createProcessInspection,
@@ -845,6 +852,103 @@ setInterval(() => {}, 1000);`,
       .sort(),
   ).toEqual(["target.jsonl", "target.jsonl.1"]);
   await supervisor.stop(request.key, { graceMs: 1500 });
+});
+
+test("a burst of short lines is recorded whole, in order and in batches, not in one append for each read of the pipe", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-process-burst-"));
+  roots.push(root);
+  let appends = 0;
+  const supervisor = createChildSupervisor({
+    ...platform(),
+    stateRoot: root,
+    // Asked once for each append.
+    logRetention: async () => {
+      appends++;
+      return DEFAULT_LOG_RETENTION;
+    },
+  });
+  supervisors.push(supervisor);
+  const logRoot = join(root, "logs");
+  const lines = 50_000;
+  const request = {
+    key: "target/web",
+    componentName: "web",
+    command: [
+      process.execPath,
+      "-e",
+      `const { writeSync } = require("node:fs");
+for (let n = 0; n < ${lines}; n++) writeSync(1, n + "\\n");`,
+    ],
+    cwd: root,
+    env: { PATH: "/usr/bin:/bin" },
+    logRoot,
+    incarnation: "start-1",
+  };
+  await supervisor.ensureRunning(request);
+  while ((await supervisor.observe(request.key)).state === "running")
+    await Bun.sleep(10);
+  // A stop waits for everything the pipes held to be written.
+  await supervisor.stop(request.key, { graceMs: 1500 });
+  const recorded = (await readFile(join(logRoot, "target.jsonl"), "utf8"))
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line).line as string);
+  expect(recorded).toEqual(Array.from({ length: lines }, (_, n) => String(n)));
+  expect(appends).toBeLessThan(lines / 5);
+}, 60_000);
+
+test("a line assembled across pipe chunks counts its whole length, so the pipes are held once that much waits for the log", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-process-split-"));
+  roots.push(root);
+  const [stdout, stderr] = [new PassThrough(), new PassThrough()];
+  const owned = {
+    pid: 1,
+    child: { stdout, stderr },
+    drains: [],
+    writes: Promise.resolve(),
+  } as unknown as OwnedProcess;
+  const logRoot = join(root, "logs");
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  captureOutput(
+    root,
+    owned,
+    { componentName: "web", logRoot } as ManagedProcess,
+    () => new Date(),
+    async () => {
+      await held;
+      return DEFAULT_LOG_RETENTION;
+    },
+  );
+  /** Lets the pipe hand over what it was given. */
+  const delivered = () => new Promise((resolve) => setImmediate(resolve));
+  // The first write waits for the test, so everything after it waits for that write.
+  stdout.write("first\n");
+  await delivered();
+  let lines = 1;
+  const body = "x".repeat(60_000);
+  while (!stdout.isPaused() && lines < 150) {
+    stdout.write(body);
+    await delivered();
+    stdout.write("\n");
+    await delivered();
+    lines++;
+  }
+  // 1 MiB of waiting output at 60 kB a line, the line in the first write aside.
+  expect(lines).toBe(19);
+  expect(stdout.isPaused()).toBe(true);
+  expect(stderr.isPaused()).toBe(true);
+
+  release();
+  stdout.end();
+  stderr.end();
+  await Promise.all(owned.drains);
+  await owned.writes;
+  const recorded = (await readFile(join(logRoot, "target.jsonl"), "utf8"))
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line).line as string);
+  expect(recorded).toEqual(["first", ...Array(lines - 1).fill(body)]);
 });
 
 test("a start whose working directory is missing fails naming the directory, as the working_dir or as the workspace, and nothing is spawned", async () => {

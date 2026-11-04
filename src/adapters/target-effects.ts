@@ -136,6 +136,7 @@ import { appendTargetLogEntries } from "../providers/target-log";
 import { outputLines } from "../domain/output-records";
 import {
   privateDirectory,
+  privateDirectoryWithin,
   removeFileDurably,
   replacePrivateFile,
 } from "../providers/private-files";
@@ -385,9 +386,10 @@ export function createTargetEffects(
     componentName: string,
     stream: TargetLogEntry["stream"],
     lines: readonly string[],
+    makeDirectory: typeof privateDirectory = privateDirectory,
   ) => {
     if (!lines.length) return;
-    await privateDirectory(options.root, target.logRoot);
+    await makeDirectory(options.root, target.logRoot);
     await appendTargetLogEntries(
       options.root,
       target.logRoot,
@@ -398,14 +400,16 @@ export function createTargetEffects(
         line,
       })),
       await options.logRetention?.(),
+      makeDirectory,
     );
   };
   /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. Only
    * the most recently checked are kept: a destroyed Preview or a removed Service is never checked again, so its entry goes
-   * in time, even one an observation in flight wrote as its owner went. */
+   * in time. */
   const lastHealth = new Map<string, string>();
   /** A check's answer, whatever becomes of its evidence: evidence that cannot be written is said (`unrecorded`) and stays
-   * unrecorded, so the next check writes it. */
+   * unrecorded, so the next check writes it. Evidence whose Target directory is gone is dropped, as is the memory of it: a
+   * check still in flight as its Preview is destroyed must not bring back what was deleted, and no one is left to tell. */
   const health = async (
     component: ManagedComponent,
     target: TargetRecord,
@@ -466,8 +470,15 @@ export function createTargetEffects(
     const key = `${target.id}:${component.name}`;
     if (lastHealth.get(key) !== evidence)
       try {
-        await recordLines(target, component.name, "health", [evidence]);
+        await recordLines(
+          target,
+          component.name,
+          "health",
+          [evidence],
+          privateDirectoryWithin,
+        );
       } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return check;
         return { ...check, unrecorded: describedFailure(error) };
       }
     keepRecent(lastHealth, key, evidence, KEPT_HEALTH_EVIDENCE);

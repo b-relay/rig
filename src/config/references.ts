@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { ConfigError } from "./errors";
-import { REFERENCE_VARIABLE_PREFIX } from "../domain/process-environment";
+import {
+  REFERENCE_VARIABLE_PREFIX,
+  unrepresentableValue,
+} from "../domain/process-environment";
 import {
   evaluatingConstruct,
   shellPosition,
@@ -76,7 +79,7 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
 /** Pure recursive resolution over one patched settings graph. A reference is an exact path to a scalar in that graph or a rig.* value;
  * `$${` escapes to a literal `${`. Inside a Service's own settings `${port}` is its only port and `${ports.<port>}` a named one;
  * `${services.<name>.port}` is that Service's only port anywhere. Throws ConfigError `renamed_reference` (a path through the old
- * `env`), `no_port` or `ambiguous_port` (a reference to a Service's only port when it has none or several), `unknown_reference`, `reference_not_scalar`, `reference_into_targets`,
+ * `env`), `no_port` or `ambiguous_port` (a reference to a Service's only port when it has none or several), `unknown_reference`, `reference_not_scalar`, `unrepresentable_value`, `reference_into_targets`,
  * `invalid_context` (rig.data, ${port} or ${ports.<port>} outside a Service) or `reference_cycle`, each naming the config path that holds the reference. */
 export function referenceResolver(
   settings: Readonly<Record<string, unknown>>,
@@ -271,6 +274,15 @@ export function referenceResolver(
         `Reference '\${${key}}' in ${at} names a collection, not one value.`,
         key,
         at,
+      );
+    // Every reference reaches a process, in its environment or in a _RIG_ variable, and must arrive as written.
+    const unrepresentable = unrepresentableValue(node);
+    if (unrepresentable)
+      throw new ConfigError(
+        `Reference '\${${key}}' in ${at} names a value that holds ${unrepresentable}.`,
+        "unrepresentable_value",
+        { key, path: at },
+        `Correct ${key} in rig.yaml; a process gets a value exactly or does not start.`,
       );
     const resolved = substitute(node, key, [...stack, key], (value) => value);
     const name =

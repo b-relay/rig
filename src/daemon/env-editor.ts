@@ -52,7 +52,9 @@ const changeSchema = z.discriminatedUnion("op", [
     value: z
       .string()
       .max(65536)
-      .describe("The value; never logged or recorded."),
+      .describe(
+        "The value, saved so that it reads back exactly; a NUL character or an unpaired surrogate is refused by name. Never logged or recorded.",
+      ),
   }),
   z.strictObject({
     op: z.literal("remove").describe("Remove every assignment of the name."),

@@ -173,7 +173,7 @@ import {
   type ScheduledRunResult,
 } from "./job-scheduler";
 import { boundedObservations } from "./bounded-observations";
-import type { KeepDecision } from "./keep-decision";
+import { describeServices, type KeepDecision } from "./keep-decision";
 import {
   initialPhase,
   type OperationPhase,
@@ -1373,6 +1373,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         warnings.push(...replaced.warnings);
         deployKept = decision.kept;
+        // --no-up starts nothing, so it has no restart to explain; its warning says what stopped.
+        const services = command.noUp ? undefined : describeServices(decision);
+        activityNote = services;
         return await finish("deployed", {
           warnings,
           retired: replaced.retired,
@@ -1387,6 +1390,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ...previous,
           kept: decision.kept,
           restarted: decision.restarted,
+          ...(services ? { services } : {}),
         });
       }
       if (command.action === "destroy") {
@@ -2941,7 +2945,8 @@ function preparedWarning(
  * Working copy's plan from the current rig.yaml (its `document`, read only for it), or a deployed Target's recorded plan,
  * whose preparation must be complete. The first thing to run must be able to: the Working copy's first build, whose
  * environment nothing runs before to write, or else each Service, whose environment must compose. With a build, a later
- * build's and each Service's wait for their own turn, since an earlier build may write an env file they read. */
+ * build's and each Service's wait for their own turn, since an earlier build may write an env file they read; only a value
+ * Rig refuses, in a file that exists, is refused now. */
 async function checkedRestartPlan(
   target: TargetRecord,
   document: () => ConfigDocument<ProjectConfig>,
@@ -2965,6 +2970,7 @@ async function checkedRestartPlan(
         )
       : target;
   if (planned.kind === "working" && planned.plan.builds?.length) {
+    await deps.lifecycle.checkEnvironmentValues(planned);
     await deps.lifecycle.checkFirstBuild(planned);
     return planned;
   }

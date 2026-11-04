@@ -7,6 +7,7 @@ import {
 } from "../src/domain/service-definition";
 import {
   decideKept,
+  describeServices,
   servicesToObserve,
   type KeepFacts,
   type KeepInput,
@@ -132,6 +133,26 @@ const decide = (input: Partial<KeepInput> = {}) =>
     facts: facts(),
     ...input,
   });
+
+test("describeServices says what a deploy started, restarted and why, and kept, leaving out what it did not do", () => {
+  expect(
+    describeServices({
+      kept: ["search"],
+      restarted: [
+        { service: "worker", reason: "new" },
+        { service: "api", reason: "files" },
+        { service: "db", reason: "definition" },
+        { service: "web", reason: "dependency", dependency: "api" },
+      ],
+    }),
+  ).toBe(
+    "started worker; restarted api (files), db (definition), web (dependency api); kept search",
+  );
+  expect(describeServices({ kept: ["db", "search"], restarted: [] })).toBe(
+    "kept db, search",
+  );
+  expect(describeServices({ kept: [], restarted: [] })).toBeUndefined();
+});
 
 describe("decideKept", () => {
   test("a deploy that changed nothing a Service uses keeps every Service running, though the checkout moved", () => {

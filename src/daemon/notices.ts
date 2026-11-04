@@ -1,4 +1,4 @@
-import type { DiagnosticLog } from "../diagnostics/types";
+import type { DiagnosticEntry, DiagnosticLog } from "../diagnostics/types";
 import type {
   RuntimeDependencies,
   RuntimeNotice,
@@ -119,30 +119,35 @@ export function workReport(
     },
   };
 }
-/** Records one operation outcome; a sink failure, returned or thrown, becomes a notice and never reaches the operation. */
+/** Records one entry; a sink failure, returned or thrown, becomes a notice and never reaches the caller. */
+export async function recordOrNote(
+  log: Pick<DiagnosticLog, "record">,
+  notices: Pick<NoticeBoard, "note">,
+  entry: DiagnosticEntry,
+): Promise<void> {
+  let failure: string | undefined;
+  try {
+    failure = (await log.record(entry)).error;
+  } catch (error) {
+    failure = describeFailure(error);
+  }
+  if (failure !== undefined)
+    notices.note(
+      DIAGNOSTIC_SINK,
+      `Diagnostic evidence was not recorded: ${failure}`,
+    );
+}
+/** Records one operation outcome through `recordOrNote`. */
 export function recordingDiagnostic(
   log: Pick<DiagnosticLog, "record">,
   notices: Pick<NoticeBoard, "note">,
 ): RuntimeDependencies["diagnostic"] {
-  return async (event) => {
-    let failure: string | undefined;
-    try {
-      failure = (
-        await log.record({
-          event: "operation.completed",
-          ...event,
-          code: event.errorCode,
-        })
-      ).error;
-    } catch (error) {
-      failure = describeFailure(error);
-    }
-    if (failure !== undefined)
-      notices.note(
-        DIAGNOSTIC_SINK,
-        `Diagnostic evidence was not recorded: ${failure}`,
-      );
-  };
+  return (event) =>
+    recordOrNote(log, notices, {
+      event: "operation.completed",
+      ...event,
+      code: event.errorCode,
+    });
 }
 /** Runs one pass at a time on a fixed interval, and once more when a pass names an earlier time something is due
  * (`nextRetryAt`, Unix milliseconds). A failed pass is noted on `channel` (the failure monitor's when absent), and a later

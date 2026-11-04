@@ -564,12 +564,24 @@ test("a running but unhealthy Service is restarted by a deploy that changed noth
 
 test("--force and --no-up keep nothing, and a deploy whose files changed restarts every Service that watches the whole checkout", async () => {
   const f = await fixture();
-  await f.deploy();
+  expect(await f.deploy()).toMatchObject({
+    services: "started db, search, api, web",
+  });
   f.git.head = "c2";
   f.git.changed = () => false;
-  expect(await f.deploy({ force: true })).toMatchObject({ kept: [] });
+  expect(await f.deploy({ force: true })).toMatchObject({
+    kept: [],
+    services:
+      "restarted db (requested), search (requested), api (requested), web (requested)",
+  });
   f.git.head = "c3";
-  expect(await f.deploy({ noUp: true })).toMatchObject({ kept: [] });
+  const prepared = await f.deploy({ noUp: true });
+  expect(prepared).toMatchObject({ kept: [] });
+  // It stopped everything and started nothing, so there is no restart to explain, on its line or in Activity.
+  expect(prepared).not.toHaveProperty("services");
+  expect((await f.world.store.read()).activity.at(-1)).not.toHaveProperty(
+    "message",
+  );
   expect((await f.stable()).desired).toBe("stopped");
   await f.runtime.command({
     action: "up",
@@ -586,6 +598,13 @@ test("--force and --no-up keep nothing, and a deploy whose files changed restart
       { service: "api", reason: "files" },
       { service: "web", reason: "files" },
     ],
+    services: "restarted db (files), search (files), api (files), web (files)",
+  });
+  // The deploy's Activity entry says the same as its line.
+  expect((await f.world.store.read()).activity.at(-1)).toMatchObject({
+    action: "deploy",
+    outcome: "deployed",
+    message: "restarted db (files), search (files), api (files), web (files)",
   });
   // Nothing was kept, so no earlier checkout is held.
   expect((await f.world.store.read()).heldCheckouts ?? []).toEqual([]);

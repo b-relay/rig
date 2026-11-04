@@ -80,6 +80,8 @@ export interface TargetEffects {
     target: TargetRecord,
     env: Readonly<Record<string, string>>,
   ): Promise<string>;
+  /** Fails ENV_VALUE when a Service of `target` could not start for a value Rig refuses (see `TargetLifecycle.checkEnvironmentValues`). */
+  checkEnvironmentValues?(target: TargetRecord): Promise<void>;
   /** The Service's own check, or without one a connection to every port it declares.
    * May block or ignore cancellation. A not-ready result retries after 100ms and its reason is kept for the failure; rejection fails startup. */
   health(
@@ -266,6 +268,9 @@ export interface TargetLifecycle {
   /** Fails as composing the environment of the plan's first build unit fails (an unreadable env file, say), which nothing
    * runs before to write; runs nothing. */
   checkFirstBuild(target: TargetRecord): Promise<void>;
+  /** Fails ENV_VALUE when a value in the plan or in an env file that exists now would refuse a Service's start, whichever file
+   * holds it; no other failure, so a build may still write a file that is missing. Runs nothing. */
+  checkEnvironmentValues(target: TargetRecord): Promise<void>;
   /** Stops one Service within its stop_timeout, telling the stop's observer, and leaves the others as they are; its routed
    * paths are withheld first, and a stop whose paths cannot be withheld is not made. SERVICE_UNKNOWN when the plan has no
    * such Service. A health restart stops a Service this way before `recover` starts it again. */
@@ -411,6 +416,8 @@ export function withStops(
     environmentDigest: (target, service) =>
       lifecycle.environmentDigest(target, service),
     checkFirstBuild: (target) => lifecycle.checkFirstBuild(target),
+    checkEnvironmentValues: (target) =>
+      lifecycle.checkEnvironmentValues(target),
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
@@ -905,6 +912,9 @@ export function createTargetLifecycle(
       if (!first) return;
       await effects.buildEnvironment?.(first, target);
       await effects.buildDirectory?.(first, target);
+    },
+    async checkEnvironmentValues(target) {
+      await effects.checkEnvironmentValues?.(target);
     },
     async stop(target, service, stops) {
       const component = target.plan.components.find(

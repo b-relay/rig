@@ -24,8 +24,15 @@ import { isHealthUrl } from "../config/schema";
 import { installedPath } from "../domain/installed-path";
 import { isGitCommit } from "../domain/git";
 import { componentDirectory } from "../config/working-dir";
-import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
-import { composeEnvironment } from "../domain/process-environment";
+import {
+  gitIgnoreCheck,
+  loadEnvironmentFiles,
+  readEnvironmentFile,
+} from "./env-file";
+import {
+  assertRepresentableEnvironment,
+  composeEnvironment,
+} from "../domain/process-environment";
 import type { TargetRecord } from "../domain/runtime";
 import type {
   Supervisor,
@@ -109,6 +116,7 @@ function failureReason(error: unknown): string {
 import type { HealthObservation, ObservationEffects } from "../runtime/status";
 import {
   RigError,
+  diagnosticErrorCode,
   failureCauses,
   failureReason as describedFailure,
   lastOutputLine,
@@ -207,18 +215,21 @@ export function createTargetEffects(
   const noted = new Set<string>();
   /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, its env files, then the plan's reference values.
    * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment and
-   * `secrets`, the list of them to redact. */
+   * `secrets`, the list of them to redact. `forRunningProcess` is for a check of a process already running: see
+   * `loadEnvironmentFiles`; every other invocation gets each value exactly or is refused. */
   const invocationEnvironment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent | PlanJob,
     /** Inputs of a Project-scope command, which no Component carries. */
     projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
+    forRunningProcess = false,
   ): Promise<{ env: Record<string, string>; secrets: string[] }> => {
     const scope = component ?? target.plan;
     const loaded = await loadEnvironmentFiles(
       scope.envFiles ?? [],
       target.plan.workspacePath,
       ignored,
+      forRunningProcess,
     );
     const tmp = join(options.root, "tmp", target.id);
     const composed = composeEnvironment({
@@ -242,10 +253,13 @@ export function createTargetEffects(
     if (fresh.length)
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
     // The values its commands read through _RIG_ variables come last.
-    return {
-      env: { ...composed.env, ...referenceValuesOf(target.plan, component) },
-      secrets: composed.secrets,
+    const env = {
+      ...composed.env,
+      ...referenceValuesOf(target.plan, component),
     };
+    if (!forRunningProcess)
+      assertRepresentableEnvironment(env, component?.name);
+    return { env, secrets: composed.secrets };
   };
   const environment = async (
     ...args: Parameters<typeof invocationEnvironment>
@@ -513,7 +527,12 @@ export function createTargetEffects(
           signal.removeEventListener("abort", forward);
         }
       }
-      const { env, secrets } = await invocationEnvironment(target, component);
+      const { env, secrets } = await invocationEnvironment(
+        target,
+        component,
+        [],
+        true,
+      );
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
         cwd: await runDirectory(target, component),
@@ -660,6 +679,29 @@ export function createTargetEffects(
     supervisor,
     environment,
     digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
+    async checkEnvironmentValues(target) {
+      const managed = target.plan.components.filter(
+        (component) => component.kind === "managed",
+      );
+      // A file several Services share is read once here; each start reads its own afresh.
+      const paths = new Set(
+        managed.flatMap((component) =>
+          (component.envFiles ?? []).map(({ path }) => path),
+        ),
+      );
+      for (const path of paths)
+        await readEnvironmentFile(path).catch((error: unknown) => {
+          if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
+        });
+      for (const component of managed)
+        assertRepresentableEnvironment(
+          {
+            ...component.env,
+            ...referenceValuesOf(target.plan, component),
+          },
+          component.name,
+        );
+    },
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
     checkpoint: async (target, previous) =>

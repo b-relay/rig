@@ -7,6 +7,7 @@ import { referenceResolver } from "./references";
 import {
   REFERENCE_VARIABLE_PREFIX,
   RESERVED_NAME_RULE,
+  unrepresentableValue,
 } from "../domain/process-environment";
 import {
   roleHostname,
@@ -152,17 +153,29 @@ const environmentMap = (scope: ReferenceScope) =>
     .pipe(
       z.record(
         envName,
-        z.string().describe(`Public value. ${referencesIn(scope)}`),
+        z
+          .string()
+          .describe(
+            `Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. ${referencesIn(scope)}`,
+          ),
       ),
     )
     .superRefine((env, ctx) => {
-      for (const [key, value] of Object.entries(env))
+      for (const [key, value] of Object.entries(env)) {
         if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
           ctx.addIssue({
             code: "custom",
             path: [key],
             message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
           });
+        const unrepresentable = unrepresentableValue(value);
+        if (unrepresentable)
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} holds ${unrepresentable}.`,
+          });
+      }
     });
 const env = (scope: ReferenceScope) =>
   environmentMap(scope).describe(

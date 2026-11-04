@@ -117,6 +117,9 @@ async function activate(
     await prepareTarget(candidate, "all", deps);
     // Before anything stops: a route that cannot be published would leave neither Deployment serving.
     await deps.lifecycle.checkRoute(candidate);
+    // Before anything stops: a value Rig refuses would refuse the rollback's starts too, leaving neither Deployment running.
+    if (intent.activation === "start")
+      await deps.lifecycle.checkEnvironmentValues(candidate);
     const decision = previous
       ? await decideKeeping(candidate, previous, intent, deps)
       : firstDecision(candidate);

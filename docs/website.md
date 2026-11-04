@@ -212,7 +212,12 @@ and every directory from `<RIG_ROOT>/env` down to it 0700. A symlink below
 `<RIG_ROOT>/env`, to the file or a directory on the way to it, is refused for
 read, reveal and write (`ENV_SCOPE_SYMLINK`), so nothing outside the env tree
 is read or replaced. Each value is quoted so the env-file reader reads it back
-exactly, and refused by name when it cannot be. Each write records an Activity
+exactly, and refused by name when it cannot be (`ENV_VALUE`: a NUL character or
+an unpaired surrogate, which a process could not get as written, or a Unicode
+line separator). A revision is of the file's bytes, and a file the reader
+refuses (a line that is not UTF-8, a NUL, `__proto__`) shows its names and the
+refusal, and is neither revealed nor rewritten until it is fixed in an editor.
+Each write records an Activity
 entry (`env`, `updated`) naming who asked and which names changed in which
 file, never a value. Every such request is signed in, so the server names where
 it came from, from the request itself and never from the browser:

@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   lstat,
   mkdir,
@@ -126,6 +127,64 @@ test("malformed YAML is a ConfigError that names the document path", async () =>
     context: { path },
     hint: expect.stringContaining(path),
   });
+});
+
+test("a rig.yaml that is not valid UTF-8 is refused, naming the file and the line, wherever the bytes lie; nothing reads it altered", async () => {
+  const root = await fixture(),
+    path = join(root, "rig.yaml");
+  const valid =
+    "name: app\ntargets:\n  working: true\nservices:\n  web:\n    command: serve\n";
+  for (const [line, bytes] of [
+    [8, "environment:\n  LABEL: caf\xe9\n"],
+    [7, "# caf\xe9\n"],
+    // A character cut short right before the line break.
+    [7, "# caf\xc3\n"],
+  ] as const) {
+    const raw = Buffer.concat([
+      Buffer.from(valid),
+      Buffer.from(bytes, "latin1"),
+    ]);
+    await writeFile(path, raw);
+    for (const read of [readProjectConfig, readProjectConfigSource])
+      await expect(read(root)).rejects.toMatchObject({
+        _tag: "ConfigError",
+        code: "invalid_yaml",
+        message: expect.stringContaining(
+          `${path} has bytes that are not valid UTF-8 on line ${line}`,
+        ),
+        context: { path, line },
+        hint: expect.stringContaining(path),
+      });
+    const edit = {
+      repoPath: root,
+      // The revision of the text as a reader that replaces such bytes took it: no edit may go through on it.
+      expectedRevision: createHash("sha256")
+        .update(raw.toString("utf8"))
+        .digest("hex"),
+      edits: [],
+    };
+    await expect(previewProjectConfig(edit)).rejects.toMatchObject({
+      code: "invalid_yaml",
+    });
+    await expect(editProjectConfig(edit)).rejects.toMatchObject({
+      code: "invalid_yaml",
+    });
+    expect(await readFile(path)).toEqual(raw);
+  }
+  // Characters that are valid stay as they are, a BOM and an encoded replacement character included.
+  await writeFile(path, `﻿${valid}environment:\n  LABEL: "café �"\n`);
+  const source = await readProjectConfigSource(root);
+  expect(source.config.environment).toEqual({ LABEL: "café �" });
+  expect(source.raw).toStartWith("﻿name: app");
+});
+
+test("Host config with bytes that are not UTF-8 stays readable, since refusing it would keep rigd from starting", async () => {
+  const root = await fixture();
+  await writeFile(
+    join(root, "config.yaml"),
+    Buffer.from("# caf\xe9\ndeploy:\n  production_branch: release\n", "latin1"),
+  );
+  expect((await readHostConfig(root)).deploy.production_branch).toBe("release");
 });
 
 test("a registered directory that no longer exists is told apart from a directory without a config", async () => {

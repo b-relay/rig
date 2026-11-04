@@ -59,7 +59,7 @@ const failed = (cause: string): Reply => ({
   cause,
 });
 /** A request that is not the JSON document it should be; `rig` only sends what its own grammar accepts, so `hint` names
- * the version too. `details.version` is what lets rig tell a version mismatch. */
+ * the version too. The client reads `details.version` to name both versions in its message about a mismatch. */
 const invalidRequest = (message: string, hint: string): Reply =>
   refusal(400, "INVALID_REQUEST", message, hint, {
     details: { version: RIG_BUILD },

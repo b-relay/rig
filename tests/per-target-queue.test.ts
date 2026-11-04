@@ -219,6 +219,11 @@ async function fixture(host: Record<string, unknown> = {}) {
       async observePreparation() {
         return { state: "stopped" as const };
       },
+      async stopPreparation() {
+        return { outcome: "unchanged" as const };
+      },
+      async checkFirstBuild() {},
+      async checkEnvironmentValues() {},
       async stopJob() {
         return { outcome: "unchanged" as const };
       },

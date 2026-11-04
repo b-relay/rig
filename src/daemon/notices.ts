@@ -1,4 +1,4 @@
-import type { DiagnosticLog } from "../diagnostics/types";
+import type { DiagnosticEntry, DiagnosticLog } from "../diagnostics/types";
 import type {
   RuntimeDependencies,
   RuntimeNotice,
@@ -31,8 +31,8 @@ export const FAILURE_MONITOR: NoticeChannel = {
 export const HEALTH_MONITOR: NoticeChannel = {
   name: "health",
   consequence:
-    "Ongoing health checks (healthcheck) of the Services named are not run, or their result is missing from Activity or the Target log, until they succeed; rigd tries again every second.",
-  hint: `Run rig activity --all for the results the checks last recorded. ${STATE_WRITE_REPAIR} So must the Target's logs under the Rig root. ${PERSISTING}`,
+    "Ongoing health checks (healthcheck) of the Services named are not run, or their result is missing from Activity or the Target log, or their last health restart failed, until they succeed; rigd tries again every second, and a health restart on its back-off.",
+  hint: `Run rig activity --all for the results the checks last recorded and why a health restart failed; rig status says what the Service does now. A restart that failed for the Service's own reason clears once a restart passes, a check passes or rig restart starts it. Otherwise: ${STATE_WRITE_REPAIR} So must the Target's logs under the Rig root. ${PERSISTING}`,
 };
 export const JOB_SCHEDULER: NoticeChannel = {
   name: "jobs",
@@ -119,30 +119,35 @@ export function workReport(
     },
   };
 }
-/** Records one operation outcome; a sink failure, returned or thrown, becomes a notice and never reaches the operation. */
+/** Records one entry; a sink failure, returned or thrown, becomes a notice and never reaches the caller. */
+export async function recordOrNote(
+  log: Pick<DiagnosticLog, "record">,
+  notices: Pick<NoticeBoard, "note">,
+  entry: DiagnosticEntry,
+): Promise<void> {
+  let failure: string | undefined;
+  try {
+    failure = (await log.record(entry)).error;
+  } catch (error) {
+    failure = describeFailure(error);
+  }
+  if (failure !== undefined)
+    notices.note(
+      DIAGNOSTIC_SINK,
+      `Diagnostic evidence was not recorded: ${failure}`,
+    );
+}
+/** Records one operation outcome through `recordOrNote`. */
 export function recordingDiagnostic(
   log: Pick<DiagnosticLog, "record">,
   notices: Pick<NoticeBoard, "note">,
 ): RuntimeDependencies["diagnostic"] {
-  return async (event) => {
-    let failure: string | undefined;
-    try {
-      failure = (
-        await log.record({
-          event: "operation.completed",
-          ...event,
-          code: event.errorCode,
-        })
-      ).error;
-    } catch (error) {
-      failure = describeFailure(error);
-    }
-    if (failure !== undefined)
-      notices.note(
-        DIAGNOSTIC_SINK,
-        `Diagnostic evidence was not recorded: ${failure}`,
-      );
-  };
+  return (event) =>
+    recordOrNote(log, notices, {
+      event: "operation.completed",
+      ...event,
+      code: event.errorCode,
+    });
 }
 /** Runs one pass at a time on a fixed interval, and once more when a pass names an earlier time something is due
  * (`nextRetryAt`, Unix milliseconds). A failed pass is noted on `channel` (the failure monitor's when absent), and a later

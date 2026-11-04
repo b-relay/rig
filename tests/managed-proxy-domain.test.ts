@@ -207,6 +207,27 @@ test("high ports stay on 127.0.0.1, internal certificates never touch the keycha
   ).toThrow(expect.objectContaining({ code: "PROXY_PATH" }));
 });
 
+test("a Rig root Caddy cannot be given is refused by naming the Rig root, not config.yaml, wherever its first path is", () => {
+  for (const root of ["/r with space", "/tmp/x/caddy ' & root"])
+    for (const tls of [{ ca: "internal" }, {}]) {
+      expect(() =>
+        renderMainCaddyfile({
+          settings: settings({ tls }),
+          paths: proxyPaths(root),
+          generation: `${root}/caddy/generations/g1`,
+          hostnames: [],
+        }),
+      ).toThrow(
+        expect.objectContaining({
+          code: "PROXY_PATH",
+          hint: expect.stringMatching(
+            /^Rig makes this value from the Rig root, not from config\.yaml\..*set RIG_ROOT/,
+          ),
+        }),
+      );
+    }
+});
+
 test("a token is trimmed and must be one unbroken run of token characters; a malformed one is refused without echoing it", () => {
   const synthetic = "Syn_thetic-Token-0123456789abcdefABCDEF";
   expect(normalizeToken(`  ${synthetic}\n`)).toBe(synthetic);

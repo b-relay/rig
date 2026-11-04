@@ -50,10 +50,10 @@ function freePort(): number {
   return port;
 }
 /** A process-mode Rig root (short, so Caddy's socket path fits) with a stand-in rigd and the real proxy installation. */
-async function world() {
+async function world(prefix = "/tmp/rig-pi-") {
   if (!caddy)
     throw new Error("Proxy installation tests require a local caddy.");
-  const root = await mkdtemp("/tmp/rig-pi-");
+  const root = await mkdtemp(prefix);
   const home = join(root, "home");
   await mkdir(home, { recursive: true });
   const script = join(root, "child.ts");
@@ -147,6 +147,20 @@ test("switching back to providers.caddy restarts rigd without Rig's Caddy and st
     proxy: "external",
   });
 }, 60_000);
+
+test("a Rig root with a space refuses the install before anything starts, naming RIG_ROOT rather than config.yaml", async () => {
+  const w = await world("/tmp/rig pi ");
+  await w.config({ tls: { ca: "internal" } });
+  await expect(w.admin.install()).rejects.toMatchObject({
+    code: "PROXY_PATH",
+    hint: expect.stringContaining("set RIG_ROOT"),
+  });
+  expect(await w.admin.status()).toMatchObject({
+    installed: false,
+    running: false,
+  });
+  expect(await w.caddyAdmin.reachable()).toBe(false);
+}, 30_000);
 
 test("without a stored token a production CA refuses the install before anything starts, naming rig proxy token", async () => {
   const w = await world();

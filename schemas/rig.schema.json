@@ -46,7 +46,7 @@
       },
       "additionalProperties": {
         "type": "string",
-        "description": "Public value. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+        "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
       }
     },
     "env_file": {
@@ -249,7 +249,7 @@
             },
             "additionalProperties": {
               "type": "string",
-              "description": "Public value. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+              "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
             }
           },
           "env_file": {
@@ -370,7 +370,7 @@
             },
             "additionalProperties": {
               "type": "string",
-              "description": "Public value. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data} (this job's own persistent directory). $${VAR} writes a literal ${VAR}."
+              "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data} (this job's own persistent directory). $${VAR} writes a literal ${VAR}."
             }
           },
           "env_file": {
@@ -491,7 +491,7 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "description": "Public value. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                    "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                   }
                 },
                 "env_file": {
@@ -709,7 +709,7 @@
                         },
                         "additionalProperties": {
                           "type": "string",
-                          "description": "Public value. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                         }
                       },
                       "env_file": {
@@ -820,7 +820,7 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "description": "Public value. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                    "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                   }
                 },
                 "env_file": {
@@ -1038,7 +1038,7 @@
                         },
                         "additionalProperties": {
                           "type": "string",
-                          "description": "Public value. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                         }
                       },
                       "env_file": {
@@ -1149,7 +1149,7 @@
                   },
                   "additionalProperties": {
                     "type": "string",
-                    "description": "Public value. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
+                    "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                   }
                 },
                 "env_file": {
@@ -1367,7 +1367,7 @@
                         },
                         "additionalProperties": {
                           "type": "string",
-                          "description": "Public value. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
+                          "description": "Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. References: ${port} (this Service's only port), ${ports.<port>} (one of its named ports), ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}, ${rig.data}. $${VAR} writes a literal ${VAR}."
                         }
                       },
                       "env_file": {

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds one release's files into <out>: rig and rigd compiled for both Mac architectures with the dashboard beside them,
-# one archive per architecture, the install script with this release's tag written into it, and SHA256SUMS over all of
-# them. The release workflow
+# Builds one release's files into <out>: rig and rigd compiled for both Mac architectures with the dashboard beside them
+# and the third-party notices in it, one archive per architecture, the install script with this release's tag written
+# into it, and SHA256SUMS over all of them. The release workflow
 # runs it on a pushed tag; it also runs locally to try a release before tagging one.
 #
 #   scripts/package-release.sh <tag> <out>     for example: scripts/package-release.sh v0.1.0 dist
@@ -42,6 +42,9 @@ stamp="$(git rev-parse --short=12 HEAD)"
 mkdir -p "$out"
 # One dashboard serves both architectures: rigd runs it with the Bun inside its own executable.
 scripts/build-dashboard.sh "$out/.dashboard"
+# The licenses of what rig, rigd and the dashboard bundle go with the dashboard, so the install script keeps them. It
+# fails when a bundled package has no license file.
+bun scripts/third-party-notices.ts "$out/.dashboard"
 for arch in arm64 x64; do
 	build="rig-$tag-darwin-$arch"
 	mkdir "$out/$build"

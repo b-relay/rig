@@ -57,6 +57,7 @@ import {
   intendRunning,
   intendStopped,
   superviseTarget,
+  withholdStoppedServices,
   supervisionScope,
   type RestartMarks,
 } from "./supervision";
@@ -91,6 +92,7 @@ import { assertLogServices } from "./log-services";
 import { plannedSites } from "./ports";
 import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
 import {
+  assertPrepared,
   assertSourceBuildsKnown,
   type TargetLifecycle,
   withStops,
@@ -112,7 +114,7 @@ import {
   type StopTracking,
 } from "./stop-progress";
 import { prepareTarget } from "./preparation";
-import { observeTargets } from "./status";
+import { observeTargets, type TargetReport } from "./status";
 import { projectStatus } from "./project-status";
 import {
   assertDeploymentRecovered,
@@ -171,7 +173,7 @@ import {
   type ScheduledRunResult,
 } from "./job-scheduler";
 import { boundedObservations } from "./bounded-observations";
-import type { KeepDecision } from "./keep-decision";
+import { describeServices, type KeepDecision } from "./keep-decision";
 import {
   initialPhase,
   type OperationPhase,
@@ -378,6 +380,35 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     unmarked.delete(target.id);
     return true;
   };
+  /** The routed Services of each Target meant to run that this daemon saw stopped and had withheld, while their record keeps
+   * them stopped (see `withholdStoppedServices`), by Target id. */
+  const routesChecked = new Map<string, Set<string>>();
+  /** The Services of each Target whose state `routesChecked` could not establish at its last look, as last recorded. */
+  const routesUnchecked = new Map<string, string>();
+  /** Records in the diagnostic log when the Services of `target` whose state could not be established change, and when none
+   * is left: every pass looks again, and one unchanged look says nothing new. */
+  const noteRoutesUnchecked = async (
+    target: TargetRecord,
+    action: string,
+    uncertain: readonly string[],
+  ): Promise<void> => {
+    const services = uncertain.join(", ");
+    if (services === (routesUnchecked.get(target.id) ?? "")) return;
+    routesUnchecked.set(target.id, services);
+    await deps
+      .diagnostic({
+        operationId: deps.id(),
+        action,
+        outcome: services ? "routes-unchecked" : "routes-checked",
+        target: target.name,
+        ...(services
+          ? {
+              evidence: `Whether ${services} still run could not be established, so their paths are left as published until they can.`,
+            }
+          : {}),
+      })
+      .catch(() => {});
+  };
   /** stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
    * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
   const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
@@ -423,6 +454,14 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         inProgress,
         stopping,
         serviceStops: (targetId) => activeStops(operations.values(), targetId),
+        // Only an up, restart or deploy builds: while one holds or waits for the Target, what runs may be its own.
+        leftoverBuild: (target, signal) =>
+          locks.busy(targetScope(target.projectId, target), (id) => {
+            const action = operations.get(id)?.view.action;
+            return !["up", "restart", "deploy"].includes(action ?? "");
+          })
+            ? Promise.resolve({ state: "stopped" })
+            : deps.lifecycle.observePreparation(target, signal),
         ...(state.jobs ? { jobRecords: state.jobs } : {}),
         ...(state.backups ? { backupRecords: state.backups } : {}),
       },
@@ -647,19 +686,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           deps.observationDeadline,
           deps.healthResults,
         );
-        if (
-          state.targets.some((t) => t.desired === "running") ||
-          state.jobs?.some((record) => record.running) ||
-          reports.some((t) =>
-            t.components.some((c) =>
-              ["running", "healthy", "unhealthy", "unknown"].includes(c.state),
-            ),
-          )
-        )
+        const blocking = uninstallBlockers(state, reports);
+        if (blocking.length)
           throw new RigError(
             "TARGETS_RUNNING",
-            "Cannot uninstall rigd while Targets are running or uncertain.",
-            "Stop all Targets and verify status first.",
+            `Cannot uninstall rigd while Targets are running or uncertain: ${blocking.map(({ what }) => what).join("; ")}.`,
+            `Stop them (${blocking.map(({ stop }) => stop).join(", ")}), check rig status, then retry. Only Services and job runs keep rigd from uninstalling: Tools stay installed, whatever state they are in.`,
           );
         // A build a daemon that died left running is in no Target's status: only its recorded process group shows it.
         const builds = await boundedObservations(
@@ -1095,7 +1127,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           throw new RigError(
             "STATE_WRITE",
             `Rig could not record that the Mac restarted for ${target.name}, so nothing was started.`,
-            `Fix the state directory under RIG_ROOT/runtime (rig doctor and the rigd diagnostic log show why; free disk space or fix the permissions), then run the command again. ${rigCommand("down", { target })} still works.`,
+            `Fix the state directory under RIG_ROOT/runtime, or the proxy when a route could not be withheld (rig doctor and the rigd diagnostic log show why; free disk space or fix the permissions), then run the command again. ${rigCommand("down", { target })} still works.`,
             { target: target.name },
           );
         // A command that plans from rig.yaml plans from the file as it is once admitted, not as it was when it arrived.
@@ -1341,6 +1373,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         warnings.push(...replaced.warnings);
         deployKept = decision.kept;
+        // --no-up starts nothing, so it has no restart to explain; its warning says what stopped.
+        const services = command.noUp ? undefined : describeServices(decision);
+        activityNote = services;
         return await finish("deployed", {
           warnings,
           retired: replaced.retired,
@@ -1355,6 +1390,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ...previous,
           kept: decision.kept,
           restarted: decision.restarted,
+          ...(services ? { services } : {}),
         });
       }
       if (command.action === "destroy") {
@@ -1448,71 +1484,86 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           );
         }
       } else {
-        if (command.action === "restart") {
-          target.desired = "stopped";
-          intendStopped(target);
-          target.updatedAt = deps.now();
-          await persistTarget(target, deps.store);
-          admission.phase("stopping", target);
-          await stopKeepingKills(target);
-          admission.phase("starting", target);
+        // Whatever would refuse a restart refuses it here, with every Service still running. The route check keeps its
+        // reservation until the start is over.
+        const restarting =
+          command.action === "restart"
+            ? await checkedRestartPlan(
+                target,
+                workingCopyDocument,
+                command,
+                project,
+                deps,
+              )
+            : undefined;
+        try {
+          if (restarting) {
+            await afterOrphanSweep(restarting, () =>
+              deps.lifecycle.checkRoute(restarting),
+            );
+            target.desired = "stopped";
+            intendStopped(target);
+            target.updatedAt = deps.now();
+            await persistTarget(target, deps.store);
+            admission.phase("stopping", target);
+            await stopKeepingKills(target);
+            admission.phase("starting", target);
+            if (target.kind === "working")
+              target = await adoptWorkingCopyPlan(target, restarting, deps);
+          }
+          // Only the Working copy builds here, from current source; a deployed Target starts from its deployment's preparation.
           if (target.kind === "working")
-            target = await replanWorkingCopy(
+            await prepareTarget(
               target,
-              command,
-              project,
-              workingCopyDocument(),
+              command.action === "restart" ? "all" : "stopped",
               deps,
             );
+          // The same text is no drift, whichever rigd parsed it. A changed text is drift only when what it says changed, so
+          // a comment or layout edit is none, nor is renaming keys to their ADR 0011 names; a Target planned by a rigd that
+          // recorded no digest is compared by text alone.
+          const current = configured.document;
+          const drift =
+            target.kind === "working" &&
+            target.configRevision !== undefined &&
+            current !== undefined &&
+            current.revision !== target.configRevision &&
+            (target.configDigest === undefined ||
+              !sameConfigDigest(current.config, target.configDigest));
+          if (drift)
+            warnings.push(
+              `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run ${rigCommand("restart", { target })} to apply the current rig.yaml.`,
+            );
+          const journal = activationJournal(target, "explicit", deps);
+          try {
+            // A route block no recorded Target owns (#336) never holds a hostname from this start.
+            const starting = target;
+            outcome = (
+              await afterOrphanSweep(starting, () =>
+                deps.lifecycle.up(starting, undefined, journal),
+              )
+            ).outcome;
+          } catch (error) {
+            // The rolled-back Services are recorded as not started; failing to say so leaves their outcome unknown, never retried.
+            // A start whose clean-up rigd's shutdown detached rolled nothing back: its Services are left as a crash leaves them.
+            if (!isStopDetached(error))
+              await journal.failed(error).catch(() => {});
+            throw error;
+          }
+          intendRunning(target);
+          // up installs, routes, and starts the recorded plan under its own
+          // committed checkpoint, which is everything an incomplete deployment lacked.
+          delete target.deploymentIncomplete;
+          target.desired = "running";
+        } finally {
+          if (restarting)
+            await deps.lifecycle.releaseRoute(restarting).catch(() => {});
         }
-        // Only the Working copy builds here, from current source; a deployed Target starts from its deployment's preparation.
-        if (target.kind === "working")
-          await prepareTarget(
-            target,
-            command.action === "restart" ? "all" : "stopped",
-            deps,
-          );
-        // The same text is no drift, whichever rigd parsed it. A changed text is drift only when what it says changed, so
-        // a comment or layout edit is none, nor is renaming keys to their ADR 0011 names; a Target planned by a rigd that
-        // recorded no digest is compared by text alone.
-        const current = configured.document;
-        const drift =
-          target.kind === "working" &&
-          target.configRevision !== undefined &&
-          current !== undefined &&
-          current.revision !== target.configRevision &&
-          (target.configDigest === undefined ||
-            !sameConfigDigest(current.config, target.configDigest));
-        if (drift)
-          warnings.push(
-            `rig.yaml changed since ${target.name} was planned, and its running Services still use the earlier plan. Run ${rigCommand("restart", { target })} to apply the current rig.yaml.`,
-          );
-        const journal = activationJournal(target, "explicit", deps);
-        try {
-          // A route block no recorded Target owns (#336) never holds a hostname from this start.
-          const starting = target;
-          outcome = (
-            await afterOrphanSweep(starting, () =>
-              deps.lifecycle.up(starting, undefined, journal),
-            )
-          ).outcome;
-        } catch (error) {
-          // The rolled-back Services are recorded as not started; failing to say so leaves their outcome unknown, never retried.
-          // A start whose clean-up rigd's shutdown detached rolled nothing back: its Services are left as a crash leaves them.
-          if (!isStopDetached(error))
-            await journal.failed(error).catch(() => {});
-          throw error;
-        }
-        intendRunning(target);
-        // up installs, routes, and starts the recorded plan under its own
-        // committed checkpoint, which is everything an incomplete deployment lacked.
-        delete target.deploymentIncomplete;
-        target.desired = "running";
       }
       target.updatedAt = deps.now();
       await persistTarget(target, deps.store);
-      // A restart started every Service from the current checkout, so the earlier one a kept Service ran in can go now.
-      if (command.action === "restart")
+      // A start published every Tool, and a restart started every Service, from the current checkout: an earlier one a Tool's
+      // shim or a kept Service ran in can go now.
+      if (command.action !== "down")
         await releaseHeldCheckouts(target, deps).catch(() => {});
       return await finish(outcome, warnings.length ? { warnings } : {});
     } catch (error) {
@@ -1817,6 +1868,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           outcome: "failed" as const,
           at: clock.now(),
           elapsed: clock.elapsed(),
+          error,
         };
       } finally {
         lease.release();
@@ -2317,7 +2369,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       // A Target gone, stopped or in a transition is not supervised: a failure about it no longer stands.
       const supervised = new Set(eligible.map((target) => target.id));
       supervision.only((work) => work === STATE_WORK || supervised.has(work));
-      const parts = eligible.map((target) => ({
+      // The first pass also takes each Target in a transition, for the one thing it does there: stop a build left running.
+      const passed =
+        action === "reconcile"
+          ? [...eligible, ...state.targets.filter((t) => !supervised.has(t.id))]
+          : eligible;
+      const parts = passed.map((target) => ({
         id: `${action}:${target.id}`,
         scopes: [targetScope(target.projectId, target)],
       }));
@@ -2348,7 +2405,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ? read
           : await deps.store.read();
       // A Target another Operation holds is skipped: neither a failure nor a recovery of its supervision.
-      jobs = eligible.flatMap((target, index) => {
+      jobs = passed.flatMap((target, index) => {
         const held = leases[index];
         if (!held) return [];
         const about = `Supervising ${target.name} of ${state.projects.find((p) => p.id === target.projectId)?.name ?? target.projectId}`;
@@ -2481,13 +2538,22 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         settled?.add(targetId);
       // Gone, or meant to be stopped: nothing of it waits for a restart's stop to be recorded.
       if (!target || target.desired !== "running") unmarked.delete(targetId);
-      if (!target || target.recovery || target.destructionPending)
-        return undefined;
+      if (!target) return undefined;
       name = target.name;
       entry.view.target = target.name;
       const project = state.projects.find((p) => p.id === target.projectId);
       if (project) entry.view.project = project.name;
       const observing = lifecycleOf(entry);
+      // A build a daemon that died left running is stopped first, whatever the Target is meant to do. One that cannot be
+      // is reported, and status lists it; it holds up nothing else of the Target.
+      if (action === "reconcile")
+        await observing
+          .stopPreparation(target)
+          .catch(async (error: unknown) => {
+            if (isStopDetached(error)) throw error;
+            await failed(error, name);
+          });
+      if (target.recovery || target.destructionPending) return undefined;
       // While it starts a Service again the pass is starting, not observing, so a command queued behind it says so.
       const lifecycle: TargetLifecycle = {
         ...observing,
@@ -2539,6 +2605,18 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           unmarked.delete(targetId);
         }
         settled?.add(targetId);
+        // A Service its record keeps stopped is not withheld by supervision, so paths an earlier rigd left published to it go
+        // here rather than at the Target's next rig up, once for each stop. One whose state cannot be established yet, or a
+        // proxy that does not answer yet, is tried again by the next pass.
+        const checked = routesChecked.get(targetId) ?? new Set<string>();
+        routesChecked.set(targetId, checked);
+        await withholdStoppedServices(target, checked, {
+          ...deps,
+          lifecycle,
+        }).then(
+          (uncertain) => noteRoutesUnchecked(target, action, uncertain),
+          (error: unknown) => failed(error, name),
+        );
         return await superviseTarget(
           target,
           { ...deps, lifecycle },
@@ -2578,6 +2656,54 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       lease.release();
     }
   }
+}
+/** What keeps rigd from uninstalling, each with the command that stops it: a Target meant to run, a job run in progress, or
+ * a Service whose process runs or cannot be ruled out. A Tool is an installed file and storage is data, and both outlive
+ * rigd, so neither counts in any state. `reports` follow `state.targets`. A job run whose Target is no longer recorded
+ * counts too, with nothing to stop it through but what status shows of it. */
+function uninstallBlockers(
+  state: Pick<RuntimeState, "targets" | "projects" | "jobs">,
+  reports: readonly TargetReport[],
+): { what: string; stop: string }[] {
+  const unrecorded = (state.jobs ?? [])
+    .filter(
+      (record) =>
+        record.running &&
+        !state.targets.some((target) => target.id === record.target),
+    )
+    .map((record) => ({
+      what: `job ${record.job} of a Target no longer recorded is running`,
+      stop: "rig status",
+    }));
+  const recorded = state.targets.flatMap((target, index) => {
+    const named = `${state.projects.find((project) => project.id === target.projectId)?.name ?? target.projectId} ${target.name}`;
+    const services = reports[index]!.components.filter(
+      (component) =>
+        component.kind === "managed" &&
+        ["running", "healthy", "unhealthy", "unknown"].includes(
+          component.state,
+        ),
+    ).map((component) => `${component.name} is ${component.state}`);
+    const jobs = (state.jobs ?? [])
+      .filter((record) => record.target === target.id && record.running)
+      .map((record) => `job ${record.job} is running`);
+    const reasons = [
+      ...services,
+      ...jobs,
+      ...(target.desired === "running" && !services.length
+        ? ["it is meant to run"]
+        : []),
+    ];
+    return reasons.length
+      ? [
+          {
+            what: `${named} (${reasons.join(", ")})`,
+            stop: rigCommand("down", { target }),
+          },
+        ]
+      : [];
+  });
+  return [...recorded, ...unrecorded];
 }
 /** Effect checkpoints of Targets no longer in state are reclaimed; each result and any failure is recorded, never raised. */
 async function pruneCheckpoints(
@@ -2815,6 +2941,49 @@ function preparedWarning(
     ? `${target.name} was running and is now stopped on the new deployment. Run ${up} to start it.`
     : `${target.name} is deployed but stopped. Run ${up} to start it.`;
 }
+/** What a restart of `target` starts, before anything of it stops, or the refusal that leaves it running as it was: the
+ * Working copy's plan from the current rig.yaml (its `document`, read only for it), or a deployed Target's recorded plan,
+ * whose preparation must be complete. The first thing to run must be able to: the Working copy's first build, whose
+ * environment nothing runs before to write, or else each Service, whose environment must compose. With a build, a later
+ * build's and each Service's wait for their own turn, since an earlier build may write an env file they read; only a value
+ * Rig refuses, in a file that exists, is refused now. */
+async function checkedRestartPlan(
+  target: TargetRecord,
+  document: () => ConfigDocument<ProjectConfig>,
+  command: RuntimeCommand,
+  project: ProjectRecord,
+  deps: RuntimeDependencies,
+): Promise<TargetRecord> {
+  assertPrepared(target);
+  const planned =
+    target.kind === "working"
+      ? await planTarget(
+          {
+            command,
+            kind: "working",
+            project,
+            document: document(),
+            existing: target,
+            replacesRunning: true,
+          },
+          deps,
+        )
+      : target;
+  if (planned.kind === "working" && planned.plan.builds?.length) {
+    await deps.lifecycle.checkEnvironmentValues(planned);
+    await deps.lifecycle.checkFirstBuild(planned);
+    return planned;
+  }
+  for (const component of planned.plan.components)
+    if (component.kind === "managed")
+      await deps.lifecycle
+        .environmentDigest(planned, component.name)
+        .catch((error: unknown) => {
+          // A start never fails for its digest, only for its environment.
+          if (diagnosticErrorCode(error) !== "ENV_DIGEST") throw error;
+        });
+  return planned;
+}
 /** A stopped working Target is re-planned from the current rig.yaml before it starts, keeping its id, data root, and recorded ports. */
 async function replanWorkingCopy(
   target: TargetRecord,
@@ -2823,10 +2992,21 @@ async function replanWorkingCopy(
   document: ConfigDocument<ProjectConfig>,
   deps: RuntimeDependencies,
 ): Promise<TargetRecord> {
-  const replanned = await planTarget(
-    { command, kind: "working", project, document, existing: target },
+  return await adoptWorkingCopyPlan(
+    target,
+    await planTarget(
+      { command, kind: "working", project, document, existing: target },
+      deps,
+    ),
     deps,
   );
+}
+/** Makes `replanned` the stopped working Target's recorded plan. */
+async function adoptWorkingCopyPlan(
+  target: TargetRecord,
+  replanned: TargetRecord,
+  deps: RuntimeDependencies,
+): Promise<TargetRecord> {
   // A Service the new plan drops would have nothing left to stop it once its plan is replaced: one a failed down left
   // running is stopped first, and while it cannot be, the plan that names it stays recorded.
   const dropped = target.plan.components.filter(

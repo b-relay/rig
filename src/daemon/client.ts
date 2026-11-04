@@ -69,6 +69,17 @@ const unanswered = (command: RuntimeCommand | undefined) =>
     "Run rig activity to see whether it finished.",
     command?.operationId ? { operationId: command.operationId } : {},
   );
+/** rigd began its answer, so `rig` did connect, and the connection closed before the answer was whole. Not malformed:
+ * nothing is wrong with what arrived. */
+const interrupted = (command: RuntimeCommand | undefined) =>
+  new RigError(
+    "DAEMON_INTERRUPTED",
+    `The connection to rigd closed before it finished answering the ${command?.action ?? "health"} request${
+      command?.operationId ? ` (operation ${command.operationId})` : ""
+    }${command && !readActions.has(command.action) ? "; it may still be running" : ""}.`,
+    "Run 'rigd status' to inspect the daemon, and rig activity to see what it finished.",
+    command?.operationId ? { operationId: command.operationId } : {},
+  );
 /** How long one read may go unanswered, and what to call it when it does. */
 interface ReadDeadline {
   ms: number;
@@ -125,9 +136,11 @@ function validated(command: RuntimeCommand, result: unknown): unknown {
   return report.data;
 }
 /** Network adapter. Reads carry a deadline; mutations wait for rigd, which owns
- * every command budget, however long it takes. A timeout is DAEMON_TIMEOUT (the
- * operation may still be running), a failed connection is DAEMON_UNREACHABLE.
- * Replies are untrusted input. */
+ * every command budget, however long it takes. A timeout, while rigd has yet to
+ * answer or part-way through its answer, is DAEMON_TIMEOUT (the operation may
+ * still be running), a failed connection is DAEMON_UNREACHABLE, one that closes
+ * part-way through an answer is DAEMON_INTERRUPTED. Replies are untrusted input:
+ * a whole reply that is not what it should be is DAEMON_PROTOCOL. */
 export class DaemonClient {
   private readonly readDeadlineMs: number;
   constructor(
@@ -216,18 +229,23 @@ export class DaemonClient {
       // sends nothing until a command finishes. The deadline above is the only one.
       timeout: false,
     };
-    let response: Response;
+    // The whole reply is acquired under one policy, since the deadline and the signal govern its body as they do its
+    // headers; only what arrives whole can be malformed.
+    let response: Response | undefined;
+    let text: string;
     try {
       response = await fetch(
         `http://127.0.0.1:${this.address.port}${path}`,
         init,
       );
+      text = await response.text();
     } catch (error) {
       if (signal?.aborted) throw abandoned();
       if ((error as { name?: string }).name === "TimeoutError")
         throw deadline
           ? deadlineExpired(deadline, body?.operationId)
           : unanswered(body);
+      if (response) throw interrupted(body);
       throw new RigError(
         "DAEMON_UNREACHABLE",
         "rigd is not reachable.",
@@ -236,7 +254,7 @@ export class DaemonClient {
     }
     let payload: unknown;
     try {
-      payload = await response.json();
+      payload = JSON.parse(text);
     } catch {
       throw protocolFailure();
     }

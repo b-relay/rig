@@ -328,6 +328,12 @@ const targetReportSchema = z
       .describe(
         "True when a Preview's destroy did not finish and its stopped inventory is retained until down --destroy is retried; absent otherwise.",
       ),
+    leftoverBuild: z
+      .boolean()
+      .optional()
+      .describe(
+        "True while a build an earlier rigd started, and left when it crashed, still runs: rigd stops it as it starts and before the next build, and rig down stops it; absent otherwise.",
+      ),
     route: z
       .string()
       .optional()

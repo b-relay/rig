@@ -2,6 +2,7 @@ import type { ManagedComponent } from "../config/types";
 import { recordActivity } from "../domain/activity";
 import { clockOr } from "../domain/clock";
 import { diagnosticErrorCode } from "../domain/errors";
+import { isStopDetached } from "../domain/stop-budget";
 import { boundedOutput, healthRestartDueAt } from "../domain/health-policy";
 import type { OperationPhase } from "../domain/operation-progress";
 import type { TargetRecord } from "../domain/runtime";
@@ -43,7 +44,8 @@ type Deps = Pick<
  * stays owned by the health back-off: the monitor checks it while a process runs and starts it on the back-off while
  * none does. The start spends none of the crash-restart budget. Activity records the restart, or why it failed.
  * `skipped` when the Service no longer runs the process that was checked, or no longer waits for a health restart;
- * `deferred` when the process could not be observed, so the monitor asks again and nothing was changed. */
+ * `deferred` when the process could not be observed, so the monitor asks again and nothing was changed, or when rigd's
+ * shutdown cut the restart short, which the next daemon finds under the stretch written ahead. */
 export async function restartForHealth(
   target: TargetRecord,
   request: HealthRestartRequest,
@@ -123,11 +125,12 @@ export async function restartForHealth(
     try {
       await deps.lifecycle.stop(target, request.service);
     } catch (error) {
+      if (isStopDetached(error)) return { outcome: "deferred" };
       await activity(
         "failed",
         `${request.service} was to be restarted because ${why}, but it could not be stopped (${diagnosticErrorCode(error)}). ${next}`,
       );
-      return { outcome: "failed", at, elapsed };
+      return { outcome: "failed", at, elapsed, error };
     }
   }
   phase("starting");
@@ -138,12 +141,13 @@ export async function restartForHealth(
     await deps.lifecycle.recover(target, request.service, journal);
   } catch (error) {
     // Nothing more to record: the stretch already says the health back-off owns the Service, whether its replacement was
-    // stopped, could not be confirmed stopped, or could not be observed.
+    // stopped, could not be confirmed stopped, or could not be observed. rigd's shutdown cutting it short is no failure.
+    if (isStopDetached(error)) return { outcome: "deferred" };
     await activity(
       "failed",
       `${request.service} was ${request.start ? "to be started" : "stopped"} because ${why}, and its start did not pass its start check (${diagnosticErrorCode(error)}). It is unhealthy. ${next}`,
     );
-    return { outcome: "failed", at, elapsed };
+    return { outcome: "failed", at, elapsed, error };
   }
   // The start passed: the stretch goes on until a check passes, but the health back-off no longer owns starting it. A
   // refused write leaves pendingStart, and the monitor, finding the process running, checks it as any other.

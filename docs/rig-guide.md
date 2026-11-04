@@ -10,8 +10,10 @@ Three complete example configs live in [examples](examples).
 Install a release, as the [README](../README.md#install) shows: its `install`
 script puts `rig` and `rigd` in `<RIG_ROOT>/bin` and the dashboard in
 `<RIG_ROOT>/dashboard/<release>`, runs `rigd install`, and prints the line that
-adds `<RIG_ROOT>/bin` to `PATH` when it is missing. `rigd upgrade` installs a
-newer release later. An installed release is production; Rig itself is
+adds `<RIG_ROOT>/bin` to `PATH` when it is missing. The licenses of the
+third-party packages a release bundles are in that dashboard directory, as
+`THIRD_PARTY_NOTICES`. `rigd upgrade` installs a newer release later. An
+installed release is production; Rig itself is
 developed as a Rig Project's working Target, whose Tools are `rig-dev` and
 `rigd-dev` (see the README's Development), never by replacing the installed
 `rig` and `rigd`.
@@ -20,7 +22,9 @@ Source development and tests must set an isolated `RIG_ROOT`; do not install
 into the real Host to try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
 `~/.rig`, and a relative value makes `rig` and `rigd` exit
 with a usage error before they create or read anything, rather than rooting
-Rig in the current working directory. Every command writes under the root (at
+Rig in the current working directory. Rig's Caddy needs a root whose path has
+only letters, digits and `. _ @ + / -`: with the `proxy` section on, `rigd
+install` refuses any other (`PROXY_PATH`) before anything starts. Every command writes under the root (at
 least its diagnostic log), so a root that is a file, or a directory the user
 cannot write, is named by path before anything runs (`The Rig root /x is not
 writable.` with a `chmod u+rwx` hint) instead of surfacing as a generic
@@ -225,6 +229,8 @@ operation waits for a Service to exit leaves that Service stopping the same way.
 For `rig down` and `rig restart` the Target was recorded as meant to be stopped
 before its stop began, so the next daemon's startup pass stops it again (a
 `restart` cut short this way leaves the Target stopped; run `rig up`). An
+automatic or health restart cut short this way is no failed attempt: Activity
+says nothing of it, and the next daemon decides from how the process ended. An
 interrupted deploy, Preview destroy or a `down` that was resolving an
 unfinished deploy is left for you to run again, and `rig status` says so.
 `rig down` on an interrupted deploy stops both recorded Deployments and any
@@ -232,7 +238,9 @@ build still running, reports `stopped` when it ended a process, keeps one
 Deployment (the previous one, unless the deploy had already committed), and
 gives back the other's checkout (or holds it, like any checkout something still
 runs in, until nothing does).
-`rigd uninstall` is the exception: it refuses while any Target is running.
+`rigd uninstall` is the exception: it refuses while any Target is running, and
+names each one. Only Services and job runs count: a Tool stays installed whatever
+state it is in, so an edited or missing one does not hold up an uninstall.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they
 are; the next `rigd install` adopts them.
@@ -1041,11 +1049,18 @@ checkout is removed within about 30 seconds of the last process leaving it.
 once. A failed deploy stops only what it started, so a kept Service is never
 stopped by it, unless its own start check failed during the deploy: then the
 rollback starts it again from the previous plan, with its dependents. The
-deploy line names what it kept, for example
-`melody stable deployed main@470a510 (was 83496f8), kept db, search`; the deploy
-history (the dashboard's history page) records `kept`, and `rig status` shows
-`kept from <sha>` beside a Service that runs from an earlier Commit than its
-Target:
+deploy line says what it did with each Service, and why it restarted those it
+restarted, for example
+`melody stable deployed main@470a510 (was 83496f8): restarted api (files), web (dependency api); kept db, search`,
+and the deploy's Activity entry says the same. `started` names a Service new to
+the plan. A restart's reason is what broke the rule above: `definition`,
+`environment`, `files`, `dependency <Service>`, `unhealthy`, `not-running` (no
+process Rig recorded for it runs), `unobserved` (its process could not be
+looked at), `unrecorded` (its run predates these records, or the previous deploy
+never finished), or `requested` (`--force`). A `--no-up` deploy starts nothing,
+so its line has no such part. The deploy history (the dashboard's history page)
+records `kept`, and `rig status` shows `kept from <sha>` beside a Service that
+runs from an earlier Commit than its Target:
 
 ```text
 stable  healthy  main@470a510
@@ -1079,7 +1094,13 @@ registered repository.
 The working Target follows the repository's current `rig.yaml`: `rig up` on a
 stopped Target and `rig restart` re-plan it from the config on disk before
 starting, keeping its Target id, data root, and recorded ports where the config
-still allows them. `rig up` on a Target that is already running keeps the plan
+still allows them. `rig restart` plans before it stops anything, so one Rig
+refuses leaves the Target running as it was: a `rig.yaml` that cannot be read,
+a plan that cannot be made (a pinned port another Target holds, say), a route
+that could not be published, a deployed Target whose preparation is not
+complete, or an `env_file` that cannot be read (the first build's always, and
+any other unless an earlier build could write it; a [value Rig refuses](#environment-builds-and-startup)
+in a file that exists always). `rig up` on a Target that is already running keeps the plan
 its processes were started from; `rig doctor` reports `config-drift` for it and
 names `rig restart working` as the fix. A valid config
 that adds a Service the recorded plan has no port for is also reported as
@@ -1331,6 +1352,10 @@ existed uses the defaults until it restarts.) While `config.yaml` is invalid,
 the last valid settings stay in force, so log output is never lost to a config
 mistake.
 
+Rig writes a Service's output as fast as the disk takes it and holds about 1 MiB
+waiting. A Service that prints faster than that waits on its own output, as with
+any full pipe, rather than growing its capture wrapper or losing lines.
+
 A Target that an older Rig ran under the removed `launchd` supervisor may
 still hold the files launchd wrote for a job (`<component>.stdout.log` and
 `<component>.stderr.log`, with their rotated generations such as
@@ -1469,7 +1494,7 @@ reports it as a failing `rigd/diagnostics`, `rigd/monitor`, `rigd/health` or
 `rigd/jobs` check with what it means: operation outcomes are never changed by
 a logging failure; a Target whose supervision failed has its exits neither
 recorded nor acted on; a health check's result, or its Activity entry or Target
-log evidence, may be missing; a job's start, recorded end, timeout or clean-up
+log evidence, may be missing, or a health restart failed; a job's start, recorded end, timeout or clean-up
 did not happen. Each failure is kept under the work it is about (a Target, a
 Service's checks, a job) and cleared only when that same work succeeds again,
 or is no longer needed: another Target's or job's success, or a pass that
@@ -1523,12 +1548,26 @@ the first and the rest) gives up after five seconds. Two reads wait ten
 minutes: `rig dns`, which waits on the DNS provider, and the first page of
 `rig logs`, which may read back through every kept log file (`logs.generations`)
 to find its lines. A read that gives up reports
-`rigd did not answer the doctor read within 5 s; it may be busy`, which is
+`rigd did not answer the doctor read within 5 s; it may be busy`, whether `rigd`
+had yet to answer or was part-way through its answer. That is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run
 `rig activity` to see what `rigd` is doing, then retry. No other timeout ends
 a lifecycle or deploy command's wait, and `rigd is not reachable` always means
-`rig` could not connect: a timeout is never reported so.
+`rig` could not connect: a timeout is never reported so. A connection that closes
+part-way through an answer is `DAEMON_INTERRUPTED`
+(`The connection to rigd closed before it finished answering ...`); a command
+may have finished all the same, so `rig activity` says whether it did.
+`rigd returned an invalid response` is only for a reply that arrived whole.
+
+The control plane holds one contract for every caller, `rig` and the dashboard
+alike. A request's body must be `application/json` (`UNSUPPORTED_MEDIA_TYPE`
+otherwise), at most 1 MiB (`REQUEST_TOO_LARGE`), and uploaded whole within ten
+seconds, however its bytes are spaced (`REQUEST_TIMEOUT`, and the connection is
+closed). Only the upload has this deadline: a complete command then runs for as
+long as its work takes. A body that is not JSON is `INVALID_REQUEST`. Every
+refusal is one `{"error":{"code","message","hint"}}` document that echoes nothing
+the request carried, and changes nothing.
 
 `rigd` runs one mutation at a time per Target, and Projects are independent:
 a slow build, start check or stop in one Project never delays `rig up`,
@@ -1699,7 +1738,15 @@ not delete Target logs (which are size-bounded instead, see Logs), activity,
 or Persistent storage. A record cut short by
 a killed writer never glues onto the next one (the next record starts on its
 own line) and never disables rotation: the segment's day comes from its first
-complete record, or from the file's creation time when none can be read. Daemon administration
+complete record, or from the file's creation time when none can be read.
+`rigd.jsonl` also holds what the control plane refused or failed to serve, which
+never reaches an Operation: a `transport.refused` or `transport.failed` entry with
+its `route` (`health`, `command`, `config`, `env` or `other`), `status`, `code`,
+`durationMs` and, for a failure, the `cause`'s class of error. It never holds a
+credential, a URL, a header or a body. A repeated refusal is one entry a minute
+per route, status and code, and the next says how many it stands for (`repeated`),
+so a flood cannot grow the log; a count still open when `rigd` stops is lost.
+Daemon administration
 activity is written under a lock (see the startup lock above) that records the
 writer's pid and start time; a writer that died holds it no longer. When activity
 cannot be recorded, the warning names the journal or lock file to inspect, and
@@ -2195,16 +2242,28 @@ ones it recorded last time:
   `rigd` ("restarted after reboot" or "restarted after login"). A stable Target
   that fails to start is reported `failed` (every Service the start left stopped
   is, and none is retried automatically), stays meant to run, and waits for
-  `rig up`.
+  `rig up`. The paths of those Services answer 503 instead of reaching their
+  ports until then, and while they cannot be withheld (the proxy does not answer
+  yet) `rigd` tries again every second before it records the failure.
 - **The working Target and Previews** stay stopped, even under
   `restart: always`. `rig status` reports their Services `stopped`, with
   `exit: unknown` and a reason that says they stopped when the Mac restarted
   (or when you logged out). Run `rig up` to start them. Until that start, no
-  unknown exit of that Target is retried automatically; after it, the usual
-  rules apply again. A Service that survived a logout is left running, and
+  unknown exit of that Target is retried automatically, and the paths of those
+  Services answer 503 instead of reaching their ports; after it, the usual
+  rules apply again. While such a path cannot be withheld (the proxy does not
+  answer yet), `rigd` tries again every second and nothing of that Target
+  starts. A Service that survived a logout is left running, and
   one whose earlier exit had already left it stopped (a clean exit under
   `on-failure`, say) keeps that status.
 - Targets meant to be stopped stay stopped.
+
+On stable, working and Preview Targets alike, a Service `rigd` could not see
+either running or stopped as it acts on the restart (its state is unknown, or the
+check does not answer) may have survived a logout. It counts as not running, but
+its paths stay published until a later pass, every second, sees it stopped and
+withholds them, or sees it running and leaves them. The diagnostic log records
+`routes-unchecked`, naming those Services, and `routes-checked` once none is left.
 
 A plain `rigd` restart in the same boot and login session detects nothing and
 follows the rules above. A `rigd` run as a detached process under `RIG_ROOT`
@@ -2341,7 +2400,9 @@ without seeing it pass (one that survived a `rigd` restart, say) is checked as
 soon as `rigd` sees it running with its Target free, then every `interval`. Checks pause while an Operation (an `up`, `down`, `restart`,
 deploy, or a restart Rig makes itself) holds or waits for the Target, never
 overlap for one Service, and at most four run at once on the Host. A check that
-does not answer within its `timeout` failed.
+does not answer within its `timeout` failed. A check of a routed Service passes
+only while its own process also owns the routed listener, whatever the check
+is, so another program answering on that port never counts as healthy.
 
 After `retries` failures in a row the Service is unhealthy; Activity records
 it with the check's last output, cut to 200 characters (`web is unhealthy: 3
@@ -2378,8 +2439,9 @@ unhealthy, and Rig starts it again at the next step of the same back-off,
 whatever its `restart` policy and without spending the automatic-restart
 budget, until a start passes; it never gives up. `rig status` shows
 `unhealthy · restart failed its start check · next attempt in 5m`, Activity
-records each attempt, and `rig doctor` reports it. `rig restart` starts it at
-once, and `rig down` stops the attempts. After a Host restart such a Service
+records each attempt, and `rig doctor`'s `rigd/health` check names the failed
+restart and its reason until a later restart or check passes. `rig restart`
+starts it at once, and `rig down` stops the attempts. After a Host restart such a Service
 of the working Target or a Preview stays stopped until `rig up`, as every
 Service of theirs does; the stable Target is started by `rigd` as after any
 Host restart, which ends the stretch. A health restart records that it owns the
@@ -2775,6 +2837,29 @@ a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
 `ENV_FILE` naming the file and line. Its contents are plain data and never
 take part in `${...}` references.
 
+A value reaches a process exactly or is refused. An env file must be UTF-8 (a
+BOM and CRLF line ends are fine), and a value or other text whose bytes are
+not, a value holding a NUL character, or the name `__proto__` is refused as
+`ENV_VALUE`, naming the file, the line and the name, never the value. Bytes in
+a comment, on its own line or after a value, change no value, so a process
+still starts from such a file (a `#` inside quotes is part of the value, not a
+comment); the dashboard refuses to edit it, since saving could not keep them.
+The same refusal covers a NUL or an unpaired surrogate in a value in
+`rig.yaml`, in `environment` or reached through a `${...}` reference, when the
+config is read; and a plan recorded earlier that holds one, when a process
+would start from it.
+
+A file written before Rig refused these keeps its bytes: nothing rewrites it. A
+Service already running keeps running, since a process reads its environment
+only when it starts, and its shell health check goes on with the rest of the
+file, reading it as Rig always did (the invalid bytes replaced, `__proto__` and
+a value with a NUL left out, as no process ever got them) and noting the
+refusal once in the Target log. Anything that would start from the file is
+refused until that line is fixed in an editor: a `rig restart` or a deploy that
+starts its Target before either stops anything, and a start after a crash, a
+job run or a restore when its turn comes. The dashboard shows the file's names
+and the refusal, and neither reveals nor changes anything in it until then.
+
 Each declared `build` is one build unit: the top-level `build` is the shared
 unit, and every Service and Tool `build` is its own. Units run one at a time,
 the shared unit first, then Service units in dependency order, then Tool units
@@ -2806,8 +2891,8 @@ in it does, even after the command's own shell has ended, and a process a build
 leaves running in the background is stopped when the build ends (the build
 fails `PREPARATION_LEFTOVER`, its record kept, when it cannot be). So a build
 that outlives a `rigd` that died is never lost: the next daemon's startup pass
-stops it on a Target meant to be stopped, `rig down` stops it (and says
-`stopped`), the next build of the Target stops it before it begins, and
+stops it on every Target, `rig status` and the dashboard say so while it runs,
+`rig down` stops it (and says `stopped`), the next build of the Target stops it before it begins, and
 `rigd uninstall` refuses with `TARGETS_RUNNING` while one may still run. A
 Deployment with a failed or missing unit is refused as
 `PREPARATION_INCOMPLETE` the same way. Builds see `env_file` values when they
@@ -2831,7 +2916,9 @@ current file.
    otherwise reported `unchanged`; a daemon restarted from another shell
    republishes nothing (a `rigd install` that records a different bun
    republishes each source-file Tool's shim). `deploy --no-up` publishes no Tool; the later `rig up`
-   does, under its own checkpoint. Installed executables share one `bin/`
+   does, under its own checkpoint. Until then a source-file Tool already published
+   keeps running the Commit it was published from, whose checkout Rig keeps for it.
+   Installed executables share one `bin/`
    directory across every Project and Target on the Host: `<tool>` for the
    stable Target, `<tool>-dev` for the working Target, and `<tool>-<preview
 name>` for a Preview. Two Projects that both install `cli` on
@@ -3119,7 +3206,8 @@ destroyed first (`rig down preview <branch> --destroy`), because forgetting
 would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
 Previews. Stopped working and stable records go with the registration, and a
 warning names the live workspace and data root that remain on disk for the
-operator to delete.
+operator to delete, and any checkout kept because a source-file Tool that stays
+installed runs from it.
 
 Before the records go, `forget` withdraws every route its Targets publish,
 confirmed by Caddy, so a hostname a forgotten Project served can be deployed

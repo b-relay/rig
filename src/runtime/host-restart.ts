@@ -358,8 +358,11 @@ export type HostRestartStart =
 /** Saves, in one write, that the start of Stable Target `target` after the restart `mark` identifies failed with `error`:
  * each Service not running as not started (see `recordFailedStart`), the Target as settled for the restart, and the start's
  * one Activity entry. All of it is saved or none is, so a later daemon never starts again a Target whose failure it can
- * read, and never finds a failure recorded without its entry. Returns whether it was saved; a failure goes to the
- * diagnostic log. */
+ * read, and never finds a failure recorded without its entry. The Caddy that came back with the Host still reaches the
+ * ports of those Services, however early the start failed (and a start's rollback puts its route back as it was), so the
+ * paths of those seen stopped are withheld first; while they cannot be, nothing is saved and the caller tries again. One
+ * only not seen running may have survived, so its paths wait for a later pass to see it stopped (`withholdStoppedServices`).
+ * Returns whether it was saved; a failure goes to the diagnostic log. */
 export async function recordFailedAfterHostRestart(
   target: TargetRecord,
   error: unknown,
@@ -368,29 +371,35 @@ export async function recordFailedAfterHostRestart(
 ): Promise<boolean> {
   const errorCode = diagnosticErrorCode(error);
   const after = hostRestartText(mark.kind);
-  return await recordFailedStart(target, error, deps, (state) => {
-    // A write reported failed may still have landed; a Target already settled for the restart has its entry.
-    if (
-      sameMark(state.host?.restart, mark) &&
-      state.host!.restart!.settled?.includes(target.id)
-    )
-      return;
-    markSettled(state, target.id, mark);
-    recordActivity(state, {
-      id: deps.id(),
-      projectId: target.projectId,
-      project: state.projects.find((p) => p.id === target.projectId)?.name,
-      target: target.name,
-      action: "up",
-      outcome: "failed",
-      occurredAt: deps.now(),
-      message: `${target.name} could not be started again after ${after} (${errorCode}). ${
-        recoveredByDownFirst(errorCode)
-          ? `Run ${rigCommand("down", { target })}, then ${rigCommand("up", { target })}.`
-          : `Run ${rigCommand("up", { target })} once the cause is fixed.`
-      }`,
-    });
-  });
+  return await recordFailedStart(
+    target,
+    error,
+    deps,
+    (state) => {
+      // A write reported failed may still have landed; a Target already settled for the restart has its entry.
+      if (
+        sameMark(state.host?.restart, mark) &&
+        state.host!.restart!.settled?.includes(target.id)
+      )
+        return;
+      markSettled(state, target.id, mark);
+      recordActivity(state, {
+        id: deps.id(),
+        projectId: target.projectId,
+        project: state.projects.find((p) => p.id === target.projectId)?.name,
+        target: target.name,
+        action: "up",
+        outcome: "failed",
+        occurredAt: deps.now(),
+        message: `${target.name} could not be started again after ${after} (${errorCode}). ${
+          recoveredByDownFirst(errorCode)
+            ? `Run ${rigCommand("down", { target })}, then ${rigCommand("up", { target })}.`
+            : `Run ${rigCommand("up", { target })} once the cause is fixed.`
+        }`,
+      });
+    },
+    (_services, stopped) => deps.lifecycle.withhold(target, stopped),
+  );
 }
 
 /** Starts a Stable Target meant to run again after `restart`, the way an explicit `rig up` does: every stopped Service in

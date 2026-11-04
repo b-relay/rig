@@ -38,6 +38,12 @@ _Relationship_: The local control-plane auth token belongs in Host/user Rig
 state, not committed Project config, because it is a machine credential for
 talking to local `rigd`.
 
+_Relationship_: Every control-plane route refuses a request the same way: one
+tagged error document with a hint that echoes nothing it carried, for a body
+that is not `application/json`, is over 1 MiB, is not uploaded within ten seconds
+or is not JSON. Each refusal and failure is Diagnostic log evidence: bounded,
+rate-limited, and without credentials, URLs or bodies.
+
 ### rigd CLI
 
 The daemon administration CLI for installing, uninstalling, and checking the
@@ -621,7 +627,7 @@ operator env files (`<RIG_ROOT>/env/<project>[/<service or job>]/{all,<role>}.en
 `read` names each file's keys and revision without values, `reveal` answers one
 value with the revision it was read from, and `write` changes names atomically
 only if the file still has the revision the changes were made against, keeping
-the file 0600; a file that moved is refused, naming what it assigns now. It takes a Project and a scope, never a path. Each write is an Activity
+the file 0600; a file that moved is refused, naming what it assigns now. A value is saved so it reads back exactly or refused by name (`ENV_VALUE`). It takes a Project and a scope, never a path. Each write is an Activity
 entry (`env`, `updated`) naming who asked and which names changed, never a
 value. The CLI does not expose it; the dashboard's Environment tab uses it.
 
@@ -887,7 +893,8 @@ start by comparing the boot and login session with the ones it last recorded.
 
 _Relationship_: after a Host restart, `rigd` starts each stable Target meant to
 run as `rig up` would; the working Target and Previews stay stopped until
-`rig up`, whatever their Automatic restart policy.
+`rig up`, whatever their Automatic restart policy, and the routes of what it
+stopped reach nothing until that start is verified.
 _Avoid_: reboot policy, restart_after_reboot
 
 ### Logs
@@ -996,8 +1003,10 @@ argument, or the current Branch when omitted.
 _Relationship_: Deploy never deploys the working Target.
 
 _Relationship_: Successful deploy output is one line,
-`<project> <target> deployed <branch>@<sha> (was <sha>)`, ending with
-`, kept <services>` when it kept any, plus any warnings and a line per retired
+`<project> <target> deployed <branch>@<sha> (was <sha>)`, ending with what it
+did with each Service when it started its Target
+(`: started <services>; restarted <service> (<reason>), ...; kept <services>`,
+as its Activity entry says too), plus any warnings and a line per retired
 Preview.
 
 ### Kept Service

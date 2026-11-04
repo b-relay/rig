@@ -1475,6 +1475,90 @@ test("a health check's answer never depends on writing its evidence: an unwritab
   expect(await readFile(log, "utf8")).toContain('"line":"ready"');
 });
 
+for (const check of ["http", "command"] as const)
+  test(`a routed Service's ${check} health check passes only while its own process owns the routed listener; an unrouted Service's check inspects nothing`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-health-routed-"));
+    roots.push(root);
+    // A foreign program answers whatever is asked: only the listener inspection tells it apart.
+    const foreign =
+      check === "http"
+        ? Bun.serve({
+            hostname: "127.0.0.1",
+            port: 0,
+            fetch: () => new Response("ok"),
+          })
+        : undefined;
+    try {
+      const record = target(root);
+      record.plan.providers = { processSupervisor: "fake" };
+      record.plan.domain = "web.test";
+      record.plan.proxy = { upstream: "web" };
+      const web = {
+        name: "web",
+        kind: "managed" as const,
+        command: "serve",
+        port: 4311,
+        readyTimeout: 1,
+        env: {},
+        dependsOn: [],
+        health:
+          check === "http" ? `http://127.0.0.1:${foreign!.port}/` : "true",
+        // Long enough that a loaded machine never times the probe out.
+        healthcheck: {
+          interval: 30,
+          timeout: 600,
+          retries: 3,
+          onFailure: "report" as const,
+        },
+      };
+      record.plan.components = [web];
+      let owned: { address: string; port: number }[] = [];
+      let inspected = 0;
+      const supervisor = {
+        observe: async () => ({ state: "running" as const, pid: 4243 }),
+      } as unknown as Supervisor;
+      const adapter = createTargetEffects({
+        connect: async () => ({ ready: true }),
+        listeners: {
+          inspect: async (pid) => {
+            inspected++;
+            return {
+              state: "observed",
+              listeners: owned.map((listener) => ({ pid, ...listener })),
+            };
+          },
+        },
+        root,
+        recordingTime: () => new Date().toISOString(),
+        supervisors: new Map([["fake", supervisor]]),
+        run: runCommand,
+        installer: createArtifactInstaller({
+          run: runCommand,
+          bunExecutable: process.execPath,
+        }),
+        router: noRoutes(),
+        environment: { PATH: process.env.PATH! },
+      });
+      const ongoing = () =>
+        adapter.observations.health(record, web, new AbortController().signal);
+      expect(await ongoing()).toEqual({
+        ready: false,
+        reason: "port 4311 has no listener owned by web",
+      });
+      owned = [{ address: "127.0.0.1", port: 4311 }];
+      expect(await ongoing()).toEqual({ ready: true });
+      // Not routed: its own check still decides, and nothing of it needs to be inspected.
+      delete record.plan.domain;
+      delete record.plan.proxy;
+      owned = [];
+      inspected = 0;
+      expect(await ongoing()).toEqual({ ready: true });
+      expect(inspected).toBe(0);
+    } finally {
+      await foreign?.stop(true);
+    }
+  });
+
 test("an ongoing check of a Service's ports passes only on listeners its own process owns, at the address its route reaches", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-owned-"));
   roots.push(root);

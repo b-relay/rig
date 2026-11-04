@@ -8,7 +8,7 @@ export function createRuntimeFiles(): RuntimeFiles {
   return {
     destroyPreview,
     inspectPreviewDeletion,
-    async selectPorts({ requests, occupied, policy }) {
+    async selectPorts({ requests, occupied, policy, held }) {
       const dynamic = policy === "dynamic";
       const selected: Record<string, number> = {},
         used = new Set(occupied.keys());
@@ -28,7 +28,10 @@ export function createRuntimeFiles(): RuntimeFiles {
             },
           );
         }
-        let port = await availablePort(dynamic ? 0 : (request.preferred ?? 0));
+        let port =
+          !dynamic && request.preferred && held?.has(request.preferred)
+            ? request.preferred
+            : await availablePort(dynamic ? 0 : (request.preferred ?? 0));
         while (used.has(port)) port = await availablePort(0);
         used.add(port);
         selected[request.name] = port;

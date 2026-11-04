@@ -15,8 +15,9 @@ import type { RuntimeDependencies } from "./contracts";
 import { holdCheckout } from "./jobs";
 
 /* A deployed Target's checkouts (`<target>/revisions/<id>`) are given back once nothing runs from them: no plan or recovery
- * plan, no job run in progress (ADR 0013) and no Service process a deploy kept running (ADR 0016). One something still
- * runs in is held, recorded in `heldCheckouts`, and offered back every 30 seconds until it is gone. */
+ * plan, no job run in progress (ADR 0013), no Service process a deploy kept running (ADR 0016) and no published Tool's shim
+ * (`deploy --no-up` publishes no Tool, so the last one published keeps running from its checkout until `rig up` replaces it).
+ * One something still runs in is held, recorded in `heldCheckouts`, and offered back every 30 seconds until it is gone. */
 
 /** What giving back revisions needs: the mirror, the state, and a bounded look at the Services' processes. */
 export type RevisionDependencies = Pick<
@@ -41,8 +42,8 @@ export interface RetainedRevision {
   readonly warning: string;
   readonly causes: FailureCauses;
 }
-/** How giving back one revision went: given back, still a plan's or recovery plan's checkout, still run in by a job run
- * or a Service process (held), or not removed. */
+/** How giving back one revision went: given back, still a plan's or recovery plan's checkout, still run in by a job run,
+ * a Service process or a published Tool (held), or not removed. */
 export type RevisionRelease =
   | {
       readonly workspacePath: string;
@@ -51,7 +52,8 @@ export type RevisionRelease =
   | (RetainedRevision & { readonly outcome: "failed" });
 
 /** Gives back each revision among `records` that nothing runs from any more, once a deployment outcome is saved, and
- * records each one a job run or a Service process still runs in as held, in one write, for the sweep to give back later.
+ * records each one a job run, a Service process or a published Tool still runs in as held, in one write, for the sweep to
+ * give back later.
  * Resolves the revisions that could not be removed; each failure is reported, never thrown: the outcome stands and the
  * checkout stays. */
 export async function releaseUnreferencedRevisions(
@@ -78,8 +80,8 @@ export async function releaseUnreferencedRevisions(
   );
 }
 
-/** Gives back each revision among `records` that no plan, recovery plan, job run in progress or Service process runs
- * from, and says how each went. A Service process holds the checkout its run's `source` names while it is observed
+/** Gives back each revision among `records` that no plan, recovery plan, job run in progress, Service process or published
+ * Tool runs from, and says how each went. A Service process holds the checkout its run's `source` names while it is observed
  * running under that run's incarnation, or cannot be observed within the status budget: Rig cannot prove it gone. */
 export async function releaseRevisions(
   records: readonly TargetRecord[],
@@ -115,7 +117,8 @@ export async function releaseRevisions(
 }
 
 /** How the checkout `workspacePath` stands in `state` now: a plan's or recovery plan's checkout, still run in by a job run in
- * progress or a Service process (held), or free to give back. Reads and observes only, so it needs no Target's lease. */
+ * progress, a Service process or a published Tool (held), or free to give back. Reads and observes only, so it needs no
+ * Target's lease. */
 export async function revisionStanding(
   workspacePath: string,
   state: Pick<RuntimeState, "targets" | "jobs">,
@@ -137,10 +140,29 @@ export async function revisionStanding(
     (state.jobs ?? []).some(
       (record) => record.running?.workspace === workspacePath,
     ) ||
-    (await runInByService(state, workspacePath, deps))
+    (await runInByService(state, workspacePath, deps)) ||
+    (await runByTool(state, workspacePath, deps))
   )
     return "held";
   return "free";
+}
+/** Whether a Tool the Target that owns `checkout` has published runs from it; one that cannot be read counts, since Rig
+ * cannot prove it does not. */
+async function runByTool(
+  state: Pick<RuntimeState, "targets">,
+  checkout: string,
+  deps: Pick<RevisionDependencies, "observations">,
+): Promise<boolean> {
+  for (const target of state.targets)
+    if (
+      target.sourceRoot &&
+      within(target.sourceRoot, checkout) &&
+      (await deps.observations
+        .toolRunsFrom?.(target, checkout)
+        .catch(() => true))
+    )
+      return true;
+  return false;
 }
 /** Whether a Service process may still run in `checkout`: a run whose source names it, whose process is observed running
  * under the run's incarnation (or one that names none), or cannot be observed. */

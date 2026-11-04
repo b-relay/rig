@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import { within } from "../domain/paths";
+import {
+  flushDirectoryOf,
+  makeDirectoryFlushed,
+  writeFlushedFile,
+} from "./private-files";
 import { realPath } from "./real-path";
 import type { CommandRunner } from "./contracts";
 import {
@@ -89,7 +94,7 @@ export function createCaddyRouter(
     route?: RouteRequest,
     restoration?: { saved: RouteCheckpoint; expected: RouteCheckpoint },
   ): Promise<void> {
-    await mkdir(dirname(config.caddyfile), { recursive: true, mode: 0o700 });
+    await makeDirectoryFlushed(dirname(config.caddyfile), 0o700);
     const file = await resolveRoutes(config);
     const before = await readRoutes(file);
     const edit = editRouteFile({
@@ -106,7 +111,9 @@ export function createCaddyRouter(
     await commit(config, file, before, after);
   }
   /** Validates `after`, writes it into `file` (the route file's resolved path, read as `before`) and reloads Caddy, putting
-   * `before` back when Caddy refuses it. Refused with ROUTE_CHANGED when the route file stops resolving to `file`. */
+   * `before` back when Caddy refuses it. Refused with ROUTE_CHANGED when the route file stops resolving to `file`. The bytes
+   * of each file, then the directory that names them, are on disk before Caddy is reloaded and before this resolves, so an
+   * effect journal never records a route a crash could still take back. */
   async function commit(
     config: ExternalCaddySettings,
     file: string,
@@ -128,14 +135,20 @@ export function createCaddyRouter(
     ];
     const rejected = `${file}.rejected`;
     const hostCaddyfile = await options.hostCaddyfile?.();
+    /** Puts `before` back in `file`, whole and on disk. */
+    const putBack = async () => {
+      await writeFlushedFile(temporary, before, mode);
+      await rename(temporary, file);
+      await flushDirectoryOf(file);
+    };
     try {
-      await writeFile(temporary, after, { mode });
+      await writeFlushedFile(temporary, after, mode);
       // Caddy reads an import from disk, so a check through the Host Caddyfile needs the new routes in place first. Caddy serves
       // what it last loaded, not the file, so a rejected change is put back before anything reloads. It is adapted rather than
       // validated: validating provisions TLS with Host secrets rigd does not hold, and the reload provisions it inside Caddy anyway.
       if (hostCaddyfile) {
         await assertPinned(config, file);
-        await writeFile(`${file}.rig-backup`, before, { mode });
+        await writeFlushedFile(`${file}.rig-backup`, before, mode);
         await rename(temporary, file);
       }
       const validation = await runCaddy(
@@ -157,15 +170,14 @@ export function createCaddyRouter(
               "caddyfile",
             ],
       ).catch(async (error) => {
-        if (hostCaddyfile) await writeFile(file, before, { mode });
+        if (hostCaddyfile) await putBack();
         throw error;
       });
       if (validation.exitCode !== 0) {
         // The rejected text is kept where the hint names it so the user can read what Caddy saw.
         if (hostCaddyfile) {
           await writeFile(rejected, after, { mode });
-          await writeFile(temporary, before, { mode });
-          await rename(temporary, file);
+          await putBack();
         } else await rename(temporary, rejected);
         const reason = lastOutputLine(validation.stderr);
         throw new RigError(
@@ -181,9 +193,10 @@ export function createCaddyRouter(
       }
       if (!hostCaddyfile) {
         await assertPinned(config, file);
-        await writeFile(`${file}.rig-backup`, before, { mode });
+        await writeFlushedFile(`${file}.rig-backup`, before, mode);
         await rename(temporary, file);
       }
+      await flushDirectoryOf(file);
       if (config.reload !== false) {
         const reload = await runCaddy(reloadCommand).catch((error) => ({
           exitCode: 1,
@@ -191,8 +204,7 @@ export function createCaddyRouter(
           stderr: describeStartFailure(error),
         }));
         if (reload.exitCode !== 0) {
-          await writeFile(temporary, before, { mode });
-          await rename(temporary, file);
+          await putBack();
           const rollback = await runCaddy(reloadCommand).catch(() => ({
             exitCode: 1,
           }));

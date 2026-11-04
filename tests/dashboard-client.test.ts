@@ -148,8 +148,9 @@ test("presentation helpers shorten a Commit, date an instant coarsely, and word 
       deploymentIncomplete: true,
       transitionPending: true,
       destructionPending: true,
+      leftoverBuild: true,
     }),
-  ).toHaveLength(4);
+  ).toHaveLength(5);
 });
 
 describe("returnPath", () => {

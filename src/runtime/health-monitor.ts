@@ -70,13 +70,12 @@ export type HealthResults = (
  * the Service's record holds; skipped because the process that was judged is gone or was replaced; or deferred because
  * nothing could be established about it, so it is asked again. */
 export type HealthRestartResult =
-  | {
-      outcome: "restarted" | "failed";
+  | ({
       /** When it was attempted, Unix milliseconds. */
       at: number;
       /** `at` on the elapsed clock of the process that made the restart, which is the monitor's own. */
       elapsed: number;
-    }
+    } & ({ outcome: "restarted" } | { outcome: "failed"; error: unknown }))
   | { outcome: "skipped" | "deferred" };
 /** A health restart rigd is asked for: which Service, and what the checks saw. */
 export interface HealthRestartRequest {
@@ -112,8 +111,8 @@ export interface HealthMonitorDependencies {
   schedule(delayMs: number, fire: () => void): () => void;
   diagnostic: RuntimeDependencies["diagnostic"];
   /** Where each Service's checks (`<target id>:<service>`), the records of its changes of health (`…/record`: Activity, the
-   * end of an unhealthy stretch) and the evidence its checks write to the Target log (`…/evidence`) say they failed, and
-   * later that they succeeded. */
+   * end of an unhealthy stretch), the evidence its checks write to the Target log (`…/evidence`) and its health restarts
+   * (`…/restart`) say they failed, and later that they succeeded. */
   report: WorkReport;
   /** Checks that may run at once across the Host; HEALTH_CHECK_CONCURRENCY when absent. */
   concurrency?: number;
@@ -377,6 +376,7 @@ export function createHealthMonitor(
       // The start itself is the transition, and what it says is the newest thing known: it is cached unconditionally.
       invalidate(target.id, service);
       const key = keyOf(target.id, service);
+      report.succeeded(`${key}/restart`);
       const component = target.plan.components.find(
         (candidate): candidate is ManagedComponent =>
           candidate.kind === "managed" && candidate.name === service,
@@ -563,7 +563,7 @@ export function createHealthMonitor(
           targetMarks.delete(targetId);
       // A failure about a Service no longer checked, with nothing of it left to write, no longer stands.
       report.only((work) => {
-        const key = work.replace(/\/(?:record|evidence)$/, "");
+        const key = work.replace(/\/(?:record|evidence|restart)$/, "");
         return monitored.has(key) || inFlight.has(key) || unwritten.has(key);
       });
     },
@@ -849,6 +849,7 @@ export function createHealthMonitor(
       });
       await forgetStretch(target, service, since, identity);
       restartMarks.delete(key);
+      report.succeeded(`${key}/restart`);
     }
     report.succeeded(key);
     const action = actionFor(
@@ -905,6 +906,7 @@ export function createHealthMonitor(
         since: stretch.since,
         restarts: stretch.restarts,
       });
+      reportRestart(key, service, now.target, started);
       if ("at" in started) madeRestart(key, stretch, started.elapsed);
       return;
     }
@@ -937,6 +939,7 @@ export function createHealthMonitor(
       since: stretch.since,
       restarts: stretch.restarts,
     });
+    reportRestart(key, service, now.target, result);
     const after = states.get(key) ?? state;
     if (!("at" in result)) {
       if (result.outcome === "deferred") return;
@@ -948,6 +951,23 @@ export function createHealthMonitor(
     // A failed restart counts for the back-off too, so a Service that cannot start is not asked again at once.
     madeRestart(key, stretch, result.elapsed);
     write(targetId, service, verdict.since, restarted(after, result.at));
+  }
+
+  /** Raises the Service's notice with why its health restart failed, and clears it when one succeeds; a restart that was
+   * skipped or deferred says nothing either way. */
+  function reportRestart(
+    key: string,
+    service: string,
+    target: Pick<TargetRecord, "name" | "plan">,
+    result: HealthRestartResult,
+  ): void {
+    if (result.outcome === "failed")
+      report.failed(
+        `${key}/restart`,
+        `Restarting ${named(target, service)} for its health`,
+        result.error,
+      );
+    else if (result.outcome === "restarted") report.succeeded(`${key}/restart`);
   }
 
   /** Runs `observe`, aborted after `timeoutMs`: its answer, a failure as a failed check, or undefined when it did not

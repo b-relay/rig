@@ -397,7 +397,12 @@ function world(
         processRunning = survives;
         transitions++;
         expected = "unhealthy";
-        return { outcome: "failed", at: now, elapsed: now };
+        return {
+          outcome: "failed",
+          at: now,
+          elapsed: now,
+          error: new Error("its start failed"),
+        };
       },
       schedule(delayMs, fire) {
         const timer = { at: now + delayMs, fire };

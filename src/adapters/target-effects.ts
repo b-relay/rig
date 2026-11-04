@@ -24,8 +24,15 @@ import { isHealthUrl } from "../config/schema";
 import { installedPath } from "../domain/installed-path";
 import { isGitCommit } from "../domain/git";
 import { componentDirectory } from "../config/working-dir";
-import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
-import { composeEnvironment } from "../domain/process-environment";
+import {
+  gitIgnoreCheck,
+  loadEnvironmentFiles,
+  readEnvironmentFile,
+} from "./env-file";
+import {
+  assertRepresentableEnvironment,
+  composeEnvironment,
+} from "../domain/process-environment";
 import type { TargetRecord } from "../domain/runtime";
 import type {
   Supervisor,
@@ -34,7 +41,10 @@ import type {
   HealthCheck,
   TargetLogEntry,
 } from "../providers/contracts";
-import { isSourceEntrypoint } from "../providers/artifact-installer";
+import {
+  isSourceEntrypoint,
+  shimRunsFrom,
+} from "../providers/artifact-installer";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
@@ -42,7 +52,7 @@ import { liveUpstreams, parseOwnedSites } from "../providers/route-file";
 import { routeUpstream, upstreamPort } from "../domain/route-upstream";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
-import { declaredPorts, plannedSites } from "../runtime/ports";
+import { declaredPorts, plannedRoutes, plannedSites } from "../runtime/ports";
 import {
   ownedListeners,
   preparationProcessKey,
@@ -106,6 +116,7 @@ function failureReason(error: unknown): string {
 import type { HealthObservation, ObservationEffects } from "../runtime/status";
 import {
   RigError,
+  diagnosticErrorCode,
   failureCauses,
   failureReason as describedFailure,
   lastOutputLine,
@@ -204,18 +215,21 @@ export function createTargetEffects(
   const noted = new Set<string>();
   /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, its env files, then the plan's reference values.
    * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment and
-   * `secrets`, the list of them to redact. */
+   * `secrets`, the list of them to redact. `forRunningProcess` is for a check of a process already running: see
+   * `loadEnvironmentFiles`; every other invocation gets each value exactly or is refused. */
   const invocationEnvironment = async (
     target: TargetRecord,
     component?: ManagedComponent | InstalledComponent | PlanJob,
     /** Inputs of a Project-scope command, which no Component carries. */
     projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
+    forRunningProcess = false,
   ): Promise<{ env: Record<string, string>; secrets: string[] }> => {
     const scope = component ?? target.plan;
     const loaded = await loadEnvironmentFiles(
       scope.envFiles ?? [],
       target.plan.workspacePath,
       ignored,
+      forRunningProcess,
     );
     const tmp = join(options.root, "tmp", target.id);
     const composed = composeEnvironment({
@@ -239,10 +253,13 @@ export function createTargetEffects(
     if (fresh.length)
       await recordLines(target, component?.name ?? "setup", "stderr", fresh);
     // The values its commands read through _RIG_ variables come last.
-    return {
-      env: { ...composed.env, ...referenceValuesOf(target.plan, component) },
-      secrets: composed.secrets,
+    const env = {
+      ...composed.env,
+      ...referenceValuesOf(target.plan, component),
     };
+    if (!forRunningProcess)
+      assertRepresentableEnvironment(env, component?.name);
+    return { env, secrets: composed.secrets };
   };
   const environment = async (
     ...args: Parameters<typeof invocationEnvironment>
@@ -397,15 +414,21 @@ export function createTargetEffects(
       target,
     );
   /** An ongoing check, as status and the health monitor run it: the start gate's check, except that a check of the Service's
-   * ports passes only on listeners its own running process owns, so a program that took a port it left never answers
-   * for it. */
+   * ports, and any check of a routed Service, passes only on listeners its own running process owns, so a program that took
+   * a port it left never answers for it. */
   const ongoingHealth = async (
     component: ManagedComponent,
     target: TargetRecord,
     signal: AbortSignal,
   ): Promise<HealthObservation> => {
-    if (component.health) return await health(component, target, signal);
-    const reached = await connections(component, signal);
+    const routed = plannedRoutes(target.plan).some(
+      (route) => route.service === component.name,
+    );
+    if (component.health && !routed)
+      return await health(component, target, signal);
+    const reached = component.health
+      ? await probe(component, target, signal)
+      : await connections(component, signal);
     const owned = reached.ready
       ? await ownedListeners(
           component,
@@ -504,7 +527,12 @@ export function createTargetEffects(
           signal.removeEventListener("abort", forward);
         }
       }
-      const { env, secrets } = await invocationEnvironment(target, component);
+      const { env, secrets } = await invocationEnvironment(
+        target,
+        component,
+        [],
+        true,
+      );
       const result = await options.run({
         command: ["/bin/sh", "-c", component.health!],
         cwd: await runDirectory(target, component),
@@ -538,6 +566,24 @@ export function createTargetEffects(
       (component) =>
         !retained.has(installedPath(options.root, previous, component)),
     );
+  };
+  /** The Tools only `previous` names that are its to retire. One another Target owns, or a file Rig did not install, was
+   * never published by it: a working Target records its plan before a start is refused for such a Tool, and dropping the Tool
+   * from rig.yaml leaves that file as it is. An executable it did publish is still held to every other check. */
+  const retirable = async (previous: TargetRecord, candidate: TargetRecord) => {
+    const own: InstalledComponent[] = [];
+    for (const component of superseded(previous, candidate))
+      try {
+        await ownership.inspect(artifactIdentity(previous, component));
+        own.push(component);
+      } catch (error) {
+        if (
+          !(error instanceof RigError) ||
+          !["ARTIFACT_CONFLICT", "ARTIFACT_UNOWNED"].includes(error.code)
+        )
+          throw error;
+      }
+    return own;
   };
   /** The identity of the repository `target` was deployed from: the root commits of its Commit (the Working copy's HEAD
    * when it has none), read in the Project's own registered repository, sorted and joined by commas: the same in every full
@@ -633,10 +679,33 @@ export function createTargetEffects(
     supervisor,
     environment,
     digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
+    async checkEnvironmentValues(target) {
+      const managed = target.plan.components.filter(
+        (component) => component.kind === "managed",
+      );
+      // A file several Services share is read once here; each start reads its own afresh.
+      const paths = new Set(
+        managed.flatMap((component) =>
+          (component.envFiles ?? []).map(({ path }) => path),
+        ),
+      );
+      for (const path of paths)
+        await readEnvironmentFile(path).catch((error: unknown) => {
+          if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
+        });
+      for (const component of managed)
+        assertRepresentableEnvironment(
+          {
+            ...component.env,
+            ...referenceValuesOf(target.plan, component),
+          },
+          component.name,
+        );
+    },
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
-    checkpoint: (target, previous) =>
-      transactions.checkpoint(
+    checkpoint: async (target, previous) =>
+      await transactions.checkpoint(
         target.id,
         [
           ...installedComponents(target).map((component) => ({
@@ -644,7 +713,7 @@ export function createTargetEffects(
             component,
           })),
           ...(previous
-            ? superseded(previous, target).map((component) => ({
+            ? (await retirable(previous, target)).map((component) => ({
                 target: previous,
                 component,
               }))
@@ -658,8 +727,8 @@ export function createTargetEffects(
     restoreEffects: (target) => transactions.restore(target.id),
     retireArtifacts: (target) =>
       retireComponents(target, installedComponents(target)),
-    retireSuperseded: (previous, candidate) =>
-      retireComponents(previous, superseded(previous, candidate)),
+    retireSuperseded: async (previous, candidate) =>
+      await retireComponents(previous, await retirable(previous, candidate)),
     async prepare(target, composed) {
       await privateDirectory(options.root, target.logRoot);
       for (const component of target.plan.preparedComponents) {
@@ -767,6 +836,13 @@ export function createTargetEffects(
         target,
         unitComponent(unit, target),
         unit.commandInputs,
+      ),
+    buildDirectory: (unit, target) =>
+      runDirectory(
+        target,
+        target.plan.components.find(
+          (candidate) => candidate.name === unit.component,
+        ),
       ),
     async build(unit, target, composed) {
       const component = unitComponent(unit, target);
@@ -1045,6 +1121,17 @@ export function createTargetEffects(
         }
       },
       persistent: (_target, component) => exists(component.path),
+      async toolRunsFrom(target, checkout) {
+        for (const component of installedComponents(target))
+          if (
+            await shimRunsFrom(
+              installedPath(options.root, target, component),
+              checkout,
+            )
+          )
+            return true;
+        return false;
+      },
       async listening(_target, component, signal) {
         const ports = [
           ...new Set([

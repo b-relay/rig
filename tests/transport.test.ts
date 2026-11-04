@@ -77,7 +77,10 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
       `http://127.0.0.1:${server.port}/v1/command`,
       {
         method: "POST",
-        headers: { authorization: "Bearer test-secret" },
+        headers: {
+          authorization: "Bearer test-secret",
+          "content-type": "application/json",
+        },
         body: JSON.stringify({ action: "execute-shell" }),
       },
     );
@@ -696,6 +699,201 @@ test("a read aborted by its signal fails as CANCELLED at once, without waiting f
     expect(performance.now() - start).toBeLessThan(1000);
   } finally {
     await server.stop(true);
+  }
+});
+
+/** Runs `args` through the real CLI against `client`, answering its exit status, what it printed and what it recorded. */
+async function runRead(client: DaemonClient, args: string[]) {
+  const { runRigCli } = await import("../src/cli/rig");
+  let stdout = "",
+    stderr = "";
+  const recorded: { event: string; code?: string }[] = [];
+  const exit = await runRigCli(args, {
+    root: "/tmp/rig-620-transport/.rig",
+    cwd: "/repo",
+    client,
+    output: {
+      write(value: string) {
+        stdout += value;
+      },
+      error(value: string) {
+        stderr += value;
+      },
+    },
+    diagnostics: {
+      async record(entry) {
+        recorded.push(entry);
+        return {};
+      },
+    },
+    wait: async () => {},
+    newOperationId: () => "read-op",
+  });
+  return { exit, stdout, stderr, recorded };
+}
+/** A rigd that sends its headers and the start of its document at once, and the rest once `finish` resolves. */
+function stallingBody(finish: Promise<void>) {
+  return Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    idleTimeout: 0,
+    fetch: () =>
+      new Response(
+        new ReadableStream({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"result":'));
+            await finish;
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+  });
+}
+/** Resolves once a fetch has its headers; the body is still to come. */
+function watchHeaders() {
+  const arrived = Promise.withResolvers<void>();
+  const real = globalThis.fetch;
+  const spy = spyOn(globalThis, "fetch").mockImplementation((async (
+    ...args: Parameters<typeof fetch>
+  ) => {
+    const response = await real(...args);
+    arrived.resolve();
+    return response;
+  }) as typeof fetch);
+  return { arrived: arrived.promise, restore: () => spy.mockRestore() };
+}
+
+test("a read deadline that expires before the headers or during the body is the same DAEMON_TIMEOUT, in the CLI's text, JSON, diagnostics and exit", async () => {
+  const finish = Promise.withResolvers<void>();
+  const body = stallingBody(finish.promise);
+  const headers = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    idleTimeout: 0,
+    async fetch() {
+      await finish.promise;
+      return Response.json({ result: { operations: [], projects: [] } });
+    },
+  });
+  try {
+    for (const server of [body, headers]) {
+      const client = new DaemonClient(
+        { port: server.port!, token: "test" },
+        { readDeadlineMs: 100 },
+      );
+      for (const action of ["activity", "list"]) {
+        const text = await runRead(client, [action]);
+        expect(text.exit).toBe(1);
+        expect(text.stdout).toBe("");
+        expect(text.stderr).toContain(
+          `rigd did not answer the ${action} read within 0.1 s; it may be busy (operation read-op).`,
+        );
+        expect(text.stderr).toContain("rig activity");
+        expect(text.stderr).not.toContain("invalid response");
+        expect(text.recorded).toContainEqual(
+          expect.objectContaining({
+            event: "command.failed",
+            code: "DAEMON_TIMEOUT",
+          }),
+        );
+      }
+      const json = await runRead(client, ["list", "--json"]);
+      expect(json.exit).toBe(1);
+      expect(JSON.parse(json.stdout)).toEqual({
+        error: {
+          code: "DAEMON_TIMEOUT",
+          message:
+            "rigd did not answer the list read within 0.1 s; it may be busy (operation read-op).",
+          hint: expect.stringContaining("rig activity"),
+        },
+      });
+    }
+  } finally {
+    finish.resolve();
+    await body.stop(true);
+    await headers.stop(true);
+  }
+});
+
+test("a read abandoned during its reply body fails as CANCELLED", async () => {
+  const finish = Promise.withResolvers<void>();
+  const server = stallingBody(finish.promise);
+  const fetching = watchHeaders();
+  try {
+    const client = new DaemonClient({ port: server.port!, token: "test" });
+    const controller = new AbortController();
+    const answer = client.command({ action: "list" }, controller.signal);
+    await fetching.arrived;
+    controller.abort();
+    await expect(answer).rejects.toMatchObject({
+      code: "CANCELLED",
+      hint: expect.stringContaining("rig activity"),
+    });
+  } finally {
+    fetching.restore();
+    finish.resolve();
+    await server.stop(true);
+  }
+});
+
+test("a reply cut off mid-body says the connection dropped; only a whole reply that is not JSON is DAEMON_PROTOCOL", async () => {
+  const fetching = watchHeaders();
+  const partial =
+    'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"result":';
+  const whole =
+    'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 10\r\nConnection: close\r\n\r\n{"result":';
+  let reply = partial;
+  const listener = Bun.listen({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      data(socket) {
+        socket.write(reply);
+        socket.flush();
+        // Cut off only once rig holds the headers, so the failure is the body's.
+        void fetching.arrived.then(() => socket.end());
+      },
+    },
+  });
+  try {
+    const client = new DaemonClient({ port: listener.port, token: "test" });
+    const cut = await runRead(client, ["list", "--json"]);
+    expect(cut.exit).toBe(1);
+    expect(JSON.parse(cut.stdout)).toEqual({
+      error: {
+        code: "DAEMON_INTERRUPTED",
+        message:
+          "The connection to rigd closed before it finished answering the list request (operation read-op).",
+        hint: expect.stringContaining("rigd status"),
+      },
+    });
+    expect(cut.recorded).toContainEqual(
+      expect.objectContaining({
+        event: "command.failed",
+        code: "DAEMON_INTERRUPTED",
+      }),
+    );
+    // An action's reply says it may have finished.
+    await expect(
+      client.command({ action: "up", operationId: "op-up" }),
+    ).rejects.toMatchObject({
+      code: "DAEMON_INTERRUPTED",
+      message:
+        "The connection to rigd closed before it finished answering the up request (operation op-up); it may still be running.",
+      hint: expect.stringContaining("rig activity"),
+    });
+
+    reply = whole;
+    const malformed = await runRead(client, ["list", "--json"]);
+    expect(malformed.exit).toBe(1);
+    expect(JSON.parse(malformed.stdout).error).toMatchObject({
+      code: "DAEMON_PROTOCOL",
+      message: "rigd returned an invalid response.",
+    });
+  } finally {
+    fetching.restore();
+    listener.stop(true);
   }
 });
 

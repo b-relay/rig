@@ -217,6 +217,9 @@ an unpaired surrogate, which a process could not get as written, or a Unicode
 line separator). A revision is of the file's bytes, and a file the reader
 refuses (a line that is not UTF-8, a NUL, `__proto__`) shows its names and the
 refusal, and is neither revealed nor rewritten until it is fixed in an editor.
+The page's value fields hold one line, and a browser strips line breaks from
+such a field without a word, so text with line breaks is refused when pasted or
+dropped there, and a revealed value that has them does not open for editing.
 Each write records an Activity
 entry (`env`, `updated`) naming who asked and which names changed in which
 file, never a value. Every such request is signed in, so the server names where

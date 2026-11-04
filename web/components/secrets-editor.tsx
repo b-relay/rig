@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   Eye,
@@ -53,6 +59,7 @@ import { cn } from "@/lib/utils";
 /** A name an env file may assign; names starting with _RIG_ are reserved for Rig. */
 const ENV_KEY = /^(?!_RIG_)[A-Za-z_][A-Za-z0-9_]*$/;
 const MASK = "••••••••••••";
+const LINE_BREAK = /[\r\n]/;
 async function call(input: unknown): Promise<Outcome<unknown>> {
   try {
     return await runEnvEdit(input);
@@ -154,6 +161,27 @@ export function SecretsEditor({
     }));
   const stageChange = (key: string, change: Pending | undefined) =>
     setDraft((now) => stage(now, file, key, change));
+  const refuseLineBreaks = (what: string, outcome: string) =>
+    setFailure({
+      code: "ENV_VALUE",
+      message: `${what} has line breaks, which this one-line field cannot keep, so ${outcome}.`,
+      hint: `Edit ${file.path} in an editor instead, with each line break written as \\n in double quotes: NAME="first\\nsecond".`,
+    });
+  const refuseOffer = (
+    event: { preventDefault(): void },
+    data: Pick<DataTransfer, "getData">,
+  ) => {
+    if (!LINE_BREAK.test(data.getData("text"))) return;
+    event.preventDefault();
+    refuseLineBreaks("That text", "it was not put in");
+  };
+  /** A browser silently strips line breaks from what a one-line field is given, so what holds any never gets there. */
+  const oneLine = {
+    onPaste: (event: ClipboardEvent<HTMLInputElement>) =>
+      refuseOffer(event, event.clipboardData),
+    onDrop: (event: DragEvent<HTMLInputElement>) =>
+      refuseOffer(event, event.dataTransfer),
+  };
   const save = async () => {
     setBusy(true);
     setFailure(undefined);
@@ -319,6 +347,7 @@ export function SecretsEditor({
                     }}
                   >
                     <Input
+                      {...oneLine}
                       autoFocus
                       type={editVisible ? "text" : "password"}
                       value={editing.value}
@@ -434,8 +463,16 @@ export function SecretsEditor({
                       label={`Edit ${key}`}
                       disabled={locked}
                       onClick={() => {
-                        setEditVisible(shownValue(key) !== undefined);
-                        setEditing(beginEdit(file, key, shownValue(key) ?? ""));
+                        const held = shownValue(key);
+                        if (held !== undefined && LINE_BREAK.test(held)) {
+                          refuseLineBreaks(
+                            `The value of ${key}`,
+                            "it cannot be edited here",
+                          );
+                          return;
+                        }
+                        setEditVisible(held !== undefined);
+                        setEditing(beginEdit(file, key, held ?? ""));
                       }}
                     >
                       <Pencil />
@@ -482,6 +519,7 @@ export function SecretsEditor({
           />
           <div className="relative min-w-48 flex-1">
             <Input
+              {...oneLine}
               value={adding.value}
               type={adding.show ? "text" : "password"}
               onChange={(event) =>

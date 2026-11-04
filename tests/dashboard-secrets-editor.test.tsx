@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, mock, test } from "bun:test";
 import {
   elements,
   hasLabel,
@@ -6,8 +6,24 @@ import {
   mountWithoutDom,
   textOf,
 } from "./support/hook-harness";
-import { SecretsEditor } from "../web/components/secrets-editor";
+import * as actions from "../web/server/actions";
 import type { EnvFileView } from "../web/lib/types";
+
+/** The value rigd answers a reveal with, while a test sets it. The real module is taken before it is mocked: the mock is
+ * process-wide, so every other use goes through to it. */
+const real = { ...actions };
+let revealing: string | undefined;
+mock.module("../web/server/actions", () => ({
+  ...real,
+  async runEnvEdit(input: unknown) {
+    if (revealing === undefined) return real.runEnvEdit(input);
+    return { ok: true, value: { value: revealing, revision: "R0" } };
+  },
+}));
+afterAll(() => {
+  revealing = undefined;
+});
+const { SecretsEditor } = await import("../web/components/secrets-editor");
 
 /** The Environment editor's own handlers, driven as an operator would, with refreshes handing it newer files between
  * keystrokes. Nothing here reaches rigd: what is checked is what the editor would save against, and what it shows. */
@@ -116,4 +132,87 @@ test("an edit or a new name keeps the file shown when its typing began, whicheve
   current.keep("New value for A");
   expect(current.text()).toContain("Review and save");
   expect(current.stale()).toBe(false);
+});
+
+/** Offers `text` to the field labelled `label` by paste or drop, as a browser does; whether the browser may go on and put it
+ * in the field. */
+function offer(
+  page: ReturnType<typeof editor>,
+  label: string,
+  how: "onPaste" | "onDrop",
+  text: string,
+): boolean {
+  let refused = false;
+  const data = { getData: () => text };
+  page.mounted.act(() =>
+    (labelled(page.mounted.tree, label).props[how] as (event: unknown) => void)(
+      {
+        clipboardData: data,
+        dataTransfer: data,
+        preventDefault() {
+          refused = true;
+        },
+      },
+    ),
+  );
+  return !refused;
+}
+/** What the page says of a value it cannot hold; the Failure element carries it as a prop. */
+const failureOf = (page: ReturnType<typeof editor>) =>
+  JSON.stringify(
+    elements(page.mounted.tree).find((each) => each.props.failure)?.props
+      .failure ?? null,
+  );
+
+test.each([
+  ["New value for A", "onPaste", "held\nback"],
+  ["New value for A", "onDrop", "held\r\nback"],
+  ["New variable value", "onPaste", "held\rback"],
+  ["New variable value", "onDrop", "held\nback"],
+] as const)(
+  "%s refuses text with a line break through %s, and says so, since a one-line field would strip it; text without one goes in",
+  (label, how, text) => {
+    const page = editor(file("R0"));
+    if (label === "New value for A") page.click("Edit A");
+    expect(offer(page, label, how, "one line")).toBe(true);
+    expect(failureOf(page)).toBe("null");
+    expect(offer(page, label, how, text)).toBe(false);
+    expect(failureOf(page)).toContain("has line breaks");
+    expect(failureOf(page)).toContain("/rig/env/demo/all.env");
+    // Neither the field nor the words on the page hold any of it.
+    expect(failureOf(page)).not.toContain("held");
+    expect(labelled(page.mounted.tree, label).props.value).toBe("");
+  },
+);
+
+test("a revealed value with line breaks does not open in the one-line field, and the page says so; one without opens as it is", async () => {
+  const reveal = async (page: ReturnType<typeof editor>, key: string) => {
+    page.click(`Reveal ${key}`);
+    // The reply comes through a few promises; no timer is involved.
+    for (let tick = 0; !hasLabel(page.mounted.tree, `Hide ${key}`); tick++) {
+      if (tick === 100) throw new Error(`${key} was not revealed.`);
+      await Promise.resolve();
+      page.mounted.render();
+    }
+  };
+  revealing = "held\nback";
+  const page = editor(file("R0"));
+  await reveal(page, "A");
+  page.click("Edit A");
+  expect(hasLabel(page.mounted.tree, "New value for A")).toBe(false);
+  expect(failureOf(page)).toContain("has line breaks");
+  expect(failureOf(page)).toContain("/rig/env/demo/all.env");
+  expect(failureOf(page)).not.toContain("held");
+  // Masked again it can be replaced whole, as any value the page does not show.
+  page.click("Hide A");
+  page.click("Edit A");
+  expect(labelled(page.mounted.tree, "New value for A").props.value).toBe("");
+
+  revealing = "one line";
+  const plain = editor(file("R0"));
+  await reveal(plain, "A");
+  plain.click("Edit A");
+  expect(labelled(plain.mounted.tree, "New value for A").props.value).toBe(
+    "one line",
+  );
 });

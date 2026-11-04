@@ -102,12 +102,15 @@ rig
 │  └─ token                         store the DNS API token read from a pipe (pbpaste | rig proxy token)
 │
 ├─ dns                              your Cloudflare records, with the proxy's token (ADR 0018)
-│  ├─ list [zone]                   every zone's records, and where each served hostname points
+│  ├─ list [zone]                   every zone's records, and where each served hostname points. A zone it cannot
+│  │                                read is warned of (--json: unreadableZones) and it exits 0, unless none can be
+│  │                                read. A named zone reads only that zone, not its child zones (another only to
+│  │                                follow a CNAME), and exits 1 when that zone cannot be read
 │  │   --json
 │  ├─ set <name> <type> <content>   create, or change the one A/AAAA/CNAME of that name; TXT/MX/CAA add one
 │  │   --ttl <seconds|auto>         default: the record's own, else auto
 │  │   --proxied / --no-proxied     A, AAAA, CNAME only
-│  │   --priority <number>          MX (default: the record's own, else 10)
+│  │   --priority <number>          MX (default: 0 for a null MX, else the record's own, else 10)
 │  │   --comment <text>
 │  │   --add                        add another record of that name and type
 │  │   --replace                    TXT, MX, CAA: change the one record there instead of adding

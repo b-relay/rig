@@ -202,14 +202,17 @@ commit `v<version>` and push the tag. The release workflow
 main, then runs all of CI on the tagged commit. CI's package job runs
 `scripts/package-release.sh`, which compiles `rig` and `rigd` for Apple Silicon
 and Intel Macs, builds the dashboard once (`scripts/build-dashboard.sh`; it runs
-on either), packs each architecture's `rig`, `rigd` and `dashboard/` into
-`rig-<tag>-darwin-<arch>.tar.gz`, writes the tag into the `install` script, and
-lists every file in `SHA256SUMS`. `scripts/smoke-release.sh` then tries those
-files on an Apple Silicon and an Intel Mac: every executable is built for its
-architecture, `rig --version` and `rigd --version` exit 0 printing exactly
+on either), generates `dashboard/THIRD_PARTY_NOTICES` from the licenses in
+`node_modules` (`scripts/third-party-notices.ts`, which fails when a bundled
+package has no license file), packs each architecture's `rig`, `rigd` and
+`dashboard/` into `rig-<tag>-darwin-<arch>.tar.gz`, writes the tag into the
+`install` script, and lists every file in `SHA256SUMS`.
+`scripts/smoke-release.sh` then tries those files on an Apple Silicon and an
+Intel Mac: every executable is built for its architecture, both archives hold the
+notices, `rig --version` and `rigd --version` exit 0 printing exactly
 `<version>+<commit>`, and the release's `install` script installs it into a
-throwaway `RIG_ROOT` where `rigd status` shows that build serving and the
-packaged dashboard answers `/healthz`. Only when every CI job passes does the
+throwaway `RIG_ROOT` where the notices are kept, `rigd status` shows that build
+serving and the packaged dashboard answers `/healthz`. Only when every CI job passes does the
 release attest each file's build provenance and publish the files CI tried as
 the GitHub Release. Run `scripts/package-release.sh <tag> dist` from a clean
 checkout to try one locally, and `scripts/smoke-release.sh <tag> <commit> dist`

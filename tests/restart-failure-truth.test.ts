@@ -62,6 +62,8 @@ async function fixture(config: ProjectConfig = shop()) {
     routeCheck?: () => unknown;
     /** Each withhold throws this. */
     withhold?: () => unknown;
+    /** The preparation at the head of a start throws this. */
+    prepare?: () => unknown;
   } = {};
   /** Held open while a Target's build runs, and said running under its recorded key, as a live daemon's own build is. */
   const build: { hold?: Promise<void>; running?: () => void } = {};
@@ -137,6 +139,10 @@ async function fixture(config: ProjectConfig = shop()) {
     },
     wrapEffects: (effects) => ({
       ...effects,
+      async prepare(target, composed) {
+        if (fail.prepare) throw fail.prepare();
+        await effects.prepare(target, composed);
+      },
       async withhold(target, ports) {
         if (fail.withhold) throw fail.withhold();
         await effects.withhold(target, ports);
@@ -459,6 +465,55 @@ test("a restart is refused before anything stops when the first build's own env 
   }
 });
 
+test("a restart is refused before anything stops when the first build's working_dir is missing, since nothing could make it first", async () => {
+  const f = await fixture(
+    shop({
+      services: {
+        web: {
+          command: "web",
+          restart: "always",
+          ports: { http: WEB },
+          working_dir: "app",
+          build: "true",
+        },
+        api: { command: "api", restart: "no", ports: { http: API } },
+      },
+    }),
+  );
+  const directory = join(f.world.repo, "app");
+  await mkdir(directory);
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await refusedWithEverythingRunning(
+    f,
+    "working",
+    () => rm(directory, { recursive: true }),
+    "WORKING_DIR_MISSING",
+  );
+});
+
+test("a restart goes on when an earlier build can make a later build's missing working_dir", async () => {
+  const f = await fixture(
+    shop({
+      build: "mkdir -p app",
+      services: {
+        web: {
+          command: "web",
+          restart: "always",
+          ports: { http: WEB },
+          working_dir: "app",
+          build: "true",
+        },
+        api: { command: "api", restart: "no", ports: { http: API } },
+      },
+    }),
+  );
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await rm(join(f.world.repo, "app"), { recursive: true });
+  f.events.length = 0;
+  await f.command({ action: "restart", project: "shop", target: "working" });
+  expect(f.events).toEqual(["stop api", "stop web", "start web", "start api"]);
+});
+
 // After a Host restart (#702)
 
 test("after a Host restart no route of a working Target or Preview reaches its port until a verified start; a stable Target's comes back with its start", async () => {
@@ -516,6 +571,127 @@ test("while a Host restart's route cannot be withheld its stop is not recorded, 
   expect(f.processes.size).toBe(0);
 });
 
+test("a stable Target whose start after a Host restart fails keeps no path to a port nothing owns, however early it failed", async () => {
+  const refused = () =>
+    new RigError("PREPARE_FAILED", "The disk said no.", "Check it.");
+  for (const failing of ["prepare", "start"] as const) {
+    const f = await fixture();
+    await f.command({ action: "deploy", project: "shop", target: "stable" });
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+    f.processes.clear();
+    f.host.session = REBOOTED;
+    f.fail[failing] = refused;
+    f.reopen();
+    await f.reconcile();
+
+    expect(f.processes.size).toBe(0);
+    expect(await f.livePorts("stable")).toEqual([]);
+    expect((await f.target("stable")).services?.web?.outcome).toMatchObject({
+      kind: "start-failed",
+    });
+
+    // Its next start publishes them again.
+    delete f.fail[failing];
+    await f.command({ action: "up", project: "shop", target: "stable" });
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+  }
+});
+
+test("while a stable Target's route cannot be withheld its failed start after a Host restart is not recorded, each pass tries again, and nothing starts", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  f.processes.clear();
+  f.host.session = REBOOTED;
+  f.fail.prepare = () =>
+    new RigError("PREPARE_FAILED", "The disk said no.", "Check it.");
+  f.fail.withhold = () =>
+    new RigError("ROUTE_RELOAD", "The proxy did not answer.", "Check it.");
+  f.reopen();
+  await f.reconcile();
+  const outcome = async () => (await f.target("stable")).services?.web?.outcome;
+  expect(await outcome()).toBeUndefined();
+  await f.supervise();
+  expect(await outcome()).toBeUndefined();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+
+  delete f.fail.withhold;
+  await f.supervise();
+  expect(await outcome()).toMatchObject({ kind: "start-failed" });
+  expect(await f.livePorts("stable")).toEqual([]);
+  expect(f.processes.size).toBe(0);
+});
+
+/** A stable Target an earlier rigd settled for the reboot: its start recorded as failed, its paths still published. */
+async function settledByAnEarlierRigd() {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  f.processes.clear();
+  f.host.session = REBOOTED;
+  const id = (await f.target("stable")).id;
+  await f.store.update((state) => {
+    const stable = state.targets.find((target) => target.id === id)!;
+    stable.services = Object.fromEntries(
+      Object.entries(stable.services ?? {}).map(([service, run]) => [
+        service,
+        {
+          ...run,
+          outcome: {
+            kind: "start-failed" as const,
+            errorCode: "HEALTH_FAILED",
+            at: "2026-11-03T08:00:00.000Z",
+          },
+        },
+      ]),
+    );
+    state.host!.restart = {
+      kind: "reboot",
+      boot: REBOOTED.boot,
+      login: REBOOTED.login,
+      seq: state.startSeq ?? 0,
+      settled: [id],
+    };
+  });
+  return f;
+}
+
+test("paths an earlier rigd left published to a stable Target's stopped Services go with the next daemon's first pass, not its next rig up", async () => {
+  const f = await settledByAnEarlierRigd();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  f.reopen();
+  await f.reconcile();
+  expect(await f.livePorts("stable")).toEqual([]);
+  expect(f.processes.size).toBe(0);
+  await f.command({ action: "up", project: "shop", target: "stable" });
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+});
+
+test("paths the first pass could not withhold from stopped Services are withheld by a later pass once the proxy answers", async () => {
+  const f = await settledByAnEarlierRigd();
+  f.fail.withhold = () =>
+    new RigError("ROUTE_RELOAD", "The proxy did not answer.", "Check it.");
+  f.reopen();
+  await f.reconcile();
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  delete f.fail.withhold;
+  await f.supervise();
+  expect(await f.livePorts("stable")).toEqual([]);
+});
+
+test("a daemon's first pass leaves the paths of a running Service published", async () => {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  let withheld = 0;
+  const withhold = f.deps.lifecycle.withhold;
+  f.deps.lifecycle.withhold = async (...args) => {
+    withheld++;
+    return await withhold(...args);
+  };
+  f.reopen();
+  await f.reconcile();
+  expect(withheld).toBe(0);
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+});
+
 test("a Service that survived a new login keeps its route after the Host restart", async () => {
   const f = await fixture();
   await f.command({ action: "up", project: "shop", target: "working" });
@@ -524,6 +700,28 @@ test("a Service that survived a new login keeps its route after the Host restart
   await f.reconcile();
   expect((await f.target("working")).services?.web?.outcome).toBeUndefined();
   expect(await f.livePorts("working")).toEqual([WEB]);
+});
+
+// rigd uninstall (#678)
+
+test("rigd uninstall is refused for a Service whose process cannot be ruled out, naming it and how to stop it", async () => {
+  const f = await fixture();
+  await f.command({ action: "up", project: "shop", target: "working" });
+  await f.command({ action: "down", project: "shop", target: "working" });
+  const stopped = await f.target("working");
+  f.processes.set(`${stopped.id}:api`, { state: "unknown" });
+  await expect(
+    f.command({ action: "prepare-uninstall" }),
+  ).rejects.toMatchObject({
+    code: "TARGETS_RUNNING",
+    message: expect.stringContaining("shop working (api is unknown)"),
+    hint: expect.stringContaining("rig down working --project shop"),
+  });
+  await f.command({ action: "cancel-uninstall" });
+  f.processes.clear();
+  expect(await f.command({ action: "prepare-uninstall" })).toEqual({
+    ready: true,
+  });
 });
 
 // Builds left running (#705)

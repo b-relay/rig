@@ -236,7 +236,9 @@ build still running, reports `stopped` when it ended a process, keeps one
 Deployment (the previous one, unless the deploy had already committed), and
 gives back the other's checkout (or holds it, like any checkout something still
 runs in, until nothing does).
-`rigd uninstall` is the exception: it refuses while any Target is running.
+`rigd uninstall` is the exception: it refuses while any Target is running, and
+names each one. Only Services and job runs count: a Tool stays installed whatever
+state it is in, so an edited or missing one does not hold up an uninstall.
 When the daemon is not reachable at all, `rigd uninstall` still removes the
 launchd job and installation record and warns that Targets were left as they
 are; the next `rigd install` adopts them.
@@ -1339,6 +1341,10 @@ the same way. (A Service started by a Rig release before these settings
 existed uses the defaults until it restarts.) While `config.yaml` is invalid,
 the last valid settings stay in force, so log output is never lost to a config
 mistake.
+
+Rig writes a Service's output as fast as the disk takes it and holds about 1 MiB
+waiting. A Service that prints faster than that waits on its own output, as with
+any full pipe, rather than growing its capture wrapper or losing lines.
 
 A Target that an older Rig ran under the removed `launchd` supervisor may
 still hold the files launchd wrote for a job (`<component>.stdout.log` and
@@ -2846,7 +2852,9 @@ current file.
    otherwise reported `unchanged`; a daemon restarted from another shell
    republishes nothing (a `rigd install` that records a different bun
    republishes each source-file Tool's shim). `deploy --no-up` publishes no Tool; the later `rig up`
-   does, under its own checkpoint. Installed executables share one `bin/`
+   does, under its own checkpoint. Until then a source-file Tool already published
+   keeps running the Commit it was published from, whose checkout Rig keeps for it.
+   Installed executables share one `bin/`
    directory across every Project and Target on the Host: `<tool>` for the
    stable Target, `<tool>-dev` for the working Target, and `<tool>-<preview
 name>` for a Preview. Two Projects that both install `cli` on

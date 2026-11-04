@@ -52,6 +52,7 @@ import {
 } from "./process-lease";
 import type { ProcessInspection } from "./process-inspection";
 import type { ProcessTiming } from "./process-timing";
+import { createOutputQueue } from "./output-queue";
 import { appendTargetLogEntries } from "./target-log";
 import { outputLines } from "../domain/output-records";
 import type { LogRetention } from "../domain/log-retention";
@@ -670,6 +671,10 @@ export function createChildSupervisor(
     },
   };
 }
+/** How much of a Service's output may wait for the log before its pipes are held. */
+const OUTPUT_QUEUE_BYTES = 1024 * 1024;
+/** What one line waiting for the log costs besides its text, so a burst of very short lines is held early enough too. */
+const OUTPUT_ENTRY_BYTES = 128;
 /** The grace a start asked for, or the default for a request that names none. */
 function graceOf(request: ManagedProcess): number {
   return request.stopGraceMs ?? serviceGraceMs(undefined);
@@ -681,41 +686,49 @@ function captureOutput(
   now: () => Date,
   retention: (() => Promise<LogRetention>) | undefined,
 ): void {
-  for (const stream of ["stdout", "stderr"] as const) {
-    const pipe = owned.child![stream]!;
+  const pipes = (["stdout", "stderr"] as const).map(
+    (stream) => [stream, owned.child![stream]!] as const,
+  );
+  const queue = createOutputQueue<TargetLogEntry>({
+    limit: OUTPUT_QUEUE_BYTES,
+    pause: () => pipes.forEach(([, pipe]) => pipe.pause()),
+    resume: () => pipes.forEach(([, pipe]) => pipe.resume()),
+    write: async (entries) => {
+      try {
+        await appendTargetLogEntries(
+          root,
+          request.logRoot,
+          entries,
+          await retention?.(),
+        );
+        owned.outputFailure = undefined;
+      } catch (error) {
+        owned.outputFailure = `Target output is not being recorded in ${request.logRoot}: ${failureReason(error)}`;
+      }
+    },
+  });
+  for (const [stream, pipe] of pipes) {
     owned.drains.push(
       new Promise((resolve) => {
         const lines = outputLines();
-        const record = (complete: string[]) => {
+        const record = (complete: string[], bytes: number) => {
           if (!complete.length) return;
           const timestamp = now().toISOString();
-          const entries = complete.map((line): TargetLogEntry => ({
-            timestamp,
-            component: request.componentName,
-            stream,
-            line,
-          }));
-          owned.writes = owned.writes
-            .then(async () =>
-              appendTargetLogEntries(
-                root,
-                request.logRoot,
-                entries,
-                await retention?.(),
-              ),
-            )
-            .then(
-              () => {
-                owned.outputFailure = undefined;
-              },
-              (error) => {
-                owned.outputFailure = `Target output is not being recorded in ${request.logRoot}: ${failureReason(error)}`;
-              },
-            );
+          owned.writes = queue.add(
+            complete.map((line): TargetLogEntry => ({
+              timestamp,
+              component: request.componentName,
+              stream,
+              line,
+            })),
+            bytes + complete.length * OUTPUT_ENTRY_BYTES,
+          );
         };
-        pipe.on("data", (chunk: Buffer) => record(lines.push(chunk)));
+        pipe.on("data", (chunk: Buffer) =>
+          record(lines.push(chunk), chunk.length),
+        );
         pipe.once("end", () => {
-          record(lines.end());
+          record(lines.end(), 0);
           resolve();
         });
         pipe.once("error", () => resolve());

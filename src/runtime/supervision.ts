@@ -563,6 +563,8 @@ export async function recordFailedStart(
   error: unknown,
   deps: Deps,
   alongside?: (state: RuntimeState) => void,
+  /** Told the Services about to be recorded, before they are; nothing is saved when it fails. */
+  beforeSaving?: (services: string[]) => Promise<void>,
 ): Promise<boolean> {
   const errorCode = diagnosticErrorCode(error);
   return await settleStopped(
@@ -575,7 +577,43 @@ export async function recordFailedStart(
         ? undefined
         : { kind: "start-failed", errorCode, at: deps.now() },
     alongside,
+    beforeSaving,
   );
+}
+
+/** Withholds the paths of each Service of `target` seen stopped now, whatever its record says: nothing listens on its ports,
+ * which any program may bind, and an earlier rigd may have settled it with its paths still published. A Service whose
+ * observation does not answer within the status budget decides nothing. Fails as withholding a route fails. */
+export async function withholdStoppedServices(
+  target: TargetRecord,
+  deps: Pick<
+    Deps,
+    "lifecycle" | "observations" | "observationBudgetMs" | "observationDeadline"
+  >,
+): Promise<void> {
+  const routed = target.plan.components.filter(
+    (component): component is ManagedComponent =>
+      component.kind === "managed" &&
+      plannedRoutes(target.plan).some(
+        (route) => route.service === component.name,
+      ),
+  );
+  if (!routed.length) return;
+  const observed = await boundedObservations(
+    routed.map(
+      (component) => (signal: AbortSignal) =>
+        deps.observations.process(target, component, signal),
+    ),
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
+  const stopped = routed.flatMap((component, index) => {
+    const seen = observed[index]!;
+    return seen.kind === "completed" && seen.value.state === "stopped"
+      ? [component.name]
+      : [];
+  });
+  if (stopped.length) await deps.lifecycle.withhold(target, stopped);
 }
 
 /** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled

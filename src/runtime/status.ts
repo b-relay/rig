@@ -56,6 +56,9 @@ export interface ObservationEffects {
     component: PersistentComponent,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Whether a Tool of `target` published now runs from the checkout `checkout`, as a source-file Tool's shim does from the
+   * checkout it was published from. Absent: none is taken to. */
+  toolRunsFrom?(target: TargetRecord, checkout: string): Promise<boolean>;
   /** The Service's recorded ports, its separate Convex site port included, that accept a connection right now, in
    * ascending order. Says nothing of who listens; an aborted probe counts as not listening. */
   listening(

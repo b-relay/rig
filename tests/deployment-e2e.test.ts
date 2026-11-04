@@ -1,7 +1,137 @@
 import { test, expect } from "bun:test";
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { rigFixture } from "./support/rig-fixture";
+
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
+const toolPrint = (text: string) => `console.log(${JSON.stringify(text)});\n`;
+
+test.each([
+  ["stable", ["stable"], ["stable"]],
+  ["preview", ["preview", "feature"], ["preview", "feature"]],
+] as const)(
+  "after deploy --no-up a published source-file Tool of a %s Target still runs, and its checkout goes only once rig up replaces it",
+  async (kind, deploy, select) => {
+    const f = await rigFixture();
+    try {
+      await f.git(["init", "-b", "main"]);
+      await writeFile(
+        join(f.repo, "rig.yaml"),
+        "name: demo\ntargets: { stable: true, preview: true }\ntools:\n  cli:\n    bin: cli.ts\n",
+      );
+      await writeFile(join(f.repo, "cli.ts"), toolPrint("first"));
+      await f.commit();
+      expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+      expect(await f.rig(["init"])).toMatchObject({ code: 0 });
+      if (kind === "preview") await f.git(["checkout", "-b", "feature"]);
+      expect(await f.rig(["deploy", ...deploy])).toMatchObject({ code: 0 });
+
+      const recorded = async () =>
+        JSON.parse(
+          await readFile(join(f.root, "runtime", "state.json"), "utf8"),
+        )
+          .targets.filter((t: { kind: string }) => t.kind === kind)
+          .at(0) as { name: string; plan: { workspacePath: string } };
+      const first = await recorded();
+      const tool = join(
+        f.root,
+        "bin",
+        kind === "stable" ? "cli" : `cli-${first.name}`,
+      );
+      const prints = async () => {
+        const run = await f.run([tool]);
+        expect(run).toMatchObject({ code: 0 });
+        return run.stdout.trim();
+      };
+      expect(await prints()).toBe("first");
+
+      await writeFile(join(f.repo, "cli.ts"), toolPrint("second"));
+      await f.commit();
+      expect(await f.rig(["deploy", ...deploy, "--no-up"])).toMatchObject({
+        code: 0,
+      });
+      const second = await recorded();
+      expect(second.plan.workspacePath).not.toBe(first.plan.workspacePath);
+      expect(await prints()).toBe("first");
+      expect(await exists(first.plan.workspacePath)).toBe(true);
+
+      // A checkout no Tool was ever published from goes as before, whichever one the Tool still needs.
+      await writeFile(join(f.repo, "cli.ts"), toolPrint("third"));
+      await f.commit();
+      expect(await f.rig(["deploy", ...deploy, "--no-up"])).toMatchObject({
+        code: 0,
+      });
+      const third = await recorded();
+      expect(await exists(second.plan.workspacePath)).toBe(false);
+      expect(await prints()).toBe("first");
+      expect(await exists(first.plan.workspacePath)).toBe(true);
+
+      expect(await f.rig(["up", ...select])).toMatchObject({ code: 0 });
+      expect(await prints()).toBe("third");
+      expect(await exists(first.plan.workspacePath)).toBe(false);
+      expect(await exists(third.plan.workspacePath)).toBe(true);
+      expect(await f.rig(["down", ...select])).toMatchObject({ code: 0 });
+    } finally {
+      await f.cleanup();
+    }
+  },
+  90_000,
+);
+
+test("deploy --no-up keeps no checkout for a copied Tool, which needs none, nor for a source-file Tool the new Commit drops, which it retires", async () => {
+  const f = await rigFixture();
+  try {
+    await f.git(["init", "-b", "main"]);
+    const config = (tools: string) =>
+      `name: demo\ntargets: { stable: true }\ntools:\n${tools}`;
+    const copied = "  copied:\n    bin: copied.sh\n";
+    await writeFile(
+      join(f.repo, "rig.yaml"),
+      config(`${copied}  dropped:\n    bin: dropped.ts\n`),
+    );
+    await writeFile(join(f.repo, "copied.sh"), "#!/bin/sh\necho copied\n", {
+      mode: 0o755,
+    });
+    await writeFile(join(f.repo, "dropped.ts"), toolPrint("dropped"));
+    await f.commit();
+    expect(await f.rigd(["install"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["init"])).toMatchObject({ code: 0 });
+    expect(await f.rig(["deploy", "stable"])).toMatchObject({ code: 0 });
+    const checkout = async () =>
+      (
+        JSON.parse(
+          await readFile(join(f.root, "runtime", "state.json"), "utf8"),
+        ).targets.find((t: { kind: string }) => t.kind === "stable") as {
+          plan: { workspacePath: string };
+        }
+      ).plan.workspacePath;
+    const first = await checkout();
+
+    await writeFile(join(f.repo, "rig.yaml"), config(copied));
+    await f.commit();
+    expect(await f.rig(["deploy", "stable", "--no-up"])).toMatchObject({
+      code: 0,
+    });
+    expect(await exists(join(f.root, "bin", "dropped"))).toBe(false);
+    expect(await exists(first)).toBe(false);
+    expect((await f.run([join(f.root, "bin", "copied")])).stdout.trim()).toBe(
+      "copied",
+    );
+  } finally {
+    await f.cleanup();
+  }
+}, 60_000);
 
 test("real Branch deployment preserves policy, persistent data, no-op stops, and developer-repository independence", async () => {
   const f = await rigFixture();

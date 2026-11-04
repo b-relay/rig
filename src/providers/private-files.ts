@@ -84,6 +84,44 @@ export async function replacePrivateFile(
     );
 }
 
+/** Writes `content` to `path` and flushes its bytes, for a file that may lie outside the Rig root: the route file of a Caddy
+ * Rig does not run, which keeps its owner's directory, link and mode, so none of the checks above apply. `mode` is for a
+ * file this creates. Whatever renames it into place, or names it, follows with `flushDirectoryOf`. */
+export async function writeFlushedFile(
+  path: string,
+  content: string,
+  mode: number,
+): Promise<void> {
+  const file = await open(path, "w", mode);
+  try {
+    await file.writeFile(content);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+}
+
+/** Flushes the directory that holds `path`, so a rename to it survives a crash; FILE_NOT_DURABLE with the new contents in
+ * place when it cannot be. */
+export async function flushDirectoryOf(path: string): Promise<void> {
+  await syncDirectory(dirname(path)).catch((error: NodeJS.ErrnoException) => {
+    throw notDurable(path, error);
+  });
+}
+
+/** Makes `directory` and any parents it lacks, as `mkdir` does, and flushes the directory above each one it made. */
+export async function makeDirectoryFlushed(
+  directory: string,
+  mode: number,
+): Promise<void> {
+  const first = await mkdir(directory, { recursive: true, mode });
+  if (first === undefined) return;
+  for (let made = directory; ; made = dirname(made)) {
+    await flushDirectoryOf(made);
+    if (made === first) return;
+  }
+}
+
 /** Removes the file at `path`, if there is one, and flushes its directory, so the removal survives a crash before anything
  * records it as done. A directory that cannot be flushed fails FILE_NOT_DURABLE, with the file already gone. */
 export async function removeFileDurably(path: string): Promise<void> {

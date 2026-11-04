@@ -23,6 +23,15 @@ async function recordedTargets(root: string) {
     return [];
   }
 }
+/** The pid of the rigd `root` records, while that process is alive and still a rigd. */
+async function recordedDaemon(root: string): Promise<number | undefined> {
+  const { pid } = (await readFile(join(root, "daemon", "address.json"), "utf8")
+    .then((text) => JSON.parse(text))
+    .catch(() => ({}))) as { pid?: number };
+  if (pid === undefined) return undefined;
+  const seen = Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="]);
+  return seen.stdout.toString().includes("rigd") ? pid : undefined;
+}
 /** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
  * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. `HOME` does the same for the home
  * directory, which is where the Services the daemon runs find the operator's caches. */
@@ -95,8 +104,15 @@ export async function rigFixture(
           : ["down", target.kind, ...target.project],
         base,
       ).catch(() => {});
-    await rigd(["uninstall"]).catch(() => {});
+    const uninstall = await rigd(["uninstall"]).catch(() => undefined);
+    // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up.
+    const left = await recordedDaemon(root);
+    if (left !== undefined) process.kill(left, "SIGKILL");
     await rm(base, { recursive: true, force: true });
+    if (left !== undefined)
+      throw new Error(
+        `rigd ${left} outlived its fixture: rigd uninstall said ${uninstall?.stderr}`,
+      );
   };
   return {
     base,

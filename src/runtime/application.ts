@@ -57,6 +57,7 @@ import {
   intendRunning,
   intendStopped,
   superviseTarget,
+  withholdStoppedServices,
   supervisionScope,
   type RestartMarks,
 } from "./supervision";
@@ -113,7 +114,7 @@ import {
   type StopTracking,
 } from "./stop-progress";
 import { prepareTarget } from "./preparation";
-import { observeTargets } from "./status";
+import { observeTargets, type TargetReport } from "./status";
 import { projectStatus } from "./project-status";
 import {
   assertDeploymentRecovered,
@@ -379,6 +380,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     unmarked.delete(target.id);
     return true;
   };
+  /** Targets meant to run whose stopped Services this daemon has had withheld since it started (see `superviseJob`). */
+  const routesChecked = new Set<string>();
   /** stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
    * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
   const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
@@ -656,19 +659,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           deps.observationDeadline,
           deps.healthResults,
         );
-        if (
-          state.targets.some((t) => t.desired === "running") ||
-          state.jobs?.some((record) => record.running) ||
-          reports.some((t) =>
-            t.components.some((c) =>
-              ["running", "healthy", "unhealthy", "unknown"].includes(c.state),
-            ),
-          )
-        )
+        const blocking = uninstallBlockers(state, reports);
+        if (blocking.length)
           throw new RigError(
             "TARGETS_RUNNING",
-            "Cannot uninstall rigd while Targets are running or uncertain.",
-            "Stop all Targets and verify status first.",
+            `Cannot uninstall rigd while Targets are running or uncertain: ${blocking.map(({ what }) => what).join("; ")}.`,
+            `Stop them (${blocking.map(({ stop }) => stop).join(", ")}), check rig status, then retry. Only Services and job runs keep rigd from uninstalling: Tools stay installed, whatever state they are in.`,
           );
         // A build a daemon that died left running is in no Target's status: only its recorded process group shows it.
         const builds = await boundedObservations(
@@ -1534,8 +1530,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       }
       target.updatedAt = deps.now();
       await persistTarget(target, deps.store);
-      // A restart started every Service from the current checkout, so the earlier one a kept Service ran in can go now.
-      if (command.action === "restart")
+      // A start published every Tool, and a restart started every Service, from the current checkout: an earlier one a Tool's
+      // shim or a kept Service ran in can go now.
+      if (command.action !== "down")
         await releaseHeldCheckouts(target, deps).catch(() => {});
       return await finish(outcome, warnings.length ? { warnings } : {});
     } catch (error) {
@@ -2577,6 +2574,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           unmarked.delete(targetId);
         }
         settled?.add(targetId);
+        // Once per daemon: a Service left stopped is not looked at again, so paths an earlier rigd left published to it go
+        // now rather than at the Target's next rig up. A proxy that does not answer yet is asked again by the next pass.
+        if (!routesChecked.has(targetId))
+          await withholdStoppedServices(target, { ...deps, lifecycle }).then(
+            () => routesChecked.add(targetId),
+            (error: unknown) => failed(error, name),
+          );
         return await superviseTarget(
           target,
           { ...deps, lifecycle },
@@ -2616,6 +2620,54 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       lease.release();
     }
   }
+}
+/** What keeps rigd from uninstalling, each with the command that stops it: a Target meant to run, a job run in progress, or
+ * a Service whose process runs or cannot be ruled out. A Tool is an installed file and storage is data, and both outlive
+ * rigd, so neither counts in any state. `reports` follow `state.targets`. A job run whose Target is no longer recorded
+ * counts too, with nothing to stop it through but what status shows of it. */
+function uninstallBlockers(
+  state: Pick<RuntimeState, "targets" | "projects" | "jobs">,
+  reports: readonly TargetReport[],
+): { what: string; stop: string }[] {
+  const unrecorded = (state.jobs ?? [])
+    .filter(
+      (record) =>
+        record.running &&
+        !state.targets.some((target) => target.id === record.target),
+    )
+    .map((record) => ({
+      what: `job ${record.job} of a Target no longer recorded is running`,
+      stop: "rig status",
+    }));
+  const recorded = state.targets.flatMap((target, index) => {
+    const named = `${state.projects.find((project) => project.id === target.projectId)?.name ?? target.projectId} ${target.name}`;
+    const services = reports[index]!.components.filter(
+      (component) =>
+        component.kind === "managed" &&
+        ["running", "healthy", "unhealthy", "unknown"].includes(
+          component.state,
+        ),
+    ).map((component) => `${component.name} is ${component.state}`);
+    const jobs = (state.jobs ?? [])
+      .filter((record) => record.target === target.id && record.running)
+      .map((record) => `job ${record.job} is running`);
+    const reasons = [
+      ...services,
+      ...jobs,
+      ...(target.desired === "running" && !services.length
+        ? ["it is meant to run"]
+        : []),
+    ];
+    return reasons.length
+      ? [
+          {
+            what: `${named} (${reasons.join(", ")})`,
+            stop: rigCommand("down", { target }),
+          },
+        ]
+      : [];
+  });
+  return [...recorded, ...unrecorded];
 }
 /** Effect checkpoints of Targets no longer in state are reclaimed; each result and any failure is recorded, never raised. */
 async function pruneCheckpoints(

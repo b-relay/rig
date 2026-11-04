@@ -34,7 +34,10 @@ import type {
   HealthCheck,
   TargetLogEntry,
 } from "../providers/contracts";
-import { isSourceEntrypoint } from "../providers/artifact-installer";
+import {
+  isSourceEntrypoint,
+  shimRunsFrom,
+} from "../providers/artifact-installer";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
@@ -545,6 +548,24 @@ export function createTargetEffects(
         !retained.has(installedPath(options.root, previous, component)),
     );
   };
+  /** The Tools only `previous` names that are its to retire. One another Target owns, or a file Rig did not install, was
+   * never published by it: a working Target records its plan before a start is refused for such a Tool, and dropping the Tool
+   * from rig.yaml leaves that file as it is. An executable it did publish is still held to every other check. */
+  const retirable = async (previous: TargetRecord, candidate: TargetRecord) => {
+    const own: InstalledComponent[] = [];
+    for (const component of superseded(previous, candidate))
+      try {
+        await ownership.inspect(artifactIdentity(previous, component));
+        own.push(component);
+      } catch (error) {
+        if (
+          !(error instanceof RigError) ||
+          !["ARTIFACT_CONFLICT", "ARTIFACT_UNOWNED"].includes(error.code)
+        )
+          throw error;
+      }
+    return own;
+  };
   /** The identity of the repository `target` was deployed from: the root commits of its Commit (the Working copy's HEAD
    * when it has none), read in the Project's own registered repository, sorted and joined by commas: the same in every full
    * clone, whatever its remotes. Never read from Rig's mirror or a checkout, whose history Rig fetched piecemeal. A shallow
@@ -641,8 +662,8 @@ export function createTargetEffects(
     digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
-    checkpoint: (target, previous) =>
-      transactions.checkpoint(
+    checkpoint: async (target, previous) =>
+      await transactions.checkpoint(
         target.id,
         [
           ...installedComponents(target).map((component) => ({
@@ -650,7 +671,7 @@ export function createTargetEffects(
             component,
           })),
           ...(previous
-            ? superseded(previous, target).map((component) => ({
+            ? (await retirable(previous, target)).map((component) => ({
                 target: previous,
                 component,
               }))
@@ -664,8 +685,8 @@ export function createTargetEffects(
     restoreEffects: (target) => transactions.restore(target.id),
     retireArtifacts: (target) =>
       retireComponents(target, installedComponents(target)),
-    retireSuperseded: (previous, candidate) =>
-      retireComponents(previous, superseded(previous, candidate)),
+    retireSuperseded: async (previous, candidate) =>
+      await retireComponents(previous, await retirable(previous, candidate)),
     async prepare(target, composed) {
       await privateDirectory(options.root, target.logRoot);
       for (const component of target.plan.preparedComponents) {
@@ -773,6 +794,13 @@ export function createTargetEffects(
         target,
         unitComponent(unit, target),
         unit.commandInputs,
+      ),
+    buildDirectory: (unit, target) =>
+      runDirectory(
+        target,
+        target.plan.components.find(
+          (candidate) => candidate.name === unit.component,
+        ),
       ),
     async build(unit, target, composed) {
       const component = unitComponent(unit, target);
@@ -1051,6 +1079,17 @@ export function createTargetEffects(
         }
       },
       persistent: (_target, component) => exists(component.path),
+      async toolRunsFrom(target, checkout) {
+        for (const component of installedComponents(target))
+          if (
+            await shimRunsFrom(
+              installedPath(options.root, target, component),
+              checkout,
+            )
+          )
+            return true;
+        return false;
+      },
       async listening(_target, component, signal) {
         const ports = [
           ...new Set([

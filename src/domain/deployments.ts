@@ -26,8 +26,8 @@ export type DeploymentReport = Omit<DeploymentRecord, "projectId"> & {
 };
 /** Pure: which Target each deploy recorded before Rig kept Target ids was of, of `records`, oldest first, in one Project.
  * The stable Target is never destroyed, so its deploys are all its own. A Preview's are told only from what no clock can
- * fool. Going back from the Commit it runs now, each deploy must have put in place the Commit the next one replaced, and
- * the first deploy of a Preview replaced nothing, so going back ends there. It also ends at a destroy of that name, by
+ * fool. Going back from the Commit it runs now, each deploy must have put in place the Commit the next one replaced, or
+ * if it failed, have set out from that Commit, and the first deploy of a Preview replaced nothing, so going back ends there. It also ends at a destroy of that name, by
  * Activity's order: what came before it was an earlier Preview's. Whatever cannot be told stays with no Target. */
 function ownersBeforeIds(
   records: readonly DeploymentRecord[],
@@ -61,7 +61,9 @@ function ownersBeforeIds(
       if (
         (record.targetId !== undefined && record.targetId !== target.id) ||
         (destroyed >= 0 && (position.get(record.id) ?? -1) < destroyed) ||
-        (record.outcome !== "failed" && record.commit !== expected)
+        (record.outcome === "failed"
+          ? record.previousCommit
+          : record.commit) !== expected
       )
         break;
       if (record.targetId === undefined) owners.set(record, target.id);

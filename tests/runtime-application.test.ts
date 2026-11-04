@@ -5707,6 +5707,70 @@ test("with the destroy gone from Activity and the replacement's first deploy unr
   expect(rows.map((row) => row.rollback)).toEqual([false, false]);
 });
 
+test("a Preview's first deploy ends what it owns: a deploy that failed before it existed, which replaced nothing either, is not its own", async () => {
+  const f = await previewHistory();
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("a").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.deploy("b");
+  f.state.deployments!.forEach((record) => delete record.targetId);
+  const rows = await f.rows();
+  expect(rows.map((row) => row.commit?.slice(0, 1))).toEqual(["b", "a"]);
+  expect(rows.map((row) => row.targetId !== undefined)).toEqual([true, false]);
+});
+
+test("a failed old deploy is no bridge from a replacement running another Commit into the old Preview's history", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.destroy();
+  // The replacement completed, but rigd died before its deploy was recorded, and the destroy's entry is gone.
+  await f.deploy("d");
+  const first = f.state.deployments!.pop()!;
+  f.state.activity = f.state.activity.filter(
+    (e) => e.action !== "destroy" && e.id !== first.id,
+  );
+  f.state.deployments!.forEach((record) => delete record.targetId);
+  const rows = await f.rows();
+  expect(rows.map((row) => row.commit?.slice(0, 1))).toEqual(["c", "b", "a"]);
+  expect(rows.map((row) => row.targetId)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(rows.map((row) => row.rollback)).toEqual([false, false, false]);
+});
+
+test("a Preview never replaced keeps its rollback from before Target ids when its latest deploy failed", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  f.state.deployments!.forEach((record) => delete record.targetId);
+  expect(f.state.targets.find((t) => t.kind === "preview")!.commit).toBe(
+    "b".repeat(40),
+  );
+  expect(marks(await f.rows())).toEqual([
+    ["c", false, false],
+    ["b", true, false],
+    ["a", false, true],
+  ]);
+});
+
 test("a Preview never replaced keeps its rollback from before Target ids through a failed deploy and whatever the clock did", async () => {
   const f = await previewHistory();
   await f.deploy("a");

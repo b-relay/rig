@@ -28,7 +28,7 @@ import {
 import { targetVerbs, verbRefusal, type TargetVerb } from "@/lib/target-verbs";
 import type { Failure as FailureShape } from "@/lib/outcome";
 import type { OperationResult, TargetReport } from "@/lib/types";
-import { Failure, OperationNotice } from "./bits";
+import { Failure, OperationNotice, Warning } from "./bits";
 import { loadFresh, useRun } from "./operations";
 import {
   AlertDialog,
@@ -118,6 +118,9 @@ export function TargetActions({
   // The verb the dialog was opened for; it outlives the close animation so the text never changes mid-fade.
   const [asked, setAsked] = useState<TargetVerb>("down");
   const verbs = targetVerbs(target);
+  const refusedWords = [
+    ...new Set(verbs.all.flatMap((verb) => refusalTitle(target, verb) ?? [])),
+  ];
   const send = (verb: TargetVerb) =>
     void act
       .run(
@@ -172,6 +175,11 @@ export function TargetActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        {running ? (
+          <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
+            {workingLabel}
+          </p>
+        ) : null}
         {verbs.all
           .filter((verb) => verb !== "destroy")
           .map((verb) => {
@@ -189,7 +197,7 @@ export function TargetActions({
                   {LABEL[verb]}
                   {/* A tooltip never reaches a phone, and a disabled item takes no hover. */}
                   {refusal ? (
-                    <span className="text-xs">{refusal.message}</span>
+                    <span className="text-xs">{refusalText(refusal)}</span>
                   ) : null}
                 </span>
               </DropdownMenuItem>
@@ -293,6 +301,13 @@ export function TargetActions({
       </div>
       {stacked ? (
         <>
+          {/* A disabled button takes no hover or focus, so its title reaches no one. */}
+          {running ? (
+            <p className="text-xs text-muted-foreground">{workingLabel}</p>
+          ) : null}
+          {refusedWords.map((text) => (
+            <Warning key={text}>{text}</Warning>
+          ))}
           <Failure failure={act.failure} />
           <OperationNotice result={act.result} />
           {last ? (

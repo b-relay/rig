@@ -8,6 +8,8 @@ import { SettingsForms } from "../web/components/settings-forms";
 import { Confirm } from "../web/components/confirm";
 import { ProjectMonitor } from "../web/components/project-monitor";
 import { projectMonitor } from "../web/server/monitor";
+import { JobCards } from "../web/components/job-cards";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   completedNotice,
@@ -573,4 +575,130 @@ test("from status to the page, every Target's view knows the replacement's serie
     view.targets.find((each) => each.name === "feature")?.detail,
   ).toStartWith("2");
   expect(cardsIn(html, "feature")).toEqual(["current", "earlier"]);
+});
+
+/** What a person can read on the page: its text, with no attribute such as a title, which a disabled control never shows. */
+const readable = (html: string) => html.replace(/<[^>]*>/g, " ");
+const says = (text: string, reason: string) => text.split(reason).length - 1;
+const JOB = {
+  name: "db-backup",
+  schedule: "0 3 * * *",
+  timeZone: "UTC",
+  state: "idle",
+  scheduled: false,
+  backup: { keep: 3, restore: true, count: 1, bytes: 1 },
+} as const;
+const BACKUP = {
+  target: "feature",
+  job: "db-backup",
+  id: "20261011T030000Z-1",
+  path: "/rig/backups/1",
+  run: "run-1",
+  trigger: "schedule",
+  startedAt: "2026-10-11T03:00:00.000Z",
+  finishedAt: "2026-10-11T03:00:41.000Z",
+} as const;
+function jobCards(
+  target: TargetReport,
+  job: Parameters<typeof JobCards>[0]["jobs"][number] = JOB,
+  backups: Parameters<typeof JobCards>[0]["backups"] = [BACKUP, BACKUP],
+) {
+  const router = { refresh() {}, push() {} } as never;
+  return readable(
+    renderToStaticMarkup(
+      <AppRouterContext.Provider value={router}>
+        <JobCards
+          project="demo"
+          target={target}
+          jobs={[job]}
+          backups={backups}
+          now={0}
+        />
+      </AppRouterContext.Provider>,
+    ),
+  );
+}
+
+test("why Back up now and Restore are refused is readable on the page, once however many backups are listed", () => {
+  const off = preview({ refusals: { run: OFF, restore: OFF } });
+  expect(says(jobCards(off), OFF.message)).toBe(1);
+  expect(says(jobCards(off), OFF.hint)).toBe(1);
+  expect(says(jobCards(preview()), OFF.message)).toBe(0);
+});
+
+test("a reason only Restore has, and a reason about the job itself, are readable on the page too", () => {
+  const noRestore = {
+    ...JOB,
+    backup: { keep: 3, restore: false, count: 1, bytes: 1 },
+  };
+  expect(jobCards(preview(), noRestore)).toContain("has no restore command");
+  expect(jobCards(preview(), { ...JOB, state: "running" })).toContain(
+    "runs never overlap",
+  );
+  // No backup is listed, so there is no Restore to explain.
+  expect(jobCards(preview(), noRestore, [])).not.toContain(
+    "has no restore command",
+  );
+});
+
+test("a Target's page says what rigd refuses in words, once, and what it is running", () => {
+  const { mounted } = actions({
+    target: stable({ refusals: { up: OFF, restart: OFF, deploy: OFF } }),
+  });
+  const reason = `${OFF.message} ${OFF.hint}`;
+  const warnings = elements(mounted.tree).filter(
+    (each) => (each.type as { name?: string }).name === "Warning",
+  );
+  expect(warnings.map((each) => textOf(each))).toEqual([reason]);
+  const working = actions({
+    target: stable({ state: "stopped" }),
+    work: { running: { operationId: "op-1", action: "up", phase: "building" } },
+  });
+  expect(textOf(working.mounted.tree)).toContain("up is running (building)");
+});
+
+test("a card has no room for words, so its menu, which a keyboard reaches, says why in full and what is running", () => {
+  const refused = actions({
+    layout: "card",
+    stacked: false,
+    target: stable({ state: "stopped", refusals: { up: OFF, deploy: OFF } }),
+  });
+  const trigger = (tree: unknown) =>
+    elements(tree).find(
+      (each) => each.props["aria-label"] === "Actions for stable",
+    );
+  expect(trigger(refused.mounted.tree)?.props.disabled).toBe(false);
+  const item = refused
+    .controls("Deploy latest")
+    .find((each) => each.props.onSelect);
+  expect(textOf(item)).toContain(OFF.message);
+  expect(textOf(item)).toContain(OFF.hint);
+  const working = actions({
+    layout: "card",
+    stacked: false,
+    target: stable(),
+    work: { running: { operationId: "op-1", action: "up", phase: "building" } },
+  });
+  expect(trigger(working.mounted.tree)?.props.disabled).toBe(false);
+  expect(textOf(working.mounted.tree)).toContain("up is running (building)");
+});
+
+test("the last action is the last Activity recorded, even when the clock was set back between them", () => {
+  const work = projectWork("demo", undefined, {
+    operations: [
+      record({
+        id: "old-failure",
+        message: "BUILD_FAILED",
+        occurredAt: "2026-11-04T12:00:00.000Z",
+      }),
+      record({
+        id: "later-success",
+        action: "up",
+        outcome: "started",
+        occurredAt: "2026-11-04T11:00:00.000Z",
+      }),
+    ],
+  });
+  expect(work.stable?.last?.id).toBe("later-success");
+  expect(lastActionText(work.stable!.last!)).toBe("Last action: started");
 });

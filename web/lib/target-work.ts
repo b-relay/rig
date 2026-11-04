@@ -29,9 +29,8 @@ export function projectWork(
   for (const record of activity?.operations ?? []) {
     if (!record.target || record.component || !LIFECYCLE.has(record.action))
       continue;
-    const last = work[record.target]?.last;
-    if (!last || record.occurredAt >= last.occurredAt)
-      work[record.target] = { last: record };
+    // Activity is in the order it was recorded; a clock set back would misorder its times.
+    work[record.target] = { last: record };
   }
   for (const operation of queue?.operations ?? []) {
     if (

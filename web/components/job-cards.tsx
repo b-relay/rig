@@ -1,6 +1,6 @@
 import { CalendarClock } from "lucide-react";
 import { formatDuration } from "@/lib/deployments";
-import type { JobView } from "@/lib/jobs";
+import { runBlocked, type JobView } from "@/lib/jobs";
 import { jobTile, until } from "@/lib/matrix";
 import { ago, when } from "@/lib/present";
 import type { TargetReport } from "@/lib/types";
@@ -8,7 +8,7 @@ import { CARD, Empty, HEALTH_DOT, HEALTH_TILE, Mono } from "./bits";
 import { RunJobButton } from "./run-job-button";
 import { BackupList } from "./backup-list";
 import { RestoreBackupButton } from "./restore-backup-button";
-import { backupsOf, type BackupView } from "@/lib/backups";
+import { backupsOf, restoreBlocked, type BackupView } from "@/lib/backups";
 import { cn } from "@/lib/utils";
 
 /** One Target's scheduled jobs and backups, each as a card: its schedule, how its last run went as a
@@ -32,6 +32,15 @@ export function JobCards({
       {jobs.map((job) => {
         const tile = jobTile(job, now);
         const health = tile.absent ? "gray" : tile.health;
+        const kept = backupsOf(backups, target, job.name);
+        // A disabled button takes no hover or focus, so its title reaches no one. Said once for the card: Run now and every
+        // backup's Restore are mostly refused for one reason.
+        const blocked = new Set(
+          [
+            runBlocked(job, target),
+            kept.length ? restoreBlocked(job, {}, target) : undefined,
+          ].filter((reason) => reason !== undefined),
+        );
         return (
           <li key={job.name} className={cn(CARD, "flex flex-col gap-3 p-3")}>
             <div className="flex items-start justify-between gap-3 px-1">
@@ -58,6 +67,11 @@ export function JobCards({
               </div>
               <RunJobButton project={project} target={target} job={job} />
             </div>
+            {[...blocked].map((reason) => (
+              <p key={reason} className="px-1 text-xs text-muted-foreground">
+                {reason}
+              </p>
+            ))}
             <div
               className={cn(
                 "flex flex-col gap-0.5 rounded-lg px-3 py-2 text-xs",
@@ -105,7 +119,7 @@ export function JobCards({
             {job.backup ? (
               <BackupList
                 summary={job.backup}
-                backups={backupsOf(backups, target, job.name)}
+                backups={kept}
                 now={now}
                 action={(backup) => (
                   <RestoreBackupButton

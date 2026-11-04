@@ -129,53 +129,148 @@ test("malformed YAML is a ConfigError that names the document path", async () =>
   });
 });
 
-test("a rig.yaml that is not valid UTF-8 is refused, naming the file and the line, wherever the bytes lie; nothing reads it altered", async () => {
-  const root = await fixture(),
-    path = join(root, "rig.yaml");
-  const valid =
-    "name: app\ntargets:\n  working: true\nservices:\n  web:\n    command: serve\n";
-  for (const [line, bytes] of [
-    [8, "environment:\n  LABEL: caf\xe9\n"],
-    [7, "# caf\xe9\n"],
-    // A character cut short right before the line break.
-    [7, "# caf\xc3\n"],
-  ] as const) {
-    const raw = Buffer.concat([
-      Buffer.from(valid),
-      Buffer.from(bytes, "latin1"),
-    ]);
+const VALID_YAML =
+  "name: app\ntargets:\n  working: true\nservices:\n  web:\n    command: serve\n";
+/** `VALID_YAML` with `bytes` after it, each character of `bytes` one byte. */
+const withBytes = (bytes: string) =>
+  Buffer.concat([Buffer.from(VALID_YAML), Buffer.from(bytes, "latin1")]);
+/** An edit of `raw` as a reader that replaces such bytes took it: none may go through on it, and none may change the file. */
+async function editRefused(root: string, path: string, raw: Buffer) {
+  const edit = {
+    repoPath: root,
+    expectedRevision: createHash("sha256")
+      .update(raw.toString("utf8"))
+      .digest("hex"),
+    edits: [],
+  };
+  await expect(previewProjectConfig(edit)).rejects.toMatchObject({
+    code: "invalid_yaml",
+  });
+  await expect(editProjectConfig(edit)).rejects.toMatchObject({
+    code: "invalid_yaml",
+  });
+  expect((await readFile(path)).equals(raw)).toBe(true);
+  await expect(readFile(`${path}.bak`)).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+}
+
+test.each([
+  ["a value", 8, "environment:\n  LABEL: caf\xe9\n"],
+  ["a key", 8, "environment:\n  caf\xe9: x\n"],
+  ["a quoted value after a #", 8, 'environment:\n  LABEL: "a # caf\xe9"\n'],
+  ["a value in a flow mapping", 7, "environment: { LABEL: caf\xe9 }\n"],
+  ["a # line of a literal block", 9, "environment:\n  L: |\n    # caf\xe9\n"],
+  ["a # line of a folded block", 9, "environment:\n  L: >\n    # caf\xe9\n"],
+  [
+    "a value, with such bytes in a comment before it",
+    9,
+    "# caf\xe9\nenvironment:\n  LABEL: caf\xe9\n",
+  ],
+  [
+    "a value, beside a U+FFFD the file really holds in a comment",
+    8,
+    "environment:\n  LABEL: caf\xe9 # \xef\xbf\xbd\n",
+  ],
+] as const)(
+  "a rig.yaml with bytes that are not UTF-8 in %s is refused, naming the file and the line",
+  async (_where, line, bytes) => {
+    const root = await fixture(),
+      path = join(root, "rig.yaml"),
+      raw = withBytes(bytes);
     await writeFile(path, raw);
     for (const read of [readProjectConfig, readProjectConfigSource])
       await expect(read(root)).rejects.toMatchObject({
         _tag: "ConfigError",
         code: "invalid_yaml",
-        message: expect.stringContaining(
-          `${path} has bytes that are not valid UTF-8 on line ${line}`,
-        ),
+        message: `${path} has bytes that are not valid UTF-8 on line ${line}.`,
         context: { path, line },
         hint: expect.stringContaining(path),
       });
-    const edit = {
-      repoPath: root,
-      // The revision of the text as a reader that replaces such bytes took it: no edit may go through on it.
-      expectedRevision: createHash("sha256")
-        .update(raw.toString("utf8"))
-        .digest("hex"),
-      edits: [],
-    };
-    await expect(previewProjectConfig(edit)).rejects.toMatchObject({
+    await editRefused(root, path, raw);
+  },
+);
+
+test.each([
+  ["on its own line", 7, "# caf\xe9\n"],
+  ["after a value", 8, "environment:\n  LABEL: plain # caf\xe9\n"],
+  ["on a block scalar's header", 8, "environment:\n  L: | # caf\xe9\n    x\n"],
+  ["after a block scalar", 10, "environment:\n  L: |\n    x\n# caf\xe9\n"],
+  // A character cut short right before the line break.
+  ["cut short at its line's end", 7, "# caf\xc3\n"],
+  ["at the end of the file, with no line break", 7, "# caf\xe9"],
+] as const)(
+  "a rig.yaml with bytes that are not UTF-8 only in a comment %s reads as it would without them, and refuses an edit",
+  async (_where, line, bytes) => {
+    const root = await fixture(),
+      path = join(root, "rig.yaml"),
+      raw = withBytes(bytes);
+    await writeFile(path, raw);
+    const clean = parseProjectConfig(
+      parse(VALID_YAML + bytes.replace(/[\xc3\xe9]/g, "e")),
+    );
+    expect((await readProjectConfig(root)).config).toEqual(clean);
+    expect((await readProjectConfigSource(root)).config).toEqual(clean);
+    await expect(
+      previewProjectConfig({
+        repoPath: root,
+        expectedRevision: "a".repeat(64),
+        edits: [],
+      }),
+    ).rejects.toMatchObject({
       code: "invalid_yaml",
+      message: `${path} has bytes that are not valid UTF-8 on line ${line}, in a comment.`,
+      context: { path, line },
+      hint: expect.stringContaining("could not keep those bytes"),
     });
-    await expect(editProjectConfig(edit)).rejects.toMatchObject({
-      code: "invalid_yaml",
-    });
-    expect(await readFile(path)).toEqual(raw);
-  }
+    await editRefused(root, path, raw);
+  },
+);
+
+test("a U+FFFD a rig.yaml really holds is valid text wherever it lies, and is not taken for a byte that is not UTF-8", async () => {
+  const root = await fixture(),
+    path = join(root, "rig.yaml");
+  // In a value, with bytes that are not UTF-8 only in a comment.
+  await writeFile(
+    path,
+    withBytes('environment:\n  LABEL: "\xef\xbf\xbd" # caf\xe9\n'),
+  );
+  expect((await readProjectConfig(root)).config.environment).toEqual({
+    LABEL: "\uFFFD",
+  });
+  // In a comment, and through a BOM that moves every position by one.
+  await writeFile(
+    path,
+    Buffer.concat([
+      Buffer.from("\uFEFF"),
+      withBytes("environment:\n  LABEL: plain # \xef\xbf\xbd caf\xe9\n"),
+    ]),
+  );
+  expect((await readProjectConfig(root)).config.environment).toEqual({
+    LABEL: "plain",
+  });
+  // A file that only holds U+FFFD is no file to refuse: an edit goes through and keeps it.
+  await writeFile(path, `${VALID_YAML}# \uFFFD\n`);
+  const { revision } = await readProjectConfig(root);
+  await editProjectConfig({
+    repoPath: root,
+    expectedRevision: revision,
+    edits: [],
+  });
+  expect(await readFile(path, "utf8")).toContain("# \uFFFD");
+});
+
+test("a rig.yaml that is valid UTF-8 keeps every character", async () => {
+  const root = await fixture(),
+    path = join(root, "rig.yaml");
   // Characters that are valid stay as they are, a BOM and an encoded replacement character included.
-  await writeFile(path, `﻿${valid}environment:\n  LABEL: "café �"\n`);
+  await writeFile(
+    path,
+    `\uFEFF${VALID_YAML}environment:\n  LABEL: "caf\u00e9 \uFFFD"\n`,
+  );
   const source = await readProjectConfigSource(root);
-  expect(source.config.environment).toEqual({ LABEL: "café �" });
-  expect(source.raw).toStartWith("﻿name: app");
+  expect(source.config.environment).toEqual({ LABEL: "caf\u00e9 \uFFFD" });
+  expect(source.raw).toStartWith("\uFEFFname: app");
 });
 
 test("Host config with bytes that are not UTF-8 stays readable, since refusing it would keep rigd from starting", async () => {

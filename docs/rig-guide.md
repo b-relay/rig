@@ -1477,8 +1477,11 @@ under targets in rig.yaml") and the `rig down` that stops it; once it is
 stopped the check passes. `doctor` is read-only by default. One report reads the repository config once, so the
 identity check and every working Target comparison see the same revision even
 while the file is being edited. A config the parser rejects, a `rig.yaml` with
-bytes that are not UTF-8 included (named by file and line, in a value or a
-comment), is `config-invalid` and carries the parser's message; a config that could not be
+bytes that are not UTF-8 in a key or a value included (named by file and line), is
+`config-invalid` and carries the parser's message; such bytes only in a comment
+change nothing, so the file still reads and a Commit holding it can still be
+deployed, but the dashboard refuses to edit it, since saving could not keep them.
+A config that could not be
 read at all (permissions, I/O) is `config-unreadable`; a config that names
 another Project is `identity-drift` and is not compared. Host, ownership,
 recovery and deployed-Target checks still run in each of these cases. A failing component check carries what was observed

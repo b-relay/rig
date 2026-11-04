@@ -15,6 +15,7 @@ import { liveUpstreams, ownedBlock } from "../src/providers/route-file";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
 import { checkIdentity } from "../src/runtime/health-monitor";
 import { preparationProcessKey } from "../src/runtime/lifecycle";
+import { rollbackCommand } from "../web/lib/deployments";
 import { runtimeWorld } from "./support/runtime-world";
 
 /** What Rig reports and does after a restart or a failure, through the real runtime, lifecycle, effects, route file and
@@ -563,6 +564,53 @@ test("a deploy goes on when its own build writes the env file a Service reads, s
 });
 
 // A rig.yaml refused for its bytes (#754)
+
+test("a Commit that deployed with bytes that are not UTF-8 only in a comment of its rig.yaml can be rolled back to from the dashboard", async () => {
+  const f = await fixture();
+  const valid = [
+    "name: shop",
+    "services:",
+    `  web: { command: web, restart: always, ports: { http: ${WEB} } }`,
+    `  api: { command: api, restart: "no", ports: { http: ${API} } }`,
+    "targets: { stable: true }",
+    "",
+  ].join("\n");
+  const commented = Buffer.concat([
+    Buffer.from(valid),
+    Buffer.from("# caf\xe9\n", "latin1"),
+  ]);
+  await writeFile(join(f.world.repo, "rig.yaml"), valid);
+  f.deps.documents.read = readProjectConfig;
+  let head = "c1";
+  f.deps.sources.preflight = async () => ({ commit: head, warnings: [] });
+  f.deps.sources.resolve = async (_repo: string, ref: string) => ref;
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async (request) => {
+    const prepared = await prepare.call(f.deps.sources, request);
+    await writeFile(
+      join(request.destination, "rig.yaml"),
+      request.ref === "c1" ? commented : valid,
+    );
+    return { ...prepared, commit: request.ref };
+  };
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  head = "c2";
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  expect((await f.target("stable")).commit).toBe("c2");
+
+  await f.command(
+    rollbackCommand("shop", {
+      target: "stable",
+      kind: "stable",
+      branch: "main",
+      commit: "c1",
+    }),
+  );
+  const stable = await f.target("stable");
+  expect(stable.commit).toBe("c1");
+  expect(stable.desired).toBe("running");
+  expect(await f.pids("stable")).toHaveLength(2);
+});
 
 test("a rig.yaml that starts being refused for its bytes stops nothing: the working Target's restart and a deploy are refused, status and doctor say why, and recorded plans go on", async () => {
   const f = await fixture();

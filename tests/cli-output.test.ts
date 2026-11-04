@@ -51,7 +51,7 @@ test("a deploy outcome names the Branch and Commits so a wrong Project is visibl
   ).toBe("share stable started\n");
 });
 
-test("a deploy names the Services it kept running, and status says which Commit a kept Service runs from", () => {
+test("a deploy says why it restarted each Service and which it kept, and status says which Commit a kept Service runs from", () => {
   expect(
     renderResult("deploy", {
       project: "melody",
@@ -60,12 +60,17 @@ test("a deploy names the Services it kept running, and status says which Commit 
       branch: "main",
       commit: "470a510f7f4c1b2d3e4f5a6b7c8d9e0f1a2b3c4d",
       previousCommit: "83496f8dafde3909a7a7121ef496aeae4dacd2ef",
-      kept: ["db", "search"],
+      kept: ["search"],
+      restarted: [
+        { service: "db", reason: "definition" },
+        { service: "api", reason: "dependency", dependency: "db" },
+      ],
+      services: "restarted db (definition), api (dependency db); kept search",
     }),
   ).toBe(
-    "melody stable deployed main@470a510 (was 83496f8), kept db, search\n",
+    "melody stable deployed main@470a510 (was 83496f8): restarted db (definition), api (dependency db); kept search\n",
   );
-  // A deploy that restarted everything says nothing more.
+  // A deploy that started nothing (--no-up) has nothing to say about its Services.
   expect(
     renderResult("deploy", {
       project: "melody",

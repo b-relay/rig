@@ -84,7 +84,7 @@ The old checkout is **held** while any process that runs in it is or may be aliv
 - **Previews** follow the same rule per Preview. A new Preview has nothing to keep. A Preview destroy or replacement stops everything and deletes every held checkout with the Preview's root.
 - **Routes and Tools.** A kept Service's route is never withheld, because `up` withholds only Services it finds stopped. The route map and Tools are republished from the new plan as today.
 - **Builds (ADR 0004).** Every build unit still runs in the new checkout, including the build of a Service that will be kept. The new Deployment is complete, and any later start of that Service uses its build.
-- **Status.** A kept Service shows the Commit its process runs from, for example `db  healthy  :5433  kept from 1a2b3c4`. Status JSON and the dashboard gain the same per-Service `commit`. Deploy output adds `kept db, search` to its one line, and the deploy history record (`DeploymentRecord`) gains `kept`.
+- **Status.** A kept Service shows the Commit its process runs from, for example `db  healthy  :5433  kept from 1a2b3c4`. Status JSON and the dashboard gain the same per-Service `commit`. Deploy output adds `kept db, search` to its one line (added after 1.0.3: with why it restarted the others, there and in its Activity entry), and the deploy history record (`DeploymentRecord`) gains `kept`.
 
 ### Failure modes
 

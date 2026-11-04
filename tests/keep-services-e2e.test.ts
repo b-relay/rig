@@ -23,7 +23,7 @@ async function pids(f: Fixture): Promise<Record<string, number | undefined>> {
   const stable = await stableStatus(f);
   return Object.fromEntries(stable.components.map((c) => [c.name, c.pid]));
 }
-/** Deploys stable and answers its result line, such as `demo stable deployed main@abc1234 (was 9f8e7d6), kept db`. */
+/** Deploys stable and answers its result line, such as `demo stable deployed main@abc1234 (was 9f8e7d6): restarted api (files); kept db`. */
 async function deploy(f: Fixture): Promise<string> {
   const result = await f.rig(["deploy", "stable"]);
   expect(result).toMatchObject({ code: 0 });
@@ -77,7 +77,7 @@ services:
     expect(await f.rig(["init"])).toMatchObject({ code: 0 });
     const firstLine = await deploy(f);
     expect(firstLine).toContain(`deployed main@${first.slice(0, 7)}`);
-    expect(firstLine).not.toContain("kept");
+    expect(firstLine).toContain(": started db, search, api, web\n");
     const started = await pids(f);
     for (const service of ["db", "search", "api", "web"])
       expect(started[service]).toBeNumber();
@@ -87,7 +87,9 @@ services:
     const second = await f.commit();
     const secondLine = await deploy(f);
     expect(secondLine).toContain(`deployed main@${second.slice(0, 7)}`);
-    expect(secondLine).toContain(", kept db, search");
+    expect(secondLine).toContain(
+      ": restarted api (files), web (files); kept db, search\n",
+    );
     const afterWeb = await pids(f);
     expect(afterWeb.db).toBe(started.db);
     expect(afterWeb.search).toBe(started.search);
@@ -105,7 +107,7 @@ services:
     await writeFile(join(f.repo, "web.ts"), `// v3\n${SERVER}`);
     await f.commit();
     expect((await f.rig(["deploy", "stable"])).stdout).toContain(
-      ", kept db, search",
+      "; kept db, search\n",
     );
     const afterThird = await pids(f);
     expect(afterThird.db).toBe(started.db);
@@ -118,7 +120,18 @@ services:
     const fourth = await f.commit();
     const fourthLine = await deploy(f);
     expect(fourthLine).toContain(`deployed main@${fourth.slice(0, 7)}`);
-    expect(fourthLine).toContain(", kept search\n");
+    expect(fourthLine).toContain(
+      ": restarted db (files), api (files), web (files); kept search\n",
+    );
+    // Activity says the same.
+    const activity = (await f.rig(["activity", "--json"])).stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { action: string; message?: string })
+      .filter((record) => record.action === "deploy");
+    expect(activity.at(-1)?.message).toBe(
+      "restarted db (files), api (files), web (files); kept search",
+    );
     const afterScript = await pids(f);
     expect(afterScript.search).toBe(started.search);
     expect(afterScript.db).not.toBe(started.db);

@@ -89,11 +89,9 @@ export function renderResult(action: string, value: unknown): string {
             : ""
         }`
       : "";
-  // ADR 0016: the Services the deploy left running from the checkout they were started in.
-  const kept =
-    action === "deploy" && Array.isArray(report.kept) && report.kept.length
-      ? `, kept ${report.kept.map(word).join(", ")}`
-      : "";
+  // ADR 0016: what the deploy did with each Service, and why it restarted those it did.
+  const services =
+    action === "deploy" && report.services ? `: ${word(report.services)}` : "";
   const warnings = [
     ...(Array.isArray(report.warnings)
       ? report.warnings.map((value) => `Warning: ${word(value)}\n`)
@@ -110,7 +108,7 @@ export function renderResult(action: string, value: unknown): string {
         `${word(report.project)} ${word(entry.target)} retired${entry.branch ? ` ${word(entry.branch)}` : ""} (${word(entry.reason)})\n`,
     )
     .join("");
-  return `${retired}${subject} ${outcome}${upgrade}${revision}${kept}${path}\n${warnings}`;
+  return `${retired}${subject} ${outcome}${upgrade}${revision}${services}${path}\n${warnings}`;
 }
 /** `rig backup list`: one line per backup, each job's newest first, `stable  db-backup  20261011T030000Z-17  2026-10-11 03:00:41Z  13 MB
  * schedule  run 1a2b3c4d`, then where they are. */

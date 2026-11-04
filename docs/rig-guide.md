@@ -1045,11 +1045,18 @@ checkout is removed within about 30 seconds of the last process leaving it.
 once. A failed deploy stops only what it started, so a kept Service is never
 stopped by it, unless its own start check failed during the deploy: then the
 rollback starts it again from the previous plan, with its dependents. The
-deploy line names what it kept, for example
-`melody stable deployed main@470a510 (was 83496f8), kept db, search`; the deploy
-history (the dashboard's history page) records `kept`, and `rig status` shows
-`kept from <sha>` beside a Service that runs from an earlier Commit than its
-Target:
+deploy line says what it did with each Service, and why it restarted those it
+restarted, for example
+`melody stable deployed main@470a510 (was 83496f8): restarted api (files), web (dependency api); kept db, search`,
+and the deploy's Activity entry says the same. `started` names a Service new to
+the plan. A restart's reason is what broke the rule above: `definition`,
+`environment`, `files`, `dependency <Service>`, `unhealthy`, `not-running` (no
+process Rig recorded for it runs), `unobserved` (its process could not be
+looked at), `unrecorded` (its run predates these records, or the previous deploy
+never finished), or `requested` (`--force`). A `--no-up` deploy starts nothing,
+so its line has no such part. The deploy history (the dashboard's history page)
+records `kept`, and `rig status` shows `kept from <sha>` beside a Service that
+runs from an earlier Commit than its Target:
 
 ```text
 stable  healthy  main@470a510
@@ -1532,12 +1539,26 @@ the first and the rest) gives up after five seconds. Two reads wait ten
 minutes: `rig dns`, which waits on the DNS provider, and the first page of
 `rig logs`, which may read back through every kept log file (`logs.generations`)
 to find its lines. A read that gives up reports
-`rigd did not answer the doctor read within 5 s; it may be busy`, which is
+`rigd did not answer the doctor read within 5 s; it may be busy`, whether `rigd`
+had yet to answer or was part-way through its answer. That is
 distinct from `rigd is not reachable`: a slow daemon never turns `rig doctor`
 into the offline host report. Reads are answered without queueing, so run
 `rig activity` to see what `rigd` is doing, then retry. No other timeout ends
 a lifecycle or deploy command's wait, and `rigd is not reachable` always means
-`rig` could not connect: a timeout is never reported so.
+`rig` could not connect: a timeout is never reported so. A connection that closes
+part-way through an answer is `DAEMON_INTERRUPTED`
+(`The connection to rigd closed before it finished answering ...`); a command
+may have finished all the same, so `rig activity` says whether it did.
+`rigd returned an invalid response` is only for a reply that arrived whole.
+
+The control plane holds one contract for every caller, `rig` and the dashboard
+alike. A request's body must be `application/json` (`UNSUPPORTED_MEDIA_TYPE`
+otherwise), at most 1 MiB (`REQUEST_TOO_LARGE`), and uploaded whole within ten
+seconds, however its bytes are spaced (`REQUEST_TIMEOUT`, and the connection is
+closed). Only the upload has this deadline: a complete command then runs for as
+long as its work takes. A body that is not JSON is `INVALID_REQUEST`. Every
+refusal is one `{"error":{"code","message","hint"}}` document that echoes nothing
+the request carried, and changes nothing.
 
 `rigd` runs one mutation at a time per Target, and Projects are independent:
 a slow build, start check or stop in one Project never delays `rig up`,
@@ -1708,7 +1729,15 @@ not delete Target logs (which are size-bounded instead, see Logs), activity,
 or Persistent storage. A record cut short by
 a killed writer never glues onto the next one (the next record starts on its
 own line) and never disables rotation: the segment's day comes from its first
-complete record, or from the file's creation time when none can be read. Daemon administration
+complete record, or from the file's creation time when none can be read.
+`rigd.jsonl` also holds what the control plane refused or failed to serve, which
+never reaches an Operation: a `transport.refused` or `transport.failed` entry with
+its `route` (`health`, `command`, `config`, `env` or `other`), `status`, `code`,
+`durationMs` and, for a failure, the `cause`'s class of error. It never holds a
+credential, a URL, a header or a body. A repeated refusal is one entry a minute
+per route, status and code, and the next says how many it stands for (`repeated`),
+so a flood cannot grow the log; a count still open when `rigd` stops is lost.
+Daemon administration
 activity is written under a lock (see the startup lock above) that records the
 writer's pid and start time; a writer that died holds it no longer. When activity
 cannot be recorded, the warning names the journal or lock file to inspect, and

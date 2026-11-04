@@ -180,6 +180,46 @@ describe("reading an env file", () => {
   });
 
   test.each([
+    ["unquoted", bytes("TOKEN=exact # caf", [0xe9], "\n"), "exact"],
+    ["with CRLF", bytes("TOKEN=exact # caf", [0xe9], "\r\nB=2\r\n"), "exact"],
+    ["exported", bytes("export TOKEN=exact # ", [0xff], "\n"), "exact"],
+    ["single-quoted", bytes("TOKEN='a b' # caf", [0xe9], "\n"), "a b"],
+    ["double-quoted", bytes('TOKEN="a b"# caf', [0xe9], "\n"), "a b"],
+    [
+      "with a # in the quoted value",
+      bytes('TOKEN="a # b" # caf', [0xe9], "\n"),
+      "a # b",
+    ],
+    [
+      "with an escaped quote in the value",
+      bytes('TOKEN="a \\" # b" # caf', [0xe9], "\n"),
+      'a " # b',
+    ],
+    [
+      "after a real replacement character",
+      bytes("TOKEN=a\ufffdb # caf", [0xe9], "\n"),
+      "a\ufffdb",
+    ],
+    [
+      "after multi-byte text",
+      bytes("TOKEN=voil\u00e0-😀 # caf", [0xe9], "\n"),
+      "voil\u00e0-😀",
+    ],
+    [
+      "after a no-break space, as the parser reads one",
+      bytes("TOKEN=a\u00a0# caf", [0xe9], "\n"),
+      "a",
+    ],
+  ])(
+    "bytes in a trailing comment change no value: %s",
+    async (_form, content, value) => {
+      const path = join(await scratch(), "app.env");
+      await writeFile(path, content);
+      expect((await readEnvironmentFile(path)).TOKEN).toBe(value);
+    },
+  );
+
+  test.each([
     [
       "beside a comment that has them too",
       bytes("# caf", [0xe9], "\nTOKEN=", SECRET, [0xff], "\n"),
@@ -187,9 +227,69 @@ describe("reading an env file", () => {
       "TOKEN",
     ],
     [
-      "in a comment after the assignment",
-      bytes("A=1\nTOKEN=", SECRET, " # caf", [0xe9], "\n"),
+      "in a value before a trailing comment",
+      bytes("A=1\nTOKEN=", SECRET, [0xff], " # note\n"),
       2,
+      "TOKEN",
+    ],
+    [
+      "in a value and in its trailing comment",
+      bytes("TOKEN=", SECRET, [0xff], " # caf", [0xe9], "\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "after a # inside double quotes",
+      bytes('TOKEN="', SECRET, " # caf", [0xe9], '"\n'),
+      1,
+      "TOKEN",
+    ],
+    [
+      "after a # inside single quotes",
+      bytes("TOKEN='", SECRET, " # caf", [0xe9], "'\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "in a quoted value before a trailing comment",
+      bytes('TOKEN="', SECRET, [0xff], '" # note\n'),
+      1,
+      "TOKEN",
+    ],
+    [
+      "after a # with no space before it, which is the value",
+      bytes("TOKEN=", SECRET, "#caf", [0xe9], "\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "after a # following a byte that reads as a no-break space only in Latin-1",
+      bytes("TOKEN=", SECRET, "\u00e0# caf", [0xe9], "\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "in a stray byte that reads as a no-break space only in Latin-1",
+      bytes("TOKEN=", SECRET, [0xa0], "# note\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "at the end of a value with no comment",
+      bytes("TOKEN=", SECRET, [0xa0], "\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "after an unclosed quote",
+      bytes('TOKEN="', SECRET, " # caf", [0xe9], "\n"),
+      1,
+      "TOKEN",
+    ],
+    [
+      "after text following the closing quote",
+      bytes('TOKEN="', SECRET, '" x # caf', [0xe9], "\n"),
+      1,
       "TOKEN",
     ],
     [
@@ -354,24 +454,28 @@ describe("the env editor", () => {
     },
   );
 
-  test("a file with invalid bytes only in a comment is described and refused for editing, its bytes untouched, while its hint says processes still read it", async () => {
-    const { path, recorded, view, write } = await editor();
-    const written = bytes("A=1\n# caf", [0xe9], "\n");
-    await writeFile(path, written);
-    const file = await view();
-    expect(file.keys).toEqual(["A"]);
-    expect(file.problem).toContain("line 2, in a comment");
-    const refused = await failed(write(file.revision, "A", "2"));
-    expect(refused).toMatchObject({
-      code: "ENV_VALUE",
-      details: { path, line: 2 },
-    });
-    expect(await readFile(path)).toEqual(written);
-    expect(recorded).toEqual([]);
-    expect(refusal(() => decodeEnvironmentFile(written, path)).hint).toContain(
-      "processes still read this file",
-    );
-  });
+  test.each([
+    ["on its own line", bytes("A=1\n# caf", [0xe9], "\n"), undefined],
+    ["after a value", bytes("A=1\nTOKEN=x # caf", [0xe9], "\n"), "TOKEN"],
+  ])(
+    "a file with invalid bytes only in a comment %s is described and refused for editing, its bytes untouched, while its hint says processes still read it",
+    async (_where, written, key) => {
+      const { path, recorded, view, write } = await editor();
+      await writeFile(path, written);
+      const file = await view();
+      expect(file.problem).toContain("line 2, in a comment");
+      const refused = await failed(write(file.revision, "A", "2"));
+      expect(refused).toMatchObject({
+        code: "ENV_VALUE",
+        details: { path, line: 2, ...(key ? { key } : {}) },
+      });
+      expect(await readFile(path)).toEqual(written);
+      expect(recorded).toEqual([]);
+      expect(
+        refusal(() => decodeEnvironmentFile(written, path)).hint,
+      ).toContain("processes still read this file");
+    },
+  );
 
   test("a revision is of the file's bytes: files that differ only in invalid bytes have different ones", async () => {
     const { path, view } = await editor();

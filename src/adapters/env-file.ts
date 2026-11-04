@@ -12,6 +12,9 @@ import type { CommandRunner } from "../providers/contracts";
 
 /** The name a line assigns, read without its value. */
 export const ASSIGNED_NAME = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+const ASSIGNMENT = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/;
+/** Where a comment begins after an unquoted value. */
+const UNQUOTED_COMMENT = /\s+#.*$/;
 const LOSSLESS_HINT =
   "Rig hands a process a value exactly or refuses it. Correct that line in an editor: save the file as UTF-8, and keep binary data base64-encoded. A process already running keeps running; whatever reads this file cannot start until then.";
 
@@ -154,9 +157,8 @@ export function lossyEnvironmentText(bytes: Uint8Array): string {
   return lossyUtf8.decode(bytes);
 }
 /** Pure: a file's bytes as text, or ENV_VALUE naming the path, the first line that is not UTF-8 and the name it assigns, never
- * a value. A line that only comments changes no value: with `comments: "replace"`, as a process reads a file, its bytes are
- * replaced and every other line is exact; by default it is refused too, as an edit could not keep it. A comment after an
- * assignment counts as that assignment. */
+ * a value. A comment changes no value: with `comments: "replace"`, as a process reads a file, bytes that lie only in comments
+ * are replaced and every value is exact; by default they are refused too, as an edit could not keep them. */
 export function decodeEnvironmentFile(
   bytes: Uint8Array,
   path: string,
@@ -169,9 +171,9 @@ export function decodeEnvironmentFile(
     const line =
       comments === "refuse"
         ? invalid[0]
-        : invalid.find(({ text }) => !text.trimStart().startsWith("#"));
+        : invalid.find(({ comment }) => !comment);
     if (!line) return lossyEnvironmentText(bytes);
-    const comment = line.text.trimStart().startsWith("#");
+    const { comment } = line;
     const key = ASSIGNED_NAME.exec(line.text)?.[1];
     throw new RigError(
       "ENV_VALUE",
@@ -184,8 +186,10 @@ export function decodeEnvironmentFile(
   }
 }
 /** The lines of `bytes` that are not UTF-8, found one by one: no multi-byte sequence holds a newline. */
-function invalidLines(bytes: Uint8Array): { number: number; text: string }[] {
-  const invalid: { number: number; text: string }[] = [];
+function invalidLines(
+  bytes: Uint8Array,
+): { number: number; text: string; comment: boolean }[] {
+  const invalid: { number: number; text: string; comment: boolean }[] = [];
   let start = 0;
   for (let number = 1; start <= bytes.length; number++) {
     const end = bytes.indexOf(0x0a, start);
@@ -193,12 +197,48 @@ function invalidLines(bytes: Uint8Array): { number: number; text: string }[] {
     try {
       strictUtf8.decode(line);
     } catch {
-      invalid.push({ number, text: lossyEnvironmentText(line) });
+      invalid.push({
+        number,
+        text: lossyEnvironmentText(line),
+        comment: invalidOnlyInComment(line),
+      });
     }
     if (end < 0) break;
     start = end + 1;
   }
   return invalid;
+}
+/** Whether every byte of a line that is not UTF-8 lies in a comment. Replacing such bytes keeps every valid character, quote and
+ * space where it was, so the parser's rule finds the comment; the text before it re-encodes to the line's own bytes exactly
+ * when it holds none of them. */
+function invalidOnlyInComment(line: Uint8Array): boolean {
+  const text = lossyEnvironmentText(line).replace(/\r$/, "");
+  if (text.trimStart().startsWith("#")) return true;
+  const kept = beforeTrailingComment(text);
+  if (kept === undefined) return false;
+  const encoded = new TextEncoder().encode(kept);
+  return Buffer.compare(encoded, line.subarray(0, encoded.length)) === 0;
+}
+/** Pure: an assignment line up to its trailing comment, as `parseEnvironmentFile` reads it, or undefined when it has none. A `#`
+ * inside quotes is part of the value. */
+function beforeTrailingComment(line: string): string | undefined {
+  const after = ASSIGNMENT.exec(line)?.[2]?.trimStart();
+  if (after === undefined) return undefined;
+  const raw = after.trimEnd();
+  const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
+  const closing = quote ? closingQuote(raw, quote) : -1;
+  const comment = quote
+    ? closing >= 0 &&
+      raw
+        .slice(closing + 1)
+        .trimStart()
+        .startsWith("#")
+      ? closing + 1
+      : -1
+    : raw.search(UNQUOTED_COMMENT);
+  return comment < 0
+    ? undefined
+    : line.slice(0, line.length - after.length + comment);
 }
 
 /** dotenv-style single-line assignments: `KEY=value`, optional `export`, single or double
@@ -221,9 +261,7 @@ export function parseEnvironmentFile(
         hint,
         { path, line: index + 1, ...(key === undefined ? {} : { key }) },
       );
-    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$/.exec(
-      line,
-    );
+    const match = ASSIGNMENT.exec(line);
     if (!match)
       throw reject(
         "an unsupported assignment",
@@ -257,7 +295,7 @@ export function parseEnvironmentFile(
     const raw = match[2]!.trim();
     const quote = raw[0] === '"' || raw[0] === "'" ? raw[0] : undefined;
     if (!quote) {
-      assign(raw.replace(/\s+#.*$/, "").trimEnd());
+      assign(raw.replace(UNQUOTED_COMMENT, "").trimEnd());
       continue;
     }
     const closing = closingQuote(raw, quote);

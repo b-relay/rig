@@ -664,3 +664,20 @@ test.each([
     }
   },
 );
+
+test("a check of env values reads the file as it is now, so the next check sees a change", async () => {
+  const { adapter, record, root } = await selected("", {
+    name: "app",
+    services: {
+      api: { command: "api", ports: { http: "auto" } },
+      worker: { command: "worker", ports: { http: "auto" } },
+    },
+  });
+  const file = join(root, "env", "app", "working.env");
+  await adapter.checkEnvironmentValues!(record);
+  await writeFile(file, `TOKEN=${SECRET}\0\n`);
+  await expect(adapter.checkEnvironmentValues!(record)).rejects.toMatchObject({
+    code: "ENV_VALUE",
+    details: { path: file, line: 1, key: "TOKEN" },
+  });
+});

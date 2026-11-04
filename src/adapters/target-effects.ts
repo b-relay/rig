@@ -659,12 +659,20 @@ export function createTargetEffects(
     environment,
     digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
     async checkEnvironmentValues(target) {
-      for (const component of target.plan.components) {
-        if (component.kind !== "managed") continue;
-        for (const { path } of component.envFiles ?? [])
-          await readEnvironmentFile(path).catch((error: unknown) => {
-            if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
-          });
+      const managed = target.plan.components.filter(
+        (component) => component.kind === "managed",
+      );
+      // A file several Services share is read once here; each start reads its own afresh.
+      const paths = new Set(
+        managed.flatMap((component) =>
+          (component.envFiles ?? []).map(({ path }) => path),
+        ),
+      );
+      for (const path of paths)
+        await readEnvironmentFile(path).catch((error: unknown) => {
+          if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
+        });
+      for (const component of managed)
         assertRepresentableEnvironment(
           {
             ...component.env,
@@ -672,7 +680,6 @@ export function createTargetEffects(
           },
           component.name,
         );
-      }
     },
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),

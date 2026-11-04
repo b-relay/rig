@@ -2821,12 +2821,13 @@ a bare `KEY`, an unclosed quote, or text after a closing quote, is rejected as
 take part in `${...}` references.
 
 A value reaches a process exactly or is refused. An env file must be UTF-8 (a
-BOM and CRLF line ends are fine), and a line whose bytes are not, a value
-holding a NUL character, or the name `__proto__` is refused as `ENV_VALUE`,
-naming the file, the line and the name, never the value. Bytes on a line that
-only comments change no value, so a process still starts from such a file; the
-dashboard refuses to edit it, since saving could not keep them. A comment after
-an assignment counts as that assignment. The same refusal covers a NUL or an unpaired surrogate in a value in
+BOM and CRLF line ends are fine), and a value or other text whose bytes are
+not, a value holding a NUL character, or the name `__proto__` is refused as
+`ENV_VALUE`, naming the file, the line and the name, never the value. Bytes in
+a comment, on its own line or after a value, change no value, so a process
+still starts from such a file (a `#` inside quotes is part of the value, not a
+comment); the dashboard refuses to edit it, since saving could not keep them.
+The same refusal covers a NUL or an unpaired surrogate in a value in
 `rig.yaml`, in `environment` or reached through a `${...}` reference, when the
 config is read; and a plan recorded earlier that holds one, when a process
 would start from it.

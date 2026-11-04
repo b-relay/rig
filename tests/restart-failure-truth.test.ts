@@ -509,9 +509,14 @@ test.each([
   },
 );
 
-test.each(["crash", "Host restart"] as const)(
-  "a stable Target whose env file has invalid bytes only in a comment starts again after a %s, and a restart goes on",
-  async (cause) => {
+test.each([
+  ["on its own line", "crash", "# caf\xe9\nTOKEN=exact\n"],
+  ["on its own line", "Host restart", "# caf\xe9\nTOKEN=exact\n"],
+  ["after a value", "crash", "TOKEN=exact # caf\xe9\n"],
+  ["after a value", "Host restart", "TOKEN=exact # caf\xe9\n"],
+] as const)(
+  "a stable Target whose env file has invalid bytes only in a comment %s starts again after a %s, and a restart goes on",
+  async (_where, cause, comment) => {
     const f = await fixtureReading((root) =>
       shop({
         services: {
@@ -528,11 +533,7 @@ test.each(["crash", "Host restart"] as const)(
     const file = join(f.world.root, "web.env");
     await writeFile(file, "# cafe\nTOKEN=exact\n");
     await f.command({ action: "deploy", project: "shop", target: "stable" });
-    const content = Buffer.concat([
-      Buffer.from("# caf"),
-      Buffer.from([0xe9]),
-      Buffer.from("\nTOKEN=exact\n"),
-    ]);
+    const content = Buffer.from(comment, "latin1");
     await writeFile(file, content);
     const key = `${(await f.target("stable")).id}:web`;
     f.events.length = 0;

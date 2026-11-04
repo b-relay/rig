@@ -273,7 +273,9 @@ export function currentOf(
 /** Pure: a card per thing the inventory names, in its order, then one per name sampled that it no longer names (a
  * destroyed Preview still in the range). A name sampled under several identities keeps them all: the current one on
  * the name's card and each other on its own card marked `earlier`; when none is current, each on its own card marked
- * `1 of 2` and so on. `identify` names a series as the inventory does. */
+ * `1 of 2` and so on. `identify` names a series as the inventory does. `shownTargetId` is the id of the one Target whose
+ * Components these are, when it exists now: only its series are current, so what only an earlier Target of its name had
+ * is `earlier`, with no card of its own saying the Target has it now. */
 export function cardsOf(
   inventory: readonly {
     readonly name: string;
@@ -283,6 +285,7 @@ export function cardsOf(
   }[],
   sampled: readonly ChartSeries[],
   identify: (series: ChartSeries) => { name: string; kind?: string },
+  shownTargetId?: string,
 ): UsageCard[] {
   const idOf = (each: { name: string; kind?: string }) =>
     `${each.kind ?? ""}:${each.name}`;
@@ -300,16 +303,20 @@ export function cardsOf(
   }
   return [...groups.entries()].flatMap(([id, group]): UsageCard[] => {
     const base = { name: group.name, ...(group.kind && { kind: group.kind }) };
-    const current = currentOf(group.series, group.targetId);
-    if (group.series.length > 1 && !current && group.targetId === undefined)
+    const targetId = group.targetId ?? shownTargetId;
+    const current = currentOf(group.series, targetId);
+    if (group.series.length > 1 && !current && targetId === undefined)
       return group.series.map((series, index) => ({
         ...base,
         key: series.key,
         series,
         incarnation: `${index + 1} of ${group.series.length}`,
       }));
+    const listed = inventory.some((each) => idOf(each) === id);
     return [
-      { ...base, key: id, ...(current && { series: current }) },
+      ...(current || listed || targetId === undefined
+        ? [{ ...base, key: id, ...(current && { series: current }) }]
+        : []),
       ...group.series
         .filter((series) => series !== current)
         .map((series) => ({

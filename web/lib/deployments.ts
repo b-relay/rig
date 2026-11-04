@@ -8,8 +8,9 @@ export interface DeploymentRow extends DeploymentReport {
    * that exists now, which rigd would deploy to and which runs another Commit now. */
   rollback: boolean;
 }
-/** Pure: whether `deploy` was of `target` itself and not of an earlier Target by its name. A deploy rigd recorded before it
- * kept Target ids is taken to be of the stable Target, which is never destroyed, and of no Preview, which may have been. */
+/** Pure: whether `deploy` was of `target` itself and not of an earlier Target by its name. rigd's read gives a deploy from
+ * before it kept Target ids its Target's id where that can be told; one still without is taken to be of the stable Target,
+ * which is never destroyed, and of no Preview, which may have been. */
 function deployedTo(
   deploy: Pick<DeploymentReport, "targetId" | "kind">,
   target: Pick<TargetReport, "id">,

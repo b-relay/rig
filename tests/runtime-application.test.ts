@@ -24,6 +24,8 @@ import {
   resolveTargetPlan as resolvePlanWithHost,
 } from "../src/config";
 import { STATE_VERSION } from "../src/runtime/state-schema";
+import { deploymentRows, rollbackCommand } from "../web/lib/deployments";
+import type { DeploymentReport } from "../web/lib/types";
 const RESOLVE_HOST = { operatorHome: "/home/operator", envRoot: "/rig/env" };
 const resolveTargetPlan = (input: Parameters<typeof resolvePlanWithHost>[0]) =>
   resolvePlanWithHost(input, RESOLVE_HOST);
@@ -5512,4 +5514,173 @@ test("each deploy records its Target's id, so a Preview made again under the sam
     ]),
   });
   await expect(deploy({ targetId: replacement.id })).resolves.toBeDefined();
+});
+
+/** A Project whose Preview `feature` was deployed at the Commits given, with what rigd read back of its history. */
+async function previewHistory() {
+  const f = fixture();
+  let commit = "a".repeat(40);
+  f.deps.sources.preflight = async () => ({ commit, warnings: [] });
+  f.deps.sources.prepare = async (request) => ({
+    workspacePath: request.destination,
+    commit: request.ref,
+  });
+  f.deps.sources.resolve = async (_repo, ref) => ref;
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const deploy = (next: string) => {
+    commit = next.repeat(40);
+    return f.runtime.command({
+      action: "deploy",
+      project: "demo",
+      target: "preview",
+      branch: "feature",
+      deployment: "feature",
+    });
+  };
+  const destroy = () =>
+    f.runtime.command({
+      action: "destroy",
+      project: "demo",
+      target: "preview",
+      deployment: "feature",
+    });
+  /** The Preview's rows, as both Deployments pages draw them from the two reads. */
+  const rows = async () => {
+    const { deployments } = (await f.runtime.command({
+      action: "deployments",
+      project: "demo",
+    })) as { deployments: DeploymentReport[] };
+    return deploymentRows(
+      deployments.filter((each) => each.target === "feature"),
+      (await statusOf(f.runtime)).targets,
+    );
+  };
+  /** The records as a rigd before Target ids wrote them, finished at the times given, oldest first. */
+  const beforeIds = (finished: readonly string[]) =>
+    f.state.deployments!.forEach((record, index) => {
+      delete record.targetId;
+      record.startedAt = record.finishedAt = finished[index]!;
+    });
+  const created = (at: string) => {
+    f.state.targets.find((t) => t.kind === "preview")!.createdAt = at;
+  };
+  return { ...f, deploy, destroy, rows, beforeIds, created };
+}
+const marks = (rows: Awaited<ReturnType<typeof deploymentRows>>) =>
+  rows.map((row) => [row.commit?.slice(0, 1), row.current, row.rollback]);
+
+test("a Preview whose whole history predates Target ids keeps its current deploy and its rollback, which names it", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  f.created("2026-10-01T00:00:00.000Z");
+  f.beforeIds(["2026-10-01T00:00:05.000Z", "2026-10-02T00:00:00.000Z"]);
+  const rows = await f.rows();
+  expect(marks(rows)).toEqual([
+    ["b", true, false],
+    ["a", false, true],
+  ]);
+  const id = f.state.targets.find((t) => t.kind === "preview")!.id;
+  const rollback = rollbackCommand("demo", rows[1]!);
+  expect(rollback).toMatchObject({ targetId: id });
+  expect(await f.runtime.command(rollback)).toMatchObject({
+    outcome: "deployed",
+    commit: "a".repeat(40),
+  });
+  // Told at read time: what rigd recorded is left as it was written.
+  expect(f.state.deployments![0]!.targetId).toBeUndefined();
+});
+
+test("a replaced Preview's deploys from before Target ids stay listed and never become a rollback of the replacement", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.destroy();
+  await f.deploy("b");
+  await f.deploy("c");
+  f.created("2026-10-02T00:00:00.000Z");
+  f.beforeIds([
+    "2026-10-01T00:00:00.000Z",
+    "2026-10-02T00:00:05.000Z",
+    "2026-10-03T00:00:00.000Z",
+  ]);
+  expect(marks(await f.rows())).toEqual([
+    ["c", true, false],
+    ["b", false, true],
+    ["a", false, false],
+  ]);
+});
+
+test("a replaced Preview's old deploy is not taken for the replacement's when the clock was set back between them", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.destroy();
+  await f.deploy("b");
+  // The old deploy reads later than the new Preview's creation; only the order of the records shows it came first.
+  f.created("2026-10-01T00:00:00.000Z");
+  f.beforeIds(["2026-10-05T00:00:00.000Z", "2026-10-01T00:00:05.000Z"]);
+  expect(marks(await f.rows())).toEqual([
+    ["b", true, false],
+    ["a", false, false],
+  ]);
+});
+
+test("a deploy from before Target ids is no rollback of a Preview made since, whose own deploys carry ids", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  f.beforeIds(["2026-10-01T00:00:00.000Z"]);
+  await f.destroy();
+  await f.deploy("b");
+  await f.deploy("c");
+  f.created("2026-10-02T00:00:00.000Z");
+  for (const [index, at] of [
+    "2026-10-02T00:00:05.000Z",
+    "2026-10-03T00:00:00.000Z",
+  ].entries())
+    f.state.deployments![index + 1]!.finishedAt = at;
+  expect(marks(await f.rows())).toEqual([
+    ["c", true, false],
+    ["b", false, true],
+    ["a", false, false],
+  ]);
+});
+
+test("a stable deploy from before Target ids is read as the stable Target's, so its rollback names it too", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+  });
+  delete f.state.deployments![0]!.targetId;
+  expect(
+    await f.runtime.command({ action: "deployments", project: "demo" }),
+  ).toMatchObject({
+    deployments: [
+      { targetId: f.state.targets.find((t) => t.kind === "stable")!.id },
+    ],
+  });
+});
+
+test("a status narrowed to the only recorded Target says nothing of the Project; one of the whole Project does", async () => {
+  const f = fixture();
+  await f.runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await f.runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "preview",
+    branch: "feature",
+    deployment: "feature",
+  });
+  expect(f.state.targets).toHaveLength(1);
+  const narrowed = (await f.runtime.command({
+    action: "status",
+    project: "demo",
+    target: "preview",
+    deployment: "feature",
+  })) as StatusOf;
+  expect(narrowed.refusals).toBeUndefined();
+  expect((await statusOf(f.runtime)).refusals?.forget?.code).toBe(
+    "PROJECT_ACTIVE",
+  );
 });

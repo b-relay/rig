@@ -67,7 +67,7 @@ test("a Preview made again under the same name keeps its old deploys listed, but
   const rows = deploymentRows(
     [
       preview("a", "old", "A"),
-      // Recorded before rigd kept Target ids: a Preview's cannot be told apart, so it offers nothing.
+      // No id even after rigd's read, which places what it can: whose it was cannot be told, so it offers nothing.
       preview("legacy", undefined, "L"),
       // The Commit the new Preview runs too: still not that Preview's deploy.
       preview("c-old", "old", "C"),

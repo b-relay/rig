@@ -6,6 +6,9 @@ import * as daemon from "../web/server/daemon";
 import { TargetActions } from "../web/components/target-actions";
 import { SettingsForms } from "../web/components/settings-forms";
 import { Confirm } from "../web/components/confirm";
+import { ProjectMonitor } from "../web/components/project-monitor";
+import { projectMonitor } from "../web/server/monitor";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   completedNotice,
   lastActionText,
@@ -465,4 +468,109 @@ test("the page an action lands on says only what Activity recorded of that Opera
     completedNotice([{ ...destroyed, action: "up" }], "op-d", "demo"),
   ).toBeUndefined();
   expect(completedNotice([destroyed], "nope", "demo")).toBeUndefined();
+});
+
+/** A recreated Preview on Monitor: the earlier one sampled last, so only the ids status reports can tell them apart. */
+function monitorReads(command: RuntimeCommand): unknown {
+  const stats = { low: 1, high: 1, average: 1, median: 1, p95: 1 };
+  const reported = (series: Record<string, unknown>, at: number) => ({
+    series: {
+      projectId: "p",
+      project: "demo",
+      target: "feature",
+      targetKind: "preview",
+      ...series,
+    },
+    summary: { cpu: stats, memory: stats },
+    now: { cpuPercent: at, memoryBytes: at },
+    points: [{ at: 1000, cpu: stats, memory: stats }],
+  });
+  if (command.action === "status")
+    return {
+      project: "demo",
+      projectId: "p",
+      targets: [
+        preview({
+          id: "new",
+          components: [{ name: "api", kind: "managed", state: "running" }],
+        }),
+      ],
+    };
+  return {
+    since: 1000,
+    from: 1000,
+    to: 1045,
+    step: 15,
+    sampledEvery: 1,
+    series: [
+      reported({ scope: "target", targetId: "old" }, 9),
+      reported({ scope: "target", targetId: "new" }, 2),
+      reported(
+        {
+          scope: "component",
+          targetId: "old",
+          componentKind: "service",
+          component: "web",
+        },
+        9,
+      ),
+      reported(
+        {
+          scope: "component",
+          targetId: "new",
+          componentKind: "service",
+          component: "api",
+        },
+        2,
+      ),
+    ],
+  };
+}
+async function monitorPage(target: string) {
+  answer = monitorReads;
+  const view = await projectMonitor("demo", "1h", target);
+  answer = undefined;
+  if (!view.usage.ok) throw new Error("the monitor read failed");
+  return {
+    view,
+    html: renderToStaticMarkup(
+      <ProjectMonitor
+        project="demo"
+        initial={view.usage.value}
+        range="1h"
+        target={view.target}
+        {...(view.targetId ? { targetId: view.targetId } : {})}
+        inventory={view.inventory}
+        operations={[]}
+        now={0}
+        doctor={null}
+        activity={null}
+      />,
+    ),
+  };
+}
+const cardsIn = (html: string, name: string) =>
+  [
+    ...html.matchAll(
+      /<span class="truncate font-mono">([^<]*)<\/span>(<span[^>]*>earlier<\/span>)?/g,
+    ),
+  ]
+    .filter((match) => match[1] === name)
+    .map((match) => (match[2] ? "earlier" : "current"));
+
+test("from status to the page, a replacement Preview's own Services are current and an earlier one's are marked earlier", async () => {
+  const { view, html } = await monitorPage("feature");
+  expect(view.targetId).toBe("new");
+  expect(cardsIn(html, "api")).toEqual(["current"]);
+  expect(cardsIn(html, "web")).toEqual(["earlier"]);
+});
+
+test("from status to the page, every Target's view knows the replacement's series by the id status reports", async () => {
+  const { view, html } = await monitorPage("all");
+  expect(view.inventory).toEqual([{ name: "feature", targetId: "new" }]);
+  // The earlier Preview's numbers are the larger; the chip shows the current one's.
+  expect(
+    view.targets.find((each) => each.name === "feature")?.detail,
+  ).toStartWith("2");
+  expect(cardsIn(html, "feature")).toEqual(["current", "earlier"]);
 });

@@ -138,19 +138,10 @@ function inventoryOf(
       ...(each.id ? { targetId: each.id } : {}),
     }));
   const found = current.find((each) => each.name === target);
-  const identity = found?.id ? { targetId: found.id } : {};
   return [
     ...(found?.components ?? [])
       .filter((component) => component.kind === "managed")
-      .map((component) => ({
-        name: component.name,
-        kind: "service",
-        ...identity,
-      })),
-    ...(found?.jobs ?? []).map((job) => ({
-      name: job.name,
-      kind: "job",
-      ...identity,
-    })),
+      .map((component) => ({ name: component.name, kind: "service" })),
+    ...(found?.jobs ?? []).map((job) => ({ name: job.name, kind: "job" })),
   ];
 }

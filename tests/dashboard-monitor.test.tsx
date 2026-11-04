@@ -206,6 +206,76 @@ test("with the Target's id known, a Preview's current series is known exactly, h
   expect(currentOf([earlier, current], "newest")).toBeUndefined();
 });
 
+test("a replacement Preview with other Services and Jobs: what only an earlier one had is earlier, with no Activity of its own", () => {
+  const component = (
+    targetId: string,
+    componentKind: "service" | "job",
+    name: string,
+  ): ChartSeries => ({
+    key: `component:p:${targetId}:${componentKind}:${name}`,
+    series: {
+      scope: "component",
+      projectId: "p",
+      project: "pantry",
+      targetId,
+      target: "feature",
+      targetKind: "preview",
+      componentKind,
+      component: name,
+    },
+    now: { cpuPercent: 1, memoryBytes: 1 },
+    cpu: { average: [1] },
+    memory: { average: [1] },
+  });
+  const cards = cardsOf(
+    [
+      { name: "api", kind: "service" },
+      { name: "sync", kind: "job" },
+    ],
+    [
+      component("old", "service", "web"),
+      component("old", "job", "nightly"),
+      component("new", "service", "api"),
+    ],
+    (each) => ({
+      name: each.series.component!,
+      kind: each.series.componentKind!,
+    }),
+    "new",
+  );
+  expect(
+    cards.map((card) => [
+      card.name,
+      card.series?.series.targetId,
+      card.incarnation,
+    ]),
+  ).toEqual([
+    ["api", "new", undefined],
+    // Named by the Target now, and not sampled yet.
+    ["sync", undefined, undefined],
+    // Only an earlier Preview had these: no empty card says the Target has them now.
+    ["web", "old", "earlier"],
+    ["nightly", "old", "earlier"],
+  ]);
+  const web = cards.find((card) => card.name === "web")!;
+  expect(
+    cardActivity(
+      web,
+      [
+        {
+          id: "op-old",
+          action: "up",
+          outcome: "started",
+          occurredAt: "2026-11-03T00:00:00.000Z",
+          target: "feature",
+          component: { kind: "service", name: "web" },
+        },
+      ],
+      "feature",
+    ),
+  ).toEqual([]);
+});
+
 test("stacked layers keep running totals, treat a silent layer as zero, and leave a gap only where every layer is silent", () => {
   expect(
     stacked([

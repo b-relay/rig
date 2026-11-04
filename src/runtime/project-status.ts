@@ -228,7 +228,7 @@ export async function projectStatus(
     if (report && Object.keys(refusals).length) report.refusals = refusals;
   }
   const refusals =
-    selected.length === targets.length
+    !command.target && !command.deployment
       ? registrationRefusals(
           project,
           targets,

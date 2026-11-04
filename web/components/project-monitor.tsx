@@ -81,10 +81,14 @@ export function ProjectMonitor({
           (each) =>
             each.series.scope === "component" && each.series.target === target,
         );
-  const cards = cardsOf(inventory, sampled, (each) =>
-    target === "all"
-      ? { name: each.series.target! }
-      : { name: each.series.component!, kind: each.series.componentKind! },
+  const cards = cardsOf(
+    inventory,
+    sampled,
+    (each) =>
+      target === "all"
+        ? { name: each.series.target! }
+        : { name: each.series.component!, kind: each.series.componentKind! },
+    target === "all" ? undefined : targetId,
   );
   // Each card keeps its colour as others start and stop sampling.
   const colorOf = (key: string) =>

@@ -62,6 +62,7 @@ const { runCommand } = await import("../src/providers/command-runner");
 const { createCaddyRouter } = await import("../src/providers/caddy-router");
 const { unreloadedCaddy, noRoutes } = await import("./support/router-doubles");
 const { localActivation } = await import("./support/activation-doubles");
+const { managedCaddyWorld } = await import("./support/managed-caddy-double");
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -150,13 +151,14 @@ async function externalRoutes(options: { hostCaddyfile?: boolean } = {}) {
   });
   return { root, file, router, reloads, route };
 }
-const routeOnDiskBeforeReload = (file: string) => {
+/** The route file and its backup flushed, renamed into place and the directory flushed, all before `step`. */
+const routeOnDiskBefore = (file: string, step: string) => {
   const directory = dirname(file);
   const written = at(temporaryOf(file));
   const backup = at(is(`sync ${file}.rig-backup`));
   const renamed = at(is(`rename ${file}`), Math.max(written, backup));
   const flushed = at(is(`sync ${directory}`), renamed);
-  expect(flushed).toBeLessThan(at(is("caddy reload")));
+  expect(flushed).toBeLessThan(at(is(step)));
 };
 
 test("an external Caddy's route file and its backup are on disk, with the directory that names them, before Caddy reloads them", async () => {
@@ -167,10 +169,10 @@ test("an external Caddy's route file and its backup are on disk, with the direct
     // The directories made for it are named on disk too.
     expect(at(is(`sync ${join(f.root, "new")}`))).toBeGreaterThan(-1);
     expect(at(is(`sync ${f.root}`))).toBeLessThan(at(is(`rename ${f.file}`)));
-    routeOnDiskBeforeReload(f.file);
+    routeOnDiskBefore(f.file, "caddy reload");
     trace.length = 0;
     await f.router.apply(f.route(3001));
-    routeOnDiskBeforeReload(f.file);
+    routeOnDiskBefore(f.file, "caddy reload");
     expect(await real.readFile(`${f.file}.rig-backup`, "utf8")).toContain(
       "127.0.0.1:3000",
     );
@@ -204,6 +206,77 @@ test("a route file whose directory cannot be flushed fails FILE_NOT_DURABLE befo
     details: { published: true },
   });
   expect(trace).not.toContain("caddy reload");
+});
+
+/** Rig's own Caddy over a root whose `proxy` directory is yet to be made, with its route file's real path; each load Caddy is
+ * given is traced. */
+async function managedRoutes() {
+  const world = await managedCaddyWorld();
+  roots.push(world.root);
+  world.control.beforeLoad = async () => {
+    trace.push("caddy load");
+  };
+  const route = (port: number) => ({
+    key: "target",
+    sites: [
+      {
+        hostname: "app.test",
+        routes: [{ prefix: "/", upstream: `127.0.0.1:${port}` }],
+      },
+    ],
+  });
+  return {
+    world,
+    file: join(await real.realpath(world.root), "proxy", "Caddyfile"),
+    route,
+  };
+}
+
+test("Rig's own Caddy's route file and its backup are on disk, with the directory that names them, before Caddy loads them", async () => {
+  const f = await managedRoutes();
+  trace.length = 0;
+  await f.world.caddy.router.apply(f.route(3000));
+  // The directory made for it is named on disk too.
+  expect(at(is(`sync ${f.world.root}`))).toBeLessThan(
+    at(is(`rename ${f.file}`)),
+  );
+  routeOnDiskBefore(f.file, "caddy load");
+  trace.length = 0;
+  await f.world.caddy.router.apply(f.route(3001));
+  routeOnDiskBefore(f.file, "caddy load");
+  expect(await real.readFile(`${f.file}.rig-backup`, "utf8")).toContain(
+    "127.0.0.1:3000",
+  );
+  expect(await real.readFile(f.file, "utf8")).toContain("127.0.0.1:3001");
+});
+
+test("a load Caddy refuses puts Rig's own route file back on disk, with the directory that names it, before the change fails", async () => {
+  const f = await managedRoutes();
+  await f.world.caddy.router.apply(f.route(3000));
+  f.world.failures.reload = "Error: boom";
+  trace.length = 0;
+  await expect(f.world.caddy.router.apply(f.route(3001))).rejects.toMatchObject(
+    { code: "ROUTE_RELOAD" },
+  );
+  const refused = at(is("caddy load"));
+  const written = at(temporaryOf(f.file), refused);
+  const renamed = at(is(`rename ${f.file}`), written);
+  at(is(`sync ${dirname(f.file)}`), renamed);
+  expect(await real.readFile(f.file, "utf8")).toContain("127.0.0.1:3000");
+});
+
+test("Rig's own route file whose directory cannot be flushed fails FILE_NOT_DURABLE before Caddy loads it", async () => {
+  const f = await managedRoutes();
+  await f.world.caddy.router.apply(f.route(3000));
+  failingFlush = dirname(f.file);
+  trace.length = 0;
+  await expect(f.world.caddy.router.apply(f.route(3001))).rejects.toMatchObject(
+    {
+      code: "FILE_NOT_DURABLE",
+      details: { published: true },
+    },
+  );
+  expect(trace).not.toContain("caddy load");
 });
 
 test("an effect checkpoint is on disk, its claim, directory, backups and journal, before the change it records; a commit is on disk before the checkpoint goes", async () => {

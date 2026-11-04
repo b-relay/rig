@@ -263,11 +263,11 @@ as `Host`. A source that is not loopback is refused before anything is sent;
 redirects are not followed; the answer must be under 100 kB and its bytes a PNG,
 ICO, JPEG, GIF or WebP (never SVG, whatever its label), and is served with the
 type its bytes show and `nosniff`. Each answer is kept on the server for ten
-minutes, and let go at the first request after that, with at most 256 answers
-and 10 MB of icons held at once, oldest out first; it is served from the site's
-own origin behind the same admission as every page; anything else is a 404 and
-the monogram stays. Which source a Project's icon comes from is kept a minute,
-for at most 256 names, including names with no Project.
+minutes, and an expired one is dropped at the next favicon-cache lookup, with at
+most 256 answers and 10 MB of icons held at once, oldest out first; it is served
+from the site's own origin behind the same admission as every page; anything
+else is a 404 and the monogram stays. Which source a Project's icon comes from
+is kept a minute, for at most 256 names, including names with no Project.
 
 ## Lost replies
 

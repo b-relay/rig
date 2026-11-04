@@ -582,23 +582,27 @@ export async function recordFailedStart(
 }
 
 /** Withholds the paths of each Service of `target` seen stopped now, whatever its record says: nothing listens on its ports,
- * which any program may bind, and an earlier rigd may have settled it with its paths still published. A Service whose
- * observation does not answer within the status budget decides nothing. Fails as withholding a route fails. */
+ * which any program may bind, and an earlier rigd may have settled it with its paths still published. Each routed Service
+ * seen running or stopped, once any such paths are withheld, joins `checked` and is not looked at again. Resolves the
+ * Services whose state could not be established (unknown, or no answer within the status budget), which decide nothing, for
+ * a later call. Fails as withholding a route fails. */
 export async function withholdStoppedServices(
   target: TargetRecord,
+  checked: Set<string>,
   deps: Pick<
     Deps,
     "lifecycle" | "observations" | "observationBudgetMs" | "observationDeadline"
   >,
-): Promise<void> {
+): Promise<string[]> {
   const routed = target.plan.components.filter(
     (component): component is ManagedComponent =>
       component.kind === "managed" &&
+      !checked.has(component.name) &&
       plannedRoutes(target.plan).some(
         (route) => route.service === component.name,
       ),
   );
-  if (!routed.length) return;
+  if (!routed.length) return [];
   const observed = await boundedObservations(
     routed.map(
       (component) => (signal: AbortSignal) =>
@@ -607,13 +611,19 @@ export async function withholdStoppedServices(
     deps.observationBudgetMs,
     deps.observationDeadline,
   );
-  const stopped = routed.flatMap((component, index) => {
-    const seen = observed[index]!;
-    return seen.kind === "completed" && seen.value.state === "stopped"
-      ? [component.name]
-      : [];
-  });
+  const seenAs = (state: ProcessObservation["state"]) =>
+    routed.flatMap((component, index) => {
+      const seen = observed[index]!;
+      return seen.kind === "completed" && seen.value.state === state
+        ? [component.name]
+        : [];
+    });
+  const [running, stopped] = [seenAs("running"), seenAs("stopped")];
   if (stopped.length) await deps.lifecycle.withhold(target, stopped);
+  for (const service of [...running, ...stopped]) checked.add(service);
+  return routed
+    .map((component) => component.name)
+    .filter((service) => !checked.has(service));
 }
 
 /** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled

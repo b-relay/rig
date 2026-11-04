@@ -61,7 +61,7 @@ import { failStart, ownStopsDetach } from "./start-cleanup";
 import { assertContainedDirectory } from "./contained-directory";
 /** How often stop asks whether the signalled group is gone. */
 const STOP_POLL_MS = 20;
-interface OwnedProcess {
+export interface OwnedProcess {
   pid: number;
   identity?: string;
   child?: ChildProcess;
@@ -679,7 +679,7 @@ const OUTPUT_ENTRY_BYTES = 128;
 function graceOf(request: ManagedProcess): number {
   return request.stopGraceMs ?? serviceGraceMs(undefined);
 }
-function captureOutput(
+export function captureOutput(
   root: string,
   owned: OwnedProcess,
   request: ManagedProcess,
@@ -711,7 +711,7 @@ function captureOutput(
     owned.drains.push(
       new Promise((resolve) => {
         const lines = outputLines();
-        const record = (complete: string[], bytes: number) => {
+        const record = (complete: string[]) => {
           if (!complete.length) return;
           const timestamp = now().toISOString();
           owned.writes = queue.add(
@@ -721,14 +721,16 @@ function captureOutput(
               stream,
               line,
             })),
-            bytes + complete.length * OUTPUT_ENTRY_BYTES,
+            complete.reduce(
+              (bytes, line) =>
+                bytes + Buffer.byteLength(line) + OUTPUT_ENTRY_BYTES,
+              0,
+            ),
           );
         };
-        pipe.on("data", (chunk: Buffer) =>
-          record(lines.push(chunk), chunk.length),
-        );
+        pipe.on("data", (chunk: Buffer) => record(lines.push(chunk)));
         pipe.once("end", () => {
-          record(lines.end(), 0);
+          record(lines.end());
           resolve();
         });
         pipe.once("error", () => resolve());

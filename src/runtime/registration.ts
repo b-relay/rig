@@ -88,12 +88,16 @@ export async function forgetProject(
   } catch (error) {
     throw notForgotten(project, error);
   }
+  const toolCheckouts = await checkoutsToolsRunFrom(targets, deps);
   // Its backups stay on disk, as its data does; their records go, since nothing could reach them by a forgotten Project.
   const kept = new Set<string>();
   try {
     await deps.store.update((state) => {
       state.projects = state.projects.filter((p) => p.id !== project.id);
       state.targets = state.targets.filter((t) => t.projectId !== project.id);
+      state.heldCheckouts = state.heldCheckouts?.filter(
+        (held) => !toolCheckouts.has(held.workspace),
+      );
       for (const backup of state.backups ?? [])
         if (backup.project === project.id)
           kept.add(dirname(dirname(dirname(backup.path))));
@@ -112,7 +116,7 @@ export async function forgetProject(
       .catch(() => undefined);
     if (registered === false)
       return [
-        ...(await forgottenWarnings(targets, kept, deps)),
+        ...(await forgottenWarnings(targets, kept, toolCheckouts, deps)),
         ...(await forgetUsage(project, deps)),
         `The forget was saved, but confirming it on disk failed: ${failureReason(error)} If the Host lost power since, run rig list; should ${project.name} be listed again, run rig forget ${shellWord(project.name)} again.`,
       ];
@@ -144,9 +148,29 @@ export async function forgetProject(
     throw error;
   }
   return [
-    ...(await forgottenWarnings(targets, kept, deps)),
+    ...(await forgottenWarnings(targets, kept, toolCheckouts, deps)),
     ...(await forgetUsage(project, deps)),
   ];
+}
+/** The held checkouts of `targets` a published Tool runs from; one that cannot be read counts. A forgotten Project's Tools
+ * stay installed, so these stay on disk like its workspace: the forget's write takes them out of `heldCheckouts`, where a
+ * sweep would give them back once their Target is gone, as it should every other checkout left there. */
+async function checkoutsToolsRunFrom(
+  targets: readonly TargetRecord[],
+  deps: Pick<RuntimeDependencies, "store" | "observations">,
+): Promise<ReadonlySet<string>> {
+  const needed = new Set<string>();
+  for (const held of (await deps.store.read()).heldCheckouts ?? []) {
+    const target = targets.find((candidate) => candidate.id === held.target);
+    if (
+      target &&
+      (await deps.observations
+        .toolRunsFrom?.(target, held.workspace)
+        .catch(() => true))
+    )
+      needed.add(held.workspace);
+  }
+  return needed;
 }
 /** Removes a forgotten Project's CPU and memory history. The forget is already saved, so a failure is a warning: the
  * history is then left until retention removes it. */
@@ -163,11 +187,13 @@ async function forgetUsage(
     ];
   }
 }
-/** What a forget leaves on disk: the stable Target's workspace and data, the backup directories in `kept`, and the Tools
- * `targets` published, now released. Read after the forget was saved; a Tool that cannot be read is left unnamed. */
+/** What a forget leaves on disk: the stable Target's workspace and data, the backup directories in `kept`, the checkouts
+ * in `toolCheckouts`, and the Tools `targets` published, now released. Read after the forget was saved; a Tool that cannot
+ * be read is left unnamed. */
 async function forgottenWarnings(
   targets: readonly TargetRecord[],
   kept: ReadonlySet<string>,
+  toolCheckouts: ReadonlySet<string>,
   deps: Pick<RuntimeDependencies, "orphanedTools" | "store" | "root">,
 ): Promise<string[]> {
   const forgotten = new Set(targets.map((target) => target.id));
@@ -200,6 +226,10 @@ async function forgottenWarnings(
     ...[...kept].map(
       (directory) =>
         `Its backups in ${directory} were kept on disk; Rig no longer lists them.`,
+    ),
+    ...[...toolCheckouts].map(
+      (checkout) =>
+        `Its checkout at ${checkout} was kept on disk because a Tool that stays installed runs from it; delete it once you no longer want that Tool.`,
     ),
     ...(tools.length
       ? [

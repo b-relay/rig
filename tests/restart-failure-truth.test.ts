@@ -65,6 +65,8 @@ async function fixture(config: ProjectConfig = shop()) {
     /** The preparation at the head of a start throws this. */
     prepare?: () => unknown;
   } = {};
+  /** How many withholds have reached the effects. */
+  const withholds = { count: 0 };
   /** Held open while a Target's build runs, and said running under its recorded key, as a live daemon's own build is. */
   const build: { hold?: Promise<void>; running?: () => void } = {};
   let pid = 7000;
@@ -144,6 +146,7 @@ async function fixture(config: ProjectConfig = shop()) {
         await effects.prepare(target, composed);
       },
       async withhold(target, ports) {
+        withholds.count++;
         if (fail.withhold) throw fail.withhold();
         await effects.withhold(target, ports);
       },
@@ -216,6 +219,7 @@ async function fixture(config: ProjectConfig = shop()) {
     processes,
     events,
     fail,
+    withholds,
     build,
     host,
     store: world.store,
@@ -677,18 +681,43 @@ test("paths the first pass could not withhold from stopped Services are withheld
   expect(await f.livePorts("stable")).toEqual([]);
 });
 
+test.each(["unknown", "unanswered"] as const)(
+  "a Service %s on the first pass has its paths withheld by the pass that sees it stopped, and is not asked about again",
+  async (first) => {
+    const f = await settledByAnEarlierRigd();
+    const observe = f.deps.observations.process;
+    const deadline = f.deps.observationDeadline;
+    f.deps.observations.process = async () =>
+      first === "unknown" ? { state: "unknown" } : new Promise(() => {});
+    if (first === "unanswered")
+      f.deps.observationDeadline = {
+        schedule(_ms, expiry) {
+          setTimeout(expiry, 0);
+          return () => {};
+        },
+      };
+    f.reopen();
+    await f.reconcile();
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+    expect(f.withholds.count).toBe(0);
+
+    f.deps.observations.process = observe;
+    f.deps.observationDeadline = deadline;
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([]);
+    expect(f.withholds.count).toBe(1);
+    await f.supervise();
+    expect(f.withholds.count).toBe(1);
+  },
+);
+
 test("a daemon's first pass leaves the paths of a running Service published", async () => {
   const f = await fixture();
   await f.command({ action: "deploy", project: "shop", target: "stable" });
-  let withheld = 0;
-  const withhold = f.deps.lifecycle.withhold;
-  f.deps.lifecycle.withhold = async (...args) => {
-    withheld++;
-    return await withhold(...args);
-  };
+  f.withholds.count = 0;
   f.reopen();
   await f.reconcile();
-  expect(withheld).toBe(0);
+  expect(f.withholds.count).toBe(0);
   expect(await f.livePorts("stable")).toEqual([WEB]);
 });
 

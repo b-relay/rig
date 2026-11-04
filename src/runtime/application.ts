@@ -380,8 +380,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     unmarked.delete(target.id);
     return true;
   };
-  /** Targets meant to run whose stopped Services this daemon has had withheld since it started (see `superviseJob`). */
-  const routesChecked = new Set<string>();
+  /** The routed Services of each Target meant to run that this daemon has seen running, or seen stopped and had withheld,
+   * since it started (see `superviseJob`), by Target id. */
+  const routesChecked = new Map<string, Set<string>>();
   /** stable Targets whose start after a Host restart failed and could not be recorded, by Target id, with the failure and
    * the restart. Each pass, and each Operation admitted on the Target, records it first (see `recordUnrecorded`). */
   const unrecorded = new Map<string, { error: unknown; mark: RestartMark }>();
@@ -2574,13 +2575,29 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           unmarked.delete(targetId);
         }
         settled?.add(targetId);
-        // Once per daemon: a Service left stopped is not looked at again, so paths an earlier rigd left published to it go
-        // now rather than at the Target's next rig up. A proxy that does not answer yet is asked again by the next pass.
-        if (!routesChecked.has(targetId))
-          await withholdStoppedServices(target, { ...deps, lifecycle }).then(
-            () => routesChecked.add(targetId),
-            (error: unknown) => failed(error, name),
-          );
+        // Once per daemon for each Service: one left stopped is not looked at again, so paths an earlier rigd left published
+        // to it go now rather than at the Target's next rig up. One whose state cannot be established yet, or a proxy that
+        // does not answer yet, is tried again by the next pass.
+        const checked = routesChecked.get(targetId) ?? new Set<string>();
+        routesChecked.set(targetId, checked);
+        await withholdStoppedServices(target, checked, {
+          ...deps,
+          lifecycle,
+        }).then(
+          (uncertain) =>
+            uncertain.length
+              ? deps
+                  .diagnostic({
+                    operationId: deps.id(),
+                    action,
+                    outcome: "routes-unchecked",
+                    target: name!,
+                    reason: `Whether ${uncertain.join(", ")} still run could not be established, so their paths were left as published.`,
+                  })
+                  .catch(() => {})
+              : undefined,
+          (error: unknown) => failed(error, name),
+        );
         return await superviseTarget(
           target,
           { ...deps, lifecycle },

@@ -3146,7 +3146,8 @@ destroyed first (`rig down preview <branch> --destroy`), because forgetting
 would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
 Previews. Stopped working and stable records go with the registration, and a
 warning names the live workspace and data root that remain on disk for the
-operator to delete.
+operator to delete, and any checkout kept because a source-file Tool that stays
+installed runs from it.
 
 Before the records go, `forget` withdraws every route its Targets publish,
 confirmed by Caddy, so a hostname a forgotten Project served can be deployed

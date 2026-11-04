@@ -25,7 +25,8 @@ export class FileStateStore implements StateStore {
 
   /** Every write replaces the file, so a new inode and time; undefined when the file cannot be looked at, or its time is a
    * whole millisecond, as on a filesystem too coarse (HFS+, exFAT) to tell two writes apart. A finer filesystem lands on one
-   * about once in a million writes, which only costs a read. */
+   * about once in a million writes; until the next write, every read then reads the file again and supervision goes without
+   * its shared snapshot. */
   async revision(): Promise<string | undefined> {
     const seen = await stat(this.path, { bigint: true }).catch(() => undefined);
     return seen && seen.mtimeNs % 1_000_000n !== 0n

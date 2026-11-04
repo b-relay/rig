@@ -172,7 +172,7 @@ import {
   type ScheduledRunResult,
 } from "./job-scheduler";
 import { boundedObservations } from "./bounded-observations";
-import type { KeepDecision } from "./keep-decision";
+import { describeServices, type KeepDecision } from "./keep-decision";
 import {
   initialPhase,
   type OperationPhase,
@@ -1350,6 +1350,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         );
         warnings.push(...replaced.warnings);
         deployKept = decision.kept;
+        // --no-up starts nothing, so it has no restart to explain; its warning says what stopped.
+        const services = command.noUp ? undefined : describeServices(decision);
+        activityNote = services;
         return await finish("deployed", {
           warnings,
           retired: replaced.retired,
@@ -1364,6 +1367,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           ...previous,
           kept: decision.kept,
           restarted: decision.restarted,
+          ...(services ? { services } : {}),
         });
       }
       if (command.action === "destroy") {

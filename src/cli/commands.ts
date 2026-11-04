@@ -450,7 +450,7 @@ function addDeployCommands(
   const deploy = command
     .command("deploy")
     .description(
-      "Deploy a Branch to the stable Target (the default) or a Preview.",
+      "Deploy a Branch to the stable Target (the default) or a Preview. Its result line says which Services it started, restarted (and why) and kept.",
     )
     .argument("[target]", "stable (the default), or preview")
     .argument(

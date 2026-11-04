@@ -110,6 +110,34 @@ export function servicesToObserve(input: Omit<KeepInput, "facts">): string[] {
     );
 }
 
+/** Pure: what a deploy that started its Target did with each Service, as its line and Activity entry say it:
+ * `started worker; restarted api (files), web (dependency api); kept db`; undefined when it has no Services. A Service new
+ * to the plan is started rather than restarted, and needs no reason. */
+export function describeServices(
+  decision: Pick<KeepDecision, "kept" | "restarted">,
+): string | undefined {
+  const started = decision.restarted.filter(({ reason }) => reason === "new");
+  const restarted = decision.restarted.filter(({ reason }) => reason !== "new");
+  return (
+    [
+      started.length
+        ? `started ${started.map(({ service }) => service).join(", ")}`
+        : "",
+      restarted.length
+        ? `restarted ${restarted
+            .map(
+              ({ service, reason, dependency }) =>
+                `${service} (${dependency ? `${reason} ${dependency}` : reason})`,
+            )
+            .join(", ")}`
+        : "",
+      decision.kept.length ? `kept ${decision.kept.join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join("; ") || undefined
+  );
+}
+
 /** The run `service` of the previous plan was started under, when it records where and from what. */
 export function recordedRun(
   previous: KeepInput["previous"],

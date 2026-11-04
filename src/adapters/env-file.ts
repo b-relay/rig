@@ -135,7 +135,10 @@ export async function readEnvironmentFile(
     );
   }
   try {
-    return parseEnvironmentFile(decodeEnvironmentFile(bytes, path), path);
+    return parseEnvironmentFile(
+      decodeEnvironmentFile(bytes, path, "replace"),
+      path,
+    );
   } catch (error) {
     if (!tolerated || (error as RigError).code !== "ENV_VALUE") throw error;
     tolerated((error as RigError).message);
@@ -150,35 +153,52 @@ const lossyUtf8 = new TextDecoder("utf-8", { ignoreBOM: true });
 export function lossyEnvironmentText(bytes: Uint8Array): string {
   return lossyUtf8.decode(bytes);
 }
-/** Pure: a file's bytes as exactly the text they hold, or ENV_VALUE naming the path, the first line that is not UTF-8 and
- * the name it assigns, never a value. */
-export function decodeEnvironmentFile(bytes: Uint8Array, path: string): string {
+/** Pure: a file's bytes as text, or ENV_VALUE naming the path, the first line that is not UTF-8 and the name it assigns, never
+ * a value. A line that only comments changes no value: with `comments: "replace"`, as a process reads a file, its bytes are
+ * replaced and every other line is exact; by default it is refused too, as an edit could not keep it. A comment after an
+ * assignment counts as that assignment. */
+export function decodeEnvironmentFile(
+  bytes: Uint8Array,
+  path: string,
+  comments: "refuse" | "replace" = "refuse",
+): string {
   try {
     return strictUtf8.decode(bytes);
   } catch {
-    const line = invalidLine(bytes);
+    const invalid = invalidLines(bytes);
+    const line =
+      comments === "refuse"
+        ? invalid[0]
+        : invalid.find(({ text }) => !text.trimStart().startsWith("#"));
+    if (!line) return lossyEnvironmentText(bytes);
+    const comment = line.text.trimStart().startsWith("#");
     const key = ASSIGNED_NAME.exec(line.text)?.[1];
     throw new RigError(
       "ENV_VALUE",
-      `The environment file ${path} has bytes that are not valid UTF-8 on line ${line.number}${key ? `, in the assignment of ${key}` : ""}.`,
-      LOSSLESS_HINT,
+      `The environment file ${path} has bytes that are not valid UTF-8 on line ${line.number}${comment ? ", in a comment" : key ? `, in the assignment of ${key}` : ""}.`,
+      comment
+        ? "A comment changes no value, so processes still read this file, but it cannot be edited here without changing those bytes. Save the file as UTF-8 in an editor."
+        : LOSSLESS_HINT,
       { path, line: line.number, ...(key ? { key } : {}) },
     );
   }
 }
-/** The first line of `bytes` that is not UTF-8, which holds its first invalid byte: no multi-byte sequence holds a newline. */
-function invalidLine(bytes: Uint8Array): { number: number; text: string } {
+/** The lines of `bytes` that are not UTF-8, found one by one: no multi-byte sequence holds a newline. */
+function invalidLines(bytes: Uint8Array): { number: number; text: string }[] {
+  const invalid: { number: number; text: string }[] = [];
   let start = 0;
-  for (let number = 1; ; number++) {
+  for (let number = 1; start <= bytes.length; number++) {
     const end = bytes.indexOf(0x0a, start);
     const line = bytes.subarray(start, end < 0 ? bytes.length : end);
     try {
       strictUtf8.decode(line);
     } catch {
-      return { number, text: lossyEnvironmentText(line) };
+      invalid.push({ number, text: lossyEnvironmentText(line) });
     }
+    if (end < 0) break;
     start = end + 1;
   }
+  return invalid;
 }
 
 /** dotenv-style single-line assignments: `KEY=value`, optional `export`, single or double

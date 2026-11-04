@@ -37,7 +37,13 @@ export function envKeys(text: string): string[] {
  * quote or a line break is single-quoted, which the reader takes literally; anything else is double-quoted
  * with escapes. A value no process could get or the reader cannot read back exactly is refused as ENV_VALUE, naming the key
  * and never the value. */
-export function encodeEnvAssignment(key: string, value: string): string {
+export function encodeEnvAssignment(
+  key: string,
+  value: string,
+  /** The file it is for, named in a refusal when known. */
+  path?: string,
+): string {
+  const where = path === undefined ? {} : { path };
   if (!ENV_KEY.test(key))
     throw new RigError(
       "ENV_KEY",
@@ -51,7 +57,7 @@ export function encodeEnvAssignment(key: string, value: string): string {
       "ENV_VALUE",
       `The value for ${key} holds ${unrepresentable}, so it cannot be saved.`,
       "Rig hands a process a value exactly or refuses it. Remove that character; keep binary data base64-encoded.",
-      { key },
+      { key, ...where },
     );
   const line =
     !value.includes("'") && !/[\r\n]/.test(value)
@@ -72,7 +78,7 @@ export function encodeEnvAssignment(key: string, value: string): string {
       "ENV_VALUE",
       `The value for ${key} cannot be written to an env file so that it reads back the same.`,
       "A value holding a Unicode line or paragraph separator (U+2028, U+2029) has no single-line form. Store it another way, for example base64-encoded.",
-      { key },
+      { key, ...where },
     );
   return line;
 }
@@ -83,6 +89,8 @@ export function encodeEnvAssignment(key: string, value: string): string {
 export function editEnvText(
   text: string,
   changes: readonly EnvChange[],
+  /** The file it is for, named in a refusal when known. */
+  path?: string,
 ): string {
   let lines = text === "" ? [] : text.replace(/\r?\n$/, "").split(/\r?\n/);
   for (const change of changes) {
@@ -100,7 +108,7 @@ export function editEnvText(
       lines = lines.filter((line) => !assigns(line));
       continue;
     }
-    const encoded = encodeEnvAssignment(change.key, change.value);
+    const encoded = encodeEnvAssignment(change.key, change.value, path);
     const first = lines.findIndex(assigns);
     if (first < 0) lines.push(encoded);
     else

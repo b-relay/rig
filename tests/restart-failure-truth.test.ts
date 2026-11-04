@@ -459,6 +459,107 @@ test("a deploy whose env file holds a value Rig refuses is refused before anythi
   expect(await f.livePorts("stable")).toEqual([WEB]);
 });
 
+/** A fixture whose Project reads `config` from now on. */
+async function fixtureReading(make: (root: string) => ProjectConfig) {
+  const f = await fixture();
+  const config = make(f.world.root);
+  const read = f.deps.documents.read;
+  f.deps.documents.read = async (path) => ({
+    ...(await read.call(f.deps.documents, path)),
+    config,
+  });
+  return f;
+}
+
+test.each([
+  ["a NUL", Buffer.from("TOKEN=v\0\n")],
+  ["invalid UTF-8", Buffer.from([0x54, 0x3d, 0xff, 0x0a])],
+  ["__proto__", Buffer.from("__proto__=v\n")],
+])(
+  "a working Target's restart with a build is refused before anything stops when a Service's env file holds %s, in whichever file",
+  async (_kind, content) => {
+    const f = await fixtureReading((root) =>
+      shop({
+        build: "true",
+        services: {
+          web: {
+            command: "web",
+            restart: "always",
+            ports: { http: WEB },
+            // The build may still write the first; that it is missing must not hide the second.
+            env_file: [join(root, "generated.env"), join(root, "web.env")],
+          },
+          api: { command: "api", restart: "no", ports: { http: API } },
+        },
+      }),
+    );
+    const generated = join(f.world.root, "generated.env");
+    const file = join(f.world.root, "web.env");
+    await writeFile(generated, "A=1\n");
+    await writeFile(file, "B=2\n");
+    await f.command({ action: "up", project: "shop", target: "working" });
+    await refusedWithEverythingRunning(
+      f,
+      "working",
+      () => writeFile(file, content),
+      "ENV_VALUE",
+    );
+    await rm(generated);
+    await refusedWithEverythingRunning(f, "working", () => {}, "ENV_VALUE");
+  },
+);
+
+test.each(["crash", "Host restart"] as const)(
+  "a stable Target whose env file has invalid bytes only in a comment starts again after a %s, and a restart goes on",
+  async (cause) => {
+    const f = await fixtureReading((root) =>
+      shop({
+        services: {
+          web: {
+            command: "web",
+            restart: "always",
+            ports: { http: WEB },
+            env_file: join(root, "web.env"),
+          },
+          api: { command: "api", restart: "no", ports: { http: API } },
+        },
+      }),
+    );
+    const file = join(f.world.root, "web.env");
+    await writeFile(file, "# cafe\nTOKEN=exact\n");
+    await f.command({ action: "deploy", project: "shop", target: "stable" });
+    const content = Buffer.concat([
+      Buffer.from("# caf"),
+      Buffer.from([0xe9]),
+      Buffer.from("\nTOKEN=exact\n"),
+    ]);
+    await writeFile(file, content);
+    const key = `${(await f.target("stable")).id}:web`;
+    f.events.length = 0;
+    if (cause === "crash") {
+      f.processes.set(key, {
+        state: "stopped",
+        incarnation: f.processes.get(key)!.incarnation!,
+        exitCode: 1,
+      });
+      await f.supervise();
+      f.world.clock.ms += 1000;
+      await f.supervise();
+    } else {
+      f.processes.clear();
+      f.host.session = REBOOTED;
+      f.reopen();
+      await f.reconcile();
+    }
+    expect(f.events).toContain("start web");
+    expect(f.processes.get(key)?.state).toBe("running");
+
+    await f.command({ action: "restart", project: "shop", target: "stable" });
+    expect(f.processes.get(key)?.state).toBe("running");
+    expect(await readFile(file)).toEqual(content);
+  },
+);
+
 test("a restart is refused before anything stops when the first build's own env file is missing, shared or a Service's, since nothing could write it first", async () => {
   const web = (extra: Record<string, unknown>) => ({
     command: "web",

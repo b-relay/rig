@@ -12,13 +12,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wallOnlyClock } from "../src/domain/clock";
 import {
+  decodeEnvironmentFile,
   parseEnvironmentFile,
   readEnvironmentFile,
 } from "../src/adapters/env-file";
 import { encodeEnvAssignment } from "../src/adapters/env-file-edit";
 import { createEnvEditor } from "../src/daemon/env-editor";
 import { parseProjectConfig, resolveTargetPlan } from "../src/config";
-import { userCorrectable } from "../src/domain/errors";
+import { referenceResolver } from "../src/config/references";
+import { asRigError, userCorrectable } from "../src/domain/errors";
 import type { OperationRecord } from "../src/domain/runtime";
 import type {
   ProcessObservation,
@@ -158,16 +160,55 @@ describe("reading an env file", () => {
     },
   );
 
-  test("refuses bytes in a comment too, naming the line, since an edit could not keep them", async () => {
+  test("bytes on a line that only comments change no value, so a process still reads the file exactly", async () => {
     const path = join(await scratch(), "app.env");
-    await writeFile(path, bytes("A=1\n# caf", [0xe9], "\nB=2\n"));
+    await writeFile(
+      path,
+      bytes(
+        [0xef, 0xbb, 0xbf],
+        "# caf",
+        [0xe9],
+        "\n  # ",
+        [0xff],
+        "\nA=caf\u00e9-\ufffd\nB=2\n",
+      ),
+    );
+    expect(await readEnvironmentFile(path)).toEqual({
+      A: "caf\u00e9-\ufffd",
+      B: "2",
+    });
+  });
+
+  test.each([
+    [
+      "beside a comment that has them too",
+      bytes("# caf", [0xe9], "\nTOKEN=", SECRET, [0xff], "\n"),
+      2,
+      "TOKEN",
+    ],
+    [
+      "in a comment after the assignment",
+      bytes("A=1\nTOKEN=", SECRET, " # caf", [0xe9], "\n"),
+      2,
+      "TOKEN",
+    ],
+    [
+      "before a # that does not start the line",
+      bytes("A=1\n", [0xff], "# ", SECRET, "\n"),
+      2,
+      undefined,
+    ],
+  ])("still refuses invalid bytes %s", async (_where, content, line, key) => {
+    const path = join(await scratch(), "app.env");
+    await writeFile(path, content);
     const failure = await readEnvironmentFile(path).catch(
       (error: unknown) => error,
     );
     expect(failure).toMatchObject({
       code: "ENV_VALUE",
-      details: { path, line: 2 },
+      details: { path, line, ...(key ? { key } : {}) },
     });
+    expect(quoted(failure)).not.toContain(SECRET);
   });
 
   test("valid Unicode, a BOM, CRLF and escaped line breaks read back exactly", async () => {
@@ -256,7 +297,7 @@ describe("the env editor", () => {
       const failure = await failed(write("absent", "TOKEN", value));
       expect(failure).toMatchObject({
         code: "ENV_VALUE",
-        details: { key: "TOKEN" },
+        details: { key: "TOKEN", path },
       });
       expect((failure as Error).message).toContain("TOKEN");
       expect(quoted(failure)).not.toContain(SECRET);
@@ -303,12 +344,34 @@ describe("the env editor", () => {
         expect(await failed(reveal(key))).toMatchObject({ code: "ENV_VALUE" });
 
       const refused = await failed(write(file.revision, "OTHER", "2"));
-      expect(refused).toMatchObject({ code: "ENV_FILE" });
+      expect(refused).toMatchObject({
+        code: "ENV_VALUE",
+        details: { path, line: 2, key },
+      });
       expect(quoted(refused)).not.toContain(SECRET);
       expect(await readFile(path)).toEqual(written);
       expect(recorded).toEqual([]);
     },
   );
+
+  test("a file with invalid bytes only in a comment is described and refused for editing, its bytes untouched, while its hint says processes still read it", async () => {
+    const { path, recorded, view, write } = await editor();
+    const written = bytes("A=1\n# caf", [0xe9], "\n");
+    await writeFile(path, written);
+    const file = await view();
+    expect(file.keys).toEqual(["A"]);
+    expect(file.problem).toContain("line 2, in a comment");
+    const refused = await failed(write(file.revision, "A", "2"));
+    expect(refused).toMatchObject({
+      code: "ENV_VALUE",
+      details: { path, line: 2 },
+    });
+    expect(await readFile(path)).toEqual(written);
+    expect(recorded).toEqual([]);
+    expect(refusal(() => decodeEnvironmentFile(written, path)).hint).toContain(
+      "processes still read this file",
+    );
+  });
 
   test("a revision is of the file's bytes: files that differ only in invalid bytes have different ones", async () => {
     const { path, view } = await editor();
@@ -361,16 +424,16 @@ describe("values in rig.yaml", () => {
       },
       { operatorHome: "/home", envRoot: "/env" },
     );
-  const failed = (action: () => unknown) => {
+  /** What a refused rig.yaml tells the operator, checked to hold no value. */
+  const refusedConfig = (action: () => unknown) => {
     try {
       action();
     } catch (error) {
-      return JSON.stringify([
-        (error as Error).message,
-        (error as { hint?: string }).hint,
-        (error as { context?: unknown }).context,
-        (error as { details?: unknown }).details,
-      ]);
+      const rig = asRigError(error);
+      expect(
+        JSON.stringify([rig.message, rig.hint, rig.details, error]),
+      ).not.toContain(SECRET);
+      return rig;
     }
     throw new Error("accepted");
   };
@@ -379,30 +442,41 @@ describe("values in rig.yaml", () => {
     ["a NUL", `${SECRET}\0tail`],
     ["an unpaired surrogate", `${SECRET}\ud800tail`],
   ])(
-    "an environment value holding %s is refused by name, for the Project, a Service and a Job",
+    "an environment value holding %s is refused as INVALID_CONFIG by its field, for the Project, a Service and a Job",
     (_kind, value) => {
-      for (const config of [
-        {
-          environment: { TOKEN: value },
-          services: { api: { command: "api" } },
-        },
-        {
-          services: { api: { command: "api", environment: { TOKEN: value } } },
-        },
-        {
-          services: { api: { command: "api" } },
-          jobs: {
-            nightly: {
-              command: "run",
-              schedule: "0 3 * * *",
-              environment: { TOKEN: value },
+      for (const [field, config] of [
+        [
+          "environment.TOKEN",
+          {
+            environment: { TOKEN: value },
+            services: { api: { command: "api" } },
+          },
+        ],
+        [
+          "services.api.environment.TOKEN",
+          {
+            services: {
+              api: { command: "api", environment: { TOKEN: value } },
             },
           },
-        },
-      ]) {
-        const said = failed(() => plan(config));
-        expect(said).toContain("TOKEN");
-        expect(said).not.toContain(SECRET);
+        ],
+        [
+          "jobs.nightly.environment.TOKEN",
+          {
+            services: { api: { command: "api" } },
+            jobs: {
+              nightly: {
+                command: "run",
+                schedule: "0 3 * * *",
+                environment: { TOKEN: value },
+              },
+            },
+          },
+        ],
+      ] as const) {
+        const refused = refusedConfig(() => plan(config));
+        expect(refused.code).toBe("INVALID_CONFIG");
+        expect(refused.hint).toContain(`Fix ${field}: TOKEN holds`);
       }
     },
   );
@@ -411,17 +485,55 @@ describe("values in rig.yaml", () => {
     ["a NUL", `${SECRET}\0tail`],
     ["an unpaired surrogate", `${SECRET}\ud800tail`],
   ])(
-    "a reference to a setting holding %s is refused by its path, into environment and into a _RIG_ variable alike",
+    "a reference to a setting holding %s is refused as INVALID_CONFIG by both paths, into environment and into a _RIG_ variable alike",
     (_kind, value) => {
       const worker = { command: value };
-      for (const api of [
-        { command: "api", environment: { COPY: "${services.worker.command}" } },
-        { command: "echo ${services.worker.command}" },
-      ]) {
-        const said = failed(() => plan({ services: { api, worker } }));
-        expect(said).toContain("services.worker.command");
-        expect(said).not.toContain(SECRET);
+      for (const [field, api] of [
+        [
+          "services.api.environment.COPY",
+          {
+            command: "api",
+            environment: { COPY: "${services.worker.command}" },
+          },
+        ],
+        [
+          "services.api.command",
+          { command: "echo ${services.worker.command}" },
+        ],
+      ] as const) {
+        const refused = refusedConfig(() =>
+          plan({ services: { api, worker } }),
+        );
+        expect(refused.code).toBe("INVALID_CONFIG");
+        expect(refused.hint).toContain(`Fix ${field}: Reference`);
+        expect(refused.hint).toContain("services.worker.command");
       }
+    },
+  );
+
+  test.each([
+    ["text", "${environment.TOKEN}"],
+    ["shell", "echo ${environment.TOKEN}"],
+  ] as const)(
+    "the resolver names the reference and the field in %s, with its own code",
+    (form, written) => {
+      const references = referenceResolver(
+        { environment: { TOKEN: `${SECRET}\0` } },
+        {
+          target: "working",
+          workspace: "/work",
+          host: "",
+          url: "",
+          data: () => "/data",
+          port: () => 4000,
+        },
+      );
+      const failure = refusal(() => references[form](written, "build"));
+      expect(failure).toMatchObject({
+        code: "unrepresentable_value",
+        context: { key: "environment.TOKEN", path: "build" },
+      });
+      expect(failure.message).not.toContain(SECRET);
     },
   );
 

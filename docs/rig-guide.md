@@ -1095,7 +1095,8 @@ refuses leaves the Target running as it was: a `rig.yaml` that cannot be read,
 a plan that cannot be made (a pinned port another Target holds, say), a route
 that could not be published, a deployed Target whose preparation is not
 complete, or an `env_file` that cannot be read (the first build's always, and
-any other unless an earlier build could write it). `rig up` on a Target that is already running keeps the plan
+any other unless an earlier build could write it; a [value Rig refuses](#environment-builds-and-startup)
+in a file that exists always). `rig up` on a Target that is already running keeps the plan
 its processes were started from; `rig doctor` reports `config-drift` for it and
 names `rig restart working` as the fix. A valid config
 that adds a Service the recorded plan has no port for is also reported as
@@ -2822,9 +2823,10 @@ take part in `${...}` references.
 A value reaches a process exactly or is refused. An env file must be UTF-8 (a
 BOM and CRLF line ends are fine), and a line whose bytes are not, a value
 holding a NUL character, or the name `__proto__` is refused as `ENV_VALUE`,
-naming the file, the line and the name, never the value. The whole file is
-refused, including for bytes in a comment, since saving an edit could not keep
-them. The same refusal covers a NUL or an unpaired surrogate in a value in
+naming the file, the line and the name, never the value. Bytes on a line that
+only comments change no value, so a process still starts from such a file; the
+dashboard refuses to edit it, since saving could not keep them. A comment after
+an assignment counts as that assignment. The same refusal covers a NUL or an unpaired surrogate in a value in
 `rig.yaml`, in `environment` or reached through a `${...}` reference, when the
 config is read; and a plan recorded earlier that holds one, when a process
 would start from it.

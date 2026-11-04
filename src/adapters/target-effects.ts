@@ -24,7 +24,11 @@ import { isHealthUrl } from "../config/schema";
 import { installedPath } from "../domain/installed-path";
 import { isGitCommit } from "../domain/git";
 import { componentDirectory } from "../config/working-dir";
-import { gitIgnoreCheck, loadEnvironmentFiles } from "./env-file";
+import {
+  gitIgnoreCheck,
+  loadEnvironmentFiles,
+  readEnvironmentFile,
+} from "./env-file";
 import {
   assertRepresentableEnvironment,
   composeEnvironment,
@@ -109,6 +113,7 @@ function failureReason(error: unknown): string {
 import type { HealthObservation, ObservationEffects } from "../runtime/status";
 import {
   RigError,
+  diagnosticErrorCode,
   failureCauses,
   failureReason as describedFailure,
   lastOutputLine,
@@ -653,6 +658,22 @@ export function createTargetEffects(
     supervisor,
     environment,
     digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
+    async checkEnvironmentValues(target) {
+      for (const component of target.plan.components) {
+        if (component.kind !== "managed") continue;
+        for (const { path } of component.envFiles ?? [])
+          await readEnvironmentFile(path).catch((error: unknown) => {
+            if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
+          });
+        assertRepresentableEnvironment(
+          {
+            ...component.env,
+            ...referenceValuesOf(target.plan, component),
+          },
+          component.name,
+        );
+      }
+    },
     health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
     checkpoint: (target, previous) =>

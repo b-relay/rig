@@ -67,13 +67,15 @@ async function readBytes(path: string): Promise<Uint8Array | undefined> {
 /** The values a file holds, read exactly; what cannot be is refused (see `parseEnvironmentFile`). */
 const valuesOf = (bytes: Uint8Array, path: string): Record<string, string> =>
   parseEnvironmentFile(decodeEnvironmentFile(bytes, path), path);
-const problemOf = (bytes: Uint8Array, path: string): string | undefined => {
+/** Why the reader refuses a file; its messages name the path, line and key, never a value. */
+const refusalOf = (bytes: Uint8Array, path: string): RigError | undefined => {
   try {
     valuesOf(bytes, path);
     return undefined;
   } catch (error) {
-    // The reader's messages name the path, line and key, never a value.
-    return error instanceof RigError ? error.message : "It cannot be parsed.";
+    return error instanceof RigError
+      ? error
+      : new RigError("ENV_FILE", "It cannot be parsed.", "", { path });
   }
 };
 /** The names a file assigns, whatever its values hold. */
@@ -94,7 +96,7 @@ export async function describeEnvFile(
       keys: [],
     };
   const mode = (await stat(path)).mode & 0o777;
-  const problem = problemOf(bytes, path);
+  const problem = refusalOf(bytes, path)?.message;
   return {
     scope,
     path,
@@ -145,18 +147,19 @@ export async function writeEnvFile(
   const current = await readBytes(path);
   if (envRevision(current) !== expectedRevision) throw conflict(current);
   if (current !== undefined) {
-    const problem = problemOf(current, path);
-    if (problem)
+    const refusal = refusalOf(current, path);
+    if (refusal)
       throw new RigError(
-        "ENV_FILE",
-        problem,
+        refusal.code,
+        refusal.message,
         "Fix that line in an editor first; the dashboard does not rewrite a file it cannot read.",
-        { path },
+        refusal.details,
       );
   }
   const next = editEnvText(
     current === undefined ? "" : decodeEnvironmentFile(current, path),
     changes,
+    path,
   );
   // The env tree is the operator's alone: directories they made by hand are made private here, as they always were, before
   // the replacement below checks them and makes what is missing.

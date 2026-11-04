@@ -140,9 +140,10 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   Target it was offered for (`targetId`), so `rigd` refuses it as
   `TARGET_REPLACED` should a new Preview have taken the name since. Deploys of an
   earlier Target of that name stay listed and offer nothing, as do a Preview's
-  deploys from before Rig kept Target ids that its read cannot place: it gives
-  such a deploy the Preview's id only when it ended after that Preview was
-  created, with the deploys after it in order.
+  deploys from before Rig kept Target ids that its read cannot place. It never
+  uses the clock for this: such a deploy gets the Preview's id only through the
+  chain of Commits each deploy replaced back from the one running now, which ends
+  at the Preview's first deploy and at any destroy of its name in Activity.
 - **Settings**: Rename, Repoint and Forget, each disabled with the reason beneath
   it while `rigd` would refuse it (status's project `refusals`: which Targets
   run, or for Forget, which Previews remain); `rigd` decides again when asked.

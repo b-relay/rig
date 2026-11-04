@@ -5610,17 +5610,127 @@ test("a replaced Preview's deploys from before Target ids stay listed and never 
   ]);
 });
 
-test("a replaced Preview's old deploy is not taken for the replacement's when the clock was set back between them", async () => {
+for (const [clock, old, replaced, finished] of [
+  [
+    "equal timestamps",
+    "2026-10-01T00:00:00.100Z",
+    "2026-10-01T00:00:00.100Z",
+    undefined,
+  ],
+  [
+    "a 100 ms clock setback",
+    "2026-10-01T00:00:00.500Z",
+    "2026-10-01T00:00:00.400Z",
+    "2026-10-01T00:00:00.900Z",
+  ],
+] as const)
+  for (const history of ["only old records", "old and new records"] as const)
+    test(`a destroyed Preview's deploy never becomes a rollback of its replacement, with ${clock} and ${history}`, async () => {
+      const f = await previewHistory();
+      await f.deploy("a");
+      const oldId = f.state.targets.find((t) => t.kind === "preview")!.id;
+      await f.destroy();
+      await f.deploy("b");
+      expect(f.state.targets.find((t) => t.kind === "preview")!.id).not.toBe(
+        oldId,
+      );
+      const [first, second] = f.state.deployments!;
+      delete first!.targetId;
+      first!.startedAt = first!.finishedAt = old;
+      second!.startedAt = replaced;
+      second!.finishedAt = finished ?? replaced;
+      f.created(replaced);
+      if (history === "only old records") delete second!.targetId;
+      const rows = await f.rows();
+      expect(marks(rows)).toEqual([
+        ["b", true, false],
+        ["a", false, false],
+      ]);
+      expect(rows[1]!.targetId).toBeUndefined();
+    });
+
+test("a replacement whose first deploy left no record is still no owner of the old deploys, by the destroy Activity recorded", async () => {
   const f = await previewHistory();
   await f.deploy("a");
+  await f.deploy("b");
+  await f.destroy();
+  // Its first deploy, of the same Commit the old Preview ran, ended with rigd before it could record itself.
+  await f.deploy("b");
+  f.state.deployments!.pop();
+  f.beforeIds(["2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"]);
+  expect(marks(await f.rows())).toEqual([
+    ["b", false, false],
+    ["a", false, false],
+  ]);
+});
+
+test("with the destroy gone from Activity, a replacement's first deploy still ends what it owns, failed old deploys included", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
   await f.destroy();
   await f.deploy("b");
-  // The old deploy reads later than the new Preview's creation; only the order of the records shows it came first.
-  f.created("2026-10-01T00:00:00.000Z");
-  f.beforeIds(["2026-10-05T00:00:00.000Z", "2026-10-01T00:00:05.000Z"]);
-  expect(marks(await f.rows())).toEqual([
+  f.beforeIds([
+    "2026-10-01T00:00:00.000Z",
+    "2026-10-01T00:00:01.000Z",
+    "2026-10-02T00:00:00.000Z",
+  ]);
+  f.state.activity = f.state.activity.filter((e) => e.action !== "destroy");
+  const rows = await f.rows();
+  expect(marks(rows)).toEqual([
     ["b", true, false],
+    ["c", false, false],
     ["a", false, false],
+  ]);
+  expect(rows.slice(1).map((row) => row.targetId)).toEqual([
+    undefined,
+    undefined,
+  ]);
+});
+
+test("with the destroy gone from Activity and the replacement's first deploy unrecorded, another Commit breaks the chain", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  await f.destroy();
+  await f.deploy("c");
+  f.state.deployments!.pop();
+  f.beforeIds(["2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"]);
+  f.state.activity = f.state.activity.filter((e) => e.action !== "destroy");
+  const rows = await f.rows();
+  expect(rows.map((row) => row.targetId)).toEqual([undefined, undefined]);
+  expect(rows.map((row) => row.rollback)).toEqual([false, false]);
+});
+
+test("a Preview never replaced keeps its rollback from before Target ids through a failed deploy and whatever the clock did", async () => {
+  const f = await previewHistory();
+  await f.deploy("a");
+  await f.deploy("b");
+  const prepare = f.deps.sources.prepare;
+  f.deps.sources.prepare = async () => {
+    throw new RigError("BUILD_FAILED", "The build failed.", "Fix it.");
+  };
+  await f.deploy("c").catch(() => {});
+  f.deps.sources.prepare = prepare;
+  await f.deploy("d");
+  // Every time is before the Preview was created, and out of order.
+  f.created("2026-10-09T00:00:00.000Z");
+  f.beforeIds([
+    "2026-10-04T00:00:00.000Z",
+    "2026-10-03T00:00:00.000Z",
+    "2026-10-02T00:00:00.000Z",
+    "2026-10-01T00:00:00.000Z",
+  ]);
+  expect(marks(await f.rows())).toEqual([
+    ["d", true, false],
+    ["c", false, false],
+    ["b", false, true],
+    ["a", false, true],
   ]);
 });
 

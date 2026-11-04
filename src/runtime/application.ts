@@ -993,6 +993,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             project.id,
             command.lines ?? 100,
             targets,
+            state.activity,
           ),
         };
       if (command.action === "doctor")

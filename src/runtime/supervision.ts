@@ -517,8 +517,9 @@ export function intendRunning(target: TargetRecord): void {
  * not answer within the status budget is counted as stopped, since a restart ends every process. A Service an operator
  * stopped, or whose automatic attempts are used up, keeps its record. Writes no Activity: the restart's own entry says why.
  * The Caddy that came back with the Host still reaches the ports of the Services it stopped, which any program may bind
- * now, so their paths are withheld first, until a verified start publishes them again; while they cannot be, nothing is
- * recorded and the caller tries again.
+ * now, so the paths of those seen stopped are withheld first, until a verified start publishes them again; while they
+ * cannot be, nothing is recorded and the caller tries again. One only not seen running may have survived a new login, so
+ * its paths wait for a later pass to see it stopped (`withholdStoppedServices`).
  * The records, and whatever `alongside` records, are saved in one write. Returns whether they were saved; a failure goes
  * to the diagnostic log. */
 export async function recordStoppedByHostRestart(
@@ -549,7 +550,7 @@ export async function recordStoppedByHostRestart(
       return { kind: "unknown", hostRestart: restart, at: deps.now() };
     },
     alongside,
-    (services) => deps.lifecycle.withhold(target, services),
+    (_services, stopped) => deps.lifecycle.withhold(target, stopped),
   );
 }
 

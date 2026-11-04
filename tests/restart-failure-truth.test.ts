@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseProjectConfig } from "../src/config";
@@ -663,6 +663,55 @@ test.each(["unknown", "unanswered"] as const)(
     expect(await f.pids("stable")).toEqual(pids);
     expect(f.withholds.count).toBe(0);
     expect(await f.livePorts("stable")).toEqual([WEB]);
+  },
+);
+
+describe.each(["working", "preview"] as const)(
+  "a %s Service whose state is uncertain after a new login",
+  (kind) => {
+    test.each([
+      ["unknown", "running"],
+      ["unknown", "stopped"],
+      ["unanswered", "running"],
+      ["unanswered", "stopped"],
+    ] as const)(
+      "%s, later seen %s, keeps its paths until a pass sees it stopped",
+      async (uncertain, later) => {
+        const f = await fixture();
+        if (kind === "working")
+          await f.command({ action: "up", project: "shop", target: kind });
+        else await f.preview();
+        const pids = await f.pids(kind);
+        f.host.session = { ...f.host.session, login: "100099" };
+        const observe = f.deps.observations.process;
+        const deadline = f.deps.observationDeadline;
+        f.deps.observations.process = async () =>
+          uncertain === "unknown"
+            ? { state: "unknown" }
+            : new Promise(() => {});
+        if (uncertain === "unanswered")
+          f.deps.observationDeadline = {
+            schedule(_ms, expiry) {
+              setTimeout(expiry, 0);
+              return () => {};
+            },
+          };
+        f.reopen();
+        await f.reconcile();
+        expect(await f.pids(kind)).toEqual(pids);
+        expect(await f.livePorts(kind)).toEqual([WEB]);
+
+        f.deps.observations.process = observe;
+        f.deps.observationDeadline = deadline;
+        if (later === "stopped")
+          f.processes.delete(`${(await f.target(kind)).id}:web`);
+        await f.supervise();
+        await f.supervise();
+        expect(await f.livePorts(kind)).toEqual(
+          later === "running" ? [WEB] : [],
+        );
+      },
+    );
   },
 );
 

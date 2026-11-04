@@ -14,6 +14,8 @@ import {
   JOB_LATE_LIMIT_MS,
   JOB_OFF_CHECK_MS,
   createJobScheduler,
+  jobSchedule,
+  nextJobRun,
   type ScheduledRunRequest,
   type ScheduledRunResult,
 } from "../src/runtime/job-scheduler";
@@ -1361,4 +1363,37 @@ test("time the Mac sleeps does not count toward a run's timeout", async () => {
   await w.after(1000);
   await w.after(1000);
   expect(w.stops).toEqual(["mb-mirror"]);
+});
+
+test("schedules parsed for plans long gone are let go, while a schedule still in use keeps its parse and its next run", () => {
+  // Thousands of distinct valid expressions, as config churn leaves behind.
+  const churn = (from: number, to: number) => {
+    for (let i = from; i < to; i++)
+      jobSchedule({
+        schedule: `${i % 60} ${Math.floor(i / 60) % 24} ${1 + Math.floor(i / 1440)} * *`,
+      });
+  };
+  const active = { schedule: "41 6 * * *", timeZone: "UTC" };
+  const parsed = jobSchedule(active);
+  expect(parsed).toBeDefined();
+  for (let i = 0; i < 2000; i += 100) {
+    churn(i, i + 100);
+    expect(jobSchedule(active)).toBe(parsed);
+  }
+  expect(
+    nextJobRun(active, Date.UTC(2026, 0, 1), { timeZone: () => "UTC" }),
+  ).toBe(Date.UTC(2026, 0, 1, 6, 41));
+  // Once nothing asks for it, it goes the way of the others, and is parsed again the same if a plan returns to it.
+  churn(2000, 4000);
+  const again = jobSchedule(active);
+  expect(again).not.toBe(parsed);
+  expect(again).toEqual(parsed);
+});
+
+test("an expression this rigd cannot read stays nothing, however many schedules passed since it was first asked for", () => {
+  const unreadable = { schedule: "every so often" };
+  expect(jobSchedule(unreadable)).toBeUndefined();
+  for (let i = 0; i < 2000; i++)
+    jobSchedule({ schedule: `${i % 60} ${Math.floor(i / 60) % 24} 2 * *` });
+  expect(jobSchedule(unreadable)).toBeUndefined();
 });

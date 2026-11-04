@@ -2,6 +2,7 @@ import type { PlanJob } from "../config/types";
 import { placed, type Clock } from "../domain/clock";
 import { nextRun, parseCron, type CronSchedule } from "../domain/cron";
 import { diagnosticErrorCode } from "../domain/errors";
+import { keepRecent } from "../domain/recent-entries";
 import type {
   JobRecord,
   JobRun,
@@ -123,16 +124,21 @@ export function jobTimeZone(
 ): string {
   return job.timeZone ?? clock.timeZone();
 }
+/** How many parsed schedules are kept, the most recently used: more than the jobs a Mac runs, and no more however many plans
+ * came and went. */
+const KEPT_SCHEDULES = 1024;
 const schedules = new Map<string, CronSchedule | undefined>();
 /** The parsed schedule of `job`; undefined for an expression this rigd cannot read (a plan validated by another version). */
 export function jobSchedule(
   job: Pick<PlanJob, "schedule">,
 ): CronSchedule | undefined {
+  let schedule = schedules.get(job.schedule);
   if (!schedules.has(job.schedule)) {
     const parsed = parseCron(job.schedule);
-    schedules.set(job.schedule, "problem" in parsed ? undefined : parsed);
+    schedule = "problem" in parsed ? undefined : parsed;
   }
-  return schedules.get(job.schedule);
+  keepRecent(schedules, job.schedule, schedule, KEPT_SCHEDULES);
+  return schedule;
 }
 /** When `job` next runs after `after` (Unix milliseconds) that is not one of the times `handled` (`handledTimes`), or
  * undefined when its schedule names no such time. The scheduler and status both count a job's next run this way. */

@@ -1334,6 +1334,47 @@ test("an HTTP health probe treats a redirect as ready, reports a failed status, 
   }
 });
 
+test("health evidence remembered for Targets long gone is let go, while a live Service's still holds each change to one line", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-health-churn-"));
+  roots.push(root);
+  const adapter = effects(root);
+  const record = target(root);
+  // A Service with neither a check nor a port: it answers at once, without a process, and its evidence never changes.
+  const check = (id: string, name: string) =>
+    adapter.observations.health(
+      { ...record, id },
+      {
+        name,
+        kind: "managed" as const,
+        command: "serve",
+        readyTimeout: 1,
+        env: {},
+        dependsOn: [],
+      },
+      new AbortController().signal,
+    );
+  const lines = async (name: string) =>
+    (await readFile(join(record.logRoot, "target.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .filter((line) => JSON.parse(line).component === name).length;
+  const destroyed = 1100;
+  // Each Preview that comes and goes leaves its evidence; the working copy's Service is checked throughout.
+  for (let i = 0; i < destroyed; i++) {
+    if (i % 100 === 0) await check("working", "live");
+    await check(`preview-${i}`, "gone");
+  }
+  expect(await lines("live")).toBe(1);
+  expect(await lines("gone")).toBe(destroyed);
+  // The newest is still remembered; the oldest was let go, so asked again it writes its evidence once more.
+  await check(`preview-${destroyed - 1}`, "gone");
+  expect(await lines("gone")).toBe(destroyed);
+  await check("preview-0", "gone");
+  expect(await lines("gone")).toBe(destroyed + 1);
+  await check("preview-0", "gone");
+  expect(await lines("gone")).toBe(destroyed + 1);
+}, 60_000);
+
 test("a failed health command's output has every env-file value redacted before it is cut to one log line", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-redact-"));
   const files = await mkdtemp(join(tmpdir(), "rig-health-env-"));

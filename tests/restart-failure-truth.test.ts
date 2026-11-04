@@ -601,6 +601,71 @@ test("a stable Target whose start after a Host restart fails keeps no path to a 
   }
 });
 
+/** A stable Service left running through a new login, whose start then fails while its state is `first`; `settle` makes its
+ * state known again. */
+async function failedStartWhileUncertain(first: "unknown" | "unanswered") {
+  const f = await fixture();
+  await f.command({ action: "deploy", project: "shop", target: "stable" });
+  const pids = await f.pids("stable");
+  f.withholds.count = 0;
+  f.host.session = { ...f.host.session, login: "100099" };
+  f.fail.prepare = () =>
+    new RigError("PREPARE_FAILED", "The disk said no.", "Check it.");
+  const observe = f.deps.observations.process;
+  const deadline = f.deps.observationDeadline;
+  f.deps.observations.process = async () =>
+    first === "unknown" ? { state: "unknown" } : new Promise(() => {});
+  if (first === "unanswered")
+    f.deps.observationDeadline = {
+      schedule(_ms, expiry) {
+        setTimeout(expiry, 0);
+        return () => {};
+      },
+    };
+  f.reopen();
+  await f.reconcile();
+  expect(await f.pids("stable")).toEqual(pids);
+  expect(f.withholds.count).toBe(0);
+  expect(await f.livePorts("stable")).toEqual([WEB]);
+  return {
+    f,
+    pids,
+    settle() {
+      f.deps.observations.process = observe;
+      f.deps.observationDeadline = deadline;
+      delete f.fail.prepare;
+    },
+  };
+}
+
+test.each(["unknown", "unanswered"] as const)(
+  "a stable Service %s when its start fails after a new login keeps its paths until a pass sees it stopped",
+  async (first) => {
+    const { f, settle } = await failedStartWhileUncertain(first);
+    // Still uncertain: the next pass looks again and leaves the paths as they are.
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+
+    settle();
+    f.processes.delete(`${(await f.target("stable")).id}:web`);
+    await f.supervise();
+    expect(await f.livePorts("stable")).toEqual([]);
+  },
+);
+
+test.each(["unknown", "unanswered"] as const)(
+  "a stable Service %s when its start fails after a new login, then seen running, keeps its paths",
+  async (first) => {
+    const { f, pids, settle } = await failedStartWhileUncertain(first);
+    settle();
+    await f.supervise();
+    await f.supervise();
+    expect(await f.pids("stable")).toEqual(pids);
+    expect(f.withholds.count).toBe(0);
+    expect(await f.livePorts("stable")).toEqual([WEB]);
+  },
+);
+
 test("while a stable Target's route cannot be withheld its failed start after a Host restart is not recorded, each pass tries again, and nothing starts", async () => {
   const f = await fixture();
   await f.command({ action: "deploy", project: "shop", target: "stable" });

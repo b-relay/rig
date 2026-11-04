@@ -563,8 +563,9 @@ export async function recordFailedStart(
   error: unknown,
   deps: Deps,
   alongside?: (state: RuntimeState) => void,
-  /** Told the Services about to be recorded, before they are; nothing is saved when it fails. */
-  beforeSaving?: (services: string[]) => Promise<void>,
+  /** Told the Services about to be recorded, and those of them seen stopped, before they are; nothing is saved when it
+   * fails. */
+  beforeSaving?: (services: string[], stopped: string[]) => Promise<void>,
 ): Promise<boolean> {
   const errorCode = diagnosticErrorCode(error);
   return await settleStopped(
@@ -628,8 +629,8 @@ export async function withholdStoppedServices(
 
 /** Gives each managed Service of `target` not seen running the outcome `decide` returns for it, clearing any scheduled
  * retry; `decide` returning nothing leaves the record alone. A Service whose observation does not answer within the status
- * budget counts as not running. `beforeSaving` is told the Services about to get an outcome, and nothing is saved when it
- * fails. The outcomes and whatever `alongside` records are saved in one write, so all of it is saved or none is. Returns
+ * budget counts as not running. `beforeSaving` is told the Services about to get an outcome, and those of them seen stopped
+ * rather than only not seen running, and nothing is saved when it fails. The outcomes and whatever `alongside` records are saved in one write, so all of it is saved or none is. Returns
  * whether it was saved; a failure goes to the diagnostic log. */
 async function settleStopped(
   target: TargetRecord,
@@ -639,9 +640,10 @@ async function settleStopped(
     run: ServiceRun | undefined,
   ) => ServiceOutcome | undefined,
   alongside?: (state: RuntimeState) => void,
-  beforeSaving?: (services: string[]) => Promise<void>,
+  beforeSaving?: (services: string[], stopped: string[]) => Promise<void>,
 ): Promise<boolean> {
   const runs: Record<string, ServiceRun> = {};
+  const stopped: string[] = [];
   try {
     for (const component of target.plan.components) {
       if (component.kind !== "managed") continue;
@@ -666,8 +668,11 @@ async function settleStopped(
         attempts: [],
       };
       runs[service] = { ...rest, outcome };
+      if (observed?.kind === "completed" && observed.value.state === "stopped")
+        stopped.push(service);
     }
-    if (Object.keys(runs).length) await beforeSaving?.(Object.keys(runs));
+    if (Object.keys(runs).length)
+      await beforeSaving?.(Object.keys(runs), stopped);
     if (Object.keys(runs).length || alongside)
       await saveRuns(target, runs, deps, alongside);
     return true;

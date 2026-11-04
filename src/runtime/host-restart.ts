@@ -359,9 +359,10 @@ export type HostRestartStart =
  * each Service not running as not started (see `recordFailedStart`), the Target as settled for the restart, and the start's
  * one Activity entry. All of it is saved or none is, so a later daemon never starts again a Target whose failure it can
  * read, and never finds a failure recorded without its entry. The Caddy that came back with the Host still reaches the
- * ports of those Services, however early the start failed (and a start's rollback puts its route back as it was), so their
- * paths are withheld first; while they cannot be, nothing is saved and the caller tries again. Returns whether it was saved;
- * a failure goes to the diagnostic log. */
+ * ports of those Services, however early the start failed (and a start's rollback puts its route back as it was), so the
+ * paths of those seen stopped are withheld first; while they cannot be, nothing is saved and the caller tries again. One
+ * only not seen running may have survived, so its paths wait for a later pass to see it stopped (`withholdStoppedServices`).
+ * Returns whether it was saved; a failure goes to the diagnostic log. */
 export async function recordFailedAfterHostRestart(
   target: TargetRecord,
   error: unknown,
@@ -397,7 +398,7 @@ export async function recordFailedAfterHostRestart(
         }`,
       });
     },
-    (services) => deps.lifecycle.withhold(target, services),
+    (_services, stopped) => deps.lifecycle.withhold(target, stopped),
   );
 }
 

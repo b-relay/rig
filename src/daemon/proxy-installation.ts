@@ -7,6 +7,7 @@ import { inspectProxyToken } from "../adapters/proxy-token";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
 import {
   bareHostname,
+  checkProxyRoot,
   hostRoutes,
   proxyPaths,
   redactSecrets,
@@ -252,6 +253,7 @@ export function createProxyInstallation(
       return warnings;
     },
     async preflight() {
+      checkProxyRoot(paths);
       const wanted = await settings();
       // A proxy.routes hostname or a dashboard.domain a Target already serves is refused while the running rigd still serves
       // as before, rather than by Caddy after the restart, when the new dashboard would expect a hostname Caddy kept from it.

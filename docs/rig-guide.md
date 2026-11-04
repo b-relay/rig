@@ -22,7 +22,9 @@ Source development and tests must set an isolated `RIG_ROOT`; do not install
 into the real Host to try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
 `~/.rig`, and a relative value makes `rig` and `rigd` exit
 with a usage error before they create or read anything, rather than rooting
-Rig in the current working directory. Every command writes under the root (at
+Rig in the current working directory. Rig's Caddy needs a root whose path has
+only letters, digits and `. _ @ + / -`: with the `proxy` section on, `rigd
+install` refuses any other (`PROXY_PATH`) before anything starts. Every command writes under the root (at
 least its diagnostic log), so a root that is a file, or a directory the user
 cannot write, is named by path before anything runs (`The Rig root /x is not
 writable.` with a `chmod u+rwx` hint) instead of surfacing as a generic
@@ -2210,7 +2212,9 @@ ones it recorded last time:
   `rigd` ("restarted after reboot" or "restarted after login"). A stable Target
   that fails to start is reported `failed` (every Service the start left stopped
   is, and none is retried automatically), stays meant to run, and waits for
-  `rig up`.
+  `rig up`. The paths of those Services answer 503 instead of reaching their
+  ports until then, and while they cannot be withheld (the proxy does not answer
+  yet) `rigd` tries again every second before it records the failure.
 - **The working Target and Previews** stay stopped, even under
   `restart: always`. `rig status` reports their Services `stopped`, with
   `exit: unknown` and a reason that says they stopped when the Mac restarted

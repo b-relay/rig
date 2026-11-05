@@ -1680,6 +1680,18 @@ moment. The "unresolved deployment transition; run down" warning is reserved
 for a transition that no live operation owns, such as one interrupted by a
 daemon crash.
 
+Until `rig down` settles such a transition, `rigd` starts, restarts and
+health-checks none of that Target's Services, and its paths stay as they were.
+Each second it does one thing: it looks at the Services behind the paths still
+live, under both the plan the deploy was moving to and the one it was moving
+from, and withholds the paths of those seen stopped, so they answer 503 instead
+of reaching a port any program may bind. A Service whose state cannot be
+established keeps its paths and is looked at again; the diagnostic log records
+`routes-unchecked`, naming it, and `routes-checked` once none is left. A proxy
+that refuses is reported by `rig doctor` and tried again. This holds after a Mac
+restart too, and whatever the Target is meant to do. A Target with no live paths
+is not looked at.
+
 Status shares one two-second budget across concurrent observations. Services
 without a healthcheck are running, not healthy; uncertain observations
 are unknown. A Service with a healthcheck shows the result of `rigd`'s last
@@ -2274,6 +2286,9 @@ ones it recorded last time:
   one whose earlier exit had already left it stopped (a clean exit under
   `on-failure`, say) keeps that status.
 - Targets meant to be stopped stay stopped.
+- A Target with a deploy that was interrupted starts nothing until `rig down`
+  settles it. The paths of its Services seen stopped are withheld (see
+  [Status, List, Doctor](#status-list-doctor)).
 
 On stable, working and Preview Targets alike, a Service `rigd` could not see
 either running or stopped as it acts on the restart (its state is unknown, or the

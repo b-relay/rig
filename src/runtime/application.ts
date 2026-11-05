@@ -58,6 +58,7 @@ import {
   intendRunning,
   intendStopped,
   superviseTarget,
+  withholdRecoveryPaths,
   withholdStoppedServices,
   supervisionScope,
   type RestartMarks,
@@ -2292,10 +2293,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       );
     });
   }
-  /** One pass over the recorded Targets. Both passes supervise the Targets meant to run; only `reconcile`, the daemon's first
-   * pass, also re-stops the Targets meant to be stopped and reclaims orphaned checkpoints. Each Target is worked on under its
-   * own lease, side by side with the others. `supervise` skips a Target another Operation holds: that Operation owns it now
-   * and the next pass looks again. `reconcile` holds the whole Host while it reclaims checkpoints, then hands each Target its
+  /** One pass over the recorded Targets. Both passes supervise the Targets meant to run and check the paths of an unresolved
+   * recovery; only `reconcile`, the daemon's first pass, also re-stops the Targets meant to be stopped and reclaims orphaned
+   * checkpoints. Each Target is worked on under its own lease, side by side with the others. `supervise` skips a Target
+   * another Operation holds: that Operation owns it now and the next pass looks again. `reconcile` holds the whole Host while it reclaims checkpoints, then hands each Target its
    * own lease before anything queued behind it runs. */
   async function pass(
     requested: "reconcile" | "supervise",
@@ -2380,14 +2381,21 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
           !target.destructionPending &&
           (action === "reconcile" || target.desired === "running"),
       );
-      // A Target gone, stopped or in a transition is not supervised: a failure about it no longer stands.
       const supervised = new Set(eligible.map((target) => target.id));
-      supervision.only((work) => work === STATE_WORK || supervised.has(work));
-      // The first pass also takes each Target in a transition, for the one thing it does there: stop a build left running.
+      // An unresolved recovery is not supervised, but every pass takes it for one duty, whatever it is meant to do: withholding
+      // the paths of its Services that stopped (`withholdRecoveryPaths`).
+      const recovering = state.targets.filter((target) => target.recovery);
+      const reported = new Set(recovering.map((target) => target.id));
+      // A Target gone, stopped or in another transition is not worked on: a failure about it no longer stands.
+      supervision.only(
+        (work) =>
+          work === STATE_WORK || supervised.has(work) || reported.has(work),
+      );
+      // The first pass also takes each Target in a transition, to stop a build left running.
       const passed =
         action === "reconcile"
           ? [...eligible, ...state.targets.filter((t) => !supervised.has(t.id))]
-          : eligible;
+          : [...eligible, ...recovering];
       const parts = passed.map((target) => ({
         id: `${action}:${target.id}`,
         scopes: [targetScope(target.projectId, target)],
@@ -2567,7 +2575,19 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             if (isStopDetached(error)) throw error;
             await failed(error, name);
           });
-      if (target.recovery || target.destructionPending) return undefined;
+      // A proxy that refuses is reported, and it and a Service whose state cannot be established are tried again by the next
+      // pass.
+      if (target.recovery) {
+        await withholdRecoveryPaths(target, {
+          ...deps,
+          lifecycle: observing,
+        }).then(
+          (uncertain) => noteRoutesUnchecked(target, action, uncertain),
+          (error: unknown) => failed(error, name),
+        );
+        return undefined;
+      }
+      if (target.destructionPending) return undefined;
       // While it starts a Service again the pass is starting, not observing, so a command queued behind it says so.
       const lifecycle: TargetLifecycle = {
         ...observing,

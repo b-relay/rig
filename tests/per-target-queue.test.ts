@@ -206,6 +206,10 @@ async function fixture(host: Record<string, unknown> = {}) {
     lifecycle: {
       async checkRoute() {},
       async withhold() {},
+      async livePorts() {
+        return new Set<number>();
+      },
+      async withholdPorts() {},
       async releaseRoute() {},
       async withdrawRoutes() {
         return { hostnames: [], async restore() {} };

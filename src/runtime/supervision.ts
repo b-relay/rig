@@ -638,6 +638,66 @@ export async function withholdStoppedServices(
     );
 }
 
+/** A pass's one duty for a Target whose recovery is unresolved (ADR 0020): nothing supervises it until `rig down`, so the
+ * paths of its Services that exit go here. The route may be either recorded plan's, and both plans' processes run under one
+ * set of process keys, so this looks only at the ports live now and at the Services either plan routes to them, whatever
+ * their records say. A port goes once every Service behind it is seen stopped, so a path never goes for a Service that may
+ * still serve it. Starts nothing and records nothing. Resolves the Services whose state could not be established (unknown,
+ * no answer within the status budget, or a failed observation), which decide nothing, for a later call. Fails as reading or
+ * withholding a route fails. */
+export async function withholdRecoveryPaths(
+  target: TargetRecord,
+  deps: Pick<
+    Deps,
+    "lifecycle" | "observations" | "observationBudgetMs" | "observationDeadline"
+  >,
+): Promise<string[]> {
+  if (!target.recovery) return [];
+  const live = await deps.lifecycle.livePorts(target);
+  if (!live.size) return [];
+  const owners = new Map<number, Set<string>>();
+  const jobs = new Map<
+    string,
+    (signal: AbortSignal) => Promise<ProcessObservation>
+  >();
+  // The Target's own plan last: a Service in both plans is one process, observed once, as the plan it runs under now.
+  for (const form of [{ ...target, plan: target.recovery.plan }, target])
+    for (const { port, service } of plannedRoutes(form.plan)) {
+      const component = form.plan.components.find(
+        (candidate): candidate is ManagedComponent =>
+          candidate.kind === "managed" && candidate.name === service,
+      );
+      if (!component || !live.has(port)) continue;
+      owners.set(port, (owners.get(port) ?? new Set()).add(service));
+      jobs.set(service, (signal) =>
+        deps.observations.process(form, component, signal),
+      );
+    }
+  const services = [...jobs.keys()];
+  const observed = await boundedObservations(
+    [...jobs.values()],
+    deps.observationBudgetMs,
+    deps.observationDeadline,
+  );
+  const seenAs = (state: ProcessObservation["state"]) =>
+    new Set(
+      services.filter((_service, index) => {
+        const seen = observed[index]!;
+        return seen.kind === "completed" && seen.value.state === state;
+      }),
+    );
+  const [running, stopped] = [seenAs("running"), seenAs("stopped")];
+  const withheld = new Set(
+    [...owners]
+      .filter(([, behind]) => [...behind].every((name) => stopped.has(name)))
+      .map(([port]) => port),
+  );
+  if (withheld.size) await deps.lifecycle.withholdPorts(target, withheld);
+  return services.filter(
+    (service) => !running.has(service) && !stopped.has(service),
+  );
+}
+
 /** Whether `run` makes a pass over its Service return before it withholds the paths of a Service it sees stopped: an outcome
  * already recorded, an operator's stop, used-up attempts, or a health restart still to come. */
 function recordKeepsStopped(run: ServiceRun | undefined): boolean {

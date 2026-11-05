@@ -16,8 +16,8 @@ const real = { ...daemon };
 let answer: ((command: RuntimeCommand) => unknown) | undefined;
 mock.module("../web/server/daemon", () => ({
   ...real,
-  async read(command: RuntimeCommand) {
-    return answer ? answer(command) : real.read(command as never);
+  async read(command: RuntimeCommand, signal?: AbortSignal) {
+    return answer ? answer(command) : real.read(command as never, signal);
   },
 }));
 afterAll(() => {

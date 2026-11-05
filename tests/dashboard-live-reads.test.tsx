@@ -41,8 +41,8 @@ let reading = false;
 let monitored: ((command: RuntimeCommand) => unknown) | undefined;
 mock.module("../web/server/daemon", () => ({
   ...real,
-  async daemon() {
-    return reading ? client : real.daemon();
+  async daemon(root?: string) {
+    return reading ? client : real.daemon(root);
   },
   async read(command: RuntimeCommand, signal?: AbortSignal) {
     if (monitored && command.action === "monitor") return monitored(command);

@@ -166,6 +166,116 @@ test("a Preview created again keeps every incarnation: the running or latest on 
   expect(currentOf([])).toBeUndefined();
 });
 
+test("with the Target's id known, a Preview's current series is known exactly, however the others were sampled", () => {
+  const preview = (
+    targetId: string,
+    average: (number | null)[],
+    live = false,
+  ): ChartSeries => ({
+    key: `target:p:${targetId}`,
+    series: {
+      scope: "target",
+      projectId: "p",
+      project: "pantry",
+      targetId,
+      target: "feature",
+      targetKind: "preview",
+    },
+    ...(live && { now: { cpuPercent: 1, memoryBytes: 1 } }),
+    cpu: { average },
+    memory: { average },
+  });
+  // The earlier Preview is the one sampled later and still reported running; a rule by samples alone would pick it.
+  const earlier = preview("old", [null, null, 9], true);
+  const current = preview("new", [1, null, null]);
+  expect(currentOf([earlier, current], "new")).toBe(current);
+  const shown = (inventory: { name: string; targetId?: string }) =>
+    cardsOf([inventory], [earlier, current], (each) => ({
+      name: each.series.target!,
+    })).map((card) => [card.series?.key, card.incarnation]);
+  expect(shown({ name: "feature", targetId: "new" })).toEqual([
+    ["target:p:new", undefined],
+    ["target:p:old", "earlier"],
+  ]);
+  // Not sampled yet: its card is empty and neither old series is passed off as it, nor numbered as a tie.
+  expect(shown({ name: "feature", targetId: "newest" })).toEqual([
+    [undefined, undefined],
+    ["target:p:old", "earlier"],
+    ["target:p:new", "earlier"],
+  ]);
+  expect(currentOf([earlier, current], "newest")).toBeUndefined();
+});
+
+test("a replacement Preview with other Services and Jobs: what only an earlier one had is earlier, with no Activity of its own", () => {
+  const component = (
+    targetId: string,
+    componentKind: "service" | "job",
+    name: string,
+  ): ChartSeries => ({
+    key: `component:p:${targetId}:${componentKind}:${name}`,
+    series: {
+      scope: "component",
+      projectId: "p",
+      project: "pantry",
+      targetId,
+      target: "feature",
+      targetKind: "preview",
+      componentKind,
+      component: name,
+    },
+    now: { cpuPercent: 1, memoryBytes: 1 },
+    cpu: { average: [1] },
+    memory: { average: [1] },
+  });
+  const cards = cardsOf(
+    [
+      { name: "api", kind: "service" },
+      { name: "sync", kind: "job" },
+    ],
+    [
+      component("old", "service", "web"),
+      component("old", "job", "nightly"),
+      component("new", "service", "api"),
+    ],
+    (each) => ({
+      name: each.series.component!,
+      kind: each.series.componentKind!,
+    }),
+    "new",
+  );
+  expect(
+    cards.map((card) => [
+      card.name,
+      card.series?.series.targetId,
+      card.incarnation,
+    ]),
+  ).toEqual([
+    ["api", "new", undefined],
+    // Named by the Target now, and not sampled yet.
+    ["sync", undefined, undefined],
+    // Only an earlier Preview had these: no empty card says the Target has them now.
+    ["web", "old", "earlier"],
+    ["nightly", "old", "earlier"],
+  ]);
+  const web = cards.find((card) => card.name === "web")!;
+  expect(
+    cardActivity(
+      web,
+      [
+        {
+          id: "op-old",
+          action: "up",
+          outcome: "started",
+          occurredAt: "2026-11-03T00:00:00.000Z",
+          target: "feature",
+          component: { kind: "service", name: "web" },
+        },
+      ],
+      "feature",
+    ),
+  ).toEqual([]);
+});
+
 test("stacked layers keep running totals, treat a silent layer as zero, and leave a gap only where every layer is silent", () => {
   expect(
     stacked([

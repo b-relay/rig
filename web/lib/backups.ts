@@ -1,3 +1,4 @@
+import { refusalText } from "./present";
 import { targetSelector } from "./target";
 import type { JobReport, RuntimeCommand, TargetReport } from "./types";
 import type { BackupReport } from "../../src/daemon/protocol";
@@ -23,12 +24,14 @@ export function backupsOf(
 export function isBackupJob(job: Pick<JobReport, "backup">): boolean {
   return job.backup !== undefined;
 }
-/** Pure: why Restore cannot put `backup` back now, or undefined when it can: not without a restore command, not while
- * a run or restore of the job goes, and not when the backup's directory is gone. */
+/** Pure: why Restore cannot put `backup` back now, or undefined when it can: whatever rigd refuses of the Target now, then
+ * not without a restore command, not while a run or restore of the job goes, and not when the backup's directory is gone. */
 export function restoreBlocked(
   job: Pick<JobReport, "name" | "state" | "backup" | "removed">,
   backup: Pick<BackupView, "missing">,
+  target: Pick<TargetReport, "refusals">,
 ): string | undefined {
+  if (target.refusals?.restore) return refusalText(target.refusals.restore);
   if (job.removed) return "This job is no longer in rig.yaml.";
   if (!job.backup?.restore)
     return `${job.name} has no restore command: add backup.restore to it in rig.yaml.`;

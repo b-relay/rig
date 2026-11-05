@@ -320,6 +320,20 @@ this:
   away end it with exit 0, always after a whole record; rigd failing ends it
   with an error line and exit 1.
 
+`status` and `list` name what they report by stable id: a Project's `id` in
+`list` and `projectId` in `status`, and each Target's `id` in `status`, the same
+`projectId` and `targetId` as `monitor`'s series. A Preview destroyed and created
+again under its name has a new `id`, so its series and its earlier one's can be
+told apart; a Target only `rig.yaml` names yet has none.
+
+`status` also says what `rigd` would refuse as things stand, with the `code`,
+`message` and `hint` the command fails with. `targets[].refusals` is keyed by
+`up`, `restart`, `deploy`, `run` and `restore`; the report's own `refusals` by
+`rename`, `repoint` and `forget`, and is left out of a status narrowed to one
+Target. A command not listed can still fail for what only running it finds out,
+such as a run of the job already going, and the state can change before the command
+runs: `rigd` decides again then.
+
 Compatibility: the fields each read prints are the contract. Fields are added,
 never renamed, retyped or removed within a major version, so a program must
 ignore fields it does not know and treat an optional field as possibly

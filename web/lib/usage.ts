@@ -248,12 +248,16 @@ export interface UsageCard {
   readonly incarnation?: string;
 }
 
-/** Pure: of the series sampled under one name, the current one: the one running now; else the one sampled latest.
- * `undefined` when none was sampled, or when several tie and none can be told current. Every Monitor view picks the
- * current incarnation this way. */
+/** Pure: of the series sampled under one name, the current one. `targetId` is the id of the Target that has the name now:
+ * its series, and none when it was not sampled yet, whatever an earlier Target of that name left. With no such Target (a
+ * destroyed Preview), the one running now; else the one sampled latest; `undefined` when none was sampled, or when
+ * several tie and none can be told current. Every Monitor view picks the current incarnation this way. */
 export function currentOf(
   group: readonly ChartSeries[],
+  targetId?: string,
 ): ChartSeries | undefined {
+  if (targetId !== undefined)
+    return group.find((each) => each.series.targetId === targetId);
   const live = group.filter((each) => each.now);
   const pool = live.length > 0 ? live : group;
   const lastSampled = (each: ChartSeries) =>
@@ -269,17 +273,25 @@ export function currentOf(
 /** Pure: a card per thing the inventory names, in its order, then one per name sampled that it no longer names (a
  * destroyed Preview still in the range). A name sampled under several identities keeps them all: the current one on
  * the name's card and each other on its own card marked `earlier`; when none is current, each on its own card marked
- * `1 of 2` and so on. `identify` names a series as the inventory does. */
+ * `1 of 2` and so on. `identify` names a series as the inventory does. `shownTargetId` is the id of the one Target whose
+ * Components these are, when it exists now: only its series are current, so what only an earlier Target of its name had
+ * is `earlier`, with no card of its own saying the Target has it now. */
 export function cardsOf(
-  inventory: readonly { readonly name: string; readonly kind?: string }[],
+  inventory: readonly {
+    readonly name: string;
+    readonly kind?: string;
+    /** The Target that has the name now, whose series is the current one. */
+    readonly targetId?: string;
+  }[],
   sampled: readonly ChartSeries[],
   identify: (series: ChartSeries) => { name: string; kind?: string },
+  shownTargetId?: string,
 ): UsageCard[] {
   const idOf = (each: { name: string; kind?: string }) =>
     `${each.kind ?? ""}:${each.name}`;
   const groups = new Map<
     string,
-    { name: string; kind?: string; series: ChartSeries[] }
+    { name: string; kind?: string; targetId?: string; series: ChartSeries[] }
   >();
   for (const each of inventory) groups.set(idOf(each), { ...each, series: [] });
   for (const each of sampled) {
@@ -291,16 +303,20 @@ export function cardsOf(
   }
   return [...groups.entries()].flatMap(([id, group]): UsageCard[] => {
     const base = { name: group.name, ...(group.kind && { kind: group.kind }) };
-    const current = currentOf(group.series);
-    if (group.series.length > 1 && !current)
+    const targetId = group.targetId ?? shownTargetId;
+    const current = currentOf(group.series, targetId);
+    if (group.series.length > 1 && !current && targetId === undefined)
       return group.series.map((series, index) => ({
         ...base,
         key: series.key,
         series,
         incarnation: `${index + 1} of ${group.series.length}`,
       }));
+    const listed = inventory.some((each) => idOf(each) === id);
     return [
-      { ...base, key: id, ...(current && { series: current }) },
+      ...(current || listed || targetId === undefined
+        ? [{ ...base, key: id, ...(current && { series: current }) }]
+        : []),
       ...group.series
         .filter((series) => series !== current)
         .map((series) => ({

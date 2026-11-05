@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   faviconCache,
   faviconSource,
+  iconSourceCache,
   imageType,
   isLoopbackUrl,
   projectIconResponse,
@@ -178,6 +179,152 @@ describe("favicon cache", () => {
     advance(2000);
     await icons.get(source(5));
     expect(calls).toHaveLength(2);
+  });
+  test("lets go of expired answers, found or not, without their sources being asked for again", async () => {
+    const { icons, advance } = setup({
+      [source(1).url]: new Response(PNG),
+      [source(3).url]: new Response(PNG),
+    });
+    await icons.get(source(1));
+    await icons.get(source(2));
+    expect(icons.retained()).toEqual({ entries: 2, bytes: PNG.byteLength });
+    // A source replaced by a new port: the old one is never asked for again.
+    advance(2000);
+    await icons.get(source(3));
+    expect(icons.retained()).toEqual({ entries: 1, bytes: PNG.byteLength });
+  });
+  test("an expired answer goes when a fresh one is served, too", async () => {
+    const { icons, calls, advance } = setup({
+      [source(1).url]: new Response(PNG),
+      [source(2).url]: new Response(PNG),
+    });
+    await icons.get(source(1));
+    advance(600);
+    await icons.get(source(2));
+    advance(600);
+    await icons.get(source(2));
+    expect(calls).toHaveLength(2);
+    expect(icons.retained()).toEqual({ entries: 1, bytes: PNG.byteLength });
+  });
+  test("holds the bytes of the most recent icons within its budget, however many sources it has read", async () => {
+    let now = 0;
+    const calls: string[] = [];
+    const large = new Uint8Array(100_000);
+    large.set(PNG);
+    const icons = faviconCache({
+      now: () => now,
+      fetch: async (url) => {
+        calls.push(url);
+        return new Response(large);
+      },
+    });
+    for (let port = 1; port <= 150; port++) {
+      expect((await icons.get(source(port)))?.body.byteLength).toBe(100_000);
+      now += 1;
+    }
+    expect(icons.retained().bytes).toBe(10_000_000);
+    expect(icons.retained().entries).toBe(100);
+    // The newest is reused; the oldest is read again.
+    await icons.get(source(150));
+    expect(calls).toHaveLength(150);
+    await icons.get(source(1));
+    expect(calls).toHaveLength(151);
+    expect(icons.retained().bytes).toBe(10_000_000);
+  });
+  test("two reads of one source at once hold only the later icon's bytes, which it reuses and later lets go", async () => {
+    let now = 0;
+    const answers: ((response: Response) => void)[] = [];
+    const icons = faviconCache({
+      now: () => now,
+      ttlMs: 1000,
+      fetch: (url) =>
+        url === source(1).url
+          ? new Promise((resolve) => answers.push(resolve))
+          : Promise.resolve(new Response(null, { status: 404 })),
+    });
+    const sized = (size: number) => {
+      const body = new Uint8Array(size);
+      body.set(PNG);
+      return new Response(body);
+    };
+    const first = icons.get(source(1));
+    const second = icons.get(source(1));
+    expect(answers).toHaveLength(2);
+    answers[0]!(sized(1_000));
+    await first;
+    expect(icons.retained()).toEqual({ entries: 1, bytes: 1_000 });
+    answers[1]!(sized(3_000));
+    await second;
+    expect(icons.retained()).toEqual({ entries: 1, bytes: 3_000 });
+    expect((await icons.get(source(1)))?.body.byteLength).toBe(3_000);
+    expect(answers).toHaveLength(2);
+    now += 2000;
+    await icons.get(source(2));
+    expect(icons.retained()).toEqual({ entries: 1, bytes: 0 });
+  });
+  test("holds a bounded number of answers when no source has an icon, and still reuses the recent ones", async () => {
+    const { icons, calls } = setup({});
+    for (let port = 1; port <= 1000; port++) await icons.get(source(port));
+    expect(icons.retained()).toEqual({ entries: 256, bytes: 0 });
+    await icons.get(source(1000));
+    expect(calls).toHaveLength(1000);
+    await icons.get(source(1));
+    expect(calls).toHaveLength(1001);
+  });
+});
+
+describe("project icon sources", () => {
+  const found: IconSource = {
+    url: "http://127.0.0.1:4000/favicon.ico",
+    host: "pantry.test",
+  };
+  const setup = () => {
+    let now = 0;
+    const rigd = new Map<string, IconSource>();
+    const asked: string[] = [];
+    const sources = iconSourceCache({
+      now: () => now,
+      read: async (project) => {
+        asked.push(project);
+        return rigd.get(project);
+      },
+    });
+    return { sources, rigd, asked, advance: (ms: number) => (now += ms) };
+  };
+  test("keeps an answer, found or not, for a minute, so a page of icons is not one status read each", async () => {
+    const { sources, rigd, asked, advance } = setup();
+    rigd.set("pantry", found);
+    expect(await sources.get("pantry")).toEqual(found);
+    expect(await sources.get("quill")).toBeUndefined();
+    advance(59_000);
+    expect(await sources.get("pantry")).toEqual(found);
+    expect(await sources.get("quill")).toBeUndefined();
+    expect(asked).toEqual(["pantry", "quill"]);
+    advance(2_000);
+    expect(await sources.get("pantry")).toEqual(found);
+    expect(asked).toEqual(["pantry", "quill", "pantry"]);
+  });
+  test("hundreds of unknown names leave a bounded cache, gone once expired, while a current Project still gets its source", async () => {
+    const { sources, rigd, advance } = setup();
+    rigd.set("pantry", found);
+    for (let i = 0; i < 500; i++) await sources.get(`unknown-${i}`);
+    expect(sources.retained().entries).toBe(256);
+    advance(61_000);
+    expect(await sources.get("pantry")).toEqual(found);
+    expect(sources.retained().entries).toBe(1);
+  });
+  test("a Project forgotten and made again gets its new source once the old answers expire", async () => {
+    const { sources, rigd, advance } = setup();
+    rigd.set("pantry", found);
+    await sources.get("pantry");
+    rigd.delete("pantry");
+    advance(61_000);
+    expect(await sources.get("pantry")).toBeUndefined();
+    const moved = { ...found, url: "http://127.0.0.1:4100/favicon.ico" };
+    rigd.set("pantry", moved);
+    advance(61_000);
+    expect(await sources.get("pantry")).toEqual(moved);
+    expect(sources.retained().entries).toBe(1);
   });
 });
 

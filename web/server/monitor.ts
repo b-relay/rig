@@ -23,10 +23,13 @@ export interface ProjectMonitorView {
   readonly targets: readonly ChipTarget[];
   /** The Target shown, by name, or `all`. */
   readonly target: string;
+  /** The id of the Target shown, when it exists now. */
+  readonly targetId?: string;
   /** The Target's Services and Jobs, or with `all` every Target: what gets a card before it is sampled. */
   readonly inventory: readonly {
     readonly name: string;
     readonly kind?: string;
+    readonly targetId?: string;
   }[];
   /** What all Targets together use now, worded. */
   readonly allDetail?: string;
@@ -69,12 +72,14 @@ export const projectMonitor = cache(
     const total = currentOf(
       whole?.series.filter((each) => each.series.scope === "project") ?? [],
     );
+    const shownId = current.find((each) => each.name === target)?.id;
     return {
       usage: monitored.ok
         ? { ok: true, value: componentsOf(whole!, target) }
         : monitored,
       targets,
       target,
+      ...(shownId ? { targetId: shownId } : {}),
       inventory: inventoryOf(current, target),
       ...(total?.now && {
         allDetail: `${percent(total.now.cpuPercent)} · ${bytes(total.now.memoryBytes)}`,
@@ -96,7 +101,10 @@ function chipTargets(
     (each) => each.series.target!,
   );
   const now = new Map(
-    [...byName].map(([name, group]) => [name, currentOf(group)?.now]),
+    [...byName].map(([name, group]) => [
+      name,
+      currentOf(group, current.find((target) => target.name === name)?.id)?.now,
+    ]),
   );
   const names = [
     ...current.map((target) => target.name),
@@ -123,8 +131,12 @@ function chipTargets(
 function inventoryOf(
   current: ProjectStatusReport["targets"],
   target: string,
-): { name: string; kind?: string }[] {
-  if (target === "all") return current.map((each) => ({ name: each.name }));
+): { name: string; kind?: string; targetId?: string }[] {
+  if (target === "all")
+    return current.map((each) => ({
+      name: each.name,
+      ...(each.id ? { targetId: each.id } : {}),
+    }));
   const found = current.find((each) => each.name === target);
   return [
     ...(found?.components ?? [])

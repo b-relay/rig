@@ -1,27 +1,21 @@
 import { dirname, join } from "node:path";
 import type { RuntimeCommand } from "../daemon/protocol";
-import type { ProjectRecord, TargetRecord } from "../domain/runtime";
+import type { ProjectStatusReport } from "../domain/project-status";
+import type { JobRecord, ProjectRecord, TargetRecord } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
 import { rigCommand } from "../domain/rig-command";
 import { shellWord } from "../domain/target-selector";
 import { RigError, failureCauses, failureReason } from "../domain/errors";
-import { observeTargets } from "./status";
+import { observeTargets, type TargetReport } from "./status";
 import { keepPublishedNames, planTarget } from "./targets";
 import { renameProject } from "./rename";
+import { refusalOf } from "./target-refusals";
 /** A registration changes only while nothing of the Project runs, is meant to run, or is mid-recovery. */
 async function assertTargetsStopped(
   targets: TargetRecord[],
   deps: RuntimeDependencies,
 ): Promise<void> {
   assertRecordedStopped(targets);
-  // A job run may outlive its Target's Services, as after a deploy; the Project is active until it ends.
-  if (
-    (await deps.store.read()).jobs?.some(
-      (record) =>
-        record.running && targets.some((target) => target.id === record.target),
-    )
-  )
-    throw projectActive();
   const reports = await observeTargets(
     targets,
     deps.observations,
@@ -29,36 +23,102 @@ async function assertTargetsStopped(
     deps.observationDeadline,
     deps.healthResults,
   );
-  if (
-    reports.some((t) =>
-      t.components.some(
-        (c) => c.kind === "managed" && !["stopped", "failed"].includes(c.state),
-      ),
-    )
-  )
-    throw projectActive();
+  assertObservedStopped(targets, (await deps.store.read()).jobs, reports);
 }
 /** Rejects PROJECT_ACTIVE when a Target is recorded as meant to run or mid-transition. Reads the records only, so a
  * registration change can refuse at once instead of waiting for the Project's operations to finish. */
 export function assertRecordedStopped(
   targets: readonly Pick<
     TargetRecord,
-    "desired" | "recovery" | "destructionPending"
+    "name" | "desired" | "recovery" | "destructionPending"
   >[],
 ): void {
-  if (
-    targets.some(
-      (t) => t.desired === "running" || t.recovery || t.destructionPending,
-    )
-  )
-    throw projectActive();
+  const active = targets.filter(
+    (t) => t.desired === "running" || t.recovery || t.destructionPending,
+  );
+  if (active.length) throw projectActive(active.map((t) => t.name));
 }
-function projectActive(): RigError {
+/** Rejects PROJECT_ACTIVE when a job run or a Service of a Target stopped on record still goes: a job run may outlive its
+ * Target's Services, as after a deploy, and the Project is active until it ends. */
+function assertObservedStopped(
+  targets: readonly Pick<TargetRecord, "id" | "name">[],
+  jobs: readonly JobRecord[] | undefined,
+  reports: readonly Pick<TargetReport, "name" | "components">[],
+): void {
+  const active = new Set([
+    ...targets
+      .filter((target) =>
+        jobs?.some((record) => record.running && record.target === target.id),
+      )
+      .map((target) => target.name),
+    ...reports
+      .filter((report) =>
+        report.components.some(
+          (c) =>
+            c.kind === "managed" &&
+            // A status also lists what rig.yaml would add, which nothing runs yet.
+            !["stopped", "failed", "configured"].includes(c.state),
+        ),
+      )
+      .map((report) => report.name),
+  ]);
+  if (active.size) throw projectActive([...active]);
+}
+function projectActive(targets: readonly string[]): RigError {
   return new RigError(
     "PROJECT_ACTIVE",
     "Project registration can only change while every Target is stopped.",
-    "Stop all Targets and retry.",
+    `Stop ${targets.join(", ")} and retry.`,
+    { targets: [...targets] },
   );
+}
+/** A stop records its Target stopped before it waits for the exit, so the record alone does not show one going on. */
+export function projectBusyError(): RigError {
+  return new RigError(
+    "PROJECT_ACTIVE",
+    "Project registration can only change while no Target of the Project has an operation running.",
+    "Wait for the running operations to finish (rig status shows a stopping Target), then retry.",
+  );
+}
+/** Forgetting drops the records, and a Preview owns its data: it must be destroyed first. */
+function assertNoPreviews(
+  project: Pick<ProjectRecord, "name">,
+  targets: readonly TargetRecord[],
+): void {
+  const previews = targets.filter((t) => t.kind === "preview");
+  if (previews.length)
+    throw new RigError(
+      "PROJECT_TARGETS",
+      `Project '${project.name}' still has ${previews.length} Preview${previews.length === 1 ? "" : "s"}: ${previews.map((t) => t.branch ?? t.name).join(", ")}.`,
+      `Destroy ${previews.length === 1 ? "it" : "them"} with ${previews.map((target) => rigCommand("down", { target }, "--destroy")).join(", ")}, then run rig forget ${shellWord(project.name)}.`,
+      { previews: previews.map((t) => t.name) },
+    );
+}
+/** Pure: the registration changes rigd refuses now, by the checks they make, for a status that observed every Target:
+ * `busy` says an Operation holds one of them. Undefined when none is. */
+export function registrationRefusals(
+  project: Pick<ProjectRecord, "name">,
+  targets: readonly TargetRecord[],
+  jobs: readonly JobRecord[] | undefined,
+  reports: readonly Pick<TargetReport, "name" | "components">[],
+  busy: boolean,
+): ProjectStatusReport["refusals"] {
+  try {
+    assertRecordedStopped(targets);
+    if (busy) throw projectBusyError();
+    assertObservedStopped(targets, jobs, reports);
+  } catch (error) {
+    if (!(error instanceof RigError)) throw error;
+    const active = refusalOf(error);
+    return { rename: active, repoint: active, forget: active };
+  }
+  try {
+    assertNoPreviews(project, targets);
+    return undefined;
+  } catch (error) {
+    if (!(error instanceof RigError)) throw error;
+    return { forget: refusalOf(error) };
+  }
 }
 /** Removes the registration and its stopped working and stable records; Previews own data and must be destroyed first.
  * Every route its Targets own is withdrawn first, confirmed in the proxy: a route left behind would be keyed by a Target
@@ -74,14 +134,7 @@ export async function forgetProject(
   deps: RuntimeDependencies,
 ): Promise<string[]> {
   await assertTargetsStopped(targets, deps);
-  const previews = targets.filter((t) => t.kind === "preview");
-  if (previews.length)
-    throw new RigError(
-      "PROJECT_TARGETS",
-      `Project '${project.name}' still has ${previews.length} Preview${previews.length === 1 ? "" : "s"}: ${previews.map((t) => t.branch ?? t.name).join(", ")}.`,
-      `Destroy ${previews.length === 1 ? "it" : "them"} with ${previews.map((target) => rigCommand("down", { target }, "--destroy")).join(", ")}, then run rig forget ${shellWord(project.name)}.`,
-      { previews: previews.map((t) => t.name) },
-    );
+  assertNoPreviews(project, targets);
   // Read before anything changes: a failure here has no route to put back.
   const toolCheckouts = await checkoutsToolsRunFrom(targets, deps);
   let withdrawal;

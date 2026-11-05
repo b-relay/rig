@@ -71,10 +71,19 @@ export interface Run<T> {
   run(command: RuntimeCommand, send?: SendCommand): Promise<T | undefined>;
   clear(): void;
 }
+/** Leaves for `href` by loading it whole. After a command that removes what the page is about (a Preview, a Project), the
+ * router's cache still holds pages and a sidebar that list it for minutes, and refreshing the page first would draw its
+ * not-found page; a load starts clean, so the destination and Back read rigd afresh. */
+export function loadFresh(href: string): void {
+  window.location.assign(href);
+}
 /** One user-started command at a time. Its refusal is kept for display, never thrown; a lost
- * reply is reconciled against rigd's record; every outcome refreshes the page's server data. */
+ * reply is reconciled against rigd's record; every outcome refreshes the page's server data, unless `refresh` says otherwise
+ * for that command and whether it succeeded. */
 export function useRun<T = OperationResult>(
-  options: { refresh?: boolean } = {},
+  options: {
+    refresh?: boolean | ((command: RuntimeCommand, ok: boolean) => boolean);
+  } = {},
 ): Run<T> {
   const router = useRouter();
   const refresh = options.refresh ?? true;
@@ -108,7 +117,8 @@ export function useRun<T = OperationResult>(
       if (turn !== latest.current) return undefined;
       if (outcome.ok) setState({ busy: false, result: outcome.value as T });
       else setState({ busy: false, failure: outcome.failure });
-      if (refresh) router.refresh();
+      if (typeof refresh === "function" ? refresh(sent, outcome.ok) : refresh)
+        router.refresh();
       return outcome.ok ? (outcome.value as T) : undefined;
     },
     [router, refresh],

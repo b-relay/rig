@@ -121,6 +121,7 @@ import {
   failureReason as describedFailure,
   lastOutputLine,
 } from "../domain/errors";
+import { keepRecent } from "../domain/recent-entries";
 import { redactValues } from "../domain/redaction";
 import { rigCommand } from "../domain/rig-command";
 import {
@@ -135,6 +136,7 @@ import { appendTargetLogEntries } from "../providers/target-log";
 import { outputLines } from "../domain/output-records";
 import {
   privateDirectory,
+  privateDirectoryWithin,
   removeFileDurably,
   replacePrivateFile,
 } from "../providers/private-files";
@@ -168,6 +170,8 @@ export interface TargetAdapterOptions {
 export { installedPath };
 /** Budget in seconds for dependency installation; rig.yaml has no setting for it. */
 const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
+/** How many Target Components' health evidence is remembered: more than the Services a Mac runs at once. */
+const KEPT_HEALTH_EVIDENCE = 1024;
 /** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
   options: TargetAdapterOptions,
@@ -382,9 +386,10 @@ export function createTargetEffects(
     componentName: string,
     stream: TargetLogEntry["stream"],
     lines: readonly string[],
+    makeDirectory: typeof privateDirectory = privateDirectory,
   ) => {
     if (!lines.length) return;
-    await privateDirectory(options.root, target.logRoot);
+    await makeDirectory(options.root, target.logRoot);
     await appendTargetLogEntries(
       options.root,
       target.logRoot,
@@ -395,12 +400,16 @@ export function createTargetEffects(
         line,
       })),
       await options.logRetention?.(),
+      makeDirectory,
     );
   };
-  /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. */
+  /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. Only
+   * the most recently checked are kept: a destroyed Preview or a removed Service is never checked again, so its entry goes
+   * in time. */
   const lastHealth = new Map<string, string>();
   /** A check's answer, whatever becomes of its evidence: evidence that cannot be written is said (`unrecorded`) and stays
-   * unrecorded, so the next check writes it. */
+   * unrecorded, so the next check writes it. Evidence whose Target directory is gone is dropped, as is the memory of it: a
+   * check still in flight as its Preview is destroyed must not bring back what was deleted, and no one is left to tell. */
   const health = async (
     component: ManagedComponent,
     target: TargetRecord,
@@ -461,11 +470,18 @@ export function createTargetEffects(
     const key = `${target.id}:${component.name}`;
     if (lastHealth.get(key) !== evidence)
       try {
-        await recordLines(target, component.name, "health", [evidence]);
-        lastHealth.set(key, evidence);
+        await recordLines(
+          target,
+          component.name,
+          "health",
+          [evidence],
+          privateDirectoryWithin,
+        );
       } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return check;
         return { ...check, unrecorded: describedFailure(error) };
       }
+    keepRecent(lastHealth, key, evidence, KEPT_HEALTH_EVIDENCE);
     return check;
   };
   /** Without a check of its own a Service is ready once every port it declares accepts a connection. */

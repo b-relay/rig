@@ -5,7 +5,9 @@ import { projectMatrix } from "@/lib/matrix";
 import { overviewSummary, type ProjectEntry } from "@/lib/overview";
 import type { ListResult } from "@/lib/types";
 import { projectList, projectStatus } from "@/server/status";
+import { projectWork } from "@/server/work";
 import { Empty, Failure, PageHeader } from "@/components/bits";
+import { CompletedOperation } from "@/components/completed-operation";
 import { MatrixLoading, ProjectMatrix } from "@/components/project-matrix";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -13,8 +15,15 @@ import { cn } from "@/lib/utils";
 type Project = ListResult["projects"][number];
 /** The root page: one matrix per Project on this Mac, its Targets across the top and its Services
  * down the side. Each matrix streams in as its Project's status arrives. */
-export default async function OverviewPage() {
-  const list = await projectList();
+export default async function OverviewPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ operation?: string | string[] }>;
+}) {
+  const [list, { operation }] = await Promise.all([
+    projectList(),
+    searchParams,
+  ]);
   const projects = list.ok ? list.value.projects : [];
   return (
     <>
@@ -41,6 +50,7 @@ export default async function OverviewPage() {
           </Button>
         }
       />
+      <CompletedOperation operation={operation} />
       {!list.ok ? <Failure failure={list.failure} /> : null}
       {list.ok && projects.length === 0 ? (
         <Empty icon={FolderPlus} title="No Project yet">
@@ -67,11 +77,12 @@ async function entry(project: Project): Promise<ProjectEntry> {
     : { project, status: await projectStatus(project.name) };
 }
 async function Matrix({ project }: { project: Project }) {
+  const [found, work] = await Promise.all([
+    entry(project),
+    projectWork(project.name),
+  ]);
   return (
-    <ProjectMatrix
-      matrix={projectMatrix(await entry(project))}
-      now={Date.now()}
-    />
+    <ProjectMatrix matrix={projectMatrix(found)} work={work} now={Date.now()} />
   );
 }
 /** The Host in one line: how many Projects and Targets, how many run, and how many need a look. */

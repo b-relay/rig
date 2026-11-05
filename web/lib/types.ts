@@ -37,6 +37,11 @@ export type {
   HostnameSource,
   PointFix,
 } from "../../src/domain/dns-hostnames";
+import type { TargetReport } from "../../src/domain/project-status";
+/** Why rigd refuses a command now, as status reports it: what the command would answer. */
+export type Refusal = NonNullable<
+  NonNullable<TargetReport["refusals"]>["deploy"]
+>;
 import type { DeploymentReport } from "../../src/domain/deployments";
 /** A Project's deploys, oldest first. */
 export interface DeploymentsResult {

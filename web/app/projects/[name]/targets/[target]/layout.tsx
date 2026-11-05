@@ -18,6 +18,7 @@ import { targetWarnings } from "@/lib/present";
 import { projectHref } from "@/lib/target";
 import { settled } from "@/server/settled";
 import { target } from "@/server/target";
+import { projectWork } from "@/server/work";
 import { cn } from "@/lib/utils";
 
 export async function generateMetadata({
@@ -48,6 +49,7 @@ export default async function TargetLayout({
   const { project, target: report, status } = read.value;
   const warnings = targetWarnings(report);
   const stable = status.targets.find((each) => each.kind === "stable");
+  const work = await projectWork(project.name);
   return (
     <>
       <div className="flex flex-col gap-3">
@@ -93,6 +95,7 @@ export default async function TargetLayout({
             <TargetActions
               project={project.name}
               target={report}
+              work={work[report.name]}
               layout="buttons"
               stacked
             />

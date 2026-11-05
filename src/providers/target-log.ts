@@ -22,6 +22,7 @@ export async function appendTargetLogEntries(
   logRoot: string,
   entries: readonly TargetLogEntry[],
   retention: LogRetention = DEFAULT_LOG_RETENTION,
+  makeDirectory: typeof privateDirectory = privateDirectory,
 ): Promise<void> {
   if (!entries.length) return;
   const records = entries.flatMap((entry) =>
@@ -35,18 +36,26 @@ export async function appendTargetLogEntries(
       }),
     ),
   );
-  await appendTargetLog(root, logRoot, records.join("\n") + "\n", retention);
+  await appendTargetLog(
+    root,
+    logRoot,
+    records.join("\n") + "\n",
+    retention,
+    makeDirectory,
+  );
 }
 
 /** Appends whole JSONL lines to a Target's `target.jsonl` in `logRoot`, after ending a record a crash cut short (see
  * `appendLinesInPrivateDirectory`), rotating a full file first (see `rotateLogFile`), and bringing back a log directory
  * that was removed underneath the running component. `logRoot` is a directory under the Rig root `root` that the caller
- * has made with `privateDirectory`: the supervisor as the component starts, the Target effects before they record. */
+ * has made with `privateDirectory`: the supervisor as the component starts, the Target effects before they record.
+ * `makeDirectory` is how it is brought back. */
 export async function appendTargetLog(
   root: string,
   logRoot: string,
   text: string,
   retention: LogRetention = DEFAULT_LOG_RETENTION,
+  makeDirectory: typeof privateDirectory = privateDirectory,
 ): Promise<void> {
   const file = join(logRoot, "target.jsonl");
   await rotateLogFile(file, retention);
@@ -56,7 +65,7 @@ export async function appendTargetLog(
     await appendLinesInPrivateDirectory(file, text);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await privateDirectory(root, logRoot);
+    await makeDirectory(root, logRoot);
     await appendLinesInPrivateDirectory(file, text);
   }
 }

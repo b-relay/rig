@@ -25,6 +25,8 @@ export function LiveRefresh() {
   const [reach, setReach] = useState<Reach>("live");
   const [refreshedAt, setRefreshedAt] = useState<number>();
   const [failedAt, setFailedAt] = useState<number>();
+  // An Operation this page did not start, or lost track of in a reload, is watched as closely as one it did.
+  const [daemonBusy, setDaemonBusy] = useState(false);
   const stamp = useRef<string | undefined>(undefined);
   const redrawnAt = useRef(0);
   useEffect(() => {
@@ -45,6 +47,7 @@ export function LiveRefresh() {
       }
       setReach("live");
       if (pulse === "refused") return redraw();
+      setDaemonBusy(pulse.busy);
       const changed = pulse.stamp !== stamp.current;
       stamp.current = pulse.stamp;
       const stale = Date.now() - redrawnAt.current > AT_LEAST_EVERY_MS;
@@ -52,7 +55,7 @@ export function LiveRefresh() {
     };
     const timer = setInterval(
       () => void tick(),
-      inFlight > 0 ? BUSY_MS : EVERY_MS,
+      inFlight > 0 || daemonBusy ? BUSY_MS : EVERY_MS,
     );
     const visible = () => void tick();
     document.addEventListener("visibilitychange", visible);
@@ -66,7 +69,7 @@ export function LiveRefresh() {
       window.removeEventListener("online", visible);
       window.removeEventListener("offline", offline);
     };
-  }, [router, inFlight]);
+  }, [router, inFlight, daemonBusy]);
   const at = (instant: number) => new Date(instant).toLocaleTimeString();
   if (reach === "offline")
     return (

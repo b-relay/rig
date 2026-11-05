@@ -44,6 +44,7 @@ export default async function ProjectMonitorPage({
           : { initialFailure: usage.failure })}
         range={range}
         target={target}
+        {...(view.targetId ? { targetId: view.targetId } : {})}
         inventory={view.inventory}
         operations={operations}
         now={now}

@@ -866,7 +866,15 @@ _Relationship_: `rigd` also keeps a bounded deploy history beside the records
 the Commit it replaced, outcome, start and end, under its Operation id. The
 `deployments` read answers it; the dashboard's rollback deploys an earlier
 entry's Commit of its Branch again, which is an ordinary deploy that names a
-Commit.
+Commit. Each entry records its Target's id: a Preview destroyed and made again
+under its name is a new Target, so the old one's entries stay listed but are no
+rollback of the new one. A deploy that names a `targetId` the name no longer
+belongs to is refused (`TARGET_REPLACED`).
+
+_Relationship_: What can be done to a Target comes from one rule in `rigd`
+(`src/runtime/target-refusals.ts`): the checks a command makes before it acts are
+what `status` reports as `refusals`, and the dashboard disables what is refused
+and says why rather than working it out again. `rigd` still decides when asked.
 
 ### Restart
 

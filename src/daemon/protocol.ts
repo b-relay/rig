@@ -140,6 +140,9 @@ export const commandSchema = z
     branch: z.string().optional(),
     commit: z.string().optional(),
     deployment: previewName.optional(),
+    /** deploy only: the Target the request was made for, by its `id` in status. A Target that has since been destroyed and
+     * replaced under the same name is refused as TARGET_REPLACED, so a rollback never lands on the replacement. */
+    targetId: z.string().min(1).max(128).optional(),
     domain: z.string().optional(),
     service: z
       .object({
@@ -243,6 +246,8 @@ export const listResultSchema = z
   .object({
     projects: z.array(
       z.object({
+        /** The Project's stable id, the `projectId` of its status and monitor series. */
+        id: z.string().optional(),
         name: z.string(),
         repoPath: z.string(),
         targetCount: z.number().int().nonnegative(),

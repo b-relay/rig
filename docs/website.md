@@ -83,7 +83,20 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   (`web/lib/target-verbs.ts`) behind its menu, and a Start button while it is
   not running: Start, or Restart and Stop, and Deploy latest for the stable
   Target and Previews, which deploys the head of the Production Branch or of
-  the Preview's own Branch after a confirmation.
+  the Preview's own Branch after a confirmation. What `rigd` refuses of a Target
+  as it stands (status's `refusals`: off in `rig.yaml`, an unresolved
+  transition, an unfinished destroy) is disabled with the command's own reason,
+  and Stop and Destroy never are. While `rigd` runs a command on the Target,
+  whoever asked and whatever page sent it, its actions wait and a dot says what
+  runs (from the `queue` read), so a reload neither hides it nor allows a
+  duplicate. Two facts are shown side by side, each labelled: what this page's
+  last command got back, with its full message and hint, until the next command
+  or a reload; and Activity's last action, which a reload keeps. The page cannot
+  know their order, so neither hides the other unless they are the same Operation.
+  A card marks a failure of either. Destroying
+  a Preview, from its card or its own page, loads its Project's page afresh
+  (`?operation=`), which says what Activity recorded of it; a refusal stays
+  where it was.
 - **Monitor** (`/monitor`): this Mac at a glance. The side column holds rigd
   (version, queue, what it is running now, and what Rig itself uses, live),
   Doctor's Host checks (failed checks first with their reason and hint), and
@@ -107,7 +120,9 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   (`pantry / stable`; `working`, a Preview's name, or `all targets`), with the
   Project's Doctor checks (one line on a phone while all pass) and its Activity
   beside the Target's charts and a card per configured Service and Job, sampled
-  or not, each listing its own latest Activity and marking it on its charts. The old `/deploy` address redirects to Deployments, and `/doctor` to
+  or not, each listing its own latest Activity and marking it on its charts. The
+  series of the Target that has the name now is known by its id; one of an earlier
+  Preview of that name has its own card, marked earlier. The old `/deploy` address redirects to Deployments, and `/doctor` to
   Monitor; `/activity` keeps the Project's full history.
 - **A Target** (`/projects/<name>/targets/<target>`): its state, hostname,
   revision and actions, then Overview (each Service's state, cached health,
@@ -124,7 +139,21 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   beside the form that deploys a Branch or a Commit. The deploy that put the
   running Commit in place is marked current; Roll back to this deploys an
   earlier deploy's exact Commit of its Branch again. `rigd` records the history
-  (below); rolling back is an ordinary deploy that names a Commit.
+  (below); rolling back is an ordinary deploy that names a Commit, and the
+  Target it was offered for (`targetId`), so `rigd` refuses it as
+  `TARGET_REPLACED` should a new Preview have taken the name since. Deploys of an
+  earlier Target of that name stay listed and offer nothing, as do a Preview's
+  deploys from before Rig kept Target ids that its read cannot place. It never
+  uses the clock for this: such a deploy gets the Preview's id only through the
+  chain of Commits each deploy replaced back from the one running now, which ends
+  at the Preview's first deploy and at any destroy of its name in Activity.
+- **Settings**: Rename, Repoint and Forget, each disabled with the reason beneath
+  it while `rigd` would refuse it (status's project `refusals`: which Targets
+  run, or for Forget, which Previews remain); `rigd` decides again when asked.
+  While status cannot be read, what `rigd` would refuse is not known: the page
+  shows the failure and offers none of them until a read succeeds.
+  Forgetting loads the overview afresh (`/?operation=`), so neither it, the
+  sidebar nor Back shows the Project from the router's cache.
 - **Environment**: the Project's secrets (below), and on a Target, each
   Service's names with the file that wins and the files it overrides.
 - **Config**: the structured editor (below). `rigd` checks the draft a moment
@@ -133,8 +162,11 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   [ADR 0013](adr/0013-scheduled-jobs.md)) with their schedule and zone, last
   run, outcome and next run, and why one is not scheduled. **Run now** sends
   what `rig run <job> <target>` sends (`action: "run"` with `job`); it is
-  offered unless a run of the job is going or the job was removed by a deploy,
-  and a refusal such as `JOB_RUNNING` shows beneath it.
+  disabled, saying why, for what `rigd` refuses of the Target (status's
+  `refusals`: off, not recorded yet, stopped, incompletely deployed or in a
+  transition), while a run of the job is going, or once a deploy removed the job,
+  and a refusal such as `JOB_RUNNING` shows beneath it. Back up now and Restore
+  follow the same rule.
   A backup job ([ADR 0017](adr/0017-backups.md)) offers **Back up now** in its
   place and lists its backups (from the `backups` read) with time, size and
   whether the schedule or `rig run` made each; **Restore** on a backup asks for
@@ -263,8 +295,11 @@ as `Host`. A source that is not loopback is refused before anything is sent;
 redirects are not followed; the answer must be under 100 kB and its bytes a PNG,
 ICO, JPEG, GIF or WebP (never SVG, whatever its label), and is served with the
 type its bytes show and `nosniff`. Each answer is kept on the server for ten
-minutes and served from the site's own origin behind the same admission as
-every page; anything else is a 404 and the monogram stays.
+minutes, and an expired one is dropped at the next favicon-cache lookup, with at
+most 256 answers and 10 MB of icons held at once, oldest out first; it is served
+from the site's own origin behind the same admission as every page; anything
+else is a 404 and the monogram stays. Which source a Project's icon comes from
+is kept a minute, for at most 256 names, including names with no Project.
 
 ## Lost replies
 
@@ -406,16 +441,16 @@ runs its commands as you.
 
 ## Layout
 
-| Path                  | Responsibility                                                                                                                                                                                                                                                                                                                                                  |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/monitor`, `/activity`, `/proxy`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon; `/usage` and `/log-lines` the polled reads.                                              |
-| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                                                     |
-| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts` and `env.ts` (per-request reads), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server).                                                                       |
-| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `operations.tsx` owns in-flight actions and reconciliation.                                                                                                |
-| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                                                              |
-| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-detail.ts`, `logs.ts`, `usage.ts`, `chart-layout.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
-| `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                                                   |
-| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                                                                                                             |
+| Path                  | Responsibility                                                                                                                                                                                                                                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/monitor`, `/activity`, `/proxy`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon; `/usage` and `/log-lines` the polled reads.                                                                |
+| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                                                                       |
+| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts`, `work.ts` and `env.ts` (per-request reads), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server).                                                                              |
+| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `operations.tsx` owns in-flight actions and reconciliation.                                                                                                                  |
+| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                                                                                |
+| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-work.ts`, `target-detail.ts`, `logs.ts`, `usage.ts`, `chart-layout.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
+| `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                                                                     |
+| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                                                                                                                               |
 
 Radix primitives set inline styles, so the Content-Security-Policy allows
 `style-src 'unsafe-inline'`; scripts need the per-request nonce.

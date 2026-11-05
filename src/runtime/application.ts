@@ -447,7 +447,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       ? new RigError(
           "DAEMON_DRAINING",
           "rigd is prepared for uninstall and refuses new work until that is finished or cancelled.",
-          `Finish it with rigd uninstall, press Cancel uninstall under Uninstall readiness on the dashboard's Monitor page, or clear it by restarting rigd: kill ${process.pid}, then rigd install.`,
+          `Finish it with rigd uninstall, press Cancel uninstall under Uninstall readiness on the dashboard's Monitor page, or clear it by restarting rigd: kill ${process.pid}, wait for process ${process.pid} to exit, then rigd install.`,
         )
       : new RigError(
           "DAEMON_DRAINING",

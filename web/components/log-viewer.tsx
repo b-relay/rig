@@ -55,7 +55,7 @@ const SLOT_CLASS = [
  * component and stream filters narrow what rigd reads; the search box narrows what is shown. The
  * first page came with the server render. The Target and the view live in the URL, and the search in this tab's session
  * storage, so a reload keeps them; a view the first page does not fit reads its own, and shows nothing of the first page
- * meanwhile. */
+ * meanwhile. No line is shown until the browser has looked for its search, so a saved one never flashes what it hides. */
 export function LogViewer({
   project,
   targets,
@@ -80,6 +80,7 @@ export function LogViewer({
   const [follow, setFollow] = useState(opened.follow);
   const [query, setQuery] = useState<LogQuery>(opened.query);
   const [search, setSearch] = useState("");
+  const [searchLookedFor, setSearchLookedFor] = useState(false);
   const [wrap, setWrap] = useState(opened.wrap);
   const [entries, setEntries] = useState<LogEntry[]>(
     opened.lines === FIRST_LOG_LINES && !logFilter(opened.query)
@@ -174,10 +175,12 @@ export function LogViewer({
     next();
     return stop;
   }, [project, selector, lines, follow, filter]);
-  // Storage belongs to the browser, so the server's render has no search and this first effect brings it back.
+  // Storage belongs to the browser, so the server's render cannot know the search; this first effect brings it back, and
+  // keptLogSearch answers even where storage is refused, so the lines always follow.
   useEffect(() => {
     const kept = keptLogSearch(window.location.pathname);
     if (kept) setSearch(kept);
+    setSearchLookedFor(true);
   }, []);
   // Written straight to the address: nothing on the server depends on it, and a router navigation would read the page again.
   useEffect(() => {
@@ -192,8 +195,11 @@ export function LogViewer({
       );
   }, [lines, follow, query, wrap]);
   const shown = useMemo(
-    () => entries.filter((entry) => matchesSearch(entry, search)),
-    [entries, search],
+    () =>
+      searchLookedFor
+        ? entries.filter((entry) => matchesSearch(entry, search))
+        : [],
+    [entries, search, searchLookedFor],
   );
   // Scrolls the log pane only, and only while the reader is at its end; scrolling up holds the view.
   useEffect(() => {
@@ -382,7 +388,7 @@ export function LogViewer({
             <span className="text-muted-foreground">
               This Project has no recorded Targets.
             </span>
-          ) : shown.length === 0 ? (
+          ) : searchLookedFor && shown.length === 0 ? (
             <span className="text-muted-foreground">
               {entries.length
                 ? "No line matches the search."
@@ -454,9 +460,11 @@ export function LogViewer({
         />
         {follow ? "Following" : "Paused"}
         <span className="ml-auto tabular-nums">
-          {search
-            ? `${shown.length} of ${entries.length} lines`
-            : `${entries.length} lines`}
+          {!searchLookedFor
+            ? null
+            : search
+              ? `${shown.length} of ${entries.length} lines`
+              : `${entries.length} lines`}
         </span>
       </div>
     </div>

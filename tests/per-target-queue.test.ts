@@ -742,7 +742,9 @@ test("the queue read says why rigd refuses new work, and each refusal says what 
   await expect(
     f.runtime.command({ action: "up", project: "alpha" }),
   ).rejects.toMatchObject({
-    hint: expect.stringContaining(`kill ${process.pid}, then rigd install`),
+    hint: expect.stringContaining(
+      `kill ${process.pid}, wait for process ${process.pid} to exit, then rigd install`,
+    ),
   });
   await f.runtime.command({ action: "cancel-uninstall" });
   expect(await draining()).toBeUndefined();

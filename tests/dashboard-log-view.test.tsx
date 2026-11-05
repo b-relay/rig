@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { SearchParamsContext } from "next/dist/shared/lib/hooks-client-context.shared-runtime";
 import { LogViewer } from "../web/components/log-viewer";
 import { logViewOf, logViewParams, type LogView } from "../web/lib/logs";
@@ -316,4 +318,66 @@ test("a browser that refuses storage opens with no search and can still search",
   );
   expect(labelled(mounted.tree, "Search the log").props.value).toBe("served");
   expect(textOf(mounted.tree)).not.toContain("other");
+});
+
+/** What the server sends and the browser first paints: the render before any effect runs. */
+function firstPaint(address: string, first: LogsResult) {
+  const router = { refresh() {}, push() {}, replace() {} };
+  return renderToStaticMarkup(
+    <AppRouterContext.Provider value={router as never}>
+      <SearchParamsContext.Provider
+        value={new URLSearchParams(address) as never}
+      >
+        <LogViewer
+          project="probe"
+          targets={TARGETS}
+          selected={undefined}
+          first={first}
+        />
+      </SearchParamsContext.Provider>
+    </AppRouterContext.Provider>,
+  );
+}
+
+test("a saved search never flashes what it hides: the first paint holds no line, and the settled view only what matches", () => {
+  storage.set("rig.logs.search:/projects/probe/logs", "needle");
+  const first = page(["needle line", "UNFILTERED"], "served");
+  const html = firstPaint("paused=1", first);
+  expect(html).not.toContain("UNFILTERED");
+  expect(html).not.toContain("needle line");
+  // Nor does it say something untrue while it waits.
+  expect(html).not.toContain("No lines yet");
+  expect(html).not.toContain("No line matches");
+  const text = textOf(viewer("paused=1", first).tree);
+  expect(text).toContain("needle line");
+  expect(text).not.toContain("UNFILTERED");
+});
+
+test.each([
+  ["no saved search", false],
+  ["storage refused", true],
+])(
+  "with %s, the lines come right after the attempt rather than staying withheld",
+  (_what, refused) => {
+    storageRefused = refused;
+    const first = page(["served line"], "served");
+    expect(firstPaint("paused=1", first)).not.toContain("served line");
+    const text = textOf(viewer("paused=1", first).tree);
+    expect(text).toContain("served line");
+    expect(text).toContain("1 lines");
+  },
+);
+
+test("a following view with a saved search keeps tailing, showing what matches as it arrives", async () => {
+  storage.set("rig.logs.search:/projects/probe/logs", "needle");
+  const mounted = viewer("", page(["needle 1", "other 1"], "c1"));
+  answers = [{ ok: true, value: page(["needle 2", "other 2"], "c2") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads.at(-1)).toMatchObject({ after: "c1" });
+  const text = textOf(mounted.tree);
+  expect(text).toContain("needle 1");
+  expect(text).toContain("needle 2");
+  expect(text).not.toContain("other");
+  expect(text).toContain("2 of 4 lines");
 });

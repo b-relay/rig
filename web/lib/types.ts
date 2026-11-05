@@ -51,6 +51,7 @@ export interface DeploymentsResult {
 export type { DoctorReport };
 
 import type {
+  DrainReason,
   OperationPosition,
   OperationView,
 } from "../../src/domain/operation-progress";
@@ -68,6 +69,8 @@ export interface QueueResult {
   operations?: OperationView[];
   /** Where the Operation the read named stands. */
   operation?: OperationPosition;
+  /** Why rigd refuses new work now; absent while it accepts it. */
+  draining?: DrainReason;
 }
 /** What every lifecycle, deploy and registration command answers with. */
 export interface OperationResult {

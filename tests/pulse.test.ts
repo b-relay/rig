@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { pulseStamp, type PulseReadings } from "../web/lib/pulse";
+import { pulseStamp, redrawDue, type PulseReadings } from "../web/lib/pulse";
 
 const readings = (over: Partial<PulseReadings> = {}): PulseReadings => ({
   health: {
@@ -27,6 +27,49 @@ const readings = (over: Partial<PulseReadings> = {}): PulseReadings => ({
     },
   },
   ...over,
+});
+
+test("the stamp changes when rigd starts or stops refusing new work, so another browser's Monitor learns of it", () => {
+  const open = pulseStamp(readings()).stamp;
+  const prepared = pulseStamp(
+    readings({
+      queue: {
+        ok: true,
+        value: { waiting: 0, draining: "uninstall-prepared" },
+      },
+    }),
+  ).stamp;
+  expect(prepared).not.toBe(open);
+});
+
+test("a pulse says when rigd did not answer, and a page is only redrawn once it does", () => {
+  const down = pulseStamp(
+    readings({
+      health: {
+        ok: false,
+        failure: { code: "DAEMON_MISSING", message: "gone", hint: "start" },
+      },
+    }),
+  );
+  expect(down.down).toBe(true);
+  expect(pulseStamp(readings()).down).toBe(false);
+  // Even a changed stamp, a running Operation and a long spell leave a page rigd cannot read.
+  expect(redrawDue(down, { stamp: "before", inFlight: 1, stale: true })).toBe(
+    false,
+  );
+  const up = pulseStamp(readings());
+  expect(redrawDue(up, { stamp: down.stamp, inFlight: 0, stale: false })).toBe(
+    true,
+  );
+  expect(redrawDue(up, { stamp: up.stamp, inFlight: 0, stale: false })).toBe(
+    false,
+  );
+  expect(redrawDue(up, { stamp: up.stamp, inFlight: 1, stale: false })).toBe(
+    true,
+  );
+  expect(redrawDue(up, { stamp: up.stamp, inFlight: 0, stale: true })).toBe(
+    true,
+  );
 });
 
 test("the stamp holds still while nothing rigd records has changed", () => {

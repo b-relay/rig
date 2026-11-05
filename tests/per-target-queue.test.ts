@@ -11,6 +11,7 @@ import type { RuntimeDependencies } from "../src/runtime/contracts";
 import type { ProcessObservation } from "../src/providers/contracts";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { RuntimeCommand } from "../src/daemon/protocol";
+import type { QueueReport } from "../src/domain/operation-progress";
 import {
   parseHostConfig,
   parseProjectConfig,
@@ -721,6 +722,32 @@ test("a drain waits for the running stop and refuses the command queued behind i
   await drained;
   expect(await down).toMatchObject({ outcome: "stopped" });
   await expect(up).rejects.toMatchObject({ code: "DAEMON_DRAINING" });
+});
+
+test("the queue read says why rigd refuses new work, and each refusal says what to do about it", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  const draining = async () =>
+    ((await f.runtime.command({ action: "queue" })) as QueueReport).draining;
+  expect(await draining()).toBeUndefined();
+  await f.runtime.command({ action: "prepare-uninstall" });
+  expect(await draining()).toBe("uninstall-prepared");
+  await expect(
+    f.runtime.command({ action: "up", project: "alpha" }),
+  ).rejects.toMatchObject({
+    code: "DAEMON_DRAINING",
+    hint: expect.stringContaining("Cancel uninstall"),
+  });
+  await f.runtime.command({ action: "cancel-uninstall" });
+  expect(await draining()).toBeUndefined();
+  await f.runtime.drain();
+  expect(await draining()).toBe("stopping");
+  await expect(
+    f.runtime.command({ action: "up", project: "alpha" }),
+  ).rejects.toMatchObject({
+    code: "DAEMON_DRAINING",
+    hint: expect.stringContaining("Wait for administration"),
+  });
 });
 
 test("a config edit never waits for a Target's stop, only for another edit of the same Project", async () => {

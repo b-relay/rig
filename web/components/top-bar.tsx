@@ -33,10 +33,13 @@ export function TopBar({
             <MobileMenu>{menu}</MobileMenu>
             <Brand className="lg:hidden" />
             <div className="ml-auto flex items-center gap-1">
-              <Suspense fallback={<DaemonMark state="probing" />}>
-                <DaemonStatus />
-              </Suspense>
-              <LiveRefresh />
+              <LiveRefresh
+                status={
+                  <Suspense fallback={<DaemonMark state="probing" />}>
+                    <DaemonStatus />
+                  </Suspense>
+                }
+              />
             </div>
           </>
         )}

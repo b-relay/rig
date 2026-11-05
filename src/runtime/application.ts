@@ -186,6 +186,7 @@ import {
   initialPhase,
   type OperationPhase,
   type OperationPosition,
+  type DrainReason,
   type QueueReport,
 } from "../domain/operation-progress";
 /**
@@ -327,7 +328,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
   /** How supervision went: reading the state (`STATE_WORK`), and each Target's share by its id. */
   const supervision = trackedWorkReport(deps.supervision);
   const reservations = createHostReservations();
-  let draining = false;
+  let draining: DrainReason | false = false;
   let passes = 0;
   /** The daemon-wide gate: nothing starts until rigd has reconciled the Host session. It starts closed (unless the
    * dependencies say `reconcileGate: "open"`, as a test that never reconciles does), opens once a first pass has read the
@@ -442,11 +443,17 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       (entry) => entry.targetId === targetId && entry.view.phase === "stopping",
     );
   const drainingError = () =>
-    new RigError(
-      "DAEMON_DRAINING",
-      "rigd is preparing to stop.",
-      "Wait for administration to complete before retrying.",
-    );
+    draining === "uninstall-prepared"
+      ? new RigError(
+          "DAEMON_DRAINING",
+          "rigd is prepared for uninstall and refuses new work until that is finished or cancelled.",
+          "Finish it with rigd uninstall, or press Cancel uninstall under Uninstall readiness on the dashboard's Monitor page.",
+        )
+      : new RigError(
+          "DAEMON_DRAINING",
+          "rigd is preparing to stop.",
+          "Wait for administration to complete before retrying.",
+        );
   const status = async (
     selection: StatusSelection,
   ): Promise<ProjectStatusReport> => {
@@ -490,6 +497,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       waiting: locks.waiting(),
       operations: running,
       ...(operationId ? { operation: positionOf(operationId) } : {}),
+      ...(draining ? { draining } : {}),
     };
   };
   const positionOf = (operationId: string): OperationPosition => {
@@ -656,12 +664,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         draining = false;
         return { cancelled: true };
       }
-      if (draining && !reads.has(command.action))
-        throw new RigError(
-          "DAEMON_DRAINING",
-          "rigd is preparing to stop.",
-          "Wait for administration to complete before retrying.",
-        );
+      if (draining && !reads.has(command.action)) throw drainingError();
       if (command.action === "prepare-uninstall") {
         // Refused rather than queued: waiting for the whole Host would hold every later operation, automatic restarts
         // included, behind whatever runs now, only to refuse once it ended with Targets still running.
@@ -729,7 +732,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               .join(", ")}, then retry.`,
             { targets: building },
           );
-        draining = true;
+        draining = "uninstall-prepared";
         return { ready: true };
       }
       if (command.action === "queue") return queueReport(command.operation);
@@ -894,6 +897,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         const targets = await enter([projectScope(project.id)]);
         attempted = true;
         const warnings = await forgetProject(project, targets, deps);
+        // Recorded as well as answered: the dashboard reads them back on the page a forget lands on.
+        if (warnings.length) activityNote = warnings.join(" ");
         return await finish("forgotten", warnings.length ? { warnings } : {});
       }
       if (command.action === "doctor" && !command.project) {
@@ -975,6 +980,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       if (command.action === "monitor")
         return {
           project: project.name,
+          targets: targets.map((each) => each.name),
           ...(await usage(deps).report({
             filter: { kind: "project", projectId: project.id },
             window: usageWindow(command, deps.now()),
@@ -2220,7 +2226,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     },
     targetBusy,
     async drain() {
-      draining = true;
+      draining = "stopping";
       // A stop in progress may wait an hour; shutdown leaves it to the Service and the next daemon.
       detaching.abort();
       // Commands already running answer; any that was waiting is refused once admitted.

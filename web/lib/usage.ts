@@ -72,6 +72,23 @@ export function chartReport(
   return componentsOf(wholeChartReport(report, range), target);
 }
 
+/** Pure: whether a Project's Monitor can show `target`: `all`, a Target the Project has now, or one whose history the range
+ * still holds (a destroyed Preview). Its page turns any other into a Target it can show, since the page owns its address;
+ * its poll refuses one, since a poll asks for what its page chose. */
+export function monitorsTarget(
+  target: string,
+  current: readonly string[],
+  series: readonly { series: { scope: string; target?: string } }[],
+): boolean {
+  return (
+    target === "all" ||
+    current.includes(target) ||
+    series.some(
+      (each) => each.series.scope === "target" && each.series.target === target,
+    )
+  );
+}
+
 /** Pure: a chart report with a Project's Components kept only for `target` (none for `all`); every series with no
  * `target`. */
 export function componentsOf(

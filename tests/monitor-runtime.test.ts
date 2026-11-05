@@ -138,7 +138,11 @@ test("monitor reads one Project by its identity, or the whole Host when asked, o
     action: "monitor",
     repoPath: world.repo,
   });
-  expect(project).toMatchObject({ project: "demo" });
+  expect(project).toMatchObject({
+    project: "demo",
+    // Every Target it has now, sampled or not, which a Monitor poll tells from one it does not have.
+    targets: (await world.store.read()).targets.map((each) => each.name),
+  });
   await runtime.command({
     action: "monitor",
     host: true,

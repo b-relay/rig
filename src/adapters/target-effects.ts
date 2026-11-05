@@ -203,6 +203,14 @@ export function createTargetEffects(
         .update(`${target.id}:${component.name}`)
         .digest("hex") + ".json",
     );
+  const livePorts = async (target: TargetRecord) =>
+    new Set(
+      [
+        ...liveUpstreams(
+          (await options.router.checkpoint(target.id)).value ?? "",
+        ),
+      ].map(upstreamPort),
+    );
   const supervisor = (target: TargetRecord) => {
     const provider = options.supervisors.get(
       target.plan.providers.processSupervisor,
@@ -954,6 +962,7 @@ export function createTargetEffects(
       return { outcome: "installed" };
     },
     listeners: (pid, signal) => options.listeners.inspect(pid, signal),
+    livePorts,
     async route(target, change) {
       const sites = plannedSites(target.plan);
       if (!sites.length)
@@ -969,13 +978,7 @@ export function createTargetEffects(
       // A port is live while the route reaches it now, which it does only from its Service's verified start until just
       // before that Service stops; `withhold` takes ports out, `verified` adds them. Every path goes to its port's state,
       // so a path moved to another Service is live exactly when that Service's port is.
-      const live = new Set(
-        [
-          ...liveUpstreams(
-            (await options.router.checkpoint(target.id)).value ?? "",
-          ),
-        ].map(upstreamPort),
-      );
+      const live = await livePorts(target);
       if ("withhold" in change)
         for (const port of change.withhold) live.delete(port);
       if ("verified" in change)

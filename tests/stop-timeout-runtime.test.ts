@@ -172,6 +172,9 @@ function world(
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;

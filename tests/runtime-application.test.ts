@@ -138,6 +138,10 @@ function fixture() {
     lifecycle: {
       async checkRoute() {},
       async withhold() {},
+      async livePorts() {
+        return new Set<number>();
+      },
+      async withholdPorts() {},
       async releaseRoute() {},
       async withdrawRoutes() {
         return { hostnames: [], async restore() {} };
@@ -3623,6 +3627,9 @@ test("destroy checkpoint finalization failure reports retained inventory and byt
     async route() {},
     listeners: async (pid: number) => loopbackListeners(pid, []),
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;

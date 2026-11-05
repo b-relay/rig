@@ -114,6 +114,9 @@ export interface TargetEffects {
   ): Promise<{ outcome: "installed" | "unchanged" }>;
   /** What the owned process `pid` and its descendants listen on now. May block or ignore cancellation. */
   listeners(pid: number, signal: AbortSignal): Promise<ListenerEvidence>;
+  /** The ports a path of the Target's published route reaches now, whatever plan it was published for; read from the route
+   * file, asking nothing of the proxy. Empty without a route. */
+  livePorts(target: TargetRecord): Promise<Set<number>>;
   /** Publishes the Target's whole route map, or removes its route when the plan has none. A path reaches its port only while
    * that port is live: one the published route reaches now, less `withhold`, plus `verified`; every other path answers 503
    * instead of reaching a process. A port is verified only by its own Service's start gate or ownership inspection, so a path
@@ -285,6 +288,14 @@ export interface TargetLifecycle {
    * them, as supervision does for a Service that exited on its own; its next verified start publishes them again.
    * ROUTE_WITHHOLD when the proxy cannot be made to. */
   withhold(target: TargetRecord, services?: readonly string[]): Promise<void>;
+  /** The ports a path of the Target's published route reaches now, whatever plan it was published for. */
+  livePorts(target: TargetRecord): Promise<ReadonlySet<number>>;
+  /** Withholds only the paths of the published route that reach `ports`, whichever plan's they are, confirmed in the proxy.
+   * ROUTE_WITHHOLD when the proxy cannot be made to. */
+  withholdPorts(
+    target: TargetRecord,
+    ports: ReadonlySet<number>,
+  ): Promise<void>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout, then any build a daemon that died left
    * running (`observePreparation`). First every path the route publishes to
    * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without
@@ -423,6 +434,8 @@ export function withStops(
       lifecycle.stop(target, service, control ?? stops),
     down: (target, control) => lifecycle.down(target, control ?? stops),
     withhold: (target, services) => lifecycle.withhold(target, services),
+    livePorts: (target) => lifecycle.livePorts(target),
+    withholdPorts: (target, ports) => lifecycle.withholdPorts(target, ports),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
     startJob: (target, job, incarnation, rigEnv) =>
@@ -968,6 +981,8 @@ export function createTargetLifecycle(
     stopJob: (target, job, stops) => stopJob(target, job, stops),
     withhold: (target, services) =>
       services ? withholdServices(target, services) : effects.withhold(target),
+    livePorts: (target) => effects.livePorts(target),
+    withholdPorts,
     async down(target, stops) {
       let changed = false;
       const processFailures: unknown[] = [];
@@ -1011,7 +1026,12 @@ export function createTargetLifecycle(
     services: Iterable<string>,
   ): Promise<void> {
     const ports = routedPorts(target, services);
-    if (!ports.size) return;
+    if (ports.size) await withholdPorts(target, ports);
+  }
+  async function withholdPorts(
+    target: TargetRecord,
+    ports: ReadonlySet<number>,
+  ): Promise<void> {
     try {
       await effects.withhold(target, ports);
     } catch (error) {

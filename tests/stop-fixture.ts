@@ -60,6 +60,9 @@ export function stopFixture(active: string[] = []) {
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold(_target, ports) {
       withheld.push({
         ...(ports ? { ports: [...ports].sort() } : {}),

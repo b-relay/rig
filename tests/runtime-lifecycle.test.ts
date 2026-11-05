@@ -106,6 +106,9 @@ test("readiness expires even when a health provider ignores cancellation, then r
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;
@@ -187,6 +190,9 @@ test("a start whose clean-up rigd's shutdown detached is left as a crash leaves 
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;
@@ -270,6 +276,9 @@ test("up preserves running components and rollback stops only newly started comp
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;
@@ -329,6 +338,9 @@ test("down uses recorded plan and reports no-op only when every process was stop
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;
@@ -384,6 +396,9 @@ test("down attempts every process even when one process stop fails", async () =>
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;
@@ -609,6 +624,9 @@ test("port contention after selection fails startup and preserves an already run
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;
@@ -725,6 +743,9 @@ test("up prepares the workspace, publishes Tools in plan order, and starts only 
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;

@@ -114,6 +114,9 @@ function fixture(
       return { outcome: "unchanged" };
     },
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;

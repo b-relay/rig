@@ -198,6 +198,9 @@ test("the lifecycle reports every start and stop of a Service as it begins, and 
     },
     async route() {},
     async removeRoute() {},
+    async livePorts() {
+      return new Set<number>();
+    },
     async withhold() {},
     async withdrawRoute() {
       return undefined;

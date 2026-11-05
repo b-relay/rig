@@ -30,8 +30,14 @@ export function NewProjectForm() {
   const [healthcheck, setHealthcheck] = useState("");
   const [bin, setBin] = useState("");
   const [build, setBuild] = useState("");
-  const info = inspect.result;
-  const look = () =>
+  // An inspection speaks only for the path it read: changing the path takes its form and its refusal away, and a reply
+  // that arrives after the change populates nothing the page shows.
+  const [inspected, setInspected] = useState<string>();
+  const current = inspected === repoPath;
+  const info = current ? inspect.result : undefined;
+  const look = () => {
+    setInspected(repoPath);
+    init.clear();
     void inspect
       .run({ action: "initialization-info", repoPath })
       .then((found) => {
@@ -39,7 +45,9 @@ export function NewProjectForm() {
         setProject(found.name);
         setProductionBranch(found.productionBranch);
         setKind(found.existing ? "existing" : "service");
+        setCreateGit(false);
       });
+  };
   const register = () => {
     const command = initCommand({
       repoPath,
@@ -94,7 +102,7 @@ export function NewProjectForm() {
             Inspect
           </Button>
         </form>
-        <Failure failure={inspect.failure} />
+        <Failure failure={current ? inspect.failure : undefined} />
       </Section>
       {info ? (
         <Section title="Register">

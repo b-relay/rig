@@ -7,6 +7,7 @@ import {
   restoreBlocked,
   restoreCommand,
   restoreConfirmed,
+  restoreNotice,
   type BackupView,
 } from "@/lib/backups";
 import { when } from "@/lib/present";
@@ -28,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 
 /** Puts one backup back, as `rig backup restore <job> <id> <target> --yes` does, once the job's name is typed: the job's
  * restore command runs as a run of the job, with the backup as $RIG_BACKUP_DIR. Rig does not stop the
@@ -40,13 +42,19 @@ export function RestoreBackupButton({
 }: {
   project: string;
   target: Pick<TargetReport, "kind" | "name" | "refusals">;
-  job: Pick<JobReport, "name" | "state" | "backup" | "removed">;
+  job: Pick<
+    JobReport,
+    "name" | "state" | "backup" | "removed" | "running" | "last"
+  >;
   backup: BackupView;
 }) {
   const act = useRun();
   const [typed, setTyped] = useState("");
   const field = useId();
   const blocked = restoreBlocked(job, backup, target);
+  const notice = act.busy
+    ? { word: "restoring", failed: false }
+    : restoreNotice(job, backup.id);
   return (
     <div className="flex shrink-0 flex-col items-end gap-1">
       <AlertDialog onOpenChange={(open) => (open ? setTyped("") : undefined)}>
@@ -108,8 +116,15 @@ export function RestoreBackupButton({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {act.result && !act.failure ? (
-        <span className="text-xs text-muted-foreground">restoring</span>
+      {notice && !act.failure ? (
+        <span
+          className={cn(
+            "text-xs",
+            notice.failed ? "text-bad" : "text-muted-foreground",
+          )}
+        >
+          {notice.word}
+        </span>
       ) : null}
       <Failure failure={act.failure} />
     </div>

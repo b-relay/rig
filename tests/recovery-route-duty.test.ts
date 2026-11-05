@@ -616,8 +616,18 @@ test("idle cost: an unresolved recovery costs one route read and an observation 
   expect(Object.fromEntries(f.observed)).toEqual({ web: 1, api: 1 });
   expect(f.calls).toEqual({ checkpoint: 1, apply: 0 });
 
-  // Nothing live: the route read alone.
+  // One path withheld: only the Service still behind a live path is observed, and the proxy is not asked again.
   await f.exit("web");
+  await f.supervise();
+  expect(await f.paths()).toEqual({ "/": "503", "/api": API });
+  f.observed.clear();
+  f.calls.checkpoint = 0;
+  f.calls.apply = 0;
+  await f.supervise();
+  expect(Object.fromEntries(f.observed)).toEqual({ api: 1 });
+  expect(f.calls).toEqual({ checkpoint: 1, apply: 0 });
+
+  // Nothing live: the route read alone.
   await f.exit("api");
   await f.supervise();
   expect(await f.paths()).toEqual({ "/": "503", "/api": "503" });

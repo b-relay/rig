@@ -447,7 +447,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       ? new RigError(
           "DAEMON_DRAINING",
           "rigd is prepared for uninstall and refuses new work until that is finished or cancelled.",
-          "Finish it with rigd uninstall, or press Cancel uninstall under Uninstall readiness on the dashboard's Monitor page.",
+          `Finish it with rigd uninstall, press Cancel uninstall under Uninstall readiness on the dashboard's Monitor page, or clear it by restarting rigd: kill ${process.pid}, then rigd install.`,
         )
       : new RigError(
           "DAEMON_DRAINING",
@@ -661,6 +661,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     let deployKept: readonly string[] = [];
     try {
       if (command.action === "cancel-uninstall") {
+        // A shutdown cannot be called off: only a preparation can.
+        if (draining === "stopping") throw drainingError();
         draining = false;
         return { cancelled: true };
       }
@@ -732,6 +734,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               .join(", ")}, then retry.`,
             { targets: building },
           );
+        // A shutdown may have begun during the observation above, and it stands.
+        if (draining) throw drainingError();
         draining = "uninstall-prepared";
         return { ready: true };
       }

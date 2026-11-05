@@ -40,7 +40,6 @@ export interface LogView {
   lines: number;
   follow: boolean;
   query: LogQuery;
-  search: string;
   wrap: boolean;
 }
 /** Pure: the view an address asks for, with `components` the names the Target's lines are recorded under. Anything it does
@@ -62,7 +61,6 @@ export function logViewOf(
       ),
       ...(stream === "stdout" || stream === "stderr" ? { stream } : {}),
     },
-    search: params.get("search") ?? "",
     wrap: params.get("nowrap") !== "1",
   };
 }
@@ -73,22 +71,33 @@ export function logViewParams(
   params: Iterable<[string, string]>,
 ): URLSearchParams {
   const next = new URLSearchParams([...params]);
-  for (const name of [
-    "lines",
-    "paused",
-    "stream",
-    "component",
-    "search",
-    "nowrap",
-  ])
+  for (const name of ["lines", "paused", "stream", "component", "nowrap"])
     next.delete(name);
   if (view.lines !== FIRST_LOG_LINES) next.set("lines", String(view.lines));
   if (!view.follow) next.set("paused", "1");
   if (view.query.stream) next.set("stream", view.query.stream);
   for (const name of view.query.services) next.append("component", name);
-  if (view.search) next.set("search", view.search);
   if (!view.wrap) next.set("nowrap", "1");
   return next;
+}
+const SEARCH_KEY = "rig.logs.search:";
+/** What this tab last searched on the log page at `path`. A search may be a secret copied from the output, so it stays out
+ * of the address and its history; session storage keeps it for a reload, and nothing is kept where storage is refused. */
+export function keptLogSearch(path: string): string {
+  try {
+    return window.sessionStorage.getItem(SEARCH_KEY + path) ?? "";
+  } catch {
+    return "";
+  }
+}
+/** Keeps `search` for `keptLogSearch`; an empty one keeps nothing. */
+export function keepLogSearch(path: string, search: string): void {
+  try {
+    if (search) window.sessionStorage.setItem(SEARCH_KEY + path, search);
+    else window.sessionStorage.removeItem(SEARCH_KEY + path);
+  } catch {
+    // A reload then opens with no search, as a new view does.
+  }
 }
 /** Pure: the `logFilter` a read carries for `query`, or nothing when it asks for every line. */
 export function logFilter(

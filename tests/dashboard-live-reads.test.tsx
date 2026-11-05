@@ -2,8 +2,9 @@ import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
 import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";
+import { renderToStaticMarkup } from "react-dom/server";
 import { LiveRefresh } from "../web/components/live-refresh";
-import { mountWithoutDom, textOf } from "./support/hook-harness";
+import { hasLabel, mountWithoutDom, textOf } from "./support/hook-harness";
 
 /** What the dashboard polls: `/pulse` and `/usage` through their route handlers, over a stand-in rigd and the real client, and
  * the corner of the page that acts on a pulse. Nothing here waits on a clock. */
@@ -52,6 +53,7 @@ mock.module("../web/server/daemon", () => ({
 }));
 const { GET: pulseRoute } = await import("../web/app/pulse/route");
 const { GET: usageRoute } = await import("../web/app/usage/route");
+const { DaemonStatus } = await import("../web/components/top-bar");
 beforeAll(() => {
   reading = true;
 });
@@ -111,6 +113,24 @@ test("a pulse left to finish answers its stamp", async () => {
     busy: false,
     down: false,
   });
+});
+
+test("a health reply rigd should not have sent is a fault: the pulse does not call it an outage, and the corner names it with its hint", async () => {
+  answer = (name) =>
+    name === "health"
+      ? { running: "not as rigd says it" }
+      : name === "queue"
+        ? { waiting: 0, operations: [] }
+        : { operations: [] };
+  const response = await pulseRoute(new Request("http://rig.test/pulse"));
+  expect(await response.json()).toMatchObject({
+    stamp: expect.stringContaining("down:DAEMON_PROTOCOL"),
+    down: false,
+  });
+  const mark = await DaemonStatus();
+  expect(renderToStaticMarkup(mark)).toContain("rigd: DAEMON_PROTOCOL");
+  expect(renderToStaticMarkup(mark)).not.toContain("rigd unreachable");
+  expect(renderToStaticMarkup(mark)).toContain("the same version");
 });
 
 const series = (scope: string, target?: string) => ({
@@ -258,6 +278,23 @@ test("rigd going down leaves the page as it last read, says so in the corner, an
     expect(page.mounted.refreshes.count).toBe(2);
     expect(textOf(page.mounted.tree)).not.toContain("rigd unreachable");
     expect(textOf(page.mounted.tree)).toContain("rigd is up");
+  } finally {
+    page.restore();
+  }
+});
+
+test("a fault keeps the page redrawing and Refresh now offered, and is not said to be an outage", async () => {
+  const page = corner();
+  try {
+    await page.beat({ stamp: "a", busy: false, down: false });
+    await page.beat({
+      stamp: "down:DAEMON_PROTOCOL",
+      busy: false,
+      down: false,
+    });
+    expect(page.mounted.refreshes.count).toBe(2);
+    expect(textOf(page.mounted.tree)).not.toContain("rigd unreachable");
+    expect(hasLabel(page.mounted.tree, "Refresh now")).toBe(true);
   } finally {
     page.restore();
   }

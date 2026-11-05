@@ -66,12 +66,16 @@ navigation attempted while the network is down waits for it to return
 (`experimental.useOffline`) instead of falling through to the browser's error
 screen.
 
-When the site answers but `rigd` does not, the corner says `rigd unreachable` and
+When the site answers but `rigd` is away (missing, unreachable, timed out or cut off
+mid-reply), the corner says `rigd unreachable` and
 the page is not redrawn, however the stamp moves: a redraw could only replace what
 the page last read with a failure, and a log view would lose its lines and cursor.
 When `rigd` answers again its stamp has changed, the page redraws, and a log follow
 resumes from its cursor. A command sent from the page during the outage still
-refreshes it, and a navigation reads afresh.
+refreshes it, and a navigation reads afresh. Any other failure of the health read,
+such as a reply `rigd` should not have sent, is a fault rather than an outage: pages
+redraw as usual and show what they can read, the corner names its code, and Monitor,
+where it links, says it in full with its hint.
 
 ## Pages
 
@@ -147,10 +151,12 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   narrow `rigd`'s own read (`logFilter`); the search box narrows and marks what
   is shown. Scrolling up holds the view until Latest; lines can wrap, be
   cleared, or be downloaded as `rig logs` prints them. The view lives in the
-  address (`lines`, `paused`, `stream`, `component`, `search`, `nowrap`, each only
-  when it is not the default), so a reload or a shared link opens it again; what
-  cannot be read opens as the default. A view that is not the default reads its own
-  page rather than show the server's first page, which it did not ask for.
+  address (`lines`, `paused`, `stream`, `component`, `nowrap`, each only when it is not
+  the default), so a reload or a shared link opens it again; what cannot be read
+  opens as the default. A view that is not the default reads its own page rather
+  than show the server's first page, which it did not ask for. A search may be a
+  secret copied from the output, so it stays out of the address and its history:
+  the tab's session storage keeps it for a reload of that page.
 - **Deployments**: every deploy newest first as a stack of cards, with its outcome, Target, Branch
   and Commit (and the one it replaced), when it started and how long it took,
   beside the form that deploys a Branch or a Commit. The deploy that put the

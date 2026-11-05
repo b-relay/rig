@@ -18,7 +18,6 @@ const DEFAULTS: LogView = {
   lines: 200,
   follow: true,
   query: { services: [] },
-  search: "",
   wrap: true,
 };
 const entry = (line: string, stream: "stdout" | "stderr" = "stdout") => ({
@@ -54,7 +53,6 @@ test("a view survives the address and back, and a default adds nothing to it; ot
     lines: 5000,
     follow: false,
     query: { services: ["web", "worker"], stream: "stderr" },
-    search: "AUDIT-LINE 11999",
     wrap: false,
   };
   const address = logViewParams(view, new URLSearchParams("target=stable"));
@@ -72,15 +70,28 @@ let reads: Record<string, unknown>[];
 let answers: unknown[];
 let writes: string[];
 let followTimers: (() => void)[];
+let storage: Map<string, string>;
+let storageRefused: boolean;
 const location = { pathname: "/projects/probe/logs", search: "", hash: "" };
 beforeEach(() => {
   reads = [];
   answers = [];
   writes = [];
   followTimers = [];
+  storage = new Map();
+  storageRefused = false;
   location.search = "";
   (globalThis as { window?: unknown }).window = {
     location,
+    // As a private window's or a blocked site's is, its very accessor can throw.
+    get sessionStorage() {
+      if (storageRefused) throw new Error("The operation is insecure.");
+      return {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => void storage.set(key, value),
+        removeItem: (key: string) => void storage.delete(key),
+      };
+    },
     history: {
       replaceState(_state: unknown, _title: string, url: string) {
         writes.push(url);
@@ -141,8 +152,9 @@ test("a reloaded view opens as it was set: paused, wrapped as chosen, searched, 
       },
     },
   ];
+  storage.set("rig.logs.search:/projects/probe/logs", "AUDIT-LINE-11999");
   const mounted = viewer(
-    "lines=5000&paused=1&stream=stderr&component=web&search=AUDIT-LINE-11999&nowrap=1",
+    "lines=5000&paused=1&stream=stderr&component=web&nowrap=1",
     page(["newest unfiltered line"], "served"),
   );
   // The first paint holds nothing of a page the view did not ask for.
@@ -186,14 +198,13 @@ test("a control's change goes to the address without a router navigation, and ba
       }) => void
     )({ target: { value: "needle" } }),
   );
-  expect(writes.at(-1)).toBe("/projects/probe/logs?paused=1&search=needle");
+  // A search may be a secret copied from the output: the address and its history never hold it.
+  expect(writes).toEqual([]);
   mounted.act(
     labelled(mounted.tree, "Do not wrap long lines").props
       .onClick as () => void,
   );
-  expect(writes.at(-1)).toBe(
-    "/projects/probe/logs?paused=1&search=needle&nowrap=1",
-  );
+  expect(writes.at(-1)).toBe("/projects/probe/logs?paused=1&nowrap=1");
   mounted.act(() =>
     (
       labelled(mounted.tree, "Search the log").props.onChange as (event: {
@@ -264,4 +275,45 @@ test("a cursor rigd says will never be valid again starts over, unlike a read th
   await settle(mounted);
   expect(reads.at(-1)).not.toHaveProperty("after");
   expect(textOf(mounted.tree)).toContain("fresh");
+});
+
+test("a search stays out of the address and comes back on a reload of that page; clearing it keeps nothing", () => {
+  const search = (mounted: ReturnType<typeof viewer>, value: string) =>
+    mounted.act(() =>
+      (
+        labelled(mounted.tree, "Search the log").props.onChange as (event: {
+          target: { value: string };
+        }) => void
+      )({ target: { value } }),
+    );
+  const first = viewer("paused=1", page(["served line"], "served"));
+  search(first, "password=synthetic-secret");
+  for (const url of [location.search, ...writes])
+    expect(url).not.toContain("synthetic-secret");
+  const reloaded = viewer("paused=1", page(["served line"], "served"));
+  expect(labelled(reloaded.tree, "Search the log").props.value).toBe(
+    "password=synthetic-secret",
+  );
+  // Another page's search is its own.
+  location.pathname = "/projects/probe/targets/working/logs";
+  const other = viewer("paused=1", page(["served line"], "served"));
+  expect(labelled(other.tree, "Search the log").props.value).toBe("");
+  location.pathname = "/projects/probe/logs";
+  search(reloaded, "");
+  expect(storage.size).toBe(0);
+});
+
+test("a browser that refuses storage opens with no search and can still search", () => {
+  storageRefused = true;
+  const mounted = viewer("paused=1", page(["served line", "other"], "served"));
+  expect(labelled(mounted.tree, "Search the log").props.value).toBe("");
+  mounted.act(() =>
+    (
+      labelled(mounted.tree, "Search the log").props.onChange as (event: {
+        target: { value: string };
+      }) => void
+    )({ target: { value: "served" } }),
+  );
+  expect(labelled(mounted.tree, "Search the log").props.value).toBe("served");
+  expect(textOf(mounted.tree)).not.toContain("other");
 });

@@ -738,6 +738,12 @@ test("the queue read says why rigd refuses new work, and each refusal says what 
     code: "DAEMON_DRAINING",
     hint: expect.stringContaining("Cancel uninstall"),
   });
+  // A Host with no dashboard has a way out too: a command it can run.
+  await expect(
+    f.runtime.command({ action: "up", project: "alpha" }),
+  ).rejects.toMatchObject({
+    hint: expect.stringContaining(`kill ${process.pid}, then rigd install`),
+  });
   await f.runtime.command({ action: "cancel-uninstall" });
   expect(await draining()).toBeUndefined();
   await f.runtime.drain();
@@ -747,6 +753,55 @@ test("the queue read says why rigd refuses new work, and each refusal says what 
   ).rejects.toMatchObject({
     code: "DAEMON_DRAINING",
     hint: expect.stringContaining("Wait for administration"),
+  });
+});
+
+test("a shutdown cannot be cancelled: rigd stays stopping, and what waited behind it is still refused", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  await f.runtime.command({ action: "up", project: "alpha" });
+  const release = f.holdStop("alpha");
+  const down = f.runtime.command({ action: "down", project: "alpha" });
+  await until(() => f.events.includes("stop alpha working"));
+  const up = f.runtime.command({
+    action: "up",
+    project: "alpha",
+    operationId: "queued-up",
+  });
+  await waiting(f.runtime, "queued-up");
+  const drained = f.runtime.drain();
+  await expect(
+    f.runtime.command({ action: "cancel-uninstall" }),
+  ).rejects.toMatchObject({ code: "DAEMON_DRAINING" });
+  expect(await f.runtime.command({ action: "queue" })).toMatchObject({
+    draining: "stopping",
+  });
+  release();
+  await down;
+  await expect(up).rejects.toMatchObject({ code: "DAEMON_DRAINING" });
+  await drained;
+});
+
+test("a preparation still observing when a shutdown begins is refused, and leaves rigd stopping", async () => {
+  const f = await fixture();
+  await f.register("alpha");
+  await f.runtime.command({ action: "up", project: "alpha" });
+  await f.runtime.command({ action: "down", project: "alpha" });
+  const held = gate();
+  let reached = false;
+  f.deps.lifecycle.observePreparation = async () => {
+    reached = true;
+    await held.opened;
+    return { state: "stopped" };
+  };
+  const prepared = f.runtime.command({ action: "prepare-uninstall" });
+  await until(() => reached);
+  const drained = f.runtime.drain();
+  held.open();
+  await expect(prepared).rejects.toMatchObject({ code: "DAEMON_DRAINING" });
+  await drained;
+  expect(await f.runtime.command({ action: "queue" })).toMatchObject({
+    draining: "stopping",
   });
 });
 

@@ -15,6 +15,8 @@ import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
 import {
   componentSlot,
   FIRST_LOG_LINES,
+  keepLogSearch,
+  keptLogSearch,
   LOG_LINE_CHOICES,
   logFilter,
   logText,
@@ -51,8 +53,9 @@ const SLOT_CLASS = [
 ];
 /** One Target's log, streamed a second at a time through rigd's cursor while following. The
  * component and stream filters narrow what rigd reads; the search box narrows what is shown. The
- * first page came with the server render. The Target and the view live in the URL, so a reload keeps them;
- * a view the first page does not fit reads its own, and shows nothing of the first page meanwhile. */
+ * first page came with the server render. The Target and the view live in the URL, and the search in this tab's session
+ * storage, so a reload keeps them; a view the first page does not fit reads its own, and shows nothing of the first page
+ * meanwhile. */
 export function LogViewer({
   project,
   targets,
@@ -76,7 +79,7 @@ export function LogViewer({
   const [lines, setLines] = useState(opened.lines);
   const [follow, setFollow] = useState(opened.follow);
   const [query, setQuery] = useState<LogQuery>(opened.query);
-  const [search, setSearch] = useState(opened.search);
+  const [search, setSearch] = useState("");
   const [wrap, setWrap] = useState(opened.wrap);
   const [entries, setEntries] = useState<LogEntry[]>(
     opened.lines === FIRST_LOG_LINES && !logFilter(opened.query)
@@ -171,18 +174,23 @@ export function LogViewer({
     next();
     return stop;
   }, [project, selector, lines, follow, filter]);
+  // Storage belongs to the browser, so the server's render has no search and this first effect brings it back.
+  useEffect(() => {
+    const kept = keptLogSearch(window.location.pathname);
+    if (kept) setSearch(kept);
+  }, []);
   // Written straight to the address: nothing on the server depends on it, and a router navigation would read the page again.
   useEffect(() => {
     const { pathname, search: before, hash } = window.location;
     const now = new URLSearchParams(before);
-    const next = logViewParams({ lines, follow, query, search, wrap }, now);
+    const next = logViewParams({ lines, follow, query, wrap }, now);
     if (next.toString() !== now.toString())
       window.history.replaceState(
         null,
         "",
         `${pathname}${next.size ? `?${next}` : ""}${hash}`,
       );
-  }, [lines, follow, query, search, wrap]);
+  }, [lines, follow, query, wrap]);
   const shown = useMemo(
     () => entries.filter((entry) => matchesSearch(entry, search)),
     [entries, search],
@@ -210,7 +218,7 @@ export function LogViewer({
             onValueChange={(next) => {
               const cleared = { services: [] };
               const address = logViewParams(
-                { lines, follow, query: cleared, search, wrap },
+                { lines, follow, query: cleared, wrap },
                 params,
               );
               address.set("target", next);
@@ -244,7 +252,10 @@ export function LogViewer({
           />
           <Input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              keepLogSearch(window.location.pathname, event.target.value);
+            }}
             placeholder="Search the lines shown…"
             aria-label="Search the log"
             className="h-8 pl-8 text-sm md:text-sm"

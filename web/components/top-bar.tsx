@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Suspense, type ReactNode } from "react";
 import { daemon, read } from "@/server/daemon";
 import { attempt } from "@/lib/outcome";
+import { rigdAway } from "@/lib/pulse";
 import type { Theme } from "@/lib/theme";
 import type { DaemonHealth, QueueResult } from "@/lib/types";
 import { LiveRefresh } from "./live-refresh";
@@ -48,13 +49,21 @@ export function TopBar({
     </header>
   );
 }
-async function DaemonStatus() {
+export async function DaemonStatus() {
   const [health, queue] = await Promise.all([
     attempt(daemon().then((client) => client.health())),
     attempt(read({ action: "queue" })),
   ]);
   if (!health.ok)
-    return <DaemonMark state="down" detail={health.failure.message} />;
+    return (
+      <DaemonMark
+        state="down"
+        detail={[health.failure.message, health.failure.hint]
+          .filter(Boolean)
+          .join(" ")}
+        {...(!rigdAway(health.failure.code) && { fault: health.failure.code })}
+      />
+    );
   const running = queue.ok ? (queue.value as QueueResult).running : undefined;
   return (
     <DaemonMark
@@ -74,11 +83,15 @@ function DaemonMark({
   state,
   version,
   detail,
+  fault,
 }: {
   state: "probing" | "up" | "busy" | "down";
   version?: string;
   detail?: string;
+  /** The code of a failure that is not rigd being away. Monitor, where this links, says it in full with its hint. */
+  fault?: string;
 }) {
+  const down = fault ? `rigd: ${fault}` : "rigd unreachable";
   return (
     <Link
       href="/monitor"
@@ -97,7 +110,7 @@ function DaemonMark({
       />
       <span className="hidden md:inline">
         {state === "down"
-          ? "rigd unreachable"
+          ? down
           : state === "probing"
             ? "rigd"
             : detail
@@ -106,7 +119,7 @@ function DaemonMark({
       </span>
       <span className="sr-only">
         {state === "down"
-          ? "rigd unreachable"
+          ? down
           : state === "busy"
             ? `rigd running ${detail}`
             : "rigd up"}

@@ -72,6 +72,29 @@ test("a pulse says when rigd did not answer, and a page is only redrawn once it 
   );
 });
 
+test.each([
+  ["DAEMON_MISSING", true],
+  ["DAEMON_UNREACHABLE", true],
+  ["DAEMON_TIMEOUT", true],
+  ["DAEMON_INTERRUPTED", true],
+  ["DAEMON_PROTOCOL", false],
+  ["DAEMON_TOKEN", false],
+])("a failed health read of %s counts as rigd being away: %p", (code, away) => {
+  const pulse = pulseStamp(
+    readings({
+      health: { ok: false, failure: { code, message: "m", hint: "h" } },
+    }),
+  );
+  expect(pulse.down).toBe(away);
+  // A fault is for a page to show: it redraws as any change does, and however long it lasts.
+  expect(redrawDue(pulse, { stamp: "before", inFlight: 0, stale: false })).toBe(
+    !away,
+  );
+  expect(
+    redrawDue(pulse, { stamp: pulse.stamp, inFlight: 0, stale: true }),
+  ).toBe(!away);
+});
+
 test("the stamp holds still while nothing rigd records has changed", () => {
   expect(pulseStamp(readings())).toEqual(pulseStamp(readings()));
   expect(pulseStamp(readings()).busy).toBe(false);

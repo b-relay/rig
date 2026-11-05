@@ -6,8 +6,14 @@ import type { TargetLifecycle } from "./lifecycle";
 export async function stopRecordedTarget(
   target: TargetRecord,
   lifecycle: TargetLifecycle,
+  /** A start follows, as in `rig restart`: see `TargetLifecycle.down`. */
+  startFollows = false,
 ): Promise<{ outcome: "stopped" | "unchanged" }> {
-  const result = await lifecycle.down(target);
+  const result = await lifecycle.down(
+    target,
+    undefined,
+    startFollows ? target.plan : undefined,
+  );
   await lifecycle.restoreEffects(target);
   return result;
 }

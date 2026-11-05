@@ -133,8 +133,15 @@ async function activate(
     }
     transitioned = true;
     if (previous) {
-      // In reverse dependency order; restarts spread to dependents, so no kept Service depends on one that stops.
-      await deps.lifecycle.down(withoutServices(previous, kept.keys()));
+      // In reverse dependency order; restarts spread to dependents, so no kept Service depends on one that stops. The guard
+      // stays until the Operation releases the Target, through the start and any rollback.
+      const startFollows = intent.activation === "start";
+      if (startFollows) deps.routeGuard?.watch(previous);
+      await deps.lifecycle.down(
+        withoutServices(previous, kept.keys()),
+        undefined,
+        startFollows ? previous.plan : undefined,
+      );
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
     if (intent.activation === "start") {

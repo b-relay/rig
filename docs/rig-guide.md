@@ -2050,10 +2050,22 @@ released only when its own Service is next verified, by an automatic retry or
 by `rig up` or `rig restart`. If the route cannot be withdrawn, the start is
 not attempted. Stopping works the same way: `rig down`, `rig restart`, a
 deploy, turning a Target off, stopping a Preview and a health restart withhold
-the paths of the Services they stop before any process stops, so those paths
-answer `503`, and a program that later takes a freed port never receives their
-requests. When Rig's Caddy cannot be made to withhold them, nothing is stopped
-(`ROUTE_WITHHOLD`). A failed start or deploy that rolls back brings the earlier
+the paths of the Services they stop before any of those Services stops, so those
+paths answer `503`, and a program that later takes a freed port never receives
+their requests. A deploy that starts its new version and `rig restart` expect the
+site back, so they first stop the Services at the end of the plan that no path
+needs, with every path still serving: each has no path, depends on no Service
+with a path, and has only such Services after it. A slow worker listed last then
+costs no `503` while it stops; a Service the site needs belongs above the last
+routed Service, or in a `depends_on`. `rig down`, `deploy --no-up` and every other
+stop withhold before their first stop, since nothing replaces what they stop.
+While a deploy or `rig restart` holds the Target, `rigd` looks at the Services
+behind the paths still live once a second: one seen stopped has its paths
+withheld, and the diagnostic log records `routes-withheld`; one whose state cannot
+be established keeps them until the next look. When Rig's Caddy cannot be made to
+withhold them, no Service with a path is stopped (`ROUTE_WITHHOLD`), and the
+diagnostic log records `routes-withhold-failed` when a look is what asked. A
+failed start or deploy that rolls back brings the earlier
 route back with every path of a Service that is not running withheld. A
 Service a deploy keeps running keeps its paths throughout, and a path a deploy
 gives it, on a port it already serves, follows that port; a port it was not

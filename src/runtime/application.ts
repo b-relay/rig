@@ -13,6 +13,7 @@ import type {
   StatusSelection,
 } from "../domain/project-status";
 import { stopRecordedTarget } from "./stop";
+import { createRouteGuard, type RouteGuard } from "./route-guard";
 import { doctor, hostDoctor } from "./doctor";
 import {
   assertRecordedStopped,
@@ -367,12 +368,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     if (left > 0) killRequests.set(targetId, left);
     else killRequests.delete(targetId);
   };
-  const lifecycleOf = (entry: StopTracking) =>
+  const lifecycleOf = (entry: StopTracking, guard?: RouteGuard) =>
     withStops(deps.lifecycle, {
       kill: (target) =>
         killSignal(entry, target.id, (id) => killRequests.has(id)),
       detach: detaching.signal,
       observer: stopObserver(entry, deps.now),
+      ...(guard ? { guard } : {}),
     });
   /** working Targets and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
    * by Target id, with that restart as the first pass identified it; each pass, and each Operation admitted on the Target,
@@ -604,15 +606,22 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     try {
       for (let attempt = 1; ; attempt++) {
         const held = admission(operationId, attempt >= MAX_SELECTIONS);
+        const routeGuard = createRouteGuard(deps, {
+          operationId,
+          action: command.action,
+        });
         try {
           return await run(command, operationId, held, {
             ...deps,
             ports: reservations.ports(operationId),
-            lifecycle: lifecycleOf(entry),
+            lifecycle: lifecycleOf(entry, routeGuard),
+            routeGuard,
           });
         } catch (error) {
           if (!isReselect(error)) throw error;
         } finally {
+          // Joined for the last time before the Target is released: from here supervision watches it again.
+          await routeGuard.release();
           held.release();
           reservations.release(operationId);
         }
@@ -1514,7 +1523,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             target.updatedAt = deps.now();
             await persistTarget(target, deps.store);
             admission.phase("stopping", target);
-            await stopKeepingKills(target);
+            deps.routeGuard?.watch(target);
+            await stopKeepingKills(target, true);
             admission.phase("starting", target);
             if (target.kind === "working")
               target = await adoptWorkingCopyPlan(target, restarting, deps);
@@ -1704,7 +1714,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     /** Stops `stopped` as `rig down` and `rig restart` do, and saves which Services it had to SIGKILL on the saved record as
      * soon as the stop is over, whether it succeeded or failed part-way, so status says so while they stay stopped: after
      * a down, or a restart that fails before it starts them again. The next start clears it. */
-    async function stopKeepingKills(stopped: TargetRecord) {
+    async function stopKeepingKills(
+      stopped: TargetRecord,
+      startFollows = false,
+    ) {
       const view = operations.get(operationId)!.view;
       // Marked on the Operation's own record as well, since what it saves later (a replan, the final record) starts from it.
       const keep = () =>
@@ -1717,7 +1730,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               })
               .catch(() => {});
       try {
-        const result = await stopRecordedTarget(stopped, deps.lifecycle);
+        const result = await stopRecordedTarget(
+          stopped,
+          deps.lifecycle,
+          startFollows,
+        );
         await keep();
         return result;
       } catch (error) {

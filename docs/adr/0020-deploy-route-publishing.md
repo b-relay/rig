@@ -85,6 +85,8 @@ Notes for the builder:
 - **A cancelled readiness check settles through a failure race,** following `awaitActivation`'s existing deadline pattern.
 - **A spawn already underway cannot be abandoned through that race.** It settles and enters `started` before cleanup begins.
 - **A route mutation already underway finishes through journal capture** before compensation proceeds.
+- **The journal's other writers take the section too.** A route change and a Tool's change save the same journal file, so a look's withhold beside them could put an older copy on disk over a newer one. Creating the checkpoint, retiring superseded Tools and installing a Tool therefore also run in the section. A kept Service that exits during a Tool's build is seen when that build ends.
+- **A look reads a live port by the plan the route was last published under,** which the operation knows, since nothing else writes the route while it holds the Target. It does not use both plans as the recovery duty must, so a port a new plan gives another Service still goes when the Service behind it now is seen stopped.
 
 An automatic or health restart (`recover`) has no tail and is unchanged.
 

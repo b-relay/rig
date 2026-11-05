@@ -82,6 +82,7 @@ import type { LogFilter } from "../domain/log-filter";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
+import type { RouteGuard } from "./route-guard";
 import type { UsageMonitor } from "./usage-report";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
@@ -340,6 +341,9 @@ export interface RuntimeDependencies {
    * carries on under each Target's own lease and a later pass reads its outcome, so one slow restart
    * or stop never holds up the next pass. Absent, a pass waits for all of it. */
   supervisionPassBudget?: { ms: number; deadline: ObservationDeadline };
+  /** The running Operation's route guard (ADR 0020), which `lifecycle` already runs its route changes under. Present while
+   * an Operation runs; absent, nothing watches a Target's live paths while it stops and starts. */
+  routeGuard?: RouteGuard;
   /** Reads the Host's boot and login session, which the daemon's first pass compares with the one it last recorded to
    * tell a Host restart from a plain daemon restart. Absent, no Host restart is ever detected. */
   hostSession?: HostSessionProbe;

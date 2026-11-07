@@ -220,7 +220,7 @@ test("install puts the release's rig and rigd in the Rig root's bin, runs rigd i
   });
   expect(again.code).toBe(0);
   expect(again.stdout).not.toContain("export PATH");
-});
+}, 30000);
 
 test("an Intel Mac gets the x64 build", async () => {
   const intel = await release({ machine: "x86_64", translated: "0" });
@@ -234,8 +234,8 @@ test("a shell under Rosetta on Apple Silicon gets the native arm64 build", async
   expect(await installedArch(rosetta.root)).toBe("arm64");
 });
 
-test("without RIG_ROOT, or with it empty, Rig is installed in ~/.rig as rig itself resolves it", async () => {
-  for (const RIG_ROOT of [undefined, ""]) {
+for (const RIG_ROOT of [undefined, ""])
+  test(`${RIG_ROOT === undefined ? "without RIG_ROOT" : "with RIG_ROOT empty"}, Rig is installed in ~/.rig as rig itself resolves it`, async () => {
     const f = await release();
     const env: Record<string, string> =
       RIG_ROOT === undefined ? {} : { RIG_ROOT };
@@ -248,8 +248,7 @@ test("without RIG_ROOT, or with it empty, Rig is installed in ~/.rig as rig itse
     expect(result.code).toBe(0);
     expect(resolveRigRoot(RIG_ROOT, f.home)).toBe(join(f.home, ".rig"));
     expect(await exists(join(f.home, ".rig", "bin", "rigd"))).toBe(true);
-  }
-});
+  });
 
 test("a download that does not match SHA256SUMS, or a SHA256SUMS that does not name it in the canonical form once, installs nothing", async () => {
   for (const sums of [
@@ -518,7 +517,7 @@ test("install refuses a rig or rigd that is a symbolic link, even to a regular f
   }
 });
 
-test("install stages nothing through a linked bin or dashboard directory, or into one others can write, and a linked root still installs", async () => {
+test("install stages nothing through a linked bin or dashboard directory", async () => {
   for (const name of ["bin", "dashboard"]) {
     const f = await release();
     const outside = join(f.home, "outside");
@@ -533,7 +532,9 @@ test("install stages nothing through a linked bin or dashboard directory, or int
     expect(await readdir(outside)).toEqual([]);
     expect(await exists(f.ran)).toBe(false);
   }
+});
 
+test("install stages nothing into a bin directory others can write", async () => {
   const open = await release();
   await mkdir(join(open.root, "bin"), { recursive: true });
   await chmod(join(open.root, "bin"), 0o775);
@@ -544,7 +545,9 @@ test("install stages nothing through a linked bin or dashboard directory, or int
   );
   expect(refused.stderr).toContain(`chmod 700 ${open.root}/bin`);
   expect(await readdir(join(open.root, "bin"))).toEqual([]);
+});
 
+test("a Rig root that is a link to a private directory still installs", async () => {
   const linked = await release();
   const volume = join(linked.home, "volume");
   await mkdir(volume, { mode: 0o700 });

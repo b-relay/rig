@@ -49,7 +49,7 @@ export interface Router {
    * stops the previous Deployment that its route cannot be published. A route with no sites (a route-free plan) checks
    * nothing; a router that reserves still reserves what the Target serves now. */
   check?(route: RouteRequest): Promise<void>;
-  /** Lets go of the hostnames `check` reserved for `key`, once the deployment that asked is decided. */
+  /** Lets go of the hostnames `check` reserved for `key`, once the deploy or restart that asked is decided. */
   release?(key: string): Promise<void>;
   /** Withdraws, as one change published like any other, every owned block whose key `owners` does not hold: a route whose
    * Target no longer exists, which would otherwise hold its hostnames from every new owner. `owners` is asked inside the

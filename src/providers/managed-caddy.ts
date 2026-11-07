@@ -1128,15 +1128,14 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       checkpoint: async (key) => ({ key, value: await readOwned(key) }),
       restore: (saved, expected) =>
         queued(() => change(saved.key, undefined, { saved, expected })),
-      // What a deploy asks before it stops anything: whether this route would be refused.
-      // What a deploy asks before it stops anything: whether this route would be refused. Its hostnames are then reserved
-      // until the route is applied, rolled back or removed, so a Host config published in between cannot claim them.
+      // Ends the reservation `check` made; the deploy or restart that asked releases it once it is decided, on every path.
       release: (key) =>
         queued(async () => {
           reservations.delete(key);
         }),
-      // The reservation covers the candidate's hostnames and those the route serves now (the previous Deployment's), since a
-      // failed deploy restores them: until it is decided, no reload or other deploy can take either.
+      // What a deploy or restart asks before it stops anything: whether this route would be refused. It then reserves the
+      // route's hostnames and those it serves now (the previous Deployment's, which a failed deploy restores), so neither
+      // a Host config reload nor another deploy can claim them until `release`.
       check: (route) =>
         queued(async () => {
           const { routes } = await canonicalRoutes();

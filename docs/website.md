@@ -471,14 +471,23 @@ a Service whose block carries comments must be done in an editor.
 ```sh
 # against your installed rigd, with hot reload, signing in with its dashboard's key
 RIG_WEB_KEY_FILE=~/.rig/auth/dashboard.key PORT=4173 bun run web:dev
-# against an isolated one
-RIG_ROOT=/tmp/rig-dev/.rig RIG_WEB_KEY_FILE=/tmp/rig-dev/.rig/auth/dashboard.key PORT=4173 bun run web:dev
+# against a source rigd running in an isolated $RIG_ROOT
+RIG_WEB_KEY_FILE="$RIG_ROOT/auth/dashboard.key" PORT=4173 bun run web:dev
 # the production build
 bun run web:build && RIG_WEB_KEY_FILE=~/.rig/auth/dashboard.key PORT=4173 bun run web:start -- -p 4173
 ```
 
 Without `RIG_WEB_KEY_FILE` the site admits no one. Then open
 `http://127.0.0.1:4173/` and give the browser the key from that file
-(`cat` it) as the password. To publish it, run `rig init` in this
-repository once and `rig deploy`; DNS for `rig.b-relay.com`, and for
-`rig-<preview>.b-relay.com` to reach Previews, must resolve to this Mac.
+(`cat` it) as the password. The README's
+[Development](../README.md#development) section starts and stops that isolated
+source `rigd`.
+
+As a Rig Project, `rig init` in this repository registers it once (its
+`rig.yaml` is committed), and `rig up` runs the working Target, which serves
+the site on a loopback port and publishes `rig-dev` and `rigd-dev`. `rig deploy preview <branch>`
+publishes a committed Branch other than `main` as a Preview at
+`rig-<preview>.b-relay.com`, which DNS must resolve to this Mac. The
+repository has no stable Target, so a bare `rig deploy` is refused
+(`TARGET_OFF`): `rig.b-relay.com` is the installed release's dashboard, which
+`rigd upgrade` updates.

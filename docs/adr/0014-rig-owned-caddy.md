@@ -1,8 +1,10 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Rig runs the Host's one Caddy and terminates TLS
+
+Implemented. Its open questions are answered (see the end): boot start shipped as `daemon.start: boot`, and the per-Service `domain` as [ADR 0015](0015-service-domains.md).
 
 ## Today
 
@@ -45,7 +47,7 @@ The coordinator settled these questions:
 - `providers.caddy` retires after the rollback window.
 - No DNS management (reversed by [ADR 0018](0018-dns-records.md)).
 
-A second hostname on one Target is supported internally. Its rig.yaml syntax is still open: the proposal is a per-Service `domain`, such as `services.api.domain: api.melody.b-relay.com`, whose Preview applies the flat rule (`api-<preview>.melody.b-relay.com`). No schema key exists yet.
+A second hostname on one Target is supported internally. Its rig.yaml syntax is still open: the proposal is a per-Service `domain`, such as `services.api.domain: api.melody.b-relay.com`, whose Preview applies the flat rule (`api-<preview>.melody.b-relay.com`). No schema key exists yet. (Resolved: [ADR 0015](0015-service-domains.md) shipped that per-Service `domain`.)
 
 ## Boot start: rigd and its Caddy as system jobs that run as the user
 
@@ -378,7 +380,7 @@ The commands come first:
 
 Each command supports `--help` and `-h`.
 
-The first three read or act through two control-plane actions:
+The first three read or act through two control-plane actions. (As built, only `rig proxy` and `rig proxy reload` do. `rig proxy verify`, like `rig proxy token`, runs in `rig` without rigd: it reads the current generation from the Rig root and makes its handshakes itself.)
 
 - **`proxy` (read)** returns:
   - **The job:** state (`running`, `stopped`, `unreachable` or `not-installed`), binary, and the ports and CA of the accepted settings.
@@ -402,6 +404,8 @@ The doctor checks replace `caddy-proxy`:
 | `proxy-custom-file` | A custom Caddy file an earlier build read is left on disk, ignored.                              |
 | `proxy-route-file`  | The route file holds text Rig did not write; it is never published and is rewritten.             |
 | `route-owners`      | The route file holds a block whose Target no longer exists (both modes); see **One owner**.      |
+
+As built (`src/adapters/proxy-inspection.ts`), the running-config comparison is `proxy-serving`: what Caddy runs is the current generation, otherwise it suggests `rig proxy reload`. `proxy-config` only checks that a current generation exists, and suggests `rigd install`. `proxy-binary` checks that Rig's copy of Caddy is there. There is no `proxy-ports` check.
 
 Certificate readiness is reported by `rig proxy verify`, not by doctor, because it needs network handshakes.
 
@@ -497,6 +501,8 @@ This Host's cutover requires boot mode. Do steps 1 to 6 in advance; they do not 
 
 1. **Boot start.** Should rigd and its Caddy become system jobs that run as clay? That is one sudo chain at install and one at uninstall, never at upgrades, and this Host's cutover requires it. _Recommendation: yes. Keep `login` as the default until #287's question about Services that need a login is settled._
 2. **The syntax for a second hostname on a Target.** The coordinator proposes a per-Service `domain`. The internals are ready for it.
+
+Both are answered. Boot start shipped as `daemon.start: boot` in Host config, with `login` the default. The per-Service `domain` shipped with [ADR 0015](0015-service-domains.md).
 
 ## Prototype and survey evidence (2026-10-10, x86_64 macOS 15.7, nothing global touched)
 

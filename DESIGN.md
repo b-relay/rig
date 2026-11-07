@@ -39,27 +39,20 @@ capability interfaces without Effect TS. See the
 
 ## Command Boundary
 
-`rig` is the user CLI:
+[docs/commands.md](docs/commands.md) is the complete command inventory, with
+every argument and flag. The boundary between the two CLIs:
 
-- `rig init`
-- `rig list`
-- `rig status`
-- `rig doctor`
-- `rig config`
-- `rig activity`
-- `rig rename` / `rig repoint` / `rig forget` for stopped Projects
-- `rig deploy`
-- `rig up`
-- `rig down`
-- `rig restart`
-- `rig logs`
-- `rig monitor`
-- `rig run`
+`rig` is the user CLI. It owns Projects and their Targets (`init`, `list`,
+`status`, `config`, `activity`, `up`, `down`, `restart`, `deploy`, `logs`,
+`monitor`, and `rename`, `repoint` and `forget` for stopped Projects), jobs
+and their backups (`run`, `rig backup`), the Host's diagnostics (`doctor`),
+and its routes and DNS (`rig proxy`, `rig dns`).
 
 `rigd` is daemon administration only:
 
 - `rigd install`
 - `rigd status`
+- `rigd upgrade`, which installs another release of Rig
 - `rigd uninstall`
 - `rigd capture`, the log-capture wrapper `rigd` runs for each Service; not a user command
 

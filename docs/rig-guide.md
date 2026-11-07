@@ -19,7 +19,8 @@ developed as a Rig Project's working Target, whose Tools are `rig-dev` and
 `rig` and `rigd`.
 
 Source development and tests must set an isolated `RIG_ROOT`; do not install
-into the real Host to try a change. `RIG_ROOT` must be an absolute path: an empty value means the default
+into the real Host to try a change (the README's Development section runs a
+source `rigd`, CLI and dashboard in one such root). `RIG_ROOT` must be an absolute path: an empty value means the default
 `~/.rig`, and a relative value makes `rig` and `rigd` exit
 with a usage error before they create or read anything, rather than rooting
 Rig in the current working directory. Rig's Caddy needs a root whose path has
@@ -736,8 +737,9 @@ registered directory and both ways forward: `rig repoint <this directory>
 Project, which is `name` in its `rig.yaml` when a config exists and `rig init
 --project <other name>` when none does.
 
-A Project needs at least one Service or Tool, so a new config is scaffolded
-from flags:
+A Project needs at least one Service, Tool or job. `rig init` scaffolds a new
+config with a Service or a Tool from flags; a jobs-only Project starts from a
+`rig.yaml` written by hand:
 
 ```bash
 rig init --service web --command "bun run start" --port 3000 \
@@ -1225,8 +1227,8 @@ or an executable's ownership record cannot be read then, the change fails
 rather than guess. A recovery holds the paths it undoes while it runs. If
 another Target nevertheless owns an executable the interrupted change was
 writing (an older rigd could let it install there), recovery refuses as
-`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Give that other
-Component a different `installName` and deploy it again, or remove its Target;
+`EFFECTS_CHANGED`, removes nothing and keeps the checkpoint. Rename that other
+Tool (its key under `tools`) and deploy it again, or remove its Target;
 then run `rig down` for the first Target again.
 
 Each journal carries a format version (currently 1). A journal written by a
@@ -1915,9 +1917,10 @@ targets:
 
 Top-level fields: `name` (required Project identity), `description`,
 `production_branch`, `domain`, `build`, `build_timeout`, `environment`,
-`env_file`, `services`, `tools`, `proxy`, and `targets`. A Project needs at
-least one Service or Tool, and a Tool cannot share a Service's name. Service
-and Tool names use lowercase letters, digits, and `-`. Unknown keys are
+`env_file`, `services`, `tools`, `jobs`, `proxy`, and `targets`. A Project
+needs at least one Service, Tool or job; a Tool cannot share a Service's name,
+nor a job a Service's or a Tool's. Service, Tool and job names use lowercase
+letters, digits, and `-`. Unknown keys are
 rejected with their field path. A few keys earlier Rig versions read are
 refused with what to do instead: a top-level `format` line (`Fix format: was
 removed because Rig reads one rig.yaml format; delete this line.`), a
@@ -2424,7 +2427,9 @@ services:
   string that starts with `http://` or `https://` is an HTTP GET that passes on
   any status below 400, without following a redirect, and must address
   `127.0.0.1` or `localhost`. Compose's lists work too:
-  - `["CMD-SHELL", "<command>"]` is the same as the string;
+  - `["CMD-SHELL", "<command>"]` is the same as the string, except for a URL:
+    an HTTP check is written as the plain string, and a URL in `CMD-SHELL` is
+    refused;
   - `["CMD", "<program>", "<argument>"]` runs the program with exactly those
     arguments and no shell (Rig quotes each one, references included, so
     nothing is split or expanded);
@@ -2562,8 +2567,11 @@ jobs:
 - **`timezone`** is an IANA name such as `America/Chicago`, `Europe/Berlin`
   or `UTC`, checked when rig.yaml is read. Without it the schedule is read in
   the Mac's own time zone (System Settings > General > Date & Time) as rigd
-  reads it. After changing the Mac's zone, check the next run in `rig status`;
-  if it still shows the old zone, restart rigd with `rigd install`.
+  reads it. After changing the Mac's zone, check the next run in `rig status`.
+  If it still shows the old zone, give the job a `timezone`, or restart rigd:
+  `rigd install` alone keeps a current rigd running (`unchanged`), so stop
+  every Target, run `rigd uninstall` and `rigd install`, and start the
+  Targets again.
   Daylight saving time follows one rule: a time the spring change skips
   (02:30 on the night clocks jump from 02:00 to 03:00) runs once, at the
   change (03:00); a time the autumn change repeats (01:30 on the night clocks

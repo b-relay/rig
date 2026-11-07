@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import "./support/dashboard-site";
 import { NextRequest } from "next/server";
 import { decide } from "../web/proxy";
 import { returnPath } from "../web/lib/return-path";

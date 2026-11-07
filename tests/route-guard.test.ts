@@ -220,7 +220,7 @@ test("a section ends a look waiting on the provider, whose late answer is droppe
   await f.guard.release();
 });
 
-test("a section drops the answers already in as well: a look it ended withholds nothing, though it saw a Service stopped", async () => {
+test("a section keeps the answers already in: a look it ended still withholds a Service it saw stopped, before the change", async () => {
   const f = fixture();
   f.guard.watch(target());
   f.seen.set("web", { state: "stopped" });
@@ -228,8 +228,15 @@ test("a section drops the answers already in as well: a look it ended withholds 
   f.startLook();
   await settled();
   expect(f.observed.sort()).toEqual(["api", "web"]);
-  await f.guard.exclusive(async () => {});
-  expect(f.events).toEqual(["read"]);
+  await f.guard.exclusive(async () => {
+    f.events.push("change");
+  });
+  expect(f.events).toEqual([
+    "read",
+    `withhold ${WEB} begun`,
+    "withhold done",
+    "change",
+  ]);
   await f.guard.release();
 });
 

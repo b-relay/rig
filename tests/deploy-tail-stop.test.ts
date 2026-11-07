@@ -736,6 +736,33 @@ test("a look held in flight is joined before the stop's withhold, without waitin
   expect(f.applied).toEqual([NONE, NONE, LIVE]);
 });
 
+test("a look the stop's section ends still withholds a kept Service it already saw stopped, before the stop goes on", async () => {
+  const f = await fixture();
+  await f.deployedThenChanged(["web", "search"]);
+  const search = f.holdStop("search");
+  const webStop = f.holdStop("web");
+  const deploying = f.deploy("c2");
+  await search.reached;
+  await f.exit("api");
+  const web = f.holdObservation("web");
+  const [fire] = f.waiting;
+  f.waiting.delete(fire!);
+  fire!();
+  await web.reached;
+  await settled();
+
+  search.open();
+  await webStop.reached;
+  expect(web.held.signal?.aborted).toBe(true);
+  expect(await f.paths()).toEqual(NONE);
+
+  webStop.open();
+  web.answerLate({ state: "stopped" });
+  f.answer.delete("web");
+  await deploying;
+  expect(f.overlaps).toEqual([]);
+});
+
 test("a withhold the guard has begun finishes through its journal capture before the stop's own route change starts", async () => {
   const f = await fixture();
   await f.deployedThenChanged(["api", "web", "search"]);

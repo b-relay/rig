@@ -125,7 +125,9 @@ export function createRouteGuard(
       if (read?.kind === "rejected") throw read.error;
       if (read?.kind !== "completed" || !read.value.size) return;
       const seen = await observeLivePorts([target], read.value, deps, signal);
-      if (signal.aborted || !seen.ports.size) return;
+      // A section that ended the look dropped only the answers not yet in: a Service already seen stopped still goes, and
+      // the section waits for it before its change.
+      if (!seen.ports.size) return;
       await deps.lifecycle.withholdPorts(target, seen.ports);
       refused = undefined;
       await tell(target, {

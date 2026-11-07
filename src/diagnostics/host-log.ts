@@ -1,4 +1,4 @@
-import { readHostConfig, type HostConfig } from "../config";
+import type { HostConfig } from "../config";
 import {
   createFileDiagnosticLog,
   type FileDiagnosticOptions,
@@ -18,17 +18,19 @@ export function configuredDiagnosticLog(
   });
 }
 
-/** Acquire Host policy lazily so help and parser-only requests never depend on valid config. */
+/** Acquire Host policy lazily, so help and parser-only requests neither depend on valid config nor load its reader. */
 export function createHostDiagnosticLog(
   options: Pick<FileDiagnosticOptions, "root" | "source" | "now">,
 ): DiagnosticLog {
   let selected: Promise<DiagnosticLog> | undefined;
   return {
     async record(entry) {
-      selected ??= readHostConfig(options.root).then(
-        (host) => configuredDiagnosticLog(options, host),
-        () => createFileDiagnosticLog(options),
-      );
+      selected ??= import("../config")
+        .then(({ readHostConfig }) => readHostConfig(options.root))
+        .then(
+          (host) => configuredDiagnosticLog(options, host),
+          () => createFileDiagnosticLog(options),
+        );
       return await (await selected).record(entry);
     },
   };

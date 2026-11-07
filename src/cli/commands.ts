@@ -9,10 +9,13 @@ import {
 } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
 import { reported } from "./failure";
-import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { rigCommand, type RigCommandPath } from "../domain/rig-command";
-import { generatedPreviewName } from "../domain/target-selector";
+// From the domain rather than the config schema, which help need not load.
+import {
+  generatedPreviewName,
+  PREVIEW_SELECTOR,
+} from "../domain/target-selector";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";

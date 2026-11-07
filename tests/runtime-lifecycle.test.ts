@@ -785,7 +785,7 @@ test("port contention after selection fails startup and preserves an already run
   }
 }, 15000);
 
-test("up prepares the workspace, publishes Tools in plan order, and starts only what is not running", async () => {
+test("up prepares the workspace, starts only what is not running, then publishes Tools before anything is routed", async () => {
   const record = structuredClone(target);
   record.plan.components = [
     {
@@ -864,7 +864,8 @@ test("up prepares the workspace, publishes Tools in plan order, and starts only 
     startGraceMs: 0,
   });
   expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
-  expect(events).toEqual(["prepare", "install:tool", "start:api"]);
+  // A Tool listed first still waits for the Services: whatever fails of it fails before publication (ADR 0020).
+  expect(events).toEqual(["prepare", "start:api", "install:tool"]);
   events.length = 0;
   expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
   expect(events).toEqual(["prepare", "install:tool"]);

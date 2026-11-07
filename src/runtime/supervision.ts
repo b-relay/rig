@@ -11,11 +11,13 @@ import {
 import type {
   OperationRecord,
   RuntimeState,
+  Served,
   ServiceOutcome,
   ServiceRun,
   ServiceSource,
   TargetRecord,
 } from "../domain/runtime";
+import type { ServedReceipt } from "./served";
 import type { ComponentReport } from "../domain/project-status";
 import { rigCommand } from "../domain/rig-command";
 import type { ProcessObservation } from "../providers/contracts";
@@ -354,7 +356,9 @@ async function saveRuns(
  * attempt of the named budget of the current activation. A `health` restart spends from neither budget and carries both
  * on, with `healthStretch`, the unhealthy stretch it continues. `afterHostRestart` marks each process an explicit start
  * makes as started after that restart, which status reports.
- * `failed` marks the Services an explicit start began as not started after it was rolled back; nothing retries that. */
+ * `failed` marks the Services an explicit start began as not started after it was rolled back; nothing retries that.
+ * What the start served is kept in `receipt` (ADR 0020), and on a deploy's candidate, the Target with a `recovery`, also
+ * saved there as `recovery.served`: before its publication, durably, and from and until when, as best it can. */
 export function activationJournal(
   target: TargetRecord,
   mode: "explicit" | RestartBudget | "health",
@@ -364,10 +368,42 @@ export function activationJournal(
     healthStretch?: NonNullable<ServiceRun["healthStretch"]>;
     /** When an automatic attempt was made (Unix milliseconds), as its budget records it; now when absent. */
     attemptAt?: number;
+    receipt?: ServedReceipt;
   } = {},
 ): ActivationJournal & { failed(error: unknown): Promise<void> } {
   const begun: string[] = [];
+  const receipt = options.receipt ?? {};
+  /** Keeps `served` in `receipt` and on the candidate, in memory first: what memory says the candidate served stays true
+   * whatever the disk says. */
+  const serve = async (served: Served) => {
+    receipt.served = served;
+    if (!target.recovery) return;
+    target.recovery.served = served;
+    await deps.store.update((state) => {
+      const saved = state.targets.find((t) => t.id === target.id);
+      if (saved?.recovery) saved.recovery.served = served;
+    });
+  };
   return {
+    async publishing() {
+      if (receipt.served) return;
+      // Durable before the proxy is asked: a candidate is never served with nothing on disk to say it may have been.
+      try {
+        await serve({});
+      } catch (error) {
+        delete receipt.served;
+        if (target.recovery) delete target.recovery.served;
+        throw error;
+      }
+    },
+    async published() {
+      if (!receipt.served || receipt.served.from !== undefined) return;
+      await serve({ ...receipt.served, from: deps.now() }).catch(() => {});
+    },
+    async withdrawn() {
+      if (!receipt.served || receipt.served.until !== undefined) return;
+      await serve({ ...receipt.served, until: deps.now() }).catch(() => {});
+    },
     async starting(service, evidence) {
       const incarnation = deps.id();
       const current = currentRun(target, service);

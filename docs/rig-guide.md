@@ -991,6 +991,19 @@ checkpoint, after which a deploy of the same Commit is `unchanged` again. After
 a build failure `rig up` is refused as `PREPARATION_INCOMPLETE`; redeploying
 the same Commit builds it again in a fresh Deployment.
 
+A deploy that fails after the new Commit's paths were published, so that it
+answered requests before the deploy stopped it, says so. The error and the
+deploy's Activity entry add when it began to serve and for how long, for example
+`The new Commit 470a510 was served from 2026-11-05T15:25:08.000Z for 2m14s.`,
+counted until its last path was withheld, before the previous Deployment
+started again. The deploy history records `servedAt`, when the new Commit began
+to serve, for a successful deploy too, and the dashboard's history page shows
+it. A deploy whose publication reached only Services it kept running serves no
+new code, and records none. When rigd stops during such a deploy, the `rig down`
+that settles it records the deploy in the history and Activity: served for at
+most as long as until its own withhold, or, when the publication was never
+confirmed, that the new Commit may have been served.
+
 Every port recorded by any Target in any Project is reserved while that record
 exists, whether the Target is running or stopped. A Target whose deployment
 transition is unresolved also keeps the ports of the plan that `rig down` may
@@ -1158,10 +1171,17 @@ A Service without a healthcheck, or whose healthcheck has no
 `test`, is ready once every port it declares accepts a connection on
 `127.0.0.1` or `::1`, within 30 seconds (or that healthcheck's `start_period`).
 When a start has more than one Service, every Service it started is verified
-again once the last one passed, before anything is published: one that exited
-while a later Service was still starting fails the start as `PROCESS_EXITED`
+again once the last one before publication passed, before anything is
+published: one that exited while a later Service was still starting fails the
+start as `PROCESS_EXITED`
 (`web was ready, then exited with code 23 before working finished starting.`),
 and the start is rolled back, so a deploy restores the revision it replaced.
+The Services at the end of the plan that no path needs start after the paths
+are published (see [Environment, builds, and startup](#environment-builds-and-startup)), and once they passed, every
+Service is verified again. A failure from then on comes after the start served:
+its paths are withheld again before it is rolled back, the hint no longer says
+that nothing of the start was published, and a deploy's error says from when
+and for how long the new Commit was served.
 A Service with neither a check nor a port must survive a short
 start grace period (half a second) before it counts as started; a command that
 exits earlier, such as a missing binary or a port already in use, fails `up`
@@ -1169,7 +1189,7 @@ and rolls the start back. `HEALTH_FAILED` details carry `outcome`:
 `unanswered` when no check answered within the budget, `unready` when the last
 answer said not ready.
 
-After the start check and before anything is published, Rig inspects what the
+After the start check and before its paths are published, Rig inspects what the
 Service's process and its descendants listen on (TCP). A listener bound
 beyond loopback, such as `*`, `0.0.0.0`, or a LAN address, fails the start as
 `LISTENER_NONLOCAL`; `127.0.0.0/8`, `::1`, and IPv4-mapped loopback are
@@ -2059,11 +2079,23 @@ with a path, and has only such Services after it. A slow worker listed last then
 costs no `503` while it stops; a Service the site needs belongs above the last
 routed Service, or in a `depends_on`. `rig down`, `deploy --no-up` and every other
 stop withhold before their first stop, since nothing replaces what they stop.
-From the first stop of a deploy that starts, or of a `rig restart`, until it
-releases the Target, `rigd` looks at the Services behind the paths still live
-once a second: one seen stopped has its paths
-withheld, and the diagnostic log records `routes-withheld`; one whose state cannot
-be established keeps them until the next look. When Rig's Caddy cannot be made to
+Starting works the other way round: `rig up`, `rig restart`, a deploy and the
+start after a Mac restart publish every path, all in one change, as soon as the
+Services before those at the end of the plan have passed their start checks, and
+start those last ones with the site up. From then on, a failed start check of
+one of them fails the start after it served, and so does a Service the start
+started that is seen stopped before the start is over, or before a deploy's
+commit is decided: the start's paths are withheld again, and a deploy restores
+the previous Deployment, a second short `503` after the new version answered.
+One seen stopped after the commit is decided only has its paths withheld, and
+restart policy takes over once the deploy is over. A Service the site needs
+without a `depends_on` that is listed below the last routed Service is missing
+while those last ones start: move it up, or declare it.
+From the first stop of a deploy that starts, or of a `rig restart`, and from the
+beginning of every other start, until it releases the Target, `rigd` looks at the
+Services behind the paths still live once a second: one seen stopped has its
+paths withheld, and the diagnostic log records `routes-withheld`; one whose
+state cannot be established keeps them until the next look. When Rig's Caddy cannot be made to
 withhold them, no Service with a path is stopped (`ROUTE_WITHHOLD`), and the
 diagnostic log records `routes-withhold-failed` when a look is what asked. A
 failed start or deploy that rolls back brings the earlier
@@ -2950,9 +2982,21 @@ runs every unit. A working Target that is already planned keeps its plan across
 running Services still use the earlier plan, and `rig restart` applies the
 current file.
 
-`rig up`, `rig restart`, and an activating deploy then work in this order:
+`rig up`, `rig restart`, an activating deploy and the start after a Mac
+restart then work in this order:
 
-1. Tools are installed. The executable is republished only when the built
+1. Each Service in dependency order, but those at the end of the plan that no
+   path needs, which start in step 4: the process start, then its start check.
+   That is its healthcheck passing within `start_period`; without a
+   healthcheck (or one without `test`), every declared port accepting a
+   connection; without ports either, that the process
+   survived the start grace period. Then its listeners are inspected. A
+   Service that was already running is skipped, except that one another
+   Service lists in `depends_on` is verified the same way first, so a
+   dependent never starts against a running but unready dependency.
+   `depends_on` gates starting only: a dependency that stops later does not
+   stop its dependents.
+2. Tools are installed. The executable is republished only when the built
    file, its destination, the Tool's declared policy, or (for a source-file
    `bin`) the recorded bun changed, and is
    otherwise reported `unchanged`; a daemon restarted from another shell
@@ -2977,21 +3021,17 @@ name>` for a Preview. Two Projects that both install `cli` on
    is neither replaced nor retired (`ARTIFACT_CHANGED`, which blocks
    `rig down preview <branch> --destroy` too): both name the file, and moving or
    deleting it is the way through.
-2. Each Service in dependency order: the process start, then its start check.
-   That is its healthcheck passing within `start_period`; without a
-   healthcheck (or one without `test`), every declared port accepting a
-   connection; without ports either, that the process
-   survived the start grace period. Then its listeners are inspected. A
-   Service that was already running is skipped, except that one another
-   Service lists in `depends_on` is verified the same way first, so a
-   dependent never starts against a running but unready dependency.
-   `depends_on` gates starting only: a dependency that stops later does not
-   stop its dependents.
-3. Routing.
+3. The Services of step 1 are checked again, and every path is published in
+   one change.
+4. The Services at the end of the plan that no path needs, in dependency order,
+   each with its start check, while the paths serve.
+5. When step 4 started any, every Service is checked again. A deploy commits
+   only after this.
 
 `rig down` stops each running Service, dependents first, each within its
 `stop_timeout`. A start that fails rolls back the processes that command
-started, within the same grace.
+started, within the same grace. One that fails in step 4 or 5 has already
+served: the paths it published are withheld again before anything stops.
 
 Rig has no hooks and no plugins. Run a database as an ordinary Service whose `command`
 starts it, and put preparation steps in a `build` or in the script `command`

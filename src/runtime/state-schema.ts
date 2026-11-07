@@ -542,6 +542,24 @@ const target = z.object({
         .optional()
         .describe("The rollback plan has not completed a deployment."),
       stage: z.enum(["pending", "blocked", "committing"]),
+      // Optional, so no STATE_VERSION bump (see there): an older rigd keeps it as it is, and its rig down settles without it.
+      served: z
+        .object({
+          from: text
+            .optional()
+            .describe(
+              "When the router confirmed the first path to a Service the candidate's start started (ISO 8601).",
+            ),
+          until: text
+            .optional()
+            .describe(
+              "When a confirmed route change removed the last such path (ISO 8601); the first stands.",
+            ),
+        })
+        .optional()
+        .describe(
+          "What the candidate served: written before a publication gives it a path, so rig down after a crash can say that it may have served, and from when until when.",
+        ),
     })
     .optional(),
 });
@@ -771,6 +789,12 @@ const deployment = z.object({
     ),
   startedAt: text.describe("When rigd began the deploy (ISO 8601)."),
   finishedAt: text.describe("When it recorded the outcome (ISO 8601)."),
+  // Optional, so no STATE_VERSION bump (see there): an older rigd keeps it as it is.
+  servedAt: text
+    .optional()
+    .describe(
+      "When the new Commit began to answer requests (ISO 8601). A failed deploy has one when it served before it was rolled back.",
+    ),
   message: z
     .string()
     .optional()

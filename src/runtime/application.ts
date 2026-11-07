@@ -14,6 +14,7 @@ import type {
 } from "../domain/project-status";
 import { stopRecordedTarget } from "./stop";
 import { createRouteGuard, type RouteGuard } from "./route-guard";
+import { servedPhrase, type ServedReceipt } from "./served";
 import { doctor, hostDoctor } from "./doctor";
 import {
   assertRecordedStopped,
@@ -661,6 +662,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       | undefined;
     /** The Services a deploy kept running (ADR 0016), for its history. */
     let deployKept: readonly string[] = [];
+    /** What the deploy's candidate served (ADR 0020), for its history and Activity whatever the outcome. */
+    const deployReceipt: ServedReceipt = {};
     try {
       if (command.action === "cancel-uninstall") {
         draining = false;
@@ -1357,6 +1360,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
                 operationId,
                 ...(command.force ? { force: true } : {}),
                 repository,
+                receipt: deployReceipt,
               },
               deps,
             ),
@@ -1377,7 +1381,18 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
                 ...retained.causes,
               })
               .catch(() => {});
-          throw error;
+          // A candidate that served says so, and for how long, whatever undid it: Activity as the error.
+          const served = deployReceipt.served;
+          if (!served) throw error;
+          activityNote = servedPhrase(candidate.commit, served);
+          const failure = asRigError(error);
+          throw new RigError(
+            failure.code,
+            `${failure.message} The ${activityNote}.`,
+            failure.hint,
+            failure.details,
+            failure.causes,
+          );
         }
         const warnings = [
           ...preflight.warnings,
@@ -1668,6 +1683,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             outcome,
             ...(outcome === "deployed" && deployKept.length
               ? { kept: [...deployKept] }
+              : {}),
+            ...(deployReceipt.served?.from
+              ? { servedAt: deployReceipt.served.from }
               : {}),
             startedAt:
               deploySource?.startedAt ??
@@ -2616,10 +2634,21 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         }
         if (mark && target.kind === "stable" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          const started = await startAfterHostRestart(target, mark, {
-            ...deps,
-            lifecycle,
+          // The start publishes before the end of its plan has started, so its paths are watched as an Operation's are,
+          // until the Target's lease ends.
+          const routeGuard = createRouteGuard(deps, {
+            operationId: lease.id,
+            action: "up",
           });
+          let started: Awaited<ReturnType<typeof startAfterHostRestart>>;
+          try {
+            started = await startAfterHostRestart(target, mark, {
+              ...deps,
+              lifecycle: lifecycleOf(entry, routeGuard),
+            });
+          } finally {
+            await routeGuard.release();
+          }
           if (started.outcome === "settled") settled?.add(targetId);
           if (started.outcome === "unrecorded")
             unrecorded.set(targetId, { error: started.error, mark });

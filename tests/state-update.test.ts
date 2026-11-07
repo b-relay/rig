@@ -65,13 +65,14 @@ function intercept<T extends object, K extends keyof T>(
   restores.push(() => spy.mockRestore());
 }
 
-/** Records every flush: the new file, before or after it became state.json, or a directory by name. */
+/** Records every flush: the new file, before or after it became state.json, or a directory by name. `fail` makes the
+ * flushes it picks throw: of the file, or of the directory it names. */
 async function traceFlushes(
   at: Awaited<ReturnType<typeof storeRoot>>,
   marker: string,
-  fail?: (kind: "file" | "directory") => boolean,
+  fail?: (flushed: "file" | "runtime" | "root") => boolean,
 ) {
-  const directories = new Map([
+  const directories = new Map<number, "root" | "runtime">([
     [(await fs.stat(at.root)).ino, "root"],
     [(await fs.stat(join(at.root, "runtime"))).ino, "runtime"],
   ]);
@@ -88,7 +89,7 @@ async function traceFlushes(
             ? `directory ${directories.get(info.ino)} ${published ? "after" : "before"} the rename`
             : `file ${published ? "after" : "before"} the rename`,
         );
-        if (fail?.(info.isDirectory() ? "directory" : "file"))
+        if (fail?.(info.isDirectory() ? directories.get(info.ino)! : "file"))
           throw Object.assign(new Error("injected flush failure"), {
             code: "EIO",
           });
@@ -157,22 +158,33 @@ test("a failure writing, flushing, backing up or renaming leaves state.json as i
   }
 });
 
-test("a directory that cannot be flushed fails FILE_NOT_DURABLE with the new state in place and the previous one kept", async () => {
-  const at = await storeRoot();
-  await at.store.update(add("first"));
-  const previous = await at.file();
-  await traceFlushes(at, '"second"', (kind) => kind === "directory");
-  await expect(at.store.update(add("second"))).rejects.toMatchObject({
-    code: "FILE_NOT_DURABLE",
-    details: { path: at.path, published: true },
-  });
-  for (const restore of restores.splice(0)) restore();
-  expect(names(await new FileStateStore(at.root).read())).toEqual([
-    "first",
-    "second",
-  ]);
-  expect(await fs.readFile(`${at.path}.bak`, "utf8")).toBe(previous);
-  expect(await at.leftovers()).toEqual([]);
+test("either directory that cannot be flushed, state.json's or the root, fails FILE_NOT_DURABLE with the new state in place and the previous one kept", async () => {
+  for (const directory of ["runtime", "root"] as const) {
+    const at = await storeRoot();
+    await at.store.update(add("first"));
+    const previous = await at.file();
+    await traceFlushes(at, '"second"', (flushed) => flushed === directory);
+    expect({
+      directory,
+      failure: await at.store.update(add("second")).then(
+        () => "resolved",
+        (error: unknown) => error,
+      ),
+    }).toMatchObject({
+      directory,
+      failure: {
+        code: "FILE_NOT_DURABLE",
+        details: { path: at.path, published: true, cause: "EIO" },
+      },
+    });
+    for (const restore of restores.splice(0)) restore();
+    expect(names(await new FileStateStore(at.root).read())).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(await fs.readFile(`${at.path}.bak`, "utf8")).toBe(previous);
+    expect(await at.leftovers()).toEqual([]);
+  }
 });
 
 test("an update waits for its asynchronous change before saving, and the update queued behind it sees that change", async () => {

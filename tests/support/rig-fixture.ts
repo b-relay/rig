@@ -30,7 +30,7 @@ async function recordedTargets(root: string) {
   }
 }
 /** When the process `pid` started and what it runs, while it is alive and a rigd: a later process of that pid differs. */
-function daemonIdentity(pid: number): string | undefined {
+export function daemonIdentity(pid: number): string | undefined {
   const seen = Bun.spawnSync(
     ["ps", "-p", String(pid), "-o", "lstart=", "-o", "command="],
     { stdout: "pipe", stderr: "ignore" },
@@ -38,7 +38,7 @@ function daemonIdentity(pid: number): string | undefined {
   return seen.includes("rigd") ? seen : undefined;
 }
 /** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits. */
-async function recordedDaemon(root: string) {
+export async function recordedDaemon(root: string) {
   const { pid } = (await readFile(join(root, "daemon", "address.json"), "utf8")
     .then((text) => JSON.parse(text))
     .catch(() => ({}))) as { pid?: number };
@@ -48,7 +48,7 @@ async function recordedDaemon(root: string) {
 /** How long a rigd may take to exit once it has been told to, on a machine as loaded as a test run makes it. */
 const DAEMON_EXIT_MS = 15_000;
 /** Whether `daemon` is gone by the deadline; it answers as soon as it is. */
-async function daemonExited(daemon: {
+export async function daemonExited(daemon: {
   pid: number;
   identity: string;
 }): Promise<boolean> {

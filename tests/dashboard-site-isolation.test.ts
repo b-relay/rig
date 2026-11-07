@@ -121,7 +121,27 @@ test("the Restore action tests pass with an operator's dashboard settings inheri
   await untouched();
 });
 
-/** The modules `file` imports, in order, among the repository's own files; `@/` is the dashboard's root. */
+const SITE_MODULE = join(REPOSITORY, "web", "server", "site.ts");
+const FIXTURE = join(REPOSITORY, "tests", "support", "dashboard-site.ts");
+/** Sources by path; a test of the check itself supplies files that are not on disk. */
+const sources = new Map<string, string>();
+const sourceOf = (file: string) => {
+  const source = sources.get(file) ?? readFileSync(file, "utf8");
+  sources.set(file, source);
+  return source;
+};
+/** Where `specifier`, imported from `file`, resolves among the repository's own files; `@/` is the dashboard's root. */
+function resolved(file: string, specifier: string): string | undefined {
+  const path = specifier.startsWith("@/")
+    ? join(REPOSITORY, "web", specifier.slice(2))
+    : specifier.startsWith(".")
+      ? join(dirname(file), specifier)
+      : undefined;
+  if (path === undefined) return undefined;
+  const found = Bun.resolveSync(path, dirname(file));
+  return found.includes("/node_modules/") ? undefined : found;
+}
+/** The modules `file` imports, in order. */
 const imported = new Map<string, string[]>();
 function imports(file: string): string[] {
   let found = imported.get(file);
@@ -130,44 +150,108 @@ function imports(file: string): string[] {
     loader: file.endsWith("x") ? "tsx" : "ts",
   });
   found = scanner
-    .scanImports(readFileSync(file, "utf8"))
-    .map(({ path }) =>
-      path.startsWith("@/")
-        ? join(REPOSITORY, "web", path.slice(2))
-        : path.startsWith(".")
-          ? join(dirname(file), path)
-          : undefined,
-    )
-    .filter((path): path is string => path !== undefined)
-    .map((path) => Bun.resolveSync(path, dirname(file)))
-    .filter((path) => !path.includes("/node_modules/"));
+    .scanImports(sourceOf(file))
+    .map(({ path }) => resolved(file, path))
+    .filter((path): path is string => path !== undefined);
   imported.set(file, found);
   return found;
 }
-/** Whether `file`, or anything it imports, reads the running site's settings or policy. */
+/** Whether `file` takes the running site's settings or policy (`site` or `sitePolicy`) from web/server/site.ts, under
+ * whatever name: by name, as the whole module, or by importing it at run time. Its pure `siteSettings` reads nothing. */
+function acquires(file: string): boolean {
+  const source = sourceOf(file);
+  for (const [, typeOnly, clause, specifier] of source.matchAll(
+    /import\s+(type\s+)?([^'";]*?)\s*from\s*["']([^"']+)["']/g,
+  )) {
+    if (typeOnly || resolved(file, specifier!) !== SITE_MODULE) continue;
+    const named = /\{([^}]*)\}/.exec(clause!);
+    const names = (named?.[1] ?? "").split(",").map(
+      (each) =>
+        each
+          .trim()
+          .replace(/^type\s+/, "")
+          .split(/\s+as\s+/)[0],
+    );
+    // A default or namespace import is the whole module.
+    const whole = clause!
+      .replace(/\{[^}]*\}/, "")
+      .replace(/,/g, "")
+      .trim();
+    if (names.includes("site") || names.includes("sitePolicy") || whole)
+      return true;
+  }
+  return [...source.matchAll(/import\(\s*["']([^"']+)["']\s*\)/g)].some(
+    ([, specifier]) => resolved(file, specifier!) === SITE_MODULE,
+  );
+}
+/** Whether `file`, or anything it imports, takes the running site's settings or policy. */
 function reachesSite(file: string): boolean {
   const seen = new Set([file]);
   for (const each of seen) {
-    if (
-      !each.endsWith("web/server/site.ts") &&
-      /\bsite(Policy)?\(\)/.test(readFileSync(each, "utf8"))
-    )
-      return true;
+    if (acquires(each)) return true;
     for (const next of imports(each)) seen.add(next);
   }
   return false;
 }
+/** Whether the test `file` imports the test site before anything, itself included, that takes the site's settings. */
+function ownsSite(file: string): boolean {
+  const order = imports(file);
+  const first = order.findIndex(
+    (path) => reachesSite(path) || (path === SITE_MODULE && acquires(file)),
+  );
+  const own = order.indexOf(FIXTURE);
+  return first === -1 || (own !== -1 && own <= first);
+}
 
 test("every test that can reach the site's settings or access key imports the test site before anything that reads them", async () => {
-  const fixture = join(REPOSITORY, "tests", "support", "dashboard-site.ts");
   const unowned: string[] = [];
-  for (const name of await readdir(join(REPOSITORY, "tests"))) {
-    if (!/\.test\.tsx?$/.test(name)) continue;
-    const order = imports(join(REPOSITORY, "tests", name));
-    const first = order.findIndex(reachesSite);
-    const own = order.indexOf(fixture);
-    if (first !== -1 && (own === -1 || own > first))
+  for (const name of await readdir(join(REPOSITORY, "tests")))
+    if (
+      /\.test\.tsx?$/.test(name) &&
+      !ownsSite(join(REPOSITORY, "tests", name))
+    )
       unowned.push(`tests/${name}`);
-  }
   expect(unowned).toEqual([]);
+});
+
+test("the check refuses a test that takes the site's settings itself, under any name, unless the test site comes first", () => {
+  const judged = (name: string, source: string) => {
+    const file = join(REPOSITORY, "tests", `${name}.test.ts`);
+    sources.set(file, `import { test } from "bun:test";\n${source}`);
+    return ownsSite(file);
+  };
+  const body = `test("reads site policy", async () => { await sitePolicy(); });`;
+  expect({
+    named: judged(
+      "unsafe-named",
+      `import { sitePolicy } from "../web/server/site";\n${body}`,
+    ),
+    renamed: judged(
+      "unsafe-renamed",
+      `import { sitePolicy as policy } from "../web/server/site";\ntest("x", () => policy());`,
+    ),
+    whole: judged(
+      "unsafe-whole",
+      `import * as running from "../web/server/site";\ntest("x", () => running.site());`,
+    ),
+    later: judged(
+      "unsafe-later",
+      `test("x", async () => (await import("../web/server/site")).site());`,
+    ),
+    owned: judged(
+      "safe-owned",
+      `import "./support/dashboard-site";\nimport { sitePolicy } from "../web/server/site";\n${body}`,
+    ),
+    pure: judged(
+      "safe-pure",
+      `import { siteSettings } from "../web/server/site";\ntest("x", () => siteSettings({}, "/", "/"));`,
+    ),
+  }).toEqual({
+    named: false,
+    renamed: false,
+    whole: false,
+    later: false,
+    owned: true,
+    pure: true,
+  });
 });

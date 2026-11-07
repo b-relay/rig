@@ -97,6 +97,11 @@ export async function fixture(config: ProjectConfig = melody()) {
     ReturnType<typeof gate> & { detach?: boolean }
   >();
   const heldStarts = new Map<string, ReturnType<typeof gate>>();
+  /** The supervisor's next observation of a Service after `skip` more, held until released. */
+  const heldObserves = new Map<
+    string,
+    ReturnType<typeof gate> & { skip: number }
+  >();
   const published = new Map<string, RouteRequest>();
   /** Each path's port or `503`, as the route stood when each Service began to stop. */
   const pathsAtStop = new Map<string, Record<string, number | "503">>();
@@ -116,6 +121,12 @@ export async function fixture(config: ProjectConfig = melody()) {
   const pids = new Map<number, string>();
   const supervisor: Supervisor = {
     async observe(key) {
+      const held = heldObserves.get(name(key));
+      if (held && held.skip-- <= 0) {
+        heldObserves.delete(name(key));
+        held.reach();
+        await held.opened;
+      }
       return processes.get(key) ?? { state: "stopped" };
     },
     async ensureRunning(request) {
@@ -577,6 +588,12 @@ export async function fixture(config: ProjectConfig = melody()) {
     holdStart(service: string) {
       const held = gate();
       heldStarts.set(service, held);
+      return held;
+    },
+    /** The lifecycle's observation of `service` after the next `skip` waits until the test releases it. */
+    holdObserve(service: string, skip = 0) {
+      const held = { ...gate(), skip };
+      heldObserves.set(service, held);
       return held;
     },
     /** The next observation of `service` waits, ignoring its cancellation, until the test answers. */

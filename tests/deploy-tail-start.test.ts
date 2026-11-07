@@ -189,6 +189,29 @@ test("a routed exit during the final checks, with db's final check pending, is w
   expect(f.overlaps).toEqual([]);
 });
 
+test("a final observation that never answers does not hold off the rollback a routed exit starts", async () => {
+  const f = await fixture();
+  await f.deployedThenChanged(["db", "web", "search"]);
+  const spawn = f.holdStart("search");
+  const deploying = f.deploy("c2").catch((error: unknown) => error);
+  await spawn.reached;
+  // From here db is observed four times by its final start check, then once more as the start's last look at it.
+  const last = f.holdObserve("db", 4);
+  spawn.open();
+  await last.reached;
+  await f.exit("web");
+  fire(f);
+  // The observation is still unanswered: the failure ends the wait, and the rollback completes.
+  expect(await deploying).toMatchObject({
+    code: "PROCESS_EXITED",
+    details: { component: "web" },
+  });
+  expect((await f.stable()).commit).toBe("c1");
+  expect((await f.stable()).recovery).toBeUndefined();
+  expect(await f.paths()).toEqual(LIVE);
+  last.open();
+});
+
 test("a kept routed Service that exits during the clean-up's long stop is withheld by the guard", async () => {
   const f = await fixture();
   await f.deployedThenChanged(["web", "search"]);

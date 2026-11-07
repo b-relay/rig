@@ -770,7 +770,7 @@ export function createTargetLifecycle(
           activated.push({
             component,
             process: processOf(component),
-            seen: await processOf(component).observe(),
+            seen: await raced(processOf(component).observe(), watching),
           });
         const startOne = async (component: ManagedComponent) => {
           if (!stopped(component.name)) {
@@ -815,7 +815,12 @@ export function createTargetLifecycle(
         };
         // Those checks took time too: right after them, every Service of the start is still the process it verified.
         const stillActive = async () => {
-          await assertStillActive(activated, target, published);
+          await assertStillActive(
+            activated,
+            target,
+            published,
+            watching.failure,
+          );
           watching.check();
         };
         // Dependencies are ordered during plan resolution, before any process starts.
@@ -1308,11 +1313,14 @@ export function createTargetLifecycle(
   ): Promise<void> {
     const key = `${target.id}:${component.name}`;
     // Read before the start is journalled, so an unreadable env file leaves no record of a start that never was.
-    const env = await effects.environment(target, component);
+    // Nothing is spawned yet, so a failure the guard latched ends these reads at once.
+    const env = await raced(effects.environment(target, component), watching);
     // Best effort: a start never fails for its digest, and a run recorded without one is never kept by a deploy.
-    const environment = await effects
-      .digestEnvironment?.(target, env)
-      .catch(() => undefined);
+    const environment = await raced(
+      effects.digestEnvironment?.(target, env).catch(() => undefined) ??
+        Promise.resolve(undefined),
+      watching,
+    );
     observer?.changing(target, component.name);
     const incarnation = journal
       ? await journal.starting(
@@ -1320,6 +1328,7 @@ export function createTargetLifecycle(
           environment !== undefined ? { environment } : {},
         )
       : randomUUID();
+    watching.check();
     const kill = stops.kill?.(target);
     const result = await supervisor.ensureRunning(
       {
@@ -1651,9 +1660,13 @@ async function assertStillActive(
   activated: readonly Activated[],
   target: TargetRecord,
   published: boolean,
+  failed?: Promise<never>,
 ): Promise<void> {
   for (const { component, process, seen } of activated) {
-    const now = await process.observe();
+    // An observation that never answers holds off no failure from elsewhere.
+    const now = await (failed
+      ? Promise.race([process.observe(), failed])
+      : process.observe());
     if (
       now.state === "running" &&
       now.pid === seen.pid &&
@@ -1696,6 +1709,10 @@ function exitedAfterReady(
       : "Inspect the Target logs for why it ended; nothing of this start was published.",
     details,
   );
+}
+/** `work`, ended at once by a failure `watching` latched: for read-only waits a start may abandon. */
+function raced<T>(work: Promise<T>, watching: GuardedStart): Promise<T> {
+  return Promise.race([work, watching.failure]);
 }
 /** The start of a lifecycle no route guard follows: nothing latches, and nothing is followed. */
 const UNGUARDED: GuardedStart = {

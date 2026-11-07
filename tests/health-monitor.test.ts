@@ -4,9 +4,9 @@ import type { HealthcheckPlan, ManagedComponent } from "../src/config/types";
 import { HEALTH_RESTART_BACKOFF_MS } from "../src/domain/health-policy";
 import { RigError } from "../src/domain/errors";
 import type { RuntimeState, TargetRecord } from "../src/domain/runtime";
+import { checkIdentity } from "../src/domain/health-policy";
+import { UNWRITTEN_HEALTH_LIMIT } from "../src/runtime/health-records";
 import {
-  UNWRITTEN_HEALTH_LIMIT,
-  checkIdentity,
   createHealthMonitor,
   type HealthMonitorDependencies,
   type HealthRestartRequest,

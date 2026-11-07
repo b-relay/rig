@@ -57,15 +57,17 @@ import { resolve as resolvePath } from "node:path";
 import { routeOwnerToken } from "../domain/proxy-publication";
 import { trackedWorkReport } from "./work-report";
 import {
-  activationJournal,
-  intendRunning,
-  intendStopped,
   superviseTarget,
   withholdRecoveryPaths,
   withholdStoppedServices,
-  supervisionScope,
   type RestartMarks,
 } from "./supervision";
+import { supervisionScope } from "../domain/restart-policy";
+import {
+  activationJournal,
+  intendRunning,
+  intendStopped,
+} from "./service-runs";
 import {
   findHostRestart,
   recordFailedAfterHostRestart,
@@ -317,7 +319,7 @@ const UNLOCKED: Admission = {
  * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
 export function createRuntime(input: RuntimeDependencies): RigRuntime {
   // Every write the runtime makes reports its lifecycle transitions to the health monitor as it is applied, while the
-  // Operation making it still holds its Target (the epoch rule in health-monitor.ts).
+  // Operation making it still holds its Target (the epochs of health-cache.ts).
   const deps: RuntimeDependencies = input.healthTransitions
     ? {
         ...input,

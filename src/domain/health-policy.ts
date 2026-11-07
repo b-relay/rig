@@ -1,3 +1,7 @@
+import type { ManagedComponent } from "../config/types";
+import type { HealthCheck } from "../providers/contracts";
+import { currentRun, type ServiceRun, type TargetRecord } from "./runtime";
+
 /** Ongoing health checks (ADR 0012): the pure rules for what one check result means, and when an unhealthy Service with
  * `on_failure: restart` is restarted. Recorded times are wall-clock Unix milliseconds; whether a check or a restart is due
  * is decided on elapsed time, which the caller measures, so nothing here reads a clock and a correction of the clock
@@ -170,4 +174,125 @@ export function restarted(state: HealthState, at: number): HealthState {
     failures: 0,
     stretch: { ...stretch, restarts: [...stretch.restarts, at] },
   };
+}
+
+/** The Service's ongoing check policy, from its recorded plan; undefined for a Service without a healthcheck, including
+ * every plan recorded before healthcheck, whose `health` only gates start. */
+export function healthPolicy(
+  component: ManagedComponent,
+): HealthPolicy | undefined {
+  const check = component.healthcheck;
+  if (!check) return undefined;
+  return {
+    intervalMs: check.interval * 1000,
+    timeoutMs: check.timeout * 1000,
+    retries: check.retries,
+    onFailure: check.onFailure,
+  };
+}
+
+/** Whether the Service's record says its last health restart's start failed, so the health monitor starts it again on the
+ * back-off. Not once a Host restart stopped it: that keeps a working Target or Preview stopped until rig up, and a stable
+ * Target is started by rigd's own start after the restart. */
+export function healthStartPending(
+  run: ServiceRun | undefined,
+): run is ServiceRun & {
+  healthStretch: NonNullable<ServiceRun["healthStretch"]>;
+} {
+  return (
+    run?.healthStretch?.pendingStart !== undefined &&
+    run.intent === "running" &&
+    !(run.outcome?.kind === "unknown" && run.outcome.hostRestart)
+  );
+}
+/** Which check a plan entry runs: its test, its policy, and what a test runs in or connects to. Results, and a restart, are
+ * about one such check of one process; a deploy or edit that changes it starts afresh. */
+export function checkIdentity(component: ManagedComponent): string {
+  return JSON.stringify([
+    component.health ?? null,
+    component.healthcheck ?? null,
+    component.workingDir ?? null,
+    component.ports ?? component.port ?? null,
+  ]);
+}
+
+/** `healthAction`, except that a process nothing identifies (adopted from a rigd older than incarnations) is never
+ * restarted for its checks, since a restart could stop another process started meanwhile: it is checked and reported as
+ * with report. */
+export function identifiedHealthAction(
+  state: HealthState,
+  policy: HealthPolicy,
+  sinceRestart: number,
+): HealthAction {
+  const action = healthAction(state, policy, sinceRestart);
+  return action.kind === "restart" && state.incarnation === undefined
+    ? { kind: "none" }
+    : action;
+}
+
+/** What one probe answer means as a check result; no answer within `timeoutMs` failed. */
+export function checkResult(
+  answer: HealthCheck | undefined,
+  timeoutMs: number,
+): { passed: boolean; output?: string } {
+  return answer === undefined
+    ? {
+        passed: false,
+        output: `The check did not answer within ${timeoutMs / 1000}s.`,
+      }
+    : "ready" in answer && answer.ready
+      ? { passed: true }
+      : {
+          passed: false,
+          output: "reason" in answer ? answer.reason : "failed",
+        };
+}
+
+/** The state a process of the Service starts from: nothing known of it, with the unhealthy stretch its record says a
+ * health or automatic restart continued. The last output was about another process, and is not kept. */
+export function seededHealth(
+  target: Pick<TargetRecord, "services" | "plan">,
+  service: string,
+): HealthState {
+  const record = currentRun(target, service)?.healthStretch;
+  return record
+    ? {
+        ...NEW_HEALTH,
+        stretch: { since: record.since, restarts: [...record.restarts] },
+      }
+    : NEW_HEALTH;
+}
+
+/** What is known of a Service after a read of its record: `known`, unless the read names another process or another check,
+ * which start afresh from their record; and the unhealthy stretch as the record carries it on, when a health restart
+ * counted an attempt there that `known` could not (its restart was itself a transition). */
+export function judgedHealth(
+  target: Pick<TargetRecord, "services" | "plan">,
+  component: ManagedComponent,
+  known: HealthState | undefined,
+): HealthState {
+  const run = currentRun(target, component.name);
+  if (
+    known === undefined ||
+    (known.incarnation !== undefined &&
+      run?.incarnation !== undefined &&
+      run.incarnation !== known.incarnation) ||
+    (known.check !== undefined && known.check !== checkIdentity(component))
+  )
+    return seededHealth(target, component.name);
+  const record = run?.healthStretch;
+  if (!record || run?.incarnation !== known.incarnation) return known;
+  // The record counted an attempt the cache could not; or it says this process's health start failed although it was seen
+  // running, a stretch its checks must end before anything forgets it.
+  const longer =
+    known.stretch &&
+    record.since === known.stretch.since &&
+    record.restarts.length > known.stretch.restarts.length;
+  const unseen = !known.stretch && record.pendingStart !== undefined;
+  return longer || unseen
+    ? {
+        ...known,
+        stretch: { since: record.since, restarts: [...record.restarts] },
+      }
+    : known;
 }

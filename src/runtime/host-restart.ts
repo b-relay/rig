@@ -17,12 +17,8 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { RuntimeDependencies } from "./contracts";
-import {
-  activationJournal,
-  intendRunning,
-  recordFailedStart,
-  recordStoppedByHostRestart,
-} from "./supervision";
+import { recordFailedStart, recordStoppedByHostRestart } from "./supervision";
+import { activationJournal, intendRunning } from "./service-runs";
 
 type Deps = Pick<RuntimeDependencies, "store" | "now" | "id">;
 

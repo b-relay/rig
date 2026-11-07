@@ -14,12 +14,12 @@ import { createProcessTiming } from "../src/providers/process-timing";
 import type { FileStateStore } from "../src/runtime/state-store";
 import type { ReadinessTiming } from "../src/runtime/lifecycle";
 import {
-  intendRunning,
   restartBudget,
   UNKNOWN_EXIT_RESTART_BACKOFF_MS,
   UNKNOWN_EXIT_RESTART_LIMIT,
   UNKNOWN_EXIT_RESTART_WINDOW_MS,
-} from "../src/runtime/supervision";
+} from "../src/domain/restart-policy";
+import { intendRunning } from "../src/runtime/service-runs";
 import type { TargetRecord } from "../src/domain/runtime";
 import type {
   ManagedProcess,

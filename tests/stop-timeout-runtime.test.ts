@@ -16,7 +16,7 @@ import type {
 import { stopDetached } from "../src/domain/stop-budget";
 import { runtimeStateSchema } from "../src/runtime/state-schema";
 import { readFixedTargetNames } from "../src/runtime/state-store";
-import { checkIdentity } from "../src/runtime/health-monitor";
+import { checkIdentity } from "../src/domain/health-policy";
 import type { ManagedComponent } from "../src/config/types";
 import {
   parseHostConfig,

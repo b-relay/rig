@@ -10,7 +10,8 @@ import {
   runtimeStateSchema as schema,
 } from "./state-schema";
 import { WORKING_TOOL_SUFFIX } from "../config/schema";
-import { RigError, describeInvalidDocument } from "../domain/errors";
+import { RigError } from "../domain/errors";
+import { describeInvalidDocument } from "../domain/invalid-document";
 import type { RuntimeState, StateStore } from "../domain/runtime";
 
 /** A change waiting for the next write, and how to answer its caller once that write is durable or the change is refused. */

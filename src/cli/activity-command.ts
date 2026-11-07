@@ -3,7 +3,6 @@ import type { RuntimeCommand } from "../daemon/protocol";
 import { OPERATION_OUTCOMES } from "../domain/activity";
 import { RigError } from "../domain/errors";
 import type { ExecuteCommand } from "./commands";
-import { logTimeWindow } from "./log-window";
 
 interface ActivityOptions {
   project?: string;
@@ -123,7 +122,7 @@ export function addActivityCommand(
           "--action is longer than any action name (64 characters).",
           "Pass an action as rig activity lists it, such as deploy, crash or job.",
         );
-      const activityFilter = filterOf(options, now());
+      const activityFilter = await filterOf(options, now());
       if (operation !== undefined && Object.keys(activityFilter).length)
         throw new RigError(
           "USAGE",
@@ -151,11 +150,13 @@ export function addActivityCommand(
     });
 }
 
-/** The filter the flags ask for; empty when none narrows the read. */
-function filterOf(
+/** The filter the flags ask for; empty when none narrows the read. The time parser loads once rig activity runs, since its
+ * help needs none of it. */
+async function filterOf(
   options: ActivityOptions,
   now: Date,
-): NonNullable<RuntimeCommand["activityFilter"]> {
+): Promise<NonNullable<RuntimeCommand["activityFilter"]>> {
+  const { logTimeWindow } = await import("./log-window");
   return {
     ...(options.target !== undefined ? { target: options.target } : {}),
     ...(options.action !== undefined ? { action: options.action } : {}),

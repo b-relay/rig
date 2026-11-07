@@ -3,7 +3,7 @@ import type { RuntimeCommand } from "../src/daemon/protocol";
 import { runRigCli } from "../src/cli/rig";
 import { renderResult } from "../src/cli/output";
 import type { CliInteraction } from "../src/cli/interaction";
-import { chooseZone, planSet } from "../src/cli/dns-command";
+import { chooseZone, planSet } from "../src/cli/dns-plan";
 
 const MAC = "100.64.0.7";
 const REPORT = {

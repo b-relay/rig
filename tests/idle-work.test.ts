@@ -382,23 +382,31 @@ describe("the capture wrapper", () => {
   });
 
   /** A real wrapper over a real application, whose every pause lasts ten minutes unless something wakes it: `end` is given the
-   * pids once the application runs, and the wrapper is expected to end without that wait. Answers its exit code and the
-   * pause it asked for each time. */
+   * pids, the Rig root and a read of the wrapper's observation once the application runs, and the wrapper is expected to
+   * end without that wait. The application runs the shell script `application` in the root, `exec /bin/sleep 600` when absent, and its output
+   * goes to the root's `logs`. Answers the wrapper's exit code and the pause it asked for each time. */
   async function wrapperPausing(
-    end: (pids: { wrapper: number; application: number }) => void,
+    end: (running: {
+      wrapper: number;
+      application: number;
+      root: string;
+      observation: () => Promise<{ observation?: { reason?: string } }>;
+    }) => unknown,
+    application = "exec /bin/sleep 600",
   ) {
     const root = await tempRoot();
     await mkdir(join(root, "capture"), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "logs"), { mode: 0o700 });
     const requestPath = join(root, "capture", "request.json");
     await writeFile(
       requestPath,
       JSON.stringify({
         key: "capture",
         componentName: "web",
-        command: ["/bin/sh", "-c", "exec /bin/sleep 600"],
+        command: ["/bin/sh", "-c", application],
         cwd: root,
         env: {},
-        logRoot: root,
+        logRoot: join(root, "logs"),
         incarnation: "start-1",
       }),
     );
@@ -417,23 +425,21 @@ process.exit(0);
       stdout: "pipe",
       stderr: "ignore",
     });
-    let application: number | undefined;
+    let pid: number | undefined;
     const watchdog = setTimeout(() => {
       wrapper.kill("SIGKILL");
-      if (application) process.kill(application, "SIGKILL");
+      if (pid) process.kill(pid, "SIGKILL");
     }, 30_000);
+    const observation = () =>
+      readFile(`${requestPath}.observation.json`, "utf8")
+        .then((raw) => JSON.parse(raw))
+        .catch(() => ({}));
     try {
-      while (!application) {
-        const evidence = await readFile(
-          `${requestPath}.observation.json`,
-          "utf8",
-        )
-          .then((raw) => JSON.parse(raw))
-          .catch(() => undefined);
-        application = evidence?.observation?.pid;
-        if (!application) await Bun.sleep(10);
+      while (!pid) {
+        pid = (await observation()).observation?.pid;
+        if (!pid) await Bun.sleep(10);
       }
-      end({ wrapper: wrapper.pid, application });
+      await end({ wrapper: wrapper.pid, application: pid, root, observation });
       return JSON.parse(await new Response(wrapper.stdout).text()) as {
         code: number;
         asked: number[];
@@ -443,13 +449,30 @@ process.exit(0);
     }
   }
 
-  test("a running application is looked at once a second, and its exit ends the pause at once", async () => {
+  test("a running application sets the wrapper no timer: its exit ends the pause at once", async () => {
     const { code, asked } = await wrapperPausing(({ application }) =>
       process.kill(application, "SIGKILL"),
     );
     expect(code).toBe(1);
     expect(asked.length).toBeGreaterThan(0);
-    for (const ms of asked) expect(ms).toBe(1000);
+    // JSON gives an absent wait as null.
+    for (const ms of asked) expect(ms).toBeNull();
+  }, 60_000);
+
+  test("output that cannot be recorded ends the pause at once, so the wrapper reports it without a timer", async () => {
+    let reason: string | undefined;
+    await wrapperPausing(async ({ application, root, observation }) => {
+      // A regular file where the log directory was, so the line the application then prints cannot be written.
+      await rm(join(root, "logs"), { recursive: true });
+      await writeFile(join(root, "logs"), "");
+      await writeFile(join(root, "go"), "");
+      for (let i = 0; !reason && i < 2000; i++) {
+        reason = (await observation()).observation?.reason;
+        if (!reason) await Bun.sleep(10);
+      }
+      process.kill(application, "SIGKILL");
+    }, "while [ ! -e go ]; do sleep 0.01; done; echo hello; exec /bin/sleep 600");
+    expect(reason).toContain("Target output is not being recorded");
   }, 60_000);
 
   test("a stop ends the wrapper's pause at once", async () => {

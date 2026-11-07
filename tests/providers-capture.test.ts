@@ -218,7 +218,7 @@ import {runCommand} from ${JSON.stringify(resolve("src/providers/command-runner.
 import {existsSync} from "node:fs";
 const real = createProcessIdentityReader(runCommand); let calls = 0;
 process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (pid) => {
-  if (++calls !== 2) return real(pid);
+  if (++calls !== 1) return real(pid);
   while (!existsSync(${JSON.stringify(pidFile)})) await Bun.sleep(20);
   throw new Error("ps failed transiently");
 } });`;

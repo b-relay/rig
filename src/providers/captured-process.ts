@@ -26,8 +26,6 @@ import {
 } from "./process-inspection";
 import { createProcessTiming } from "./process-timing";
 import { elapsedNow } from "./system-clock";
-/** How often the wrapper looks at a running application when nothing wakes it: its exit and a stop both do. */
-const OBSERVE_INTERVAL_MS = 1000;
 /** Signals that ask the wrapper to stop its application within its grace; the wrapper then ends by the same signal.
  * CAPTURE_KILL_SIGNAL asks it to stop the application and cut the grace to the kill wait. */
 const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
@@ -75,7 +73,9 @@ async function runUntilStopped(
     root,
     timing: createProcessTiming(),
     processInspection,
-    onExit: pause.wake,
+    // The application's exit, a change in whether its output is recorded, and a stop each wake the wrapper; nothing else
+    // changes what it observes, so it sets no timer.
+    onChange: pause.wake,
     // The wrapper reads the Host's logs settings as rigd does, so every writer of the Target log rotates it alike.
     logRetention: request.configRoot
       ? hostLogRetention({
@@ -130,13 +130,6 @@ async function runUntilStopped(
   const inspect = dependencies.inspect ?? processInspection.identity;
   let applicationPid: number | undefined;
   try {
-    const wrapperIdentity = await inspect(process.pid);
-    if (!wrapperIdentity)
-      throw new RigError(
-        "PROCESS_INSPECT",
-        "Capture wrapper identity unavailable.",
-        "Check process inspection permissions.",
-      );
     const started = await supervisor.ensureRunning(request);
     applicationPid = started.pid!;
     await writeCaptureStatus(root, requestPath, {
@@ -150,8 +143,6 @@ async function runUntilStopped(
       ) =>
         writeCaptureObservation(root, requestPath, {
           wrapperPid: process.pid,
-          wrapperIdentity,
-          observedAt: Date.now(),
           applicationIdentity,
           observation,
         }),
@@ -164,7 +155,7 @@ async function runUntilStopped(
           inspect,
           publish,
           stopping: () => stopping,
-          pause: () => pause.wait(OBSERVE_INTERVAL_MS),
+          pause: () => pause.wait(),
         }),
       );
     } catch (error) {
@@ -198,8 +189,8 @@ async function runUntilStopped(
 }
 /** Stays installed once the wrapper's stop is over, until it exits. */
 function ignoreLateKill(): void {}
-/** A pause `wake` ends early. A wake while nothing pauses ends the next pause at once, so none is lost; the timer goes with
- * the pause, so it never holds the wrapper open as it exits. */
+/** A pause `wake` ends, or `ms` when given. A wake while nothing pauses ends the next pause at once, so none is lost; a
+ * timer goes with its pause, so it never holds the wrapper open as it exits. */
 export function wakeablePause() {
   let woken = false;
   let end: (() => void) | undefined;
@@ -208,7 +199,7 @@ export function wakeablePause() {
       if (end) end();
       else woken = true;
     },
-    wait: (ms: number) =>
+    wait: (ms?: number) =>
       new Promise<void>((resolve) => {
         if (woken) {
           woken = false;
@@ -220,7 +211,7 @@ export function wakeablePause() {
           end = undefined;
           resolve();
         };
-        const timer = setTimeout(finish, ms);
+        const timer = ms === undefined ? undefined : setTimeout(finish, ms);
         end = finish;
       }),
   };

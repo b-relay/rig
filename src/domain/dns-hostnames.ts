@@ -141,185 +141,275 @@ export function checkHostnames(input: {
    * `missing`. */
   readonly unreadable?: readonly DnsZone[];
 }): HostnameCheck[] {
+  const view = {
+    zones: input.zones,
+    records: input.records,
+    unreadable: input.unreadable ?? [],
+  };
   return [...input.hostnames]
     .sort((a, b) => a.hostname.localeCompare(b.hostname))
-    .map((served) => checkHostname(served, input));
+    .map((served) => checkHostname(served, view, input.address));
+}
+/** The managed zones as one check sees them: those whose records it has, those records, and those it could not read. */
+export interface ZoneRecords {
+  readonly zones: readonly DnsZone[];
+  readonly records: readonly DnsRecord[];
+  readonly unreadable: readonly DnsZone[];
+}
+type Address = Pick<DnsRecord, "type" | "content" | "proxied">;
+type Answered = Extract<Lookup, { kind: "records" }>;
+type Unanswered = Exclude<Lookup, { kind: "records" }>;
+/** The record name that first answers for a hostname: its own, or the wildcard that covers it. */
+export interface FirstAnswer {
+  readonly owner: string;
+  readonly wildcard: boolean;
+}
+/** Where the walk from a hostname along its CNAMEs ends: nothing answers for the hostname itself, or `first` does and the
+ * walk ends after the hops in `chain`. */
+export type Resolution =
+  | { readonly kind: "unanswered"; readonly lookup: Unanswered }
+  | {
+      readonly kind: "answered";
+      readonly first: FirstAnswer;
+      /** The CNAME hops followed, each `name -> target`. */
+      readonly chain: readonly string[];
+      readonly end: ChainEnd;
+    };
+/** The name an answered walk stopped at, or why it stopped before one. */
+export type ChainEnd =
+  /** A name with no CNAME: its A and AAAA records. */
+  | { readonly kind: "addresses"; readonly addresses: readonly Address[] }
+  /** A CNAME to a name nothing answers for. */
+  | {
+      readonly kind: "dangling";
+      readonly name: string;
+      readonly lookup: Unanswered;
+    }
+  /** A CNAME to a name in a managed zone whose records were not read. */
+  | { readonly kind: "unread"; readonly name: string; readonly zone: string }
+  /** A CNAME to a name no managed zone holds. */
+  | { readonly kind: "outside"; readonly name: string }
+  /** A CNAME to a name that `cut`'s NS records delegate to other nameservers. */
+  | { readonly kind: "delegated"; readonly name: string; readonly cut: string }
+  | { readonly kind: "proxied-cname" }
+  /** More than MAX_HOPS CNAMEs, or a loop. */
+  | { readonly kind: "too-long" };
+/** What the check reports when no zone's records answer for a hostname. */
+type ZoneRefusal = Pick<
+  HostnameCheck,
+  "zone" | "verdict" | "unreadZone" | "reason" | "fixBlocked"
+>;
+/** Pure: the zone whose records answer for `hostname`, or why none does: no managed zone holds it, its zone's records were
+ * not read, or NS records below the apex delegate it. */
+export function answeringZone(
+  hostname: string,
+  view: ZoneRecords,
+): { readonly zone: string } | { readonly refusal: ZoneRefusal } {
+  const zone = zoneOf(hostname, [...view.zones, ...view.unreadable])?.name;
+  if (!zone)
+    return {
+      refusal: {
+        verdict: "unknown",
+        reason:
+          "No zone Rig manages holds this name, so Rig cannot tell where it points.",
+      },
+    };
+  if (!view.zones.some((each) => each.name === zone))
+    return {
+      refusal: {
+        zone,
+        verdict: "unknown",
+        unreadZone: zone,
+        reason: `Rig could not read the records of ${zone} just now, so it cannot tell where this name points.`,
+      },
+    };
+  const cut = delegation(hostname, zone, view.records);
+  if (cut)
+    return {
+      refusal: {
+        zone,
+        verdict: "unknown",
+        reason: `${cut} is delegated to other nameservers (NS records), so ${zone}'s records do not answer for this name.`,
+        fixBlocked: `Point it at this Mac at the nameservers ${cut} is delegated to.`,
+      },
+    };
+  return { zone };
+}
+/** Pure: the walk from `hostname` along its CNAMEs, starting in `zone`, the zone answeringZone found to answer for it. */
+export function resolveChain(
+  hostname: string,
+  zone: string,
+  view: ZoneRecords,
+): Resolution {
+  const found = lookupName(hostname, zone, view.records);
+  if (found.kind !== "records") return { kind: "unanswered", lookup: found };
+  const first = { owner: found.owner, wildcard: found.wildcard };
+  const chain: string[] = [];
+  const ends = (end: ChainEnd): Resolution => ({
+    kind: "answered",
+    first,
+    chain,
+    end,
+  });
+  for (let answer: Answered = found; ;) {
+    const cname = answer.records.find((record) => record.type === "CNAME");
+    if (!cname)
+      return ends({ kind: "addresses", addresses: addressesOf(answer) });
+    chain.push(
+      `${answer.owner} -> ${cname.content}${cname.proxied ? " (proxied)" : ""}`,
+    );
+    if (cname.proxied) return ends({ kind: "proxied-cname" });
+    // The record at each hop is examined first, so a chain of exactly MAX_HOPS CNAMEs still reaches its address; only a
+    // CNAME beyond them (a longer chain, or a loop) stops the walk.
+    if (chain.length > MAX_HOPS) return ends({ kind: "too-long" });
+    const name = cname.content;
+    // The zone that answers for this hop is the longest that holds the name, read or not: a parent zone's wildcard never
+    // answers for a name in a child zone whose records could not be read.
+    const hopZone = zoneOf(name, [...view.zones, ...view.unreadable])?.name;
+    if (!hopZone) return ends({ kind: "outside", name });
+    if (!view.zones.some((each) => each.name === hopZone))
+      return ends({ kind: "unread", name, zone: hopZone });
+    const cut = delegation(name, hopZone, view.records);
+    if (cut) return ends({ kind: "delegated", name, cut });
+    const next = lookupName(name, hopZone, view.records);
+    if (next.kind !== "records")
+      return ends({ kind: "dangling", name, lookup: next });
+    answer = next;
+  }
+}
+function addressesOf(answer: Answered): Address[] {
+  return answer.records
+    .filter((record) => record.type === "A" || record.type === "AAAA")
+    .map((record) => ({
+      type: record.type,
+      content: record.content,
+      ...(record.proxied ? { proxied: true } : {}),
+    }));
+}
+/** Pure: the verdict on where a hostname's walk ends, with the addresses it reached and the sentence that says why.
+ * `address` is this Mac's, or undefined when Rig does not know it. */
+export function verdictOf(
+  resolution: Resolution,
+  address: string | undefined,
+): Pick<HostnameCheck, "addresses" | "verdict" | "unreadZone" | "reason"> {
+  if (resolution.kind === "unanswered")
+    return {
+      addresses: [],
+      verdict: "missing",
+      reason: unansweredReason("It", resolution.lookup),
+    };
+  const { end } = resolution;
+  switch (end.kind) {
+    case "addresses":
+      return {
+        addresses: end.addresses,
+        ...judge(
+          end.addresses,
+          address,
+          resolution.first,
+          resolution.chain.length > 0,
+        ),
+      };
+    case "dangling":
+      return {
+        addresses: [],
+        verdict: "missing",
+        reason: unansweredReason(
+          `Its CNAME leads to ${end.name}, which`,
+          end.lookup,
+        ),
+      };
+    case "unread":
+      return {
+        addresses: [],
+        verdict: "unknown",
+        unreadZone: end.zone,
+        reason: `It is a CNAME to ${end.name}, in ${end.zone}, whose records Rig could not read just now, so Rig cannot tell where that points.`,
+      };
+    case "outside":
+      return {
+        addresses: [],
+        verdict: "unknown",
+        reason: `It is a CNAME to ${end.name}, outside the zones Rig manages, so Rig cannot tell where that points.`,
+      };
+    case "delegated":
+      return {
+        addresses: [],
+        verdict: "unknown",
+        reason: `It is a CNAME to ${end.name}, which ${end.cut} delegates to other nameservers, so Rig cannot tell where that points.`,
+      };
+    case "proxied-cname":
+      return {
+        addresses: [],
+        verdict: "elsewhere",
+        reason:
+          "Its CNAME is proxied through Cloudflare, whose edge cannot reach this Mac's Tailscale address.",
+      };
+    case "too-long":
+      return {
+        addresses: [],
+        verdict: "unknown",
+        reason: `Its CNAME chain is longer than ${MAX_HOPS} hops or loops.`,
+      };
+  }
+}
+/** Why a name nothing answers for has no address; `subject` names it: "It", or the CNAME that leads to it. */
+function unansweredReason(subject: string, lookup: Unanswered): string {
+  if (lookup.kind === "nxdomain")
+    return `${subject} has no record, and no wildcard covers it.`;
+  return lookup.parentOnly
+    ? `${subject} exists only as the parent of other records, so no wildcard answers for it and it has no address.`
+    : `${subject} has records, but no A record.`;
 }
 function checkHostname(
   served: ServedHostname,
-  input: Parameters<typeof checkHostnames>[0],
+  view: ZoneRecords,
+  address: string | undefined,
 ): HostnameCheck {
-  const { hostname } = served;
-  const holder = zoneOf(hostname, [
-    ...input.zones,
-    ...(input.unreadable ?? []),
-  ]);
-  const zone = holder?.name;
-  const base = {
-    hostname,
-    sources: served.sources,
-    wildcard: false,
-    chain: [],
-    addresses: [],
+  const { hostname, sources } = served;
+  const holder = answeringZone(hostname, view);
+  if ("refusal" in holder)
+    return {
+      hostname,
+      sources,
+      wildcard: false,
+      chain: [],
+      addresses: [],
+      ...holder.refusal,
+    };
+  const { zone } = holder;
+  const resolution = resolveChain(hostname, zone, view);
+  const first = resolution.kind === "answered" ? resolution.first : undefined;
+  const report = {
+    zone,
+    chain: resolution.kind === "answered" ? resolution.chain : [],
+    wildcard: first?.wildcard ?? false,
+    ...(first ? { answeredBy: first.owner } : {}),
+    ...verdictOf(resolution, address),
   };
-  if (!zone)
-    return {
-      ...base,
-      verdict: "unknown",
-      reason:
-        "No zone Rig manages holds this name, so Rig cannot tell where it points.",
-    };
-  if (!input.zones.some((each) => each.name === zone))
-    return {
-      ...base,
-      zone,
-      verdict: "unknown",
-      unreadZone: zone,
-      reason: `Rig could not read the records of ${zone} just now, so it cannot tell where this name points.`,
-    };
-  const cut = delegation(hostname, zone, input.records);
-  if (cut)
-    return {
-      ...base,
-      zone,
-      verdict: "unknown",
-      reason: `${cut} is delegated to other nameservers (NS records), so ${zone}'s records do not answer for this name.`,
-      fixBlocked: `Point it at this Mac at the nameservers ${cut} is delegated to.`,
-    };
-  const chain: string[] = [];
-  let name = hostname;
-  let first: { owner: string; wildcard: boolean } | undefined;
-  let verdict: Omit<
-    HostnameCheck,
-    "hostname" | "sources" | "fix" | "fixBlocked"
-  >;
-  for (let hop = 0; ; hop++) {
-    // The zone that answers for this hop is the longest that holds the name, read or not: a parent zone's wildcard never
-    // answers for a name in a child zone whose records could not be read.
-    const hopZone = zoneOf(name, [
-      ...input.zones,
-      ...(input.unreadable ?? []),
-    ])?.name;
-    const where = {
-      zone,
-      chain,
-      wildcard: first?.wildcard ?? false,
-      ...(first ? { answeredBy: first.owner } : {}),
-    };
-    if (hopZone && !input.zones.some((each) => each.name === hopZone)) {
-      verdict = {
-        ...where,
-        addresses: [],
-        verdict: "unknown",
-        unreadZone: hopZone,
-        reason: `It is a CNAME to ${name}, in ${hopZone}, whose records Rig could not read just now, so Rig cannot tell where that points.`,
-      };
-      break;
-    }
-    if (!hopZone) {
-      verdict = {
-        ...where,
-        addresses: [],
-        verdict: "unknown",
-        reason: `It is a CNAME to ${name}, outside the zones Rig manages, so Rig cannot tell where that points.`,
-      };
-      break;
-    }
-    const hopCut =
-      hop > 0 ? delegation(name, hopZone, input.records) : undefined;
-    if (hopCut) {
-      verdict = {
-        ...where,
-        addresses: [],
-        verdict: "unknown",
-        reason: `It is a CNAME to ${name}, which ${hopCut} delegates to other nameservers, so Rig cannot tell where that points.`,
-      };
-      break;
-    }
-    const found = lookupName(name, hopZone, input.records);
-    if (found.kind !== "records") {
-      const dangling = hop > 0 ? `Its CNAME leads to ${name}, which ` : "It ";
-      verdict = {
-        ...where,
-        addresses: [],
-        verdict: "missing",
-        reason:
-          found.kind === "nxdomain"
-            ? `${hop > 0 ? `Its CNAME leads to ${name}, which has` : "It has"} no record, and no wildcard covers it.`
-            : found.parentOnly
-              ? `${dangling}exists only as the parent of other records, so no wildcard answers for it and it has no address.`
-              : `${dangling}has records, but no A record.`,
-      };
-      break;
-    }
-    first ??= { owner: found.owner, wildcard: found.wildcard };
-    const cname = found.records.find((record) => record.type === "CNAME");
-    if (cname) {
-      chain.push(
-        `${found.owner} -> ${cname.content}${cname.proxied ? " (proxied)" : ""}`,
-      );
-      if (cname.proxied) {
-        verdict = {
-          zone,
-          chain,
-          wildcard: first.wildcard,
-          answeredBy: first.owner,
-          addresses: [],
-          verdict: "elsewhere",
-          reason:
-            "Its CNAME is proxied through Cloudflare, whose edge cannot reach this Mac's Tailscale address.",
-        };
-        break;
-      }
-      // The record at each hop is examined first, so a chain of exactly MAX_HOPS CNAMEs still reaches its address; only
-      // a CNAME beyond them (a longer chain, or a loop) stops the walk.
-      if (chain.length > MAX_HOPS) {
-        verdict = {
-          zone,
-          chain,
-          wildcard: first.wildcard,
-          answeredBy: first.owner,
-          addresses: [],
-          verdict: "unknown",
-          reason: `Its CNAME chain is longer than ${MAX_HOPS} hops or loops.`,
-        };
-        break;
-      }
-      name = cname.content;
-      continue;
-    }
-    const addresses = found.records
-      .filter((record) => record.type === "A" || record.type === "AAAA")
-      .map((record) => ({
-        type: record.type,
-        content: record.content,
-        ...(record.proxied ? { proxied: true } : {}),
-      }));
-    const resolved = {
-      zone,
-      chain,
-      wildcard: first.wildcard,
-      answeredBy: first.owner,
-      addresses,
-    };
-    verdict = {
-      ...resolved,
-      ...judge(addresses, input.address, first, hop > 0),
-    };
-    break;
-  }
   return {
     hostname,
-    sources: served.sources,
-    ...verdict,
-    ...pointFix(hostname, zone, verdict, input),
+    sources,
+    ...report,
+    ...pointFix(
+      {
+        hostname,
+        zone,
+        verdict: report.verdict,
+        own: view.records.filter(
+          (record) => record.zone === zone && record.name === hostname,
+        ),
+        ...(first?.wildcard ? { overrides: first.owner } : {}),
+      },
+      address,
+    ),
   };
 }
 /** Pure: the verdict on the addresses a name resolves to. */
 function judge(
-  addresses: readonly Pick<DnsRecord, "type" | "content" | "proxied">[],
+  addresses: readonly Address[],
   address: string | undefined,
-  answer: { owner: string; wildcard: boolean },
+  answer: FirstAnswer,
   viaCname: boolean,
 ): { verdict: HostnameVerdict; reason: string } {
   const a = addresses.filter((record) => record.type === "A");
@@ -368,23 +458,25 @@ function judge(
     reason: `${by} points at ${contents.join(", ")}, not this Mac (${address}).${v6}`,
   };
 }
-/** Pure: the one change that would point `hostname` at this Mac, or why none is offered. */
-function pointFix(
-  hostname: string,
-  zone: string,
-  verdict: { verdict: HostnameVerdict; answeredBy?: string; wildcard: boolean },
-  input: Parameters<typeof checkHostnames>[0],
+/** Pure: the one change that would point `name.hostname` at this Mac (`address`), or why none is offered. `own` are the
+ * records of that exact name in `zone`, and `overrides` the wildcard that alone answers for it today, if one does. */
+export function pointFix(
+  name: {
+    readonly hostname: string;
+    readonly zone: string;
+    readonly verdict: HostnameVerdict;
+    readonly own: readonly DnsRecord[];
+    readonly overrides?: string;
+  },
+  address: string | undefined,
 ): Pick<HostnameCheck, "fix" | "fixBlocked"> {
-  if (verdict.verdict === "mac") return {};
-  const address = input.address;
+  const { hostname, zone, own } = name;
+  if (name.verdict === "mac") return {};
   if (!address)
     return {
       fixBlocked:
         "Rig does not know this Mac's address: set proxy.dns.address in config.yaml, or install Tailscale.",
     };
-  const own = input.records.filter(
-    (record) => record.zone === zone && record.name === hostname,
-  );
   const cname = own.find((record) => record.type === "CNAME");
   if (cname)
     return {
@@ -432,9 +524,7 @@ function pointFix(
         proxied: false,
         comment: POINT_COMMENT,
       },
-      ...(verdict.wildcard && verdict.answeredBy
-        ? { overrides: verdict.answeredBy }
-        : {}),
+      ...(name.overrides ? { overrides: name.overrides } : {}),
     },
   };
 }

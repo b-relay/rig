@@ -250,34 +250,33 @@ for (const RIG_ROOT of [undefined, ""])
     expect(await exists(join(f.home, ".rig", "bin", "rigd"))).toBe(true);
   });
 
-test("a download that does not match SHA256SUMS, or a SHA256SUMS that does not name it in the canonical form once, installs nothing", async () => {
-  for (const sums of [
-    // Tampered: the digest is another file's.
-    (written: string) => written.replace(/^[0-9a-f]{64}/gm, "0".repeat(64)),
-    // A BSD-style line, which shasum -c would read as a digest of another file.
-    (written: string) =>
-      written.replace(
-        /^[0-9a-f]{64}  (\S+)$/gm,
-        `SHA256 (/etc/hosts) = ${"0".repeat(64)}  $1`,
-      ),
-    // Named twice.
-    (written: string) => `${written}${written}`,
-    // Separated by a tab, by one space, or padded.
-    (written: string) => written.replace(/^([0-9a-f]{64})  /gm, "$1\t"),
-    (written: string) => written.replace(/^([0-9a-f]{64})  /gm, "$1 "),
-    (written: string) => written.replace(/\.tar\.gz$/gm, ".tar.gz "),
-    // A valid line, and a malformed one naming the archive too.
-    (written: string) =>
-      `${written}${written.replace(/^([0-9a-f]{64})  /gm, "$1\t")}`,
-  ]) {
+for (const [shape, sums] of Object.entries<(written: string) => string>({
+  // Tampered: the digest is another file's.
+  "a digest of another file": (written) =>
+    written.replace(/^[0-9a-f]{64}/gm, "0".repeat(64)),
+  // Which shasum -c would read as a digest of another file.
+  "a BSD-style line": (written) =>
+    written.replace(
+      /^[0-9a-f]{64}  (\S+)$/gm,
+      `SHA256 (/etc/hosts) = ${"0".repeat(64)}  $1`,
+    ),
+  "the archive named twice": (written) => `${written}${written}`,
+  "a tab between digest and name": (written) =>
+    written.replace(/^([0-9a-f]{64})  /gm, "$1\t"),
+  "one space between digest and name": (written) =>
+    written.replace(/^([0-9a-f]{64})  /gm, "$1 "),
+  "a padded name": (written) => written.replace(/\.tar\.gz$/gm, ".tar.gz "),
+  "a valid line and a malformed one naming the archive too": (written) =>
+    `${written}${written.replace(/^([0-9a-f]{64})  /gm, "$1\t")}`,
+}))
+  test(`a download that does not match SHA256SUMS, or a SHA256SUMS that does not name it in the canonical form once, installs nothing: ${shape}`, async () => {
     const f = await release({ sums });
     const result = await f.install();
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("nothing was installed.");
     expect(await exists(join(f.root, "bin"))).toBe(false);
     expect(await exists(f.ran)).toBe(false);
-  }
-});
+  });
 
 test("a release that cannot be downloaded installs nothing and names the address", async () => {
   const f = await release();
@@ -490,12 +489,12 @@ test("install refuses a destination that is not a regular file, before replacing
   expect(await exists(join(f.root, "bin", "rigd"))).toBe(false);
 });
 
-test("install refuses a rig or rigd that is a symbolic link, even to a regular file or to nothing, and leaves link and file alone", async () => {
-  for (const [name, target] of [
-    ["rig", "kept"],
-    ["rigd", "kept"],
-    ["rig", "missing"],
-  ] as const) {
+for (const [name, target] of [
+  ["rig", "kept"],
+  ["rigd", "kept"],
+  ["rig", "missing"],
+] as const)
+  test(`install refuses a ${name} that is a symbolic link to ${target === "kept" ? "a regular file" : "nothing"}, and leaves link and file alone`, async () => {
     const f = await release();
     const bin = join(f.root, "bin");
     await mkdir(bin, { recursive: true });
@@ -514,8 +513,7 @@ test("install refuses a rig or rigd that is a symbolic link, even to a regular f
       expect(await readFile(referent, "utf8")).toBe("the operator's own");
     expect(await exists(join(f.root, "dashboard"))).toBe(false);
     expect(await exists(f.ran)).toBe(false);
-  }
-});
+  });
 
 test("install stages nothing through a linked bin or dashboard directory", async () => {
   for (const name of ["bin", "dashboard"]) {

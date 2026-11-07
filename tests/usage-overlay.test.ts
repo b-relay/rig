@@ -160,9 +160,9 @@ describe("held minutes laid over stored history", () => {
     ).toEqual([{ at: START, sum: 1100, count: 2 }]);
   });
 
-  test("a held minute repeated for a series counts as its last copy", () => {
+  test("a held minute repeated for a series: by the second, a later copy replaces only the seconds it holds; by the minute, the last copy counts", () => {
     const repeated = [
-      held(web, MINUTE, { 0: 10 }),
+      held(web, MINUTE, { 0: 10, 2: 20 }),
       held(web, MINUTE, { 0: 30, 1: 40 }),
     ];
     const bySecond = overlaid({
@@ -175,6 +175,7 @@ describe("held minutes laid over stored history", () => {
     ).toEqual([
       { at: START, sum: 30, count: 1 },
       { at: START + 1, sum: 40, count: 1 },
+      { at: START + 2, sum: 20, count: 1 },
     ]);
     const byMinute = overlaid({
       resolution: "minute",

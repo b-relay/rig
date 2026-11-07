@@ -30,18 +30,49 @@ import { familyMayMatch, readFamilyTail, type LogPosition } from "./log-tail";
 
 const positionSchema = z
   .object({
-    identity: z.string(),
-    offset: z.number().int().nonnegative(),
-    midRecord: z.literal(true).optional(),
+    identity: z
+      .string()
+      .describe(
+        "The file the position is in, as `<device>:<inode>` from its metadata. It survives a rename, so a follow finds a rotated file under its new name. A position whose file is gone from a log directory that still exists is dropped when its family rotates (the file rotated out of retention); otherwise the cursor fails.",
+      ),
+    offset: z
+      .number()
+      .int()
+      .nonnegative()
+      .describe(
+        "Byte offset in the file just past the last line already read, where a follow resumes. An offset past the file's end means the file was truncated in place, and the cursor fails.",
+      ),
+    midRecord: z
+      .literal(true)
+      .optional()
+      .describe(
+        "true when the offset is inside an over-long run already reported as one unreadable record: a follow passes over the rest of it, up to its newline. Absent otherwise.",
+      ),
   })
-  .strict();
-const cursorSchema = z
+  .strict()
+  .describe("Where a follow resumes in one Target log file.");
+export const cursorSchema = z
   .object({
-    version: z.literal(1),
-    target: z.string(),
-    sources: z.record(z.string(), positionSchema),
+    version: z
+      .literal(1)
+      .describe(
+        "The cursor format. Only 1 exists; any other fails the cursor.",
+      ),
+    target: z
+      .string()
+      .describe(
+        "The Target the cursor belongs to: the hex SHA-256 of its id and its log directory. A cursor of another Target, or of one whose log directory moved, fails.",
+      ),
+    sources: z
+      .record(z.string(), positionSchema)
+      .describe(
+        "Where a follow resumes in each Target log file read so far, by the file's name in the log directory (such as target.jsonl or target.jsonl.1). A name that is not a Target log fails the cursor.",
+      ),
   })
-  .strict();
+  .strict()
+  .describe(
+    "The Target log cursor readTargetLogs returns, as base64url-encoded JSON; rig sends it back unchanged as `after`. One longer than 128000 characters fails.",
+  );
 interface LogRow {
   end: number;
   entry?: TargetLogEntry;

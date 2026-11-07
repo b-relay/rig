@@ -20,6 +20,7 @@ import {
 import { projectStatusSchema } from "../src/domain/project-status.js";
 import { processLeaseSchema } from "../src/providers/process-lease.js";
 import { runtimeStateSchema } from "../src/runtime/state-schema.js";
+import { cursorSchema } from "../src/adapters/target-log-reader.js";
 
 const REPO = join(import.meta.dir, "..");
 const schemas = configJsonSchemas();
@@ -275,6 +276,7 @@ test.each(
     addressSchema,
     installationSchema,
     processLeaseSchema,
+    cursorSchema,
   }),
 )("every field of %s documents what it holds", (_, schema) => {
   const document =

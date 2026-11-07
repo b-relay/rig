@@ -742,7 +742,7 @@ export class DaemonAdmin {
         proxyMode === "managed" &&
         !(prior.reachable && recorded?.proxy === "managed")
       )
-        await this.options.proxy!.install({ defineJob: false });
+        await this.options.proxy!.stage();
       // The record keeps naming the rigd that runs now until both jobs are installed: a line never pasted must not leave a
       // LaunchAgent rigd recorded as a system job. The system rigd learns its mode from its plist (RIG_DAEMON_MODE).
       await this.writeInstallation(
@@ -804,9 +804,9 @@ export class DaemonAdmin {
         port: address!.port,
         token: await readDaemonToken(root),
       });
-      warnings = await this.options.proxy!.install({
-        publish: () => client.command({ action: "proxy-apply" }),
-      });
+      warnings = await this.options.proxy!.installPublishedBy(() =>
+        client.command({ action: "proxy-apply" }),
+      );
     }
     const status = await this.status();
     // An upgrade needs no sudo only while the job's program stays at one path.

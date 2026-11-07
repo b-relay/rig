@@ -50,36 +50,6 @@ import {
 /** Supervision: observes each Service, records what it sees through the run journal, and starts again what the restart
  * policy (`domain/restart-policy`) says to. Status and Activity wording is `domain/restart-wording`'s. */
 
-// This module's earlier exports, now owned elsewhere.
-export {
-  DEFAULT_SUPERVISION_SCOPE,
-  RESTART_BACKOFF_MS,
-  RESTART_LIMIT,
-  RESTART_WINDOW_MS,
-  UNKNOWN_EXIT_RESTART_BACKOFF_MS,
-  UNKNOWN_EXIT_RESTART_LIMIT,
-  UNKNOWN_EXIT_RESTART_WINDOW_MS,
-  cleanExit,
-  observedOutcome,
-  restartBudget,
-  scheduleAttempt,
-  supervisionScope,
-  type RestartBudget,
-  type SupervisionScope,
-} from "../domain/restart-policy";
-export {
-  describeExit,
-  runningNote,
-  stoppedStanding,
-} from "../domain/restart-wording";
-export { currentRun } from "../domain/runtime";
-export {
-  activationJournal,
-  intendRunning,
-  intendStopped,
-  recordHealthStretch,
-} from "./service-runs";
-
 type Deps = Pick<
   RuntimeDependencies,
   | "store"

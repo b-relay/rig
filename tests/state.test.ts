@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { STATE_VERSION } from "../src/runtime/state-schema";
 import { FileStateStore } from "../src/runtime/state-store";
-import { describeExit } from "../src/runtime/supervision";
+import { describeExit } from "../src/domain/restart-wording";
 import { parseProjectConfig, resolveTargetPlan } from "../src/config";
 
 test("registration survives reopening and serialized concurrent updates preserve both projects", async () => {

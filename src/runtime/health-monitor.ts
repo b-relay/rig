@@ -38,14 +38,6 @@ import { createHealthWork } from "./health-work";
 import type { ObservationEffects } from "./status";
 import { trackedWorkReport } from "./work-report";
 
-// This module's earlier exports, now owned elsewhere.
-export {
-  checkIdentity,
-  healthPolicy,
-  healthStartPending,
-} from "../domain/health-policy";
-export { UNWRITTEN_HEALTH_LIMIT } from "./health-records";
-
 /** How many ongoing checks run at once across the Host. */
 export const HEALTH_CHECK_CONCURRENCY = 4;
 /** How often rigd looks for checks that are due; a check runs at most this late. */

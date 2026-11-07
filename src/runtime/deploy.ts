@@ -160,12 +160,18 @@ async function activate(
       );
       candidate.desired = "running";
     }
-    const committing = {
-      ...candidate,
-      recovery: { ...candidate.recovery!, stage: "committing" as const },
+    // The write that decides the commit runs in the guard's section (ADR 0020): a failure of the start the guard latched
+    // before it rolls back, and a Service seen stopped after it leaves a decided commit to restart policy.
+    const decide = async () => {
+      const committing = {
+        ...candidate,
+        recovery: { ...candidate.recovery!, stage: "committing" as const },
+      };
+      delete committing.deploymentIncomplete;
+      await persistTarget(committing, deps.store);
+      return committing;
     };
-    delete committing.deploymentIncomplete;
-    await persistTarget(committing, deps.store);
+    const committing = await (deps.routeGuard?.decide(decide) ?? decide());
     commitDecided = true;
     await checkpoint.commit();
     const completed: TargetRecord = { ...committing };

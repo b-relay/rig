@@ -189,28 +189,32 @@ test("the guard reads a path by the plan it was published under: a port the new 
   expect(await f.paths()).toEqual({ "/": API, "/api": WEB });
 });
 
-test("once the new plan is published the guard reads a path by it: a Service that exits on its new port is withheld, and the deploy still commits", async () => {
+test("once the new plan is published the guard reads a path by it: a Service the start started that exits on its new port is withheld, and fails the deploy before its commit", async () => {
   const f = await fixture();
   await f.deploy("c1");
   f.config.services!.web!.ports = { http: MOVED };
   f.config.services!.search!.command = "search2";
   f.listening.web = [MOVED];
   f.reset();
-  const write = gate();
-  f.failCommit({ hold: write });
-  const deploying = f.deploy("c2");
-  await write.reached;
+  // Every path is published before the tail starts.
+  const search = f.holdStart("search");
+  const deploying = f.deploy("c2").catch((error: unknown) => error);
+  await search.reached;
   expect(await f.paths()).toEqual({ "/": MOVED, "/api": API });
 
   await f.exit("web");
   await f.look();
   expect(await f.paths()).toEqual({ "/": "503", "/api": API });
 
-  // Before the commit is decided this only withholds: failing the start for it comes with publishing before the tail.
-  write.open();
-  await deploying;
-  expect((await f.stable()).commit).toBe("c2");
-  expect(await f.paths()).toEqual({ "/": "503", "/api": API });
+  // The rollback starts the previous web, which listens where the previous plan says.
+  f.listening.web = [WEB];
+  search.open();
+  expect(await deploying).toMatchObject({
+    code: "PROCESS_EXITED",
+    details: { component: "web" },
+  });
+  expect((await f.stable()).commit).toBe("c1");
+  expect(await f.paths()).toEqual(LIVE);
   expect(f.overlaps).toEqual([]);
 });
 

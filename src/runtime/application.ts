@@ -2634,10 +2634,21 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         }
         if (mark && target.kind === "stable" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          const started = await startAfterHostRestart(target, mark, {
-            ...deps,
-            lifecycle,
+          // The start publishes before the end of its plan has started, so its paths are watched as an Operation's are,
+          // until the Target's lease ends.
+          const routeGuard = createRouteGuard(deps, {
+            operationId: lease.id,
+            action: "up",
           });
+          let started: Awaited<ReturnType<typeof startAfterHostRestart>>;
+          try {
+            started = await startAfterHostRestart(target, mark, {
+              ...deps,
+              lifecycle: lifecycleOf(entry, routeGuard),
+            });
+          } finally {
+            await routeGuard.release();
+          }
           if (started.outcome === "settled") settled?.add(targetId);
           if (started.outcome === "unrecorded")
             unrecorded.set(targetId, { error: started.error, mark });

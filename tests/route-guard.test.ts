@@ -385,6 +385,121 @@ test("release waits for a withholding the look has begun", async () => {
   expect(f.events.at(-1)).toBe("withhold done");
 });
 
+/** A start the guard follows, which says what it was told. */
+function following(f: ReturnType<typeof fixture>) {
+  const told: string[] = [];
+  const start = f.guard.start(target(), {
+    async withdrawn() {
+      told.push("withdrawn");
+    },
+    exited: (service, seen) =>
+      new Error(`${service} exited with ${seen.exitCode}`),
+  });
+  return { start, told };
+}
+
+test("a look that sees a Service the start started stopped fails the start once it withheld its path; a Service it kept fails nothing", async () => {
+  const f = fixture();
+  f.guard.watch(target());
+  const { start } = following(f);
+  start.started("web");
+  f.seen.set("api", { state: "stopped" });
+  await f.look();
+  expect(f.events).toContain(`withhold ${API} begun`);
+  expect(() => start.check()).not.toThrow();
+
+  f.seen.set("web", { state: "stopped", exitCode: 3 });
+  await f.look();
+  expect(() => start.check()).toThrow("web exited with 3");
+  await expect(start.failure).rejects.toThrow("web exited with 3");
+  await f.guard.release();
+});
+
+test("a look that cannot withhold still fails the start for a Service it started and saw stopped", async () => {
+  const f = fixture();
+  f.guard.watch(target());
+  const { start } = following(f);
+  start.started("web");
+  f.seen.set("web", { state: "stopped", exitCode: 3 });
+  f.hooks.withhold = async () => {
+    throw new Error("caddy is down");
+  };
+  await f.look();
+  expect(f.said).toEqual(["routes-withhold-failed"]);
+  expect(() => start.check()).toThrow("web exited with 3");
+  await f.guard.release();
+});
+
+test("the decision joins the look in flight and rejects the failure it latched before its write runs", async () => {
+  const f = fixture();
+  f.guard.watch(target());
+  const { start } = following(f);
+  start.started("web");
+  f.seen.set("web", { state: "stopped", exitCode: 3 });
+  const held = gate();
+  f.hooks.withhold = () => {
+    held.reach();
+    return held.opened;
+  };
+  f.startLook();
+  await held.reached;
+  const deciding = f.guard.decide(async () => {
+    f.events.push("decided");
+  });
+  await settled();
+  held.open();
+  await expect(deciding).rejects.toThrow("web exited with 3");
+  expect(f.events).not.toContain("decided");
+  await f.guard.release();
+});
+
+test("once the decision is written no stopped Service fails the start, and no look runs while it is", async () => {
+  const f = fixture();
+  f.guard.watch(target());
+  const { start } = following(f);
+  start.started("web");
+  await f.guard.decide(async () => {
+    expect(f.waiting.size).toBe(0);
+  });
+  f.seen.set("web", { state: "stopped", exitCode: 3 });
+  await f.look();
+  expect(f.live.has(WEB)).toBe(false);
+  expect(() => start.check()).not.toThrow();
+  await f.guard.release();
+});
+
+test("only the last start can fail: one begun after it, such as a rollback's, takes over, and fails only for its own Services", async () => {
+  const f = fixture();
+  f.guard.watch(target());
+  const first = following(f);
+  first.start.started("web");
+  const second = following(f);
+  second.start.started("api");
+  f.seen.set("web", { state: "stopped", exitCode: 3 });
+  await f.look();
+  expect(() => first.start.check()).not.toThrow();
+  expect(() => second.start.check()).not.toThrow();
+  await f.guard.release();
+});
+
+test("what a start served ends at the first withholding that leaves none of its paths, whoever made it, and only once", async () => {
+  const f = fixture();
+  f.guard.watch(target());
+  const { start, told } = following(f);
+  start.published(new Set([WEB, API]));
+  await f.guard.withheld(target(), new Set([API]));
+  expect(told).toEqual([]);
+  // Another Target's withholding is not this start's.
+  await f.guard.withheld({ ...target(), id: "t2" });
+  expect(told).toEqual([]);
+  f.seen.set("web", { state: "stopped" });
+  await f.look();
+  expect(told).toEqual(["withdrawn"]);
+  await f.guard.withheld(target());
+  expect(told).toEqual(["withdrawn"]);
+  await f.guard.release();
+});
+
 test("boundedObservations: aborting its signal expires what has not settled, without the deadline or the provider", async () => {
   const controller = new AbortController();
   const never: ObservationDeadline = { schedule: () => () => {} };
@@ -446,7 +561,13 @@ function recordingGuard() {
     publishedUnder() {
       published.push(depth ? "published inside" : "published outside");
     },
-    start: () => ({ published() {} }),
+    start: () => ({
+      published() {},
+      started() {},
+      failure: new Promise<never>(() => {}),
+      check() {},
+    }),
+    decide: (write) => guard.exclusive(write),
     async withheld() {
       published.push(depth ? "withheld inside" : "withheld outside");
     },

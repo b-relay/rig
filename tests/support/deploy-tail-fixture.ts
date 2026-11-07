@@ -12,8 +12,11 @@ import type {
 } from "../../src/providers/contracts";
 import { stopDetached } from "../../src/domain/stop-budget";
 import type { RuntimeState, TargetRecord } from "../../src/domain/runtime";
+import type { HostSession } from "../../src/domain/host-session";
 import type { RuntimeDependencies } from "../../src/runtime/contracts";
 import { ROUTE_LOOK_INTERVAL_MS } from "../../src/runtime/route-guard";
+import type { createTargetEffects } from "../../src/adapters/target-effects";
+import { createTargetLifecycle } from "../../src/runtime/lifecycle";
 import { runtimeWorld } from "./runtime-world";
 
 /** The stop side and the guard of ADR 0020, through the real runtime, lifecycle and effects over a scripted supervisor, a
@@ -84,6 +87,9 @@ export async function fixture(config: ProjectConfig = melody()) {
   const processes = new Map<string, ProcessObservation>();
   const starts: string[] = [];
   const stops: string[] = [];
+  /** Starts, Tool installations and route changes, in the order they were made. */
+  const timeline: string[] = [];
+  const exitsOnStart = new Set<string>();
   const name = (key: string) => key.split(":").at(-1)!;
   /** Stops held until released, or failed then, by Service. */
   const heldStops = new Map<
@@ -119,12 +125,15 @@ export async function fixture(config: ProjectConfig = melody()) {
       held?.reach();
       await held?.opened;
       starts.push(request.componentName);
+      timeline.push(`start ${request.componentName}`);
       pids.set(++pid, request.componentName);
-      processes.set(request.key, {
-        state: "running",
-        pid,
-        incarnation: request.incarnation,
-      });
+      // A Service set to exit on its next start is spawned, then gone before anything looks at it.
+      processes.set(
+        request.key,
+        exitsOnStart.delete(request.componentName)
+          ? { state: "stopped", incarnation: request.incarnation, exitCode: 1 }
+          : { state: "running", pid, incarnation: request.incarnation },
+      );
       return { outcome: "started" };
     },
     async stop(key) {
@@ -144,13 +153,28 @@ export async function fixture(config: ProjectConfig = melody()) {
   };
   /** Every change asked of the router, as each path's port or `503`, in order. */
   const applied: Record<string, number | "503">[] = [];
-  const proxy: { refuses?: boolean; hold?: ReturnType<typeof gate> } = {};
+  /** `refusals` refuses that many changes from now, then answers again. */
+  const proxy: {
+    refuses?: boolean;
+    refusals?: number;
+    hold?: ReturnType<typeof gate>;
+  } = {};
   const router: Router = {
     async apply(route) {
       applied.push(pathsOf(route));
+      timeline.push(
+        `route ${Object.entries(pathsOf(route))
+          .sort()
+          .map(([path, port]) => `${path}=${port}`)
+          .join(" ")}`,
+      );
       const hold = proxy.hold;
       hold?.reach();
       await hold?.opened;
+      if (proxy.refusals) {
+        proxy.refusals--;
+        throw new Error("caddy is down");
+      }
       if (proxy.refuses) throw new Error("caddy is down");
       published.set(route.key, route);
     },
@@ -214,6 +238,8 @@ export async function fixture(config: ProjectConfig = melody()) {
   const answer = new Map<
     string,
     | { kind: "unknown" | "rejected" }
+    /** Seen stopped by the guard, whatever the supervisor says, with the signal it was asked under. */
+    | { kind: "stopped"; signal?: AbortSignal }
     | {
         kind: "held";
         reached: () => void;
@@ -256,22 +282,35 @@ export async function fixture(config: ProjectConfig = melody()) {
     string,
     ReturnType<typeof gate> & { signal?: AbortSignal }
   >();
+  const tools: { fails?: Error } = {};
+  /** The Host's boot and login session, which a test changes to stand for a Mac restart. */
+  const host: { session: HostSession } = {
+    session: {
+      boot: "BOOT-1",
+      bootedAt: "2026-11-05T07:00:00.000Z",
+      login: "100002",
+    },
+  };
   const git = { head: "c1" };
+  // Polls fire at once and no start check's deadline ever does, so a loaded machine fails nothing here.
+  const timing = {
+    schedule(delayMs: number, fire: () => void) {
+      if (delayMs >= 1000) return () => {};
+      const timer = setTimeout(fire, 0);
+      return () => clearTimeout(timer);
+    },
+    startGraceMs: 0,
+  };
+  /** Once armed, the next `up` to resolve waits there, its start over, before it returns to the Operation. */
+  const afterUp: { hold?: ReturnType<typeof gate> } = {};
+  let wrapped!: ReturnType<typeof createTargetEffects>;
   const world = await runtimeWorld({
     name: "tail-stop",
     config,
     supervisor: () => supervisor,
     startsAt: "2026-11-05T08:00:00.000Z",
     readinessDeadlineMs: 0,
-    // Polls fire at once and no start check's deadline ever does, so a loaded machine fails nothing here.
-    timing: {
-      schedule(delayMs, fire) {
-        if (delayMs >= 1000) return () => {};
-        const timer = setTimeout(fire, 0);
-        return () => clearTimeout(timer);
-      },
-      startGraceMs: 0,
-    },
+    timing,
     activation: {
       connect: async () => ({ ready: true }),
       listeners: {
@@ -288,57 +327,84 @@ export async function fixture(config: ProjectConfig = melody()) {
       },
     },
     router,
-    wrapEffects: (effects) => ({
-      ...effects,
-      observations: {
-        ...effects.observations,
-        process(target, component, signal) {
-          observed.push(component.name);
-          const answers = answer.get(component.name);
-          if (answers?.kind === "unknown")
-            return Promise.resolve<ProcessObservation>({ state: "unknown" });
-          if (answers?.kind === "rejected")
-            return Promise.reject(new Error("the supervisor did not answer"));
-          if (answers?.kind === "held") {
-            answers.signal = signal;
-            answers.reached();
-            return answers.late;
-          }
-          return effects.observations.process(target, component, signal);
+    wrapEffects: (effects) =>
+      (wrapped = {
+        ...effects,
+        observations: {
+          ...effects.observations,
+          process(target, component, signal) {
+            observed.push(component.name);
+            const answers = answer.get(component.name);
+            if (answers?.kind === "unknown")
+              return Promise.resolve<ProcessObservation>({ state: "unknown" });
+            if (answers?.kind === "rejected")
+              return Promise.reject(new Error("the supervisor did not answer"));
+            if (answers?.kind === "stopped") {
+              answers.signal = signal;
+              return Promise.resolve<ProcessObservation>({
+                state: "stopped",
+                exitCode: 3,
+              });
+            }
+            if (answers?.kind === "held") {
+              answers.signal = signal;
+              answers.reached();
+              return answers.late;
+            }
+            return effects.observations.process(target, component, signal);
+          },
         },
-      },
-      async health(component, target, signal) {
-        const held = heldHealth.get(component.name);
-        if (!held) return effects.health(component, target, signal);
-        heldHealth.delete(component.name);
-        held.signal = signal;
-        held.reach();
-        await held.opened;
-        return { ready: true };
-      },
-      route: (target, change) =>
-        exclusiveEffect("route", () => effects.route(target, change)),
-      withhold: (target, ports) =>
-        exclusiveEffect("withhold", () => effects.withhold(target, ports)),
-      restoreEffects: (target) =>
-        exclusiveEffect("restore", () => effects.restoreEffects(target)),
-      retireSuperseded: (previous, candidate) =>
-        exclusiveEffect("retire", () =>
-          effects.retireSuperseded(previous, candidate),
-        ),
-      async checkpoint(target, previous) {
-        const checkpoint = await exclusiveEffect("checkpoint", () =>
-          effects.checkpoint(target, previous),
-        );
-        return {
-          ...checkpoint,
-          commit: () => exclusiveEffect("commit", () => checkpoint.commit()),
-          rollback: () =>
-            exclusiveEffect("rollback", () => checkpoint.rollback()),
-        };
-      },
-    }),
+        // A Tool is published as asked, or fails once when the test says.
+        async install(component) {
+          timeline.push(`install ${component.name}`);
+          const failure = tools.fails;
+          delete tools.fails;
+          if (failure) throw failure;
+          return { outcome: "installed" };
+        },
+        async health(component, target, signal) {
+          const held = heldHealth.get(component.name);
+          if (!held) return effects.health(component, target, signal);
+          heldHealth.delete(component.name);
+          held.signal = signal;
+          held.reach();
+          await held.opened;
+          return { ready: true };
+        },
+        route: (target, change) =>
+          exclusiveEffect("route", () => effects.route(target, change)),
+        withhold: (target, ports) =>
+          exclusiveEffect("withhold", () => effects.withhold(target, ports)),
+        restoreEffects: (target) =>
+          exclusiveEffect("restore", () => effects.restoreEffects(target)),
+        retireSuperseded: (previous, candidate) =>
+          exclusiveEffect("retire", () =>
+            effects.retireSuperseded(previous, candidate),
+          ),
+        async checkpoint(target, previous) {
+          const checkpoint = await exclusiveEffect("checkpoint", () =>
+            effects.checkpoint(target, previous),
+          );
+          return {
+            ...checkpoint,
+            commit: () => exclusiveEffect("commit", () => checkpoint.commit()),
+            rollback: () =>
+              exclusiveEffect("rollback", () => checkpoint.rollback()),
+          };
+        },
+      }),
     dependencies: ({ store }) => ({
+      lifecycle: ((lifecycle) => ({
+        ...lifecycle,
+        async up(...args: Parameters<typeof lifecycle.up>) {
+          const started = await lifecycle.up(...args);
+          const hold = afterUp.hold;
+          delete afterUp.hold;
+          hold?.reach();
+          await hold?.opened;
+          return started;
+        },
+      }))(createTargetLifecycle(wrapped, timing)),
       files: {
         /** Every Service gets the port it declares. */
         async selectPorts(input: {
@@ -353,6 +419,11 @@ export async function fixture(config: ProjectConfig = melody()) {
       } as unknown as RuntimeDependencies["files"],
       observationBudgetMs: 600_000,
       observationDeadline,
+      hostSession: {
+        async current() {
+          return { ...host.session };
+        },
+      },
       async diagnostic({ outcome, evidence, errorCode }) {
         if (outcome.startsWith("routes-"))
           said.push({
@@ -433,6 +504,7 @@ export async function fixture(config: ProjectConfig = melody()) {
   /** Forgets what the deploy before the one under test did. */
   const reset = () => {
     starts.length = 0;
+    timeline.length = 0;
     stops.length = 0;
     applied.length = 0;
     observed.length = 0;
@@ -463,6 +535,11 @@ export async function fixture(config: ProjectConfig = melody()) {
     proxy,
     listening,
     failWrite,
+    timeline,
+    tools,
+    afterUp,
+    exitsOnStart,
+    host,
     /** The write that decides a deploy's commit (`recovery.stage` = `committing`): see `failWrite`. */
     failCommit: (options?: Parameters<typeof failWrite>[1]) =>
       failWrite(

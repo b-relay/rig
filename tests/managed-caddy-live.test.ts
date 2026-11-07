@@ -1072,3 +1072,150 @@ test("real Caddy whose CA-change restart cannot start the new generation serves 
   expect(await readlink(paths.current)).toBe(previous);
   expect(await job.state()).toBe("stopped");
 }, 60_000);
+
+test("real Caddy answers through a start's paths while the Service at the end of its plan, which no path needs, is still starting", async () => {
+  const source = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
+    existsSync,
+  );
+  if (!source)
+    throw new Error("Managed Caddy integration requires a local caddy.");
+  const root = await mkdtemp("/tmp/rig-mc-");
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home, { recursive: true });
+  const https = freePort();
+  const webPort = freePort();
+  const settings = parseHostConfig({
+    proxy: {
+      caddy: source,
+      ports: { http: freePort(), https },
+      tls: { ca: "internal" },
+    },
+  }).proxy!;
+  const paths = proxyPaths(root);
+  await installCaddyBinary({
+    source,
+    paths,
+    dns: "cloudflare",
+    run: runCommand,
+  });
+  const admin = createCaddyAdmin(paths.socket);
+  const job = createProcessCaddyJob({ root, paths, userHome: home, admin });
+  cleanups.push(() => job.remove());
+  const caddy = createManagedCaddy({
+    root,
+    settings: async () => settings,
+    run: runCommand,
+    job,
+    admin,
+  });
+  await caddy.republish();
+  await job.install();
+
+  // web serves for real; search, last and needed by no path, takes its time to start.
+  let web: ReturnType<typeof Bun.serve> | undefined;
+  cleanups.push(async () => web?.stop(true));
+  let searchStarting!: () => void;
+  let searchStarts!: () => void;
+  const reached = new Promise<void>((resolve) => (searchStarting = resolve));
+  const released = new Promise<void>((resolve) => (searchStarts = resolve));
+  const running = new Set<string>();
+  const supervisor: Supervisor = {
+    observe: async (key) =>
+      running.has(key)
+        ? { state: "running", pid: process.pid }
+        : { state: "stopped" },
+    async ensureRunning(request) {
+      if (request.componentName === "web")
+        web = Bun.serve({
+          hostname: "127.0.0.1",
+          port: webPort,
+          fetch: () => new Response("web"),
+        });
+      else {
+        searchStarting();
+        await released;
+      }
+      running.add(request.key);
+      return { outcome: "started" };
+    },
+    async stop(key) {
+      running.delete(key);
+      return { outcome: "stopped" };
+    },
+    shutdown: async () => {},
+    detach: async () => {},
+  };
+  const service = (name: string, port?: number) => ({
+    name,
+    kind: "managed" as const,
+    command: name,
+    ...(port ? { port } : {}),
+    readyTimeout: 5,
+    env: {},
+    dependsOn: [],
+  });
+  const target: TargetRecord = {
+    id: "target",
+    projectId: "project",
+    name: "stable",
+    kind: "stable",
+    desired: "running",
+    createdAt: "now",
+    updatedAt: "now",
+    logRoot: join(root, "logs"),
+    plan: {
+      project: "demo",
+      target: "stable",
+      workspacePath: root,
+      dataRoot: join(root, "data"),
+      deploymentName: "stable",
+      branchSlug: "main",
+      subdomain: "stable",
+      providers: { processSupervisor: "child" },
+      preparedComponents: [],
+      domain: "app.example.test",
+      proxy: { upstream: "web" },
+      components: [service("web", webPort), service("search")],
+    },
+  };
+  const effects = createTargetEffects({
+    ...localActivation([webPort]),
+    root,
+    recordingTime: () => new Date().toISOString(),
+    supervisors: new Map([["child", supervisor]]),
+    run: runCommand,
+    installer: createArtifactInstaller({
+      run: runCommand,
+      bunExecutable: process.execPath,
+    }),
+    router: caddy.router,
+    environment: { PATH: process.env.PATH! },
+  });
+  const starting = createTargetLifecycle(effects, {
+    schedule(delayMs, fire) {
+      const timer = setTimeout(fire, delayMs);
+      return () => clearTimeout(timer);
+    },
+    startGraceMs: 0,
+  }).up(target);
+  await reached;
+  // The publication was confirmed in Caddy before search began; Caddy's first answer may still take a moment.
+  for (
+    let deadline = Date.now() + 15_000;
+    (await get("app.example.test", https)).status === 0 &&
+    Date.now() < deadline;
+  )
+    await Bun.sleep(200);
+  expect(await get("app.example.test", https, "/account")).toEqual({
+    status: 200,
+    body: "web",
+  });
+
+  searchStarts();
+  expect(await starting).toEqual({ outcome: "started" });
+  expect(await get("app.example.test", https)).toEqual({
+    status: 200,
+    body: "web",
+  });
+}, 60_000);

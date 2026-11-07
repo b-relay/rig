@@ -12,6 +12,20 @@ const observationSchema = z.object({
     .int()
     .positive()
     .describe("Capture wrapper process identifier."),
+  wrapperIdentity: z
+    .string()
+    .length(64)
+    .optional()
+    .describe(
+      "Capture wrapper process birth identity; written for rigd 1.1.0, which requires it, and read by nothing now.",
+    ),
+  observedAt: z
+    .number()
+    .finite()
+    .optional()
+    .describe(
+      "Unix milliseconds when the observation was written; written for rigd 1.1.0, which requires it, and read by nothing now.",
+    ),
   applicationIdentity: z
     .string()
     .length(64)

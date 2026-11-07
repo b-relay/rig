@@ -5,6 +5,15 @@ import { join, resolve } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
 import { readExitRecord } from "../src/providers/exit-record";
 import { executionBaseline } from "../src/daemon/environment";
+import {
+  survivingApplication,
+  type CaptureObservation,
+} from "../src/providers/capture-observation";
+import {
+  createProcessInspection,
+  platformInspection,
+} from "../src/providers/process-inspection";
+import * as release110 from "./support/capture-observation-1.1.0";
 const roots: string[] = [];
 /** Where rigd writes a request: in the capture directory of the Rig root `root`, the only place the wrapper takes one from. */
 async function requestIn(root: string): Promise<string> {
@@ -243,3 +252,100 @@ process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (p
   expect(observation.observation.state).toBe("stopped");
   expect(observation.observation.reason).toContain("stopped");
 }, 12000);
+
+/** How a supervisor of `reader`'s release judges the application of the wrapper whose request is `requestPath`. */
+async function judged(
+  reader: Pick<typeof release110, "survivingApplication">,
+  requestPath: string,
+) {
+  const inspection = createProcessInspection(
+    await platformInspection(runCommand),
+  );
+  return await reader.survivingApplication({
+    requestPath,
+    key: "adopted",
+    inspect: inspection.identity,
+    groupExists: inspection.groupExists,
+  });
+}
+
+test("a supervisor of rigd 1.1.0 adopts this release's wrapper: it sees the application running, then gone once it exits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-1.1.0-reader-"));
+  roots.push(root);
+  const requestPath = await requestIn(root);
+  await writeFile(
+    requestPath,
+    JSON.stringify({
+      key: "adopted",
+      componentName: "web",
+      command: [
+        "/bin/sh",
+        "-c",
+        "while [ ! -e stop ]; do sleep 0.05; done; exit 0",
+      ],
+      cwd: root,
+      env: {},
+      logRoot: root,
+      incarnation: "start-1",
+    }),
+  );
+  const wrapper = Bun.spawn(
+    [process.execPath, resolve("src/rigd.ts"), "capture", requestPath],
+    {
+      env: { ...process.env, RIG_ROOT: root },
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+  try {
+    let running: { pid?: number } | undefined;
+    for (let i = 0; i < 1000 && !running?.pid; i++) {
+      running = await readFile(`${requestPath}.observation.json`, "utf8")
+        .then((raw) => JSON.parse(raw).observation)
+        .catch(() => undefined);
+      if (!running?.pid) await Bun.sleep(10);
+    }
+    expect(await judged(release110, requestPath)).toMatchObject({
+      state: "unknown",
+      reason: expect.stringContaining(`pid ${running!.pid}`),
+    });
+    await writeFile(join(root, "stop"), "");
+    expect(await wrapper.exited).toBe(0);
+    expect(await judged(release110, requestPath)).toBeUndefined();
+  } finally {
+    wrapper.kill("SIGKILL");
+  }
+}, 30000);
+
+test("a supervisor of this release adopts a rigd 1.1.0 wrapper's observation: the application running, then gone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-1.1.0-writer-"));
+  roots.push(root);
+  const requestPath = await requestIn(root);
+  const application = Bun.spawn(["/bin/sleep", "600"]);
+  try {
+    const inspection = createProcessInspection(
+      await platformInspection(runCommand),
+    );
+    const identity = (await inspection.identity(application.pid))!;
+    const written: release110.CaptureObservation = {
+      wrapperPid: process.pid,
+      wrapperIdentity: (await inspection.identity(process.pid))!,
+      observedAt: Date.now(),
+      applicationIdentity: identity,
+      observation: { state: "running", pid: application.pid },
+    };
+    await release110.writeCaptureObservation(root, requestPath, written);
+    // This release's type names the same document.
+    const read: CaptureObservation = written;
+    expect(read.observation.pid).toBe(application.pid);
+    expect(await judged({ survivingApplication }, requestPath)).toMatchObject({
+      state: "unknown",
+      reason: expect.stringContaining(`pid ${application.pid}`),
+    });
+    application.kill("SIGKILL");
+    await application.exited;
+    expect(await judged({ survivingApplication }, requestPath)).toBeUndefined();
+  } finally {
+    application.kill("SIGKILL");
+  }
+}, 30000);

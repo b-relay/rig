@@ -1,0 +1,186 @@
+/* rigd 1.1.0's reader and writer of capture observations, as `git show v1.1.0:src/providers/capture-observation.ts`
+ * prints them with only the import paths changed (and formatted): the tests check that wrappers and supervisors of this release and of
+ * 1.1.0 still read each other's observations. CI checks out no tags, so the file is kept here rather than read from Git. */
+import { readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { replacePrivateFile } from "../../src/providers/private-files";
+import { z } from "zod";
+import type { ProcessObservation } from "../../src/providers/contracts";
+import type { ProcessIdentityReader } from "../../src/providers/process-identity";
+import {
+  processLeasePath,
+  processLeaseSchema,
+} from "../../src/providers/process-lease";
+
+const observationSchema = z.object({
+  wrapperPid: z
+    .number()
+    .int()
+    .positive()
+    .describe("Capture wrapper process identifier."),
+  wrapperIdentity: z
+    .string()
+    .length(64)
+    .describe("Capture wrapper process birth identity."),
+  observedAt: z
+    .number()
+    .finite()
+    .describe("Unix milliseconds when the child was observed."),
+  applicationIdentity: z
+    .string()
+    .length(64)
+    .optional()
+    .describe("Running application process birth identity."),
+  observation: z
+    .object({
+      state: z
+        .enum(["running", "stopped", "unknown"])
+        .describe("Current application process state."),
+      pid: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Application process identifier, never the wrapper PID."),
+      exitCode: z
+        .number()
+        .int()
+        .optional()
+        .describe("Last application exit code."),
+      signal: z
+        .string()
+        .optional()
+        .describe("Signal that ended the application, when one did."),
+      incarnation: z
+        .string()
+        .optional()
+        .describe("The start that produced the observed application process."),
+      reason: z
+        .string()
+        .optional()
+        .describe("Safe explanation of uncertain application state."),
+    })
+    .describe("Application observation owned by the capture supervisor."),
+});
+export type CaptureObservation = z.infer<typeof observationSchema>;
+
+/** Capture's existing observation loop publishes a complete, atomic child snapshot. */
+export async function writeCaptureObservation(
+  root: string,
+  requestPath: string,
+  evidence: CaptureObservation,
+): Promise<void> {
+  await replacePrivateFile(
+    root,
+    `${requestPath}.observation.json`,
+    JSON.stringify(evidence),
+  );
+}
+
+/** What a supervisor reports about the application of a capture wrapper that is gone: nothing when that application is gone
+ * too (or none was ever recorded), and an `unknown` observation when it may still run. The application is known from the
+ * wrapper's last observation and from the lease the wrapper's own supervisor writes, beside the request, as soon as it spawns
+ * the application: a wrapper killed before its first observation still leaves that lease. It still runs while its pid has the
+ * recorded birth identity, or, once that leader is gone, while its process group has members, as the wrapper's supervisor
+ * itself judges ownership. A reused pid never counts as the application. A record that exists but cannot be read, and a
+ * probe that fails, leave the application uncertain rather than gone. Freshness does not matter here: the wrapper's last
+ * word is exactly what is in question. */
+export async function survivingApplication(request: {
+  requestPath: string;
+  key: string;
+  inspect: ProcessIdentityReader;
+  groupExists: (pid: number) => Promise<boolean>;
+}): Promise<ProcessObservation | undefined> {
+  const uncertain = (subject: string): ProcessObservation => ({
+    state: "unknown",
+    reason: `The capture wrapper is gone and whether ${subject} still runs could not be verified.`,
+  });
+  const observed = await observedApplication(request.requestPath);
+  const leased = await leasedApplication(
+    dirname(request.requestPath),
+    request.key,
+  );
+  if (observed === "unreadable" || leased === "unreadable")
+    return uncertain("its application");
+  for (const { pid, identity: expected } of [...observed, ...leased]) {
+    let running: boolean;
+    try {
+      const identity = await request.inspect(pid);
+      // A pid with another identity was reused, so a group by that id is not the application's.
+      running =
+        identity === expected ||
+        (identity === undefined && (await request.groupExists(pid)));
+    } catch {
+      return uncertain(`its application (pid ${pid})`);
+    }
+    if (running)
+      return {
+        state: "unknown",
+        reason: `The application (pid ${pid}, or its process group) is still running without its capture wrapper, so Rig neither stops it nor starts another. End that process group, then run rig up for this Target.`,
+      };
+  }
+  return undefined;
+}
+type RecordedApplication = { pid: number; identity: string };
+/** The running application the wrapper's last observation names, with its birth identity; none without an observation or
+ * when it names none, and `unreadable` when the observation exists but cannot be read. */
+async function observedApplication(
+  requestPath: string,
+): Promise<RecordedApplication[] | "unreadable"> {
+  const saved = await readRecord(`${requestPath}.observation.json`);
+  if (saved.kind !== "read") return saved.kind === "absent" ? [] : saved.kind;
+  const parsed = observationSchema.safeParse(saved.content);
+  if (!parsed.success) return "unreadable";
+  const { observation, applicationIdentity } = parsed.data;
+  return observation.state === "running" &&
+    observation.pid &&
+    applicationIdentity
+    ? [{ pid: observation.pid, identity: applicationIdentity }]
+    : [];
+}
+/** The application the wrapper's own supervisor, whose state lives in `stateRoot`, leased for `key`; none without a lease,
+ * and `unreadable` when the lease exists but cannot be read. */
+async function leasedApplication(
+  stateRoot: string,
+  key: string,
+): Promise<RecordedApplication[] | "unreadable"> {
+  const saved = await readRecord(processLeasePath(stateRoot, key));
+  if (saved.kind !== "read") return saved.kind === "absent" ? [] : saved.kind;
+  const parsed = processLeaseSchema.safeParse(saved.content);
+  if (!parsed.success || parsed.data.key !== key) return "unreadable";
+  return [{ pid: parsed.data.pid, identity: parsed.data.identity }];
+}
+/** A JSON record's content: `absent` when there is none, `unreadable` when it exists but cannot be read or parsed. */
+async function readRecord(
+  path: string,
+): Promise<
+  { kind: "read"; content: unknown } | { kind: "absent" | "unreadable" }
+> {
+  try {
+    return { kind: "read", content: JSON.parse(await readFile(path, "utf8")) };
+  } catch (error) {
+    return {
+      kind:
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? "absent"
+          : "unreadable",
+    };
+  }
+}
+
+/** Wraps a publisher so only a change reaches it: an idle component does not rewrite its file. Nothing judges how old the
+ * evidence is; what matters is the wrapper's last word (see `survivingApplication`). */
+export function changePublisher<Observation>(
+  publish: (
+    observation: Observation,
+    applicationIdentity?: string,
+  ) => Promise<void>,
+): (observation: Observation, applicationIdentity?: string) => Promise<void> {
+  let last: string | undefined;
+  return async (observation, applicationIdentity) => {
+    const key = JSON.stringify([observation, applicationIdentity]);
+    if (key === last) return;
+    await publish(observation, applicationIdentity);
+    last = key;
+  };
+}

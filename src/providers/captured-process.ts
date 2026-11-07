@@ -129,6 +129,11 @@ async function runUntilStopped(
     received ? { exitCode, signal: received } : { exitCode };
   const inspect = dependencies.inspect ?? processInspection.identity;
   let applicationPid: number | undefined;
+  // rigd 1.1.0 refuses an observation without the wrapper's identity and time, so a rigd downgraded while this wrapper
+  // runs would take its application for unknown: both are still written, though nothing here reads them.
+  const wrapperIdentity = await processInspection
+    .identity(process.pid)
+    .catch(() => undefined);
   try {
     const started = await supervisor.ensureRunning(request);
     applicationPid = started.pid!;
@@ -143,6 +148,8 @@ async function runUntilStopped(
       ) =>
         writeCaptureObservation(root, requestPath, {
           wrapperPid: process.pid,
+          ...(wrapperIdentity ? { wrapperIdentity } : {}),
+          observedAt: Date.now(),
           applicationIdentity,
           observation,
         }),

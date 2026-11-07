@@ -9,20 +9,51 @@ export interface CliInteraction {
   text(message: string, defaultValue: string): Promise<string>;
   confirm(message: string): Promise<boolean>;
 }
+/** The `initialization-info` reply rig init asks before it prompts. */
 const initialization = z.object({
-  name: z.string(),
-  productionBranch: z.string(),
-  currentBranch: z.string().optional(),
-  gitRequired: z.boolean(),
-  existing: z.boolean(),
+  name: z
+    .string()
+    .describe(
+      "The name init would register: the one an existing rig.yaml declares, else --project, else one made from the directory's name.",
+    ),
+  productionBranch: z
+    .string()
+    .describe(
+      "The Production branch init would record: an existing rig.yaml's, else the remote's default Branch, else the Host config default.",
+    ),
+  currentBranch: z
+    .string()
+    .optional()
+    .describe("The Branch the checkout is on; absent when it is on none."),
+  gitRequired: z
+    .boolean()
+    .describe(
+      "The directory is not in a Git repository, so init must create one.",
+    ),
+  existing: z
+    .boolean()
+    .describe("A rig.yaml is already there, so init registers it as it is."),
 });
+/** The `deployment-context` reply rig deploy asks before it announces the deploy. */
 const deployment = z.object({
-  project: z.string(),
-  repoPath: z.string(),
-  productionBranch: z.string(),
-  currentBranch: z.string().nullable(),
-  // Required: a reply without it would let a stable deploy skip its Production confirmation.
-  selected: z.enum(["working", "stable", "preview"]),
+  project: z.string().describe("The Project's registered name."),
+  repoPath: z
+    .string()
+    .describe("The repository directory it is registered at."),
+  productionBranch: z
+    .string()
+    .describe(
+      "Its Production branch: rig.yaml's, else the Host config default.",
+    ),
+  currentBranch: z
+    .string()
+    .nullable()
+    .describe("The Branch the checkout is on; null for a detached HEAD."),
+  selected: z
+    .enum(["working", "stable", "preview"])
+    .describe(
+      "The role the deploy's Target selector means. Required: a reply without it would let a stable deploy skip its Production confirmation.",
+    ),
 });
 /** Resolve human choices through read-only daemon queries before submitting any mutation. A command that names no Target
  * has its default from the grammar (working, or stable for a deploy), so no Target is ever chosen here. */

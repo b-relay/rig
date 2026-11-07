@@ -14,21 +14,49 @@ import {
   type RuntimeCommand,
 } from "./protocol";
 
+/** rigd's health reply. */
 const healthSchema = z.object({
-  instanceId: z.string().min(1),
-  pid: z.number().int().positive(),
-  running: z.literal(true),
-  version: z.string().min(1).optional(),
-  dashboard: z.string().min(1).optional(),
-  dashboardProblem: z.string().min(1).optional(),
+  instanceId: z
+    .string()
+    .min(1)
+    .describe(
+      "The id the answering rigd chose at its start, as its lease records it.",
+    ),
+  pid: z.number().int().positive().describe("Its process id."),
+  running: z.literal(true).describe("Always true: a rigd that answers runs."),
+  version: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Its Rig version; absent when an older rigd, which reported none, answers.",
+    ),
+  dashboard: z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Where rigd serves the dashboard; absent when it runs none."),
+  dashboardProblem: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Why that dashboard is not served now; absent while it is, or while it first starts.",
+    ),
 });
+/** A refused or failed command's reply: the tagged error rigd raised. */
 const errorSchema = z.object({
-  error: z.object({
-    code: z.string().min(1),
-    message: z.string().min(1),
-    hint: z.string().optional(),
-    details: z.record(z.string(), z.unknown()).optional(),
-  }),
+  error: z
+    .object({
+      code: z.string().min(1).describe("The error code, such as TARGET_OFF."),
+      message: z.string().min(1).describe("What went wrong, in a sentence."),
+      hint: z.string().optional().describe("What to do about it."),
+      details: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Structured context, such as the paths or names involved."),
+    })
+    .describe("The error rigd raised."),
 });
 /** rig only sends commands its own grammar accepts, so a daemon that rejects
  * one as invalid is running a different version. */
@@ -43,7 +71,13 @@ const versionSkew = (details: Record<string, unknown> | undefined) => {
   );
 };
 const resultSchema = z
-  .object({ result: z.unknown() })
+  .object({
+    result: z
+      .unknown()
+      .describe(
+        "The command's reply: a read's report, checked against its schema, or a mutation's outcome, passed through as received. The key is required whatever its value.",
+      ),
+  })
   .refine((value) => Object.hasOwn(value, "result"));
 /** Only reads and the health probe carry a deadline; rigd answers them without queueing, so a late answer means a busy daemon, not a queued operation. */
 const deadlineExpired = (

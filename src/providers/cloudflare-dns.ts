@@ -34,37 +34,87 @@ export interface CloudflareDnsOptions {
   readonly maxPages?: number;
 }
 
+/** Every Cloudflare API answer, as far as Rig reads it. */
 const envelopeSchema = z.object({
-  success: z.boolean(),
+  success: z.boolean().describe("Whether Cloudflare carried out the request."),
   errors: z
     .array(
-      z.object({ code: z.number().optional(), message: z.string().optional() }),
+      z.object({
+        code: z.number().optional().describe("Cloudflare's error code."),
+        message: z.string().optional().describe("Cloudflare's error message."),
+      }),
     )
-    .optional(),
-  result: z.unknown(),
+    .optional()
+    .describe("Why a request failed, as Cloudflare says."),
+  result: z
+    .unknown()
+    .describe("The answer itself, which the request's own schema reads."),
   result_info: z
     .object({
-      page: z.number().int().optional(),
-      total_pages: z.number().int().optional(),
+      page: z.number().int().optional().describe("The page this answer is."),
+      total_pages: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          "How many pages the list has; without it, a page shorter than asked is the last.",
+        ),
     })
-    .optional(),
+    .optional()
+    .describe("A list's paging, when the answer is one page of a list."),
 });
 type Envelope = z.infer<typeof envelopeSchema>;
+/** A zone as Cloudflare lists it. */
 const zoneSchema = z.object({
-  id: z.string().regex(ID),
-  name: z.string().min(1).max(253),
-  status: z.string().optional(),
+  id: z.string().regex(ID).describe("Cloudflare's id for the zone."),
+  name: z
+    .string()
+    .min(1)
+    .max(253)
+    .describe("The zone's apex name, such as example.com."),
+  status: z
+    .string()
+    .optional()
+    .describe(
+      "The zone's state, such as active or pending; absent reads as unknown.",
+    ),
 });
+/** A DNS record as Cloudflare stores it. */
 const recordSchema = z.object({
-  id: z.string().regex(ID),
-  name: z.string().min(1).max(253),
-  type: z.string().min(1).max(16),
-  content: z.string(),
-  ttl: z.number().int(),
-  proxied: z.boolean().optional(),
-  priority: z.number().int().optional(),
-  comment: z.string().nullable().optional(),
-  modified_on: z.string().min(1),
+  id: z.string().regex(ID).describe("Cloudflare's id for the record."),
+  name: z
+    .string()
+    .min(1)
+    .max(253)
+    .describe("The record's fully qualified name."),
+  type: z
+    .string()
+    .min(1)
+    .max(16)
+    .describe("The record type, such as A or CNAME."),
+  content: z.string().describe("The record's value, by type."),
+  ttl: z
+    .number()
+    .int()
+    .describe("Seconds; 1 means Cloudflare's automatic TTL."),
+  proxied: z
+    .boolean()
+    .optional()
+    .describe("Answered by Cloudflare's proxy rather than with content."),
+  priority: z
+    .number()
+    .int()
+    .optional()
+    .describe("The MX preference; Rig keeps it only for MX records."),
+  comment: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("The record's note; null or empty means none."),
+  modified_on: z
+    .string()
+    .min(1)
+    .describe("When Cloudflare last changed the record (ISO 8601)."),
 });
 
 /** Cloudflare's DNS records API behind Rig's DnsProvider contract (ADR 0018). Every request has a deadline and is never

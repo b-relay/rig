@@ -3,17 +3,34 @@ import type { TargetLogEntry } from "../providers/contracts";
 import { familyEvidence } from "./log-sources";
 import type { LogFilter } from "../domain/log-filter";
 
+/** One record of `target.jsonl`, as `appendTargetLogEntries` writes it. */
 const currentEntry = z.object({
-  timestamp: z.string(),
-  component: z.string(),
-  stream: z.enum(["stdout", "stderr", "health"]),
-  line: z.string(),
+  timestamp: z.string().describe("When the line was written (ISO 8601)."),
+  component: z.string().describe("The Service, Tool or job that wrote it."),
+  stream: z
+    .enum(["stdout", "stderr", "health"])
+    .describe("stdout or stderr output, or health-check evidence."),
+  line: z.string().describe("The line, without its newline."),
 });
+/** One record of an older JSONL log family: an event, of which only `component.log` holds output. */
 const legacyEvent = z.object({
-  timestamp: z.string().optional(),
-  event: z.string(),
-  component: z.string().optional(),
-  details: z.record(z.string(), z.unknown()).optional(),
+  timestamp: z
+    .string()
+    .optional()
+    .describe("When it was written (ISO 8601); absent reads as unknown."),
+  event: z
+    .string()
+    .describe("What the record is; only component.log holds an output line."),
+  component: z
+    .string()
+    .optional()
+    .describe("The component that wrote it; absent reads as unknown."),
+  details: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "The event's details: a component.log event's line and stream; nothing else is shown.",
+    ),
 });
 
 /** One complete line of a family's file, read: an entry; `unreadable` for a record that cannot be parsed, which the

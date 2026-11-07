@@ -16,6 +16,8 @@ const failing = new Map<string, Error>();
 let candidate: binaries.BinaryInstallation | undefined;
 /** The fake job: whether it ran before the install, and whether its install changes its definition. */
 const job = { running: true, definitionChanges: false };
+/** How many publishers from this process an install built. */
+let publishers = 0;
 function step(name: string): void {
   const taken = trace.filter(
     (each) => each === name || each.startsWith(`${name} `),
@@ -73,6 +75,7 @@ mock.module("../src/providers/managed-caddy", () => ({
     options: Parameters<typeof managed.createManagedCaddy>[0],
   ) {
     if (!candidate) return real.managed.createManagedCaddy(options);
+    publishers++;
     return {
       republish: async () => step("publish here"),
       close: async () => step("close"),
@@ -88,6 +91,7 @@ afterEach(async () => {
   Object.assign(job, { running: true, definitionChanges: false });
   trace.length = 0;
   failing.clear();
+  publishers = 0;
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -132,7 +136,8 @@ async function installation(
 }
 test("a complete install publishes before the job runs the new binary, restarts the job that kept running, then confirms it", async () => {
   const proxy = await installation();
-  expect(await proxy.install()).toEqual([]);
+  await proxy.install();
+  expect(publishers).toBe(1);
   expect(trace).toEqual([
     "binary",
     "publish here",
@@ -251,7 +256,9 @@ test("a staging whose publication fails puts the previous binary back and define
 test("beside a running system rigd, that rigd publishes instead of this install, before the job runs the new binary", async () => {
   const proxy = await installation();
   const publish = async () => step("rigd publishes");
-  expect(await proxy.installPublishedBy(publish)).toEqual([]);
+  await proxy.installPublishedBy(publish);
+  // Nothing publishes from here, so no publisher is built here.
+  expect(publishers).toBe(0);
   expect(trace).toEqual([
     "binary",
     "rigd publishes",

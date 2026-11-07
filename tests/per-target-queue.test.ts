@@ -133,6 +133,9 @@ async function fixture(host: Record<string, unknown> = {}) {
     },
     store,
     documents: {
+      async directoryMissing() {
+        return false;
+      },
       async initializationInfo(path) {
         return {
           name: basename(path),

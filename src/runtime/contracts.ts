@@ -105,6 +105,9 @@ export interface ProjectDocuments {
     searched: DiscoverySearch;
   }>;
   read(path: string): Promise<ConfigDocument<ProjectConfig>>;
+  /** Whether the registered directory `path` is gone entirely, as `read` reports it (`missing_directory`), without reading
+   * its config: one that exists, however unreadable its config, is not missing. */
+  directoryMissing(path: string): Promise<boolean>;
   initializationInfo(path: string): Promise<{
     name: string;
     /** The branch init would record: an existing config's, origin/HEAD, or the host default. */

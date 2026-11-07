@@ -83,7 +83,6 @@ import {
   registerProject,
   selectProject,
   assertIdentity,
-  registeredDirectoryMissing,
 } from "./projects";
 import {
   assertNewPreviewName,
@@ -819,17 +818,23 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         });
       }
       if (command.action === "list") {
-        const state = await deps.store.read();
-        // An inventory listing reads the record only; Target liveness is status's job and is not observed here.
+        const state = await readOnlyState(deps.store);
+        const targetCounts = new Map<string, number>();
+        for (const target of state.targets)
+          targetCounts.set(
+            target.projectId,
+            (targetCounts.get(target.projectId) ?? 0) + 1,
+          );
+        // An inventory listing reads the record only; Target liveness is status's job and is not observed here, and each
+        // Project's config is not read either.
         return {
           projects: await Promise.all(
             state.projects.map(async (p) => ({
               id: p.id,
               name: p.name,
               repoPath: p.repoPath,
-              targetCount: state.targets.filter((t) => t.projectId === p.id)
-                .length,
-              ...((await directoryMissing(p.repoPath, deps))
+              targetCount: targetCounts.get(p.id) ?? 0,
+              ...((await deps.documents.directoryMissing(p.repoPath))
                 ? { missing: true }
                 : {}),
             })),
@@ -3366,18 +3371,6 @@ function activityScopeError(error: unknown): unknown {
   );
 }
 
-/** A registered directory that is gone entirely, as opposed to one whose config is unreadable. */
-async function directoryMissing(
-  repoPath: string,
-  deps: Pick<RuntimeDependencies, "documents">,
-): Promise<boolean> {
-  try {
-    await deps.documents.read(repoPath);
-    return false;
-  } catch (error) {
-    return registeredDirectoryMissing(error);
-  }
-}
 /** The scaffold flags an init carried that an existing config keeps out. */
 function unappliedInitFlags(command: RuntimeCommand): string[] {
   const flags: [keyof RuntimeCommand, string][] = [

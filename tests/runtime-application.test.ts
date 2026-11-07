@@ -73,6 +73,9 @@ function fixture() {
       },
     },
     documents: {
+      async directoryMissing() {
+        return false;
+      },
       async initializationInfo() {
         return {
           name: "demo",
@@ -889,6 +892,34 @@ test("a Project whose registered directory no longer exists is named with its pa
     reason: "directory-missing",
     hint,
   });
+});
+
+test("list counts each Project's Targets and reports a gone directory without reading any Project's config", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  await runtime.command({ action: "up", project: "demo" });
+  await runtime.command({
+    action: "deploy",
+    project: "demo",
+    target: "stable",
+  });
+  let reads = 0;
+  deps.documents.read = async () => {
+    reads++;
+    throw new Error("list read a Project config");
+  };
+  deps.documents.directoryMissing = async (path) => path === "/tmp/developer";
+  expect(await runtime.command({ action: "list" })).toMatchObject({
+    projects: [
+      {
+        name: "demo",
+        repoPath: "/tmp/developer",
+        targetCount: 2,
+        missing: true,
+      },
+    ],
+  });
+  expect(reads).toBe(0);
 });
 
 test("down and the reads of recorded state reach the Project registered where rig.yaml cannot be read, never one above that rig.yaml or outside the repository, while up and restart still refuse", async () => {
@@ -4317,16 +4348,7 @@ test("forget refuses running Targets and retained Previews, list marks a missing
     hint: "Destroy it with rig down preview feature --project demo --destroy, then run rig forget demo.",
   });
   state.targets = state.targets.filter((t) => t.kind !== "preview");
-  const originalRead = deps.documents.read.bind(deps.documents);
-  deps.documents.read = async (path) => {
-    if (path === "/tmp/developer")
-      throw new ConfigError(
-        "Project directory /tmp/developer does not exist.",
-        "missing_directory",
-        { repoPath: path },
-      );
-    return await originalRead(path);
-  };
+  deps.documents.directoryMissing = async (path) => path === "/tmp/developer";
   expect(await runtime.command({ action: "list" })).toMatchObject({
     projects: [
       {

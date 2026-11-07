@@ -190,6 +190,9 @@ async function rigWorld() {
     orphanedTools: (recorded) => effects.orphanedTools(recorded),
     store,
     documents: {
+      async directoryMissing() {
+        return false;
+      },
       async initializationInfo() {
         return {
           name: "ledger",

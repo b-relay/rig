@@ -64,7 +64,13 @@ export function completedNotice(
   operations: readonly Recorded[],
   operation: string,
   project: string | undefined,
-): (Pick<OperationResult, "operationId"> & { text: string }) | undefined {
+):
+  | (Pick<OperationResult, "operationId"> & {
+      text: string;
+      /** What it left that the reader should know, as Activity recorded it. */
+      warnings?: string;
+    })
+  | undefined {
   const record = operations.findLast((each) => each.id === operation);
   if (!record || record.outcome === "failed") return undefined;
   if (project !== undefined && record.project !== project) return undefined;
@@ -77,6 +83,7 @@ export function completedNotice(
     return {
       operationId: record.id,
       text: `Project ${record.project} was forgotten: this Host no longer manages it. Its repository is untouched.`,
+      ...(record.message ? { warnings: record.message } : {}),
     };
   return undefined;
 }

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { projectColor } from "@/lib/health";
-import type { ActivityResult, DoctorReport } from "@/lib/types";
+import type { ActivityResult, DoctorReport, QueueResult } from "@/lib/types";
 import {
   bytes,
   cardsOf,
@@ -48,6 +48,8 @@ export function HostMonitor({
   rigd,
   doctor,
   activityFailure,
+  draining,
+  queueRead,
 }: {
   /** The report the page was rendered with; absent when that read failed, with `initialFailure` saying why. */
   initial?: ChartReport;
@@ -58,6 +60,10 @@ export function HostMonitor({
   operations: readonly Operation[];
   /** The page's render instant, for Activity's "ago". */
   now: number;
+  /** Why rigd refuses new work now, by its queue read. */
+  draining?: QueueResult["draining"];
+  /** Whether that read answered; otherwise what rigd would refuse is not known. */
+  queueRead: boolean;
   /** rigd's facts (version, process, root, queue) and what it runs now; or why they could not be read. Data, not
    * elements, so the card renders them here. */
   rigd:
@@ -223,12 +229,12 @@ export function HostMonitor({
           scope="all Projects"
           {...(activityFailure && { failure: activityFailure })}
         />
-        <details className="group text-sm">
+        <details className="group text-sm" open={draining !== undefined}>
           <summary className="cursor-pointer list-none text-xs text-muted-foreground hover:text-foreground">
             Uninstall readiness…
           </summary>
           <div className="mt-3">
-            <RigdControls />
+            <RigdControls draining={draining} known={queueRead} />
           </div>
         </details>
       </div>

@@ -39,6 +39,19 @@ export const HEALTH_TILE: Record<Health, string> = {
   gray: "bg-muted text-idle",
 };
 
+/** The page's main region, which the skip link moves focus to. */
+export const CONTENT_ID = "content";
+/** The keyboard's first stop on every page, hidden until focused: past the sidebar, however many Projects it lists. */
+export function SkipToContent() {
+  return (
+    <a
+      href={`#${CONTENT_ID}`}
+      className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:border focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-foreground focus:no-underline focus:shadow-md"
+    >
+      Skip to content
+    </a>
+  );
+}
 /** A refusal or transport failure, with rigd's code and hint when it gave them. */
 export function Failure({ failure }: { failure: FailureShape | undefined }) {
   if (!failure) return null;

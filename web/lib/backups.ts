@@ -40,6 +40,21 @@ export function restoreBlocked(
   if (backup.missing) return "This backup's directory is gone.";
   return undefined;
 }
+/** Pure: what `backup`'s row says of a restore of it, from the job's status alone, so a refresh, a reload and another
+ * browser agree: restoring while the run goes, then how the job's latest run ended when that run was a restore of this
+ * backup. A later run of the job has its own word on its card; nothing here speaks for it. */
+export function restoreNotice(
+  job: Pick<JobReport, "running" | "last">,
+  backup: string,
+): { word: string; failed: boolean } | undefined {
+  if (job.running?.trigger === "restore" && job.running.restore === backup)
+    return { word: "restoring", failed: false };
+  if (job.last?.trigger !== "restore" || job.last.restore !== backup)
+    return undefined;
+  return job.last.outcome === "succeeded"
+    ? { word: "restored", failed: false }
+    : { word: `restore ${job.last.outcome ?? "unknown"}`, failed: true };
+}
 /** Pure: whether what was typed confirms a restore of `job`: its name exactly. */
 export function restoreConfirmed(typed: string, job: string): boolean {
   return typed.trim() === job;

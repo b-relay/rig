@@ -1,12 +1,22 @@
 "use client";
 
+import type { QueueResult } from "@/lib/types";
 import { Failure, Notice, Section } from "./bits";
 import { Confirm } from "./confirm";
 import { useRun } from "./operations";
 import { Button } from "@/components/ui/button";
 
-export function RigdControls() {
+/** What rigd's admission is now, as its queue read says, so a reload and another browser see what the page that prepared it
+ * saw. Unknown when that read failed: both buttons are offered, and rigd decides. */
+export function RigdControls({
+  draining,
+  known = true,
+}: {
+  draining?: QueueResult["draining"];
+  known?: boolean;
+}) {
   const drain = useRun<{ ready: true } | { cancelled: true }>();
+  const prepared = draining === "uninstall-prepared";
   return (
     <Section
       title="Uninstall readiness"
@@ -19,34 +29,45 @@ export function RigdControls() {
         </>
       }
     >
-      <div className="flex flex-wrap gap-2">
-        <Confirm
-          title="Prepare rigd for uninstall?"
-          description="rigd will refuse lifecycle and deploy commands until this is cancelled."
-          confirmLabel="Prepare uninstall"
-          destructive
-          onConfirm={() => void drain.run({ action: "prepare-uninstall" })}
-        >
-          <Button variant="destructive" disabled={drain.busy}>
-            Prepare uninstall
-          </Button>
-        </Confirm>
-        <Button
-          variant="outline"
-          disabled={drain.busy}
-          onClick={() => void drain.run({ action: "cancel-uninstall" })}
-        >
-          Cancel uninstall
-        </Button>
-      </div>
-      <Failure failure={drain.failure} />
-      {drain.result ? (
-        <Notice tone="good">
-          {"ready" in drain.result
-            ? "rigd is ready to be uninstalled and is refusing new work."
-            : "rigd is accepting commands again."}
+      {prepared ? (
+        <Notice tone="warn" title="Prepared for uninstall">
+          rigd is refusing new work. Run <code>rigd uninstall</code> to finish,
+          or cancel to return it to normal service.
         </Notice>
       ) : null}
+      {draining === "stopping" ? (
+        <Notice tone="warn" title="rigd is stopping">
+          It is finishing what it runs and refuses new work; the next rigd
+          accepts it again.
+        </Notice>
+      ) : null}
+      {draining === "stopping" ? null : (
+        <div className="flex flex-wrap gap-2">
+          {prepared ? null : (
+            <Confirm
+              title="Prepare rigd for uninstall?"
+              description="rigd will refuse lifecycle and deploy commands until this is cancelled."
+              confirmLabel="Prepare uninstall"
+              destructive
+              onConfirm={() => void drain.run({ action: "prepare-uninstall" })}
+            >
+              <Button variant="destructive" disabled={drain.busy}>
+                Prepare uninstall
+              </Button>
+            </Confirm>
+          )}
+          {prepared || !known ? (
+            <Button
+              variant="outline"
+              disabled={drain.busy}
+              onClick={() => void drain.run({ action: "cancel-uninstall" })}
+            >
+              Cancel uninstall
+            </Button>
+          ) : null}
+        </div>
+      )}
+      <Failure failure={drain.failure} />
     </Section>
   );
 }

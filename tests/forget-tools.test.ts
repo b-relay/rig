@@ -398,6 +398,11 @@ test("a forget keeps the checkout a source-file Tool left installed runs from, a
   expect(forgotten.warnings).toContainEqual(
     expect.stringContaining(`Its checkout at ${first} was kept on disk`),
   );
+  // Recorded too: a page that lands after the forget reads them from Activity, as a later reader can.
+  const record = w.state.activity.findLast((each) => each.action === "forget")!;
+  expect(record.outcome).toBe("forgotten");
+  for (const warning of forgotten.warnings!)
+    expect(record.message).toContain(warning);
   expect(w.state.heldCheckouts!.map((held) => held.workspace)).toEqual([other]);
 
   w.released.length = 0;

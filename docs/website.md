@@ -66,6 +66,17 @@ navigation attempted while the network is down waits for it to return
 (`experimental.useOffline`) instead of falling through to the browser's error
 screen.
 
+When the site answers but `rigd` is away (missing, unreachable, timed out or cut off
+mid-reply), the corner says `rigd unreachable` and
+the page is not redrawn, however the stamp moves: a redraw could only replace what
+the page last read with a failure, and a log view would lose its lines and cursor.
+When `rigd` answers again its stamp has changed, the page redraws, and a log follow
+resumes from its cursor. A command sent from the page during the outage still
+refreshes it, and a navigation reads afresh. Any other failure of the health read,
+such as a reply `rigd` should not have sent, is a fault rather than an outage: pages
+redraw as usual and show what they can read, the corner names its code, and Monitor,
+where it links, says it in full with its hint.
+
 ## Pages
 
 A sidebar (`web/components/shell/sidebar.tsx`) lists the Host-wide sections
@@ -98,9 +109,12 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   (`?operation=`), which says what Activity recorded of it; a refusal stays
   where it was.
 - **Monitor** (`/monitor`): this Mac at a glance. The side column holds rigd
-  (version, queue, what it is running now, and what Rig itself uses, live),
-  Doctor's Host checks (failed checks first with their reason and hint), and
-  Activity for every Project; uninstall readiness folds under it. These stand
+  (version, queue, whether it refuses new work, what it is running now, and what
+  Rig itself uses, live), Doctor's Host checks (failed checks first with what each
+  found, its hint and its reason), and Activity for every Project; uninstall
+  readiness folds under it, and opens while the `queue` read's `draining` says
+  rigd is prepared for uninstall or stopping, so a reload or another browser sees
+  it and can cancel a prepared one. These stand
   even when the usage read fails. The main column stacks every Project's CPU
   and memory in one chart each, coloured like their monograms, with every
   Project's peak flagged where it happened (labels move apart rather than
@@ -108,7 +122,10 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   Project, sampled or not, with its own charts (median dashed, peak flagged)
   and latest Activity. `1h`, `24h` and `7d` are presets: each reads the window
   that ends now. Charts read `/usage` again after every sample, at the pace of
-  the newest report, a plain GET as the log follow is. Pointing at a chart,
+  the newest report, a plain GET as the log follow is. A Project's page turns a
+  `?target=` it cannot show into one it can; the poll refuses one (`TARGET_MISSING`)
+  that the Project neither has now nor had in the range, since it asks for what
+  its page chose. Pointing at a chart,
   tapping it on a phone, or focusing it and using the arrow keys shows a
   moment's values; Escape hides them. On a phone, rigd and Doctor sit side by
   side above the charts, and Doctor lists only failed checks. `/doctor` and
@@ -133,7 +150,13 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   at a time through `rigd`'s cursor, read with a plain GET (`/log-lines`) because Next runs Server Actions one at a time and a deploy started from the page would hold the follow. Component chips and the stream picker
   narrow `rigd`'s own read (`logFilter`); the search box narrows and marks what
   is shown. Scrolling up holds the view until Latest; lines can wrap, be
-  cleared, or be downloaded as `rig logs` prints them.
+  cleared, or be downloaded as `rig logs` prints them. The view lives in the
+  address (`lines`, `paused`, `stream`, `component`, `nowrap`, each only when it is not
+  the default), so a reload or a shared link opens it again; what cannot be read
+  opens as the default. A view that is not the default reads its own page rather
+  than show the server's first page, which it did not ask for. A search may be a
+  secret copied from the output, so it stays out of the address and its history:
+  the tab's session storage keeps it for a reload of that page.
 - **Deployments**: every deploy newest first as a stack of cards, with its outcome, Target, Branch
   and Commit (and the one it replaced), when it started and how long it took,
   beside the form that deploys a Branch or a Commit. The deploy that put the
@@ -153,7 +176,8 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   While status cannot be read, what `rigd` would refuse is not known: the page
   shows the failure and offers none of them until a read succeeds.
   Forgetting loads the overview afresh (`/?operation=`), so neither it, the
-  sidebar nor Back shows the Project from the router's cache.
+  sidebar nor Back shows the Project from the router's cache, and says there
+  every warning `rig forget` prints, as Activity recorded them.
 - **Environment**: the Project's secrets (below), and on a Target, each
   Service's names with the file that wins and the files it overrides.
 - **Config**: the structured editor (below). `rigd` checks the draft a moment
@@ -175,9 +199,12 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   own, `runRestore`, which checks what was typed on the server; the generic
   command action refuses `restore`. It is offered only for a job
   with a `restore` command, while no run of it goes, for a backup still on disk.
+  The backup's row says `restoring` while a restore of it runs and then how that
+  run ended, from the job's status alone, so a reload and another browser agree;
+  a later run of the job takes that word away, and Activity keeps the record.
 - **Activity** (`/activity`, linked from Monitor): Operations as a timeline
-  grouped by local day, newest first, each linking to its own record
-  (`?operation=<id>`).
+  grouped by local day, newest first, each with the Service or Job it recorded and
+  linking to its own record (`?operation=<id>`).
 - **Proxy** reads through one module, `web/lib/proxy.ts`. With Rig's own Caddy
   (ADR 0014), rigd's `proxy` read lists every hostname served, each Target's
   paths with their upstream or `withheld (503)` and the owner's `proxy.routes`,

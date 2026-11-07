@@ -13,7 +13,18 @@ export interface Pulse {
   stamp: string;
   /** rigd is in the middle of an Operation, so the pages it touches change from tick to tick. */
   busy: boolean;
+  /** rigd is away. A page read now could only say so, in place of what the page last read. */
+  down: boolean;
 }
+/** Pure: whether a failed read means rigd is away for now, which it comes back from, rather than a fault that needs someone
+ * to act: anything else, such as a reply it should not have sent, is for a page to show. */
+export const rigdAway = (code: string): boolean =>
+  [
+    "DAEMON_MISSING",
+    "DAEMON_UNREACHABLE",
+    "DAEMON_TIMEOUT",
+    "DAEMON_INTERRUPTED",
+  ].includes(code);
 /** Pure: whether an Operation is a command someone asked for, not rigd's own brief supervision passes. */
 export const isCommand = (operation: { action: string }): boolean =>
   operation.action !== "supervise" && operation.action !== "reconcile";
@@ -36,7 +47,7 @@ export function pulseStamp(readings: PulseReadings): Pulse {
           .map((operation) => `${operation.operationId}/${operation.phase}`)
           .join(",") ||
         (running?.operationId ?? "-")
-      }:${readings.queue.value.waiting}`
+      }:${readings.queue.value.waiting}:${readings.queue.value.draining ?? ""}`
     : "?";
   const operations = readings.activity.ok
     ? readings.activity.value.operations
@@ -52,5 +63,18 @@ export function pulseStamp(readings: PulseReadings): Pulse {
   return {
     stamp: `${daemon}|${queue}|${activity}`,
     busy: running !== undefined || commands.length > 0,
+    down: !readings.health.ok && rigdAway(readings.health.failure.code),
   };
+}
+/** Pure: whether a pulse redraws the page. A redraw while rigd is down would replace the page, and whatever it holds that
+ * its server data cannot bring back (a log view's lines and cursor), with a failure; the page stays until rigd answers,
+ * and its stamp then says it changed. Otherwise: a changed stamp, a running Operation, or a long quiet spell. */
+export function redrawDue(
+  pulse: Pulse,
+  seen: { stamp: string | undefined; inFlight: number; stale: boolean },
+): boolean {
+  if (pulse.down) return false;
+  return (
+    pulse.stamp !== seen.stamp || pulse.busy || seen.inFlight > 0 || seen.stale
+  );
 }

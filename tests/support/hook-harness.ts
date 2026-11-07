@@ -62,6 +62,12 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
     },
     useMemo: (make: () => unknown) => make(),
     useCallback: (callback: unknown) => callback,
+    use: (context: React.Context<unknown>) =>
+      (context as unknown as { _currentValue: unknown })._currentValue,
+    useId: () => "harness-id",
+    useTransition: () => [false, (work: () => void) => work()],
+    useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) =>
+      snapshot(),
   };
   const internals = (
     React as unknown as {

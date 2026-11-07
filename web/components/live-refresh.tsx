@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
-import { RefreshCw, WifiOff } from "lucide-react";
+import { RefreshCw, ServerOff, WifiOff } from "lucide-react";
 import { z } from "zod";
+import { redrawDue } from "@/lib/pulse";
 import { useOperationsInFlight } from "./operations";
 import { cn } from "@/lib/utils";
 
@@ -11,14 +18,19 @@ const EVERY_MS = 15_000;
 const BUSY_MS = 3_000;
 /** Even an unchanged stamp gets a redraw this often, for the few things rigd records nothing about. */
 const AT_LEAST_EVERY_MS = 120_000;
-const pulseSchema = z.object({ stamp: z.string(), busy: z.boolean() });
-type Reach = "live" | "offline";
+const pulseSchema = z.object({
+  stamp: z.string(),
+  busy: z.boolean(),
+  down: z.boolean(),
+});
+type Reach = "live" | "offline" | "rigd-down";
 /** Keeps the page's server data current while the tab is visible. Every tick asks the site for
  * rigd's pulse: a small stamp that changes when rigd's record did. Only a changed stamp, a
  * running Operation, or a long quiet spell re-renders the server components, so client state
  * (a log follow, a half-typed form) survives and pages seen a moment ago come back at once.
- * When the site does not answer, that is said here, in the corner, and the page stays. */
-export function LiveRefresh() {
+ * When the site or rigd does not answer, that is said here, in the corner, and the page stays with what it last read;
+ * `status`, what the page last read of rigd, gives way while rigd is known to be down. */
+export function LiveRefresh({ status }: { status?: ReactNode }) {
   const router = useRouter();
   const inFlight = useOperationsInFlight();
   const [pending, startTransition] = useTransition();
@@ -45,13 +57,21 @@ export function LiveRefresh() {
         setFailedAt(Date.now());
         return;
       }
-      setReach("live");
-      if (pulse === "refused") return redraw();
+      if (pulse === "refused") {
+        setReach("live");
+        return redraw();
+      }
+      setReach(pulse.down ? "rigd-down" : "live");
+      if (pulse.down) setFailedAt(Date.now());
       setDaemonBusy(pulse.busy);
-      const changed = pulse.stamp !== stamp.current;
-      stamp.current = pulse.stamp;
       const stale = Date.now() - redrawnAt.current > AT_LEAST_EVERY_MS;
-      if (changed || pulse.busy || inFlight > 0 || stale) redraw();
+      const due = redrawDue(pulse, {
+        stamp: stamp.current,
+        inFlight,
+        stale,
+      });
+      stamp.current = pulse.stamp;
+      if (due) redraw();
     };
     const timer = setInterval(
       () => void tick(),
@@ -71,39 +91,61 @@ export function LiveRefresh() {
     };
   }, [router, inFlight, daemonBusy]);
   const at = (instant: number) => new Date(instant).toLocaleTimeString();
-  if (reach === "offline")
+  if (reach === "rigd-down")
     return (
       <span
         className="inline-flex h-8 items-center gap-1.5 rounded px-2 text-xs text-warn"
-        title={`The site did not answer${failedAt ? ` at ${at(failedAt)}` : ""}; trying again every ${EVERY_MS / 1000} s.`}
+        title={`rigd did not answer${failedAt ? ` at ${at(failedAt)}` : ""}; this page shows what it last read and refreshes once rigd answers.`}
         role="status"
       >
-        <WifiOff className="size-3.5" aria-hidden />
-        <span className="hidden sm:inline">offline</span>
-        <span className="sr-only">The site did not answer; trying again.</span>
+        <ServerOff className="size-3.5" aria-hidden />
+        rigd unreachable
+        <span className="sr-only">
+          ; this page shows what it last read and refreshes once rigd answers.
+        </span>
       </span>
     );
+  if (reach === "offline")
+    return (
+      <>
+        {status}
+        <span
+          className="inline-flex h-8 items-center gap-1.5 rounded px-2 text-xs text-warn"
+          title={`The site did not answer${failedAt ? ` at ${at(failedAt)}` : ""}; trying again every ${EVERY_MS / 1000} s.`}
+          role="status"
+        >
+          <WifiOff className="size-3.5" aria-hidden />
+          <span className="hidden sm:inline">offline</span>
+          <span className="sr-only">
+            The site did not answer; trying again.
+          </span>
+        </span>
+      </>
+    );
   return (
-    <button
-      type="button"
-      onClick={() => {
-        redrawnAt.current = Date.now();
-        startTransition(() => router.refresh());
-        setRefreshedAt(Date.now());
-      }}
-      className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-      title={
-        refreshedAt
-          ? `Refreshed ${at(refreshedAt)}`
-          : `Checks rigd every ${EVERY_MS / 1000} s`
-      }
-      aria-label="Refresh now"
-    >
-      <RefreshCw className={cn("size-3.5", pending && "animate-spin")} />
-      <span className="hidden sm:inline">
-        {pending ? "refreshing" : "live"}
-      </span>
-    </button>
+    <>
+      {status}
+      <button
+        type="button"
+        onClick={() => {
+          redrawnAt.current = Date.now();
+          startTransition(() => router.refresh());
+          setRefreshedAt(Date.now());
+        }}
+        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+        title={
+          refreshedAt
+            ? `Refreshed ${at(refreshedAt)}`
+            : `Checks rigd every ${EVERY_MS / 1000} s`
+        }
+        aria-label="Refresh now"
+      >
+        <RefreshCw className={cn("size-3.5", pending && "animate-spin")} />
+        <span className="hidden sm:inline">
+          {pending ? "refreshing" : "live"}
+        </span>
+      </button>
+    </>
   );
 }
 /** One pulse: the stamp, `refused` when the site answered but not with one (the session

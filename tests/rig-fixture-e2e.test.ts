@@ -16,10 +16,12 @@ import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { processLeasePath } from "../src/providers/process-lease";
 import {
   daemonIdentity,
+  platformInspect,
   processExited,
   processIdentity,
   recordedDaemon,
   rigFixture,
+  type Inspect,
 } from "./support/rig-fixture";
 
 const exists = (path: string) =>
@@ -27,6 +29,19 @@ const exists = (path: string) =>
     () => true,
     () => false,
   );
+/** Whether `owned` still runs as the process it was: alive, not a zombie its parent (the test, for a shell it started) has
+ * yet to reap, which a signal leaves. */
+function stillRuns(owned: { pid: number; identity: string }): boolean {
+  const state = Bun.spawnSync(["ps", "-p", String(owned.pid), "-o", "stat="], {
+    stdout: "pipe",
+    stderr: "ignore",
+  }).stdout.toString();
+  return (
+    processIdentity(owned.pid) === owned.identity &&
+    state.trim() !== "" &&
+    !state.trim().startsWith("Z")
+  );
+}
 /** What the process `pid` runs now, or "" once it is gone. */
 function commandOf(pid: number): string {
   return Bun.spawnSync(["ps", "-p", String(pid), "-o", "command="], {
@@ -137,8 +152,12 @@ test("a fixture whose record cannot be read still stops the Services its leases 
 
 /** A fixture whose rigd is a script: with `released`, a shell condition, `rigd uninstall` releases the shell `leasedShell`
  * started and returns once the condition holds; without it, it does nothing. Nothing else runs, so the test is of what
- * cleanup does with the root's leases alone. */
-async function scriptedFixture(work: string, released?: string) {
+ * cleanup does with the root's leases alone. `inspect` is the `ps` cleanup reads processes with. */
+async function scriptedFixture(
+  work: string,
+  released?: string,
+  inspect?: Inspect,
+) {
   const fifo = join(work, "release");
   expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
   const rigd = join(work, "rigd");
@@ -160,6 +179,7 @@ exit 1`
     fifo,
     fixture: await rigFixture({
       commands: { rig: ["/usr/bin/true"], rigd: [rigd] },
+      ...(inspect ? { inspect } : {}),
     }),
   };
 }
@@ -277,7 +297,60 @@ test("a lease whose pid now belongs to another process never has that process si
     expect(failure).toContain(`its root is kept at ${fixture.base}:`);
     expect(failure).toContain(`${stranger.pid} (/bin/sleep 120)`);
     // Still running, as the same process: the fixture sent it nothing.
-    expect(processIdentity(stranger.pid)).toBe(stranger.identity);
+    expect(stillRuns(stranger)).toBe(true);
+  } finally {
+    for (const each of owned) await stopOwned(each);
+    if (base) await rm(base, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a process whose birth changes after cleanup picked it, as a reused pid's does, is never signalled", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-recheck-"));
+  const owned: { pid: number; identity: string }[] = [];
+  let base: string | undefined;
+  try {
+    // Cleanup picks from the real process table. Asked about this one process's birth alone, as it is just before a
+    // signal, ps says another process now has the pid.
+    let leasedPid = 0;
+    let changed = 0;
+    const inspect: Inspect = (args) => {
+      if (args.join(" ") !== `-p ${leasedPid} -o lstart=`)
+        return platformInspect(args);
+      changed++;
+      return { exitCode: 0, stdout: "Thu Jan  1 00:00:00 1970\n" };
+    };
+    const { fixture } = await scriptedFixture(work, undefined, inspect);
+    base = fixture.base;
+    const leased = await leasedShell(fixture.root, "exec /bin/sleep 120");
+    owned.push(leased);
+    leasedPid = leased.pid;
+    const failure = await cleanupFailure(fixture.cleanup);
+    expect(changed).toBeGreaterThan(0);
+    // Picked, then no longer provably the same process: sent nothing, so it still runs, and the root is kept.
+    expect(stillRuns(leased)).toBe(true);
+    expect(failure).toContain(`its root is kept at ${fixture.base}:`);
+  } finally {
+    for (const each of owned) await stopOwned(each);
+    if (base) await rm(base, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a process table that cannot be read keeps the root: it is no proof that nothing runs", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-unlisted-"));
+  const owned: { pid: number; identity: string }[] = [];
+  let base: string | undefined;
+  try {
+    const inspect: Inspect = (args) =>
+      args[0] === "-axo" ? { exitCode: 1, stdout: "" } : platformInspect(args);
+    const { fixture } = await scriptedFixture(work, undefined, inspect);
+    base = fixture.base;
+    owned.push(await leasedShell(fixture.root, "exec /bin/sleep 120"));
+    const failure = await cleanupFailure(fixture.cleanup);
+    expect(failure).toContain(`its root is kept at ${fixture.base}:`);
+    expect(failure).toContain("the process table could not be read");
+    expect(await exists(fixture.root)).toBe(true);
   } finally {
     for (const each of owned) await stopOwned(each);
     if (base) await rm(base, { recursive: true, force: true });

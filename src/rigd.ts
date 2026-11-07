@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir, userInfo } from "node:os";
-import { runRigdCli } from "./cli/rigd";
 import {
   daemonCommand,
   resolveToolBun,
@@ -10,25 +9,9 @@ import {
   verifyRigRoot,
   userOutput,
 } from "./cli/entry-environment";
-import { createHostDiagnosticLog } from "./diagnostics/host-log";
-import { DaemonAdmin } from "./daemon/admin";
-import { composeDaemon } from "./daemon/composition";
-import { readInstallationRecord } from "./daemon/installation";
-import { runDaemonHost } from "./daemon/host";
-import { securePrivateRoot } from "./daemon/private-root";
-import { writeStartupFailure } from "./daemon/startup-failure";
+// Every running Service and Job keeps a capture wrapper resident, so only capture is imported up front: the daemon and the
+// administration commands load their code once one of them is chosen.
 import { runCapturedProcess } from "./providers/captured-process";
-import { runCommand } from "./providers/command-runner";
-import { createProxyInstallation } from "./daemon/proxy-installation";
-import { readHostConfig } from "./config";
-import { dashboardServing } from "./daemon/dashboard";
-import {
-  RELEASES,
-  installEnvironment,
-  installationGap,
-  installedRelease,
-  upgrade,
-} from "./daemon/upgrade";
 export async function main(args: readonly string[]): Promise<number> {
   let root: string;
   try {
@@ -47,6 +30,19 @@ export async function main(args: readonly string[]): Promise<number> {
     }
   }
   if (process.env.RIG_DAEMON_CHILD === "1") {
+    const [
+      { securePrivateRoot },
+      { readInstallationRecord },
+      { composeDaemon },
+      { writeStartupFailure },
+      { runDaemonHost },
+    ] = await Promise.all([
+      import("./daemon/private-root"),
+      import("./daemon/installation"),
+      import("./daemon/composition"),
+      import("./daemon/startup-failure"),
+      import("./daemon/host"),
+    ]);
     const command = await daemonCommand();
     let runtime;
     try {
@@ -70,6 +66,31 @@ export async function main(args: readonly string[]): Promise<number> {
     await runDaemonHost({ root, port: 0, ...runtime });
     return 0;
   }
+  const [
+    { runRigdCli },
+    { createHostDiagnosticLog },
+    { DaemonAdmin },
+    { runCommand },
+    { createProxyInstallation },
+    { readHostConfig },
+    { dashboardServing },
+    {
+      RELEASES,
+      installEnvironment,
+      installationGap,
+      installedRelease,
+      upgrade,
+    },
+  ] = await Promise.all([
+    import("./cli/rigd"),
+    import("./diagnostics/host-log"),
+    import("./daemon/admin"),
+    import("./providers/command-runner"),
+    import("./daemon/proxy-installation"),
+    import("./config"),
+    import("./daemon/dashboard"),
+    import("./daemon/upgrade"),
+  ]);
   const mode = process.env.RIG_ROOT ? "process" : "launchd";
   const admin = new DaemonAdmin({
     root,

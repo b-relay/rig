@@ -217,6 +217,9 @@ function world(
       },
     },
     documents: {
+      async directoryMissing() {
+        return false;
+      },
       async initializationInfo() {
         return {
           name: "fletcher",

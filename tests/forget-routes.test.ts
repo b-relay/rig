@@ -228,6 +228,9 @@ async function rigWorld(
       },
     },
     documents: {
+      async directoryMissing() {
+        return false;
+      },
       async initializationInfo() {
         return {
           name: "ledger",

@@ -282,6 +282,93 @@ process.stdout.write(JSON.stringify({ unchanged, changed: reads }));
     expect((await store.read()).projects).toEqual([]);
   });
 
+  test("an update's own write is read without reading the file or validating it again", async () => {
+    const { store } = await storeWith(empty);
+    await store.read();
+    const parse = runtimeStateSchema.parse.bind(runtimeStateSchema);
+    let validations = 0;
+    Object.defineProperty(runtimeStateSchema, "parse", {
+      configurable: true,
+      value: (input: unknown) => {
+        validations++;
+        return parse(input);
+      },
+    });
+    try {
+      await store.update((state) => {
+        state.projects.push({
+          id: "p",
+          name: "p",
+          repoPath: "/repos/p",
+          configPath: "/repos/p/rig.yaml",
+          createdAt: "2026-11-07T00:00:00Z",
+        });
+      });
+      // The update validates its change once; what it wrote is not validated again.
+      expect(validations).toBe(1);
+      expect((await store.read()).projects).toHaveLength(1);
+      expect(validations).toBe(1);
+    } finally {
+      delete (runtimeStateSchema as { parse?: unknown }).parse;
+    }
+  });
+
+  test("shared as one frozen snapshot while it does not change, and a new one as soon as it does", async () => {
+    const { root, store } = await storeWith(empty);
+    const [first, second] = await Promise.all([
+      store.snapshot(),
+      store.snapshot(),
+    ]);
+    expect(second).toBe(first);
+    expect(await store.snapshot()).toBe(first);
+    expect(() => first.projects.push({ id: "p" } as never)).toThrow();
+    expect((await store.read()).projects).toEqual([]);
+    await write(root, { ...empty, extra: 1 });
+    const changed = await store.snapshot();
+    expect(changed).not.toBe(first);
+    expect((changed as unknown as { extra: number }).extra).toBe(1);
+  });
+
+  test("a snapshot is frozen all the way down: no reader can change a nested record for the others", async () => {
+    // A Project record, and a key a newer rigd wrote, nested three levels below it.
+    const { store } = await storeWith({
+      ...empty,
+      projects: [
+        {
+          id: "p",
+          name: "p",
+          repoPath: "/repos/p",
+          configPath: "/repos/p/rig.yaml",
+          createdAt: "2026-11-07T00:00:00Z",
+        },
+      ],
+      newer: { nested: { deeper: { value: 1, list: [{ value: 1 }] } } },
+    });
+    type Newer = {
+      newer: {
+        nested: { deeper: { value: number; list: { value: number }[] } };
+      };
+    };
+    const first = await store.snapshot();
+    const deeper = () => (first as unknown as Newer).newer.nested.deeper;
+    expect(() => {
+      first.projects[0]!.name = "changed";
+    }).toThrow();
+    expect(() => {
+      deeper().value = 2;
+    }).toThrow();
+    expect(() => {
+      deeper().list[0]!.value = 2;
+    }).toThrow();
+    expect(() => deeper().list.push({ value: 2 })).toThrow();
+    const other = await store.snapshot();
+    expect(other.projects[0]!.name).toBe("p");
+    expect((other as unknown as Newer).newer.nested.deeper).toEqual({
+      value: 1,
+      list: [{ value: 1 }],
+    });
+  });
+
   test("has a new revision after each write and the same one until then", async () => {
     const { store } = await storeWith(empty);
     const before = await store.revision();
@@ -382,23 +469,31 @@ describe("the capture wrapper", () => {
   });
 
   /** A real wrapper over a real application, whose every pause lasts ten minutes unless something wakes it: `end` is given the
-   * pids once the application runs, and the wrapper is expected to end without that wait. Answers its exit code and the
-   * pause it asked for each time. */
+   * pids, the Rig root and a read of the wrapper's observation once the application runs, and the wrapper is expected to
+   * end without that wait. The application runs the shell script `application` in the root, `exec /bin/sleep 600` when absent, and its output
+   * goes to the root's `logs`. Answers the wrapper's exit code and the pause it asked for each time. */
   async function wrapperPausing(
-    end: (pids: { wrapper: number; application: number }) => void,
+    end: (running: {
+      wrapper: number;
+      application: number;
+      root: string;
+      observation: () => Promise<{ observation?: { reason?: string } }>;
+    }) => unknown,
+    application = "exec /bin/sleep 600",
   ) {
     const root = await tempRoot();
     await mkdir(join(root, "capture"), { recursive: true, mode: 0o700 });
+    await mkdir(join(root, "logs"), { mode: 0o700 });
     const requestPath = join(root, "capture", "request.json");
     await writeFile(
       requestPath,
       JSON.stringify({
         key: "capture",
         componentName: "web",
-        command: ["/bin/sh", "-c", "exec /bin/sleep 600"],
+        command: ["/bin/sh", "-c", application],
         cwd: root,
         env: {},
-        logRoot: root,
+        logRoot: join(root, "logs"),
         incarnation: "start-1",
       }),
     );
@@ -417,23 +512,21 @@ process.exit(0);
       stdout: "pipe",
       stderr: "ignore",
     });
-    let application: number | undefined;
+    let pid: number | undefined;
     const watchdog = setTimeout(() => {
       wrapper.kill("SIGKILL");
-      if (application) process.kill(application, "SIGKILL");
+      if (pid) process.kill(pid, "SIGKILL");
     }, 30_000);
+    const observation = () =>
+      readFile(`${requestPath}.observation.json`, "utf8")
+        .then((raw) => JSON.parse(raw))
+        .catch(() => ({}));
     try {
-      while (!application) {
-        const evidence = await readFile(
-          `${requestPath}.observation.json`,
-          "utf8",
-        )
-          .then((raw) => JSON.parse(raw))
-          .catch(() => undefined);
-        application = evidence?.observation?.pid;
-        if (!application) await Bun.sleep(10);
+      while (!pid) {
+        pid = (await observation()).observation?.pid;
+        if (!pid) await Bun.sleep(10);
       }
-      end({ wrapper: wrapper.pid, application });
+      await end({ wrapper: wrapper.pid, application: pid, root, observation });
       return JSON.parse(await new Response(wrapper.stdout).text()) as {
         code: number;
         asked: number[];
@@ -443,13 +536,30 @@ process.exit(0);
     }
   }
 
-  test("a running application is looked at once a second, and its exit ends the pause at once", async () => {
+  test("a running application sets the wrapper no timer: its exit ends the pause at once", async () => {
     const { code, asked } = await wrapperPausing(({ application }) =>
       process.kill(application, "SIGKILL"),
     );
     expect(code).toBe(1);
     expect(asked.length).toBeGreaterThan(0);
-    for (const ms of asked) expect(ms).toBe(1000);
+    // JSON gives an absent wait as null.
+    for (const ms of asked) expect(ms).toBeNull();
+  }, 60_000);
+
+  test("output that cannot be recorded ends the pause at once, so the wrapper reports it without a timer", async () => {
+    let reason: string | undefined;
+    await wrapperPausing(async ({ application, root, observation }) => {
+      // A regular file where the log directory was, so the line the application then prints cannot be written.
+      await rm(join(root, "logs"), { recursive: true });
+      await writeFile(join(root, "logs"), "");
+      await writeFile(join(root, "go"), "");
+      for (let i = 0; !reason && i < 2000; i++) {
+        reason = (await observation()).observation?.reason;
+        if (!reason) await Bun.sleep(10);
+      }
+      process.kill(application, "SIGKILL");
+    }, "while [ ! -e go ]; do sleep 0.01; done; echo hello; exec /bin/sleep 600");
+    expect(reason).toContain("Target output is not being recorded");
   }, 60_000);
 
   test("a stop ends the wrapper's pause at once", async () => {

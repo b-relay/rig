@@ -913,8 +913,11 @@ message: fix the config on that Branch and deploy the new Commit.
 
 Each deploy checks out its revision under
 `<RIG_ROOT>/targets/<project id>/<target id>/revisions/<uuid>` as a worktree of Rig's
-own mirror and installs its dependencies once, recording that in a
-`.rig-prepared` file at the workspace root. Once the new revision is committed,
+own mirror, which fetches a Commit from the repository only when it does not
+hold it yet. A Commit the mirror holds can be deployed again, as a dashboard
+rollback does, even after the repository dropped it (a rewritten Branch, say,
+once Git pruned the old Commits). Each checkout installs its dependencies
+once, recording that in a `.rig-prepared` file at the workspace root. Once the new revision is committed,
 the superseded checkout, its install output, and its worktree registration are
 removed, unless a job run or a kept Service (below) still runs in it; a
 candidate that fails to start is removed the same way when the previous plan

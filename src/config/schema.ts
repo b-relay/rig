@@ -26,6 +26,7 @@ import {
 } from "./healthcheck";
 import { isTimeZone, parseCron } from "../domain/cron";
 import { MAX_NAME_LENGTH, nameSchema } from "../domain/names";
+import { PREVIEW_SELECTOR } from "../domain/target-selector";
 const text = z.string().min(1);
 const name = nameSchema.describe(
   `Stable registered Project name, at most ${MAX_NAME_LENGTH} characters. It names the Project's operator env directory under <RIG_ROOT>/env, so no two Projects on a Host may have names that differ only in case. Change it with rig rename.`,
@@ -526,8 +527,7 @@ const patchFields = {
       "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
     ),
 };
-/** The selector of every Preview; it is also the preview role's key under targets. */
-export const PREVIEW_SELECTOR = "preview";
+export { PREVIEW_SELECTOR };
 /** The three Target roles. `working` and `stable` are also the fixed names of the one Target each role has. */
 export const TARGET_ROLES = ["working", "stable", "preview"] as const;
 export type TargetRole = (typeof TARGET_ROLES)[number];

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { TargetRecord } from "./runtime";
 
+/** The selector of every Preview; it is also the preview role's key under targets. */
+export const PREVIEW_SELECTOR = "preview";
+
 /** The name Rig generates for a Branch's Preview: a slug of the Branch and eight hex digits of its hash. */
 export function generatedPreviewName(branch: string): string {
   const slug =

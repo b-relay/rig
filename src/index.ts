@@ -12,16 +12,10 @@ import { createHostDiagnosticLog } from "./diagnostics/host-log";
 import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import type { DaemonClientOptions } from "./daemon/client";
-import { inspectOfflineHost } from "./daemon/offline-doctor";
-import { inspectHost } from "./adapters/host-inspection";
-import { createProjectDocuments } from "./adapters/project-documents";
-import { runCommand } from "./providers/command-runner";
-import { inheritedEnvironment } from "./daemon/environment";
 import { homedir } from "node:os";
-import { writeProxyToken } from "./adapters/proxy-token";
-import { verifyProxyCertificates } from "./adapters/proxy-verify";
-import { readHostConfig } from "./config";
 import { RigError } from "./domain/errors";
+// Help and the common reads need only the command line and rigd's client, so the local commands and the offline doctor
+// import their config, Caddy and certificate code when they run.
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked. A second
@@ -97,9 +91,15 @@ export async function main(args: readonly string[]): Promise<number> {
               "rig proxy token reads the token from a pipe, not the keyboard.",
               "Copy the token, then run: pbpaste | rig proxy token",
             );
+          const { writeProxyToken } = await import("./adapters/proxy-token");
           return writeProxyToken(root, await Bun.stdin.text());
         },
         async proxyVerify(options) {
+          const [{ readHostConfig }, { verifyProxyCertificates }] =
+            await Promise.all([
+              import("./config"),
+              import("./adapters/proxy-verify"),
+            ]);
           const host = await readHostConfig(root);
           if (!host.proxy)
             throw new RigError(
@@ -141,6 +141,19 @@ export function createCliClient(
         ).command(request, signal);
       } catch (error) {
         if (request.action === "doctor" && isDaemonUnavailable(error)) {
+          const [
+            { inspectOfflineHost },
+            { inspectHost },
+            { createProjectDocuments },
+            { runCommand },
+            { inheritedEnvironment },
+          ] = await Promise.all([
+            import("./daemon/offline-doctor"),
+            import("./adapters/host-inspection"),
+            import("./adapters/project-documents"),
+            import("./providers/command-runner"),
+            import("./daemon/environment"),
+          ]);
           // The discovery rigd runs, so a linked worktree is checked against its main checkout's config.
           const documents = createProjectDocuments(
             root,

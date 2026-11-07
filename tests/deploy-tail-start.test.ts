@@ -410,3 +410,40 @@ test("after a Mac restart the start publishes before its tail, and a tail that f
   });
   expect(f.waiting.size).toBe(0);
 });
+
+test("after a Mac restart the pass's own guard watches the start: a Service it started that exits during the last check is withheld, cancels the check and fails the start", async () => {
+  const f = await checkedFixture();
+  await f.deploy("c1");
+  f.reset();
+  f.processes.clear();
+  f.host.session = {
+    boot: "BOOT-2",
+    bootedAt: "2026-11-05T09:00:00.000Z",
+    login: "100003",
+  };
+  const search = f.holdHealth("search");
+  f.reopen();
+  const reconciling = f.reconcile();
+  await search.reached;
+  expect(await f.paths()).toEqual(LIVE);
+  expect(f.waiting.size).toBe(1);
+
+  await f.exit("web");
+  fire(f);
+  await reconciling;
+  // The provider never answered: the guard's failure ended the check.
+  expect(search.signal?.aborted).toBe(true);
+  expect(f.said).toContainEqual({
+    outcome: "routes-withheld",
+    evidence: expect.stringContaining("web stopped"),
+  });
+  expect(await f.paths()).toEqual(NONE);
+  expect((await f.store.read()).activity.at(-1)).toMatchObject({
+    action: "up",
+    outcome: "failed",
+    message: expect.stringContaining("PROCESS_EXITED"),
+  });
+  // Released with the Target's lease: nothing looks any more.
+  expect(f.waiting.size).toBe(0);
+  search.open();
+});

@@ -318,6 +318,109 @@ test("a change written with others that fails, or leaves the state invalid, is u
   expect(replaced()).toBe(2);
 });
 
+/** Writes `a`, `b` and `c` together behind a held write, and holds each flush of that shared write until the test lets it
+ * go (`next`): what each update came to is in `settled` as soon as it settles. */
+async function heldSharedWrite(at: Awaited<ReturnType<typeof storeRoot>>) {
+  const flushes: {
+    release: () => void;
+    fail: () => void;
+  }[] = [];
+  let arrived = Promise.withResolvers<void>();
+  let holding = false;
+  intercept(
+    await fileHandleClass(),
+    "sync",
+    (original) =>
+      async function (this: fs.FileHandle) {
+        if (holding) {
+          const { promise, resolve, reject } = Promise.withResolvers<void>();
+          flushes.push({
+            release: resolve,
+            fail: () =>
+              reject(
+                Object.assign(new Error("injected flush failure"), {
+                  code: "EIO",
+                }),
+              ),
+          });
+          arrived.resolve();
+          await promise;
+        }
+        return original.call(this);
+      },
+  );
+  const { promise: started, resolve: start } = Promise.withResolvers<void>();
+  const { promise: gate, resolve: open } = Promise.withResolvers<void>();
+  const first = at.store.update(async (state) => {
+    start();
+    await gate;
+    add("held")(state);
+  });
+  await started;
+  const settled: string[] = [];
+  const updates = ["a", "b", "c"].map((name) =>
+    at.store.update(add(name)).then(
+      () => settled.push(`${name} saved`),
+      (error: { code?: string }) =>
+        settled.push(`${name} refused ${error.code}`),
+    ),
+  );
+  open();
+  await first;
+  // The shared write has done no I/O yet, so each of its flushes is held from here on.
+  holding = true;
+  return {
+    settled,
+    updates,
+    /** The next flush of the shared write, once it is held. */
+    async next() {
+      while (!flushes.length) {
+        arrived = Promise.withResolvers<void>();
+        await arrived.promise;
+      }
+      return flushes.shift()!;
+    },
+  };
+}
+
+test("a write that holds several changes answers none of them until its file and every directory up to the root are flushed", async () => {
+  const at = await storeRoot();
+  await at.store.update(add("first"));
+  const write = await heldSharedWrite(at);
+  for (const flush of ["file", "runtime directory", "root directory"]) {
+    const held = await write.next();
+    expect({ flush, settled: write.settled }).toEqual({ flush, settled: [] });
+    held.release();
+  }
+  await Promise.all(write.updates);
+  expect(write.settled).toEqual(["a saved", "b saved", "c saved"]);
+});
+
+test("a flush that fails in a write that holds several changes fails every one of them", async () => {
+  for (const [failing, code, saved] of [
+    [0, "EIO", ["first", "held"]],
+    [1, "FILE_NOT_DURABLE", ["first", "held", "a", "b", "c"]],
+    [2, "FILE_NOT_DURABLE", ["first", "held", "a", "b", "c"]],
+  ] as const) {
+    const at = await storeRoot();
+    await at.store.update(add("first"));
+    const write = await heldSharedWrite(at);
+    for (let flush = 0; flush < failing; flush++)
+      (await write.next()).release();
+    (await write.next()).fail();
+    await Promise.all(write.updates);
+    for (const restore of restores.splice(0)) restore();
+    expect({ failing, settled: write.settled }).toEqual({
+      failing,
+      settled: ["a", "b", "c"].map((name) => `${name} refused ${code}`),
+    });
+    expect({
+      failing,
+      saved: names(await new FileStateStore(at.root).read()),
+    }).toEqual({ failing, saved: [...saved] });
+  }
+});
+
 test("an update asked for at any moment after the write before it is answered is written too", async () => {
   const at = await storeRoot();
   const written: string[] = [];

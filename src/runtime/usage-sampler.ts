@@ -3,14 +3,7 @@ import {
   SLOTS_PER_MINUTE,
   type StoredSample,
 } from "../domain/usage-minute";
-import {
-  cpuByProcess,
-  processKey,
-  sumSamples,
-  treeUsage,
-  type ProcessReading,
-  type UsageSample,
-} from "../domain/usage-sample";
+import { sumSamples, type UsageSample } from "../domain/usage-sample";
 import type { ProcessUsageReader } from "../providers/process-usage";
 import {
   seriesKey,
@@ -18,6 +11,13 @@ import {
   type UsageHistory,
   type UsageSeries,
 } from "./usage-history";
+import {
+  maintained,
+  pruneBefore,
+  type MaintenancePolicy,
+  type MaintenanceState,
+} from "./usage-maintenance";
+import { createTreeSampling } from "./usage-sampling";
 
 type ComponentSeries = Extract<UsageSeries, { scope: "component" }>;
 
@@ -67,26 +67,29 @@ export interface UsageSampler {
   forget(projectId: string): Promise<void>;
 }
 
-/** How often the set of running processes is read again from rigd's records when nothing new appears. */
-export const PROCESS_REFRESH_MS = 5000;
-/** Something new under rigd (a Job run starting, most often) has its processes read again after at most this long. */
-const NEWCOMER_REFRESH_MS = 1000;
+export { PROCESS_REFRESH_MS } from "./usage-sampling";
 /** How often changed minutes are written: a crash loses at most this much. */
 export const USAGE_FLUSH_MS = 30_000;
-/** How soon a failed write is tried again. */
-const FLUSH_RETRY_MS = 5000;
-/** How often history past retention is pruned, and how soon a failed prune is tried again. */
+/** How often history past retention is pruned. */
 export const USAGE_PRUNE_MS = 3_600_000;
-const PRUNE_RETRY_MS = 60_000;
+/** Changed minutes are first written a whole interval after the first pass, and a failed write is tried again soon. */
+const FLUSH: MaintenancePolicy = {
+  everyMs: USAGE_FLUSH_MS,
+  retryMs: 5000,
+  first: "wait",
+};
+/** The first pass prunes, and a failed prune is tried again after a minute. */
+const PRUNE: MaintenancePolicy = {
+  everyMs: USAGE_PRUNE_MS,
+  retryMs: 60_000,
+  first: "run",
+};
 /** At most this many finished minutes wait for a failing store; older ones are dropped. */
 const PENDING_LIMIT = 10_000;
-const RIG = seriesKey({ scope: "rig" });
 
-/** rigd's usage sampler. Each pass reads the process trees of every running Component and of Rig itself (rigd, Rig's
- * Caddy, and every capture wrapper, whether rigd started it or adopted it after a restart), turns them into samples,
- * sums them into Target, Project and Host totals for that second, and buffers them by minute. The Host total includes
- * Rig itself. A Component's first pass has no CPU to measure from and is not recorded. CPU is measured over the
- * monotonic time between the reads that returned the CPU counters, never the time a pass began. */
+/** rigd's usage sampler. Each pass samples the process trees of every running Component and of Rig itself
+ * (`createTreeSampling`), sums them into Target, Project and Host totals for that second, buffers them by minute, and
+ * then writes or prunes history when either is due. The Host total includes Rig itself. */
 export function createUsageSampler(deps: {
   readonly reader: ProcessUsageReader;
   /** Every running Service and Job run, from rigd's records and its supervisor. */
@@ -102,26 +105,11 @@ export function createUsageSampler(deps: {
   /** Logical cores on the Host. */
   readonly cores: number;
 }): UsageSampler {
-  let running:
-    | {
-        readonly at: number;
-        readonly processes: readonly MonitoredProcess[];
-        readonly rig: readonly number[];
-      }
-    | undefined;
-  /** Each tree's previous reading, by series key: when it was read (monotonic) and each process's CPU time then. */
-  const previous = new Map<string, { at: number; cpu: Map<string, number> }>();
+  const trees = createTreeSampling(deps);
   const minutes = createMinuteBuffer();
   let latest: LatestSample[] = [];
-  /** The processes the last pass counted as Rig itself (by `processKey`), and those of them a later look at rigd's
-   * records still found in no Component: a helper rigd keeps running, such as a healthcheck command, is new only once,
-   * while a Job run that began just before a look is new until a look after it. */
-  let seenAsRig = new Set<string>();
-  let countedAsRig = new Set<string>();
-  let flushDueAt: number | undefined;
-  let pruneDueAt: number | undefined;
-  let flushFailure: unknown;
-  let pruneFailure: unknown;
+  let flushing: MaintenanceState = {};
+  let pruning: MaintenanceState = {};
   // Passes, flushes and forgets run one at a time.
   let turn: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(work: () => Promise<T>): Promise<T> => {
@@ -130,145 +118,36 @@ export function createUsageSampler(deps: {
     return run;
   };
 
-  const discover = async () => ({
-    at: deps.elapsed(),
-    processes: await deps.processes(),
-    rig: await deps.rigProcesses(),
-  });
-  const rootsOf = (known: NonNullable<typeof running>) => [
-    ...new Set([
-      ...known.processes.map((each) => each.wrapperPid),
-      ...known.rig,
-    ]),
-  ];
-  const measure = (
-    key: string,
-    readings: readonly ProcessReading[],
-    at: number,
-  ): UsageSample | undefined => {
-    const before = previous.get(key);
-    const usage = treeUsage({
-      previous: before?.cpu,
-      current: readings,
-      elapsedNs: before ? (at - before.at) * 1e6 : 0,
-      cores: deps.cores,
-    });
-    previous.set(key, { at, cpu: cpuByProcess(readings) });
-    return usage.cpuPercent === undefined
-      ? undefined
-      : { cpuPercent: usage.cpuPercent, memoryBytes: usage.memoryBytes };
-  };
   const writeChanged = async () => {
     await deps.history.write(minutes.changed());
     minutes.written(Math.floor(deps.now() / 60_000));
+  };
+  const pruneHistory = async (second: number) => {
+    await deps.history.prune(
+      pruneBefore({
+        second,
+        retention: await deps.retention(),
+        heldMinutes: minutes.pending().map((each) => each.minute),
+      }),
+    );
   };
 
   return {
     pass: () =>
       exclusive(async () => {
-        // A look at rigd's records confirms as Rig itself only what was already counted so before it.
-        let confirmable: ReadonlySet<string> = countedAsRig;
-        const rediscover = () => {
-          confirmable = seenAsRig;
-          return discover();
-        };
-        running =
-          running && deps.elapsed() - running.at < PROCESS_REFRESH_MS
-            ? running
-            : await rediscover();
-        let trees = await deps.reader.read(rootsOf(running));
-        let at = deps.elapsed();
-        // A process under rigd that is none of the known ones is most often a Job run that just began: read rigd's
-        // records again now rather than count it towards Rig itself until the next refresh.
-        if (
-          at - running.at >= NEWCOMER_REFRESH_MS &&
-          hasNewcomer(running, trees, countedAsRig)
-        ) {
-          running = await rediscover();
-          trees = await deps.reader.read(rootsOf(running));
-          at = deps.elapsed();
-        }
-        const second = Math.floor(deps.now() / 1000);
-
-        const components: {
-          series: ComponentSeries;
-          sample: UsageSample;
-        }[] = [];
-        const inComponents = new Set<number>();
-        const wrappers: ProcessReading[] = [];
-        for (const { series, wrapperPid } of running.processes) {
-          const tree = trees.get(wrapperPid) ?? [];
-          const readings = tree.filter((reading) => reading.pid !== wrapperPid);
-          wrappers.push(
-            ...tree.filter((reading) => reading.pid === wrapperPid),
-          );
-          for (const reading of readings) inComponents.add(reading.pid);
-          const sample =
-            readings.length > 0
-              ? measure(seriesKey(series), readings, at)
-              : undefined;
-          if (sample) components.push({ series, sample });
-        }
-        const rigReadings = new Map<number, ProcessReading>();
-        for (const reading of [
-          ...running.rig.flatMap((pid) => trees.get(pid) ?? []),
-          ...wrappers,
-        ])
-          if (!inComponents.has(reading.pid))
-            rigReadings.set(reading.pid, reading);
-        seenAsRig = new Set([...rigReadings.values()].map(processKey));
-        countedAsRig = new Set(
-          [...seenAsRig].filter((key) => confirmable.has(key)),
+        const look = await trees.look();
+        latest = totalsOf(look.components, look.rig).map(
+          ({ series, sample }) => {
+            minutes.record(series, storedSample(sample), look.second);
+            return { series, sample, at: look.second };
+          },
         );
-        const rig =
-          rigReadings.size > 0
-            ? measure(RIG, [...rigReadings.values()], at)
-            : undefined;
-
-        latest = totalsOf(components, rig).map(({ series, sample }) => {
-          minutes.record(series, storedSample(sample), second);
-          return { series, sample, at: second };
-        });
-        const sampled = new Set([
-          RIG,
-          ...running.processes.map((each) => seriesKey(each.series)),
-        ]);
-        for (const key of previous.keys())
-          if (!sampled.has(key)) previous.delete(key);
-
-        flushDueAt ??= at + USAGE_FLUSH_MS;
-        if (at >= flushDueAt) {
-          try {
-            await writeChanged();
-            flushFailure = undefined;
-            flushDueAt = at + USAGE_FLUSH_MS;
-          } catch (error) {
-            flushFailure = error;
-            flushDueAt = at + FLUSH_RETRY_MS;
-          }
-        }
-        if (pruneDueAt === undefined || at >= pruneDueAt) {
-          try {
-            const retention = await deps.retention();
-            // Never the seconds of a minute still held unwritten: its write merges with them, and a store whose minutes
-            // lose their seconds strictly oldest first can tell where detail starts.
-            const held = minutes.pending().map((each) => each.minute * 60);
-            await deps.history.prune({
-              detailBefore: Math.min(
-                second - retention.detailHours * 3600,
-                ...held,
-              ),
-              historyBefore: second - retention.retentionDays * 86_400,
-            });
-            pruneFailure = undefined;
-            pruneDueAt = at + USAGE_PRUNE_MS;
-          } catch (error) {
-            pruneFailure = error;
-            pruneDueAt = at + PRUNE_RETRY_MS;
-          }
-        }
-        if (flushFailure !== undefined) throw flushFailure;
-        if (pruneFailure !== undefined) throw pruneFailure;
+        flushing = await maintained(FLUSH, flushing, look.at, writeChanged);
+        pruning = await maintained(PRUNE, pruning, look.at, () =>
+          pruneHistory(look.second),
+        );
+        if (flushing.failure !== undefined) throw flushing.failure;
+        if (pruning.failure !== undefined) throw pruning.failure;
       }),
     snapshot() {
       return { latest, pending: minutes.pending() };
@@ -282,34 +161,10 @@ export function createUsageSampler(deps: {
           "projectId" in series && series.projectId === projectId;
         minutes.drop(ofProject);
         latest = latest.filter((each) => !ofProject(each.series));
-        for (const key of previous.keys())
-          if (key.startsWith(`component:${projectId}:`)) previous.delete(key);
-        running = undefined;
+        trees.forget(projectId);
         await deps.history.forget(projectId);
       }),
   };
-}
-
-/** Whether a Rig tree holds a process that is new: not rigd or Caddy, not in a known Component tree, and not one the
- * last pass already counted as Rig itself. */
-function hasNewcomer(
-  known: {
-    readonly processes: readonly MonitoredProcess[];
-    readonly rig: readonly number[];
-  },
-  trees: ReadonlyMap<number, readonly ProcessReading[]>,
-  countedAsRig: ReadonlySet<string>,
-): boolean {
-  const familiar = new Set<number>(known.rig);
-  for (const { wrapperPid } of known.processes)
-    for (const reading of trees.get(wrapperPid) ?? [])
-      familiar.add(reading.pid);
-  return known.rig.some((pid) =>
-    (trees.get(pid) ?? []).some(
-      (reading) =>
-        !familiar.has(reading.pid) && !countedAsRig.has(processKey(reading)),
-    ),
-  );
 }
 
 /** Pure: every sample of one second, Components first, then each Target's, each Project's, Rig itself's and the Host's

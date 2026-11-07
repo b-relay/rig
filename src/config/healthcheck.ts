@@ -1,4 +1,5 @@
 /** A Service's `healthcheck` (ADR 0012): Docker Compose's shape, read into what Rig runs. Pure; no I/O. */
+import { shellQuote } from "../domain/shell-quote";
 
 /** Compose's defaults where Rig keeps them, and Rig's own start_period: Compose's 0s would leave start no time to pass. */
 export const HEALTHCHECK_DEFAULTS = {
@@ -92,5 +93,5 @@ export function healthcheckListProblem(
  * an assignment (`A=1`), a reserved word or an operator (`(`). The command starts with a quote, so it is never taken for
  * an HTTP check either. */
 export function execCommand(argv: readonly string[]): string {
-  return argv.map((value) => `'${value.replaceAll("'", `'\\''`)}'`).join(" ");
+  return argv.map(shellQuote).join(" ");
 }

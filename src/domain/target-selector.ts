@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { TargetRecord } from "./runtime";
+import { shellQuote } from "./shell-quote";
 
 /** The selector of every Preview; it is also the preview role's key under targets. */
 export const PREVIEW_SELECTOR = "preview";
@@ -18,9 +19,7 @@ export function generatedPreviewName(branch: string): string {
  * single-quoted, since a Branch may hold characters the shell would read, such as `(`, `$`, a space, or a leading `=`,
  * which zsh expands to a command's path. */
 export function shellWord(word: string): string {
-  return /^[A-Za-z0-9_./:@%+,-]+$/.test(word)
-    ? word
-    : `'${word.replaceAll("'", "'\\''")}'`;
+  return /^[A-Za-z0-9_./:@%+,-]+$/.test(word) ? word : shellQuote(word);
 }
 /** Whether `preview <branch>` selects this Preview: its name is the one Rig generates for its Branch. */
 const selectedByBranch = (target: Pick<TargetRecord, "name" | "branch">) =>

@@ -433,3 +433,11 @@ export function readOnlyState(
 ): Promise<RuntimeState> {
   return store.snapshot ? store.snapshot() : store.read();
 }
+/** The record of `service` for the Deployment the Target now runs; a record left by another Deployment describes nothing. */
+export function currentRun(
+  target: Pick<TargetRecord, "services" | "plan">,
+  service: string,
+): ServiceRun | undefined {
+  const run = target.services?.[service];
+  return run?.deployment === target.plan.workspacePath ? run : undefined;
+}

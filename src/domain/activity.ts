@@ -24,6 +24,12 @@ export type OperationOutcome = (typeof OPERATION_OUTCOMES)[number];
  * diagnostic log, which has its own retention, so older activity is not lost, only unlisted. */
 export const ACTIVITY_RETAINED = 1000;
 
+/** What one Activity entry about a Service says, without what its writer adds: ids, times and names. */
+export type ServiceActivity = Pick<
+  OperationRecord,
+  "action" | "outcome" | "message"
+>;
+
 /** Appends one final Operation and drops the oldest beyond the retained count, so
  * state.json stays bounded however long the Host runs. */
 export function recordActivity(

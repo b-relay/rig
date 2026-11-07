@@ -1,4 +1,4 @@
-import { activationJournal, intendStopped } from "./supervision";
+import { activationJournal, intendStopped } from "./service-runs";
 import type { ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import { rigCommand, type RecordedTarget } from "../domain/rig-command";

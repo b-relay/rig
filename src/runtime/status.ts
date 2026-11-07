@@ -10,17 +10,16 @@ import type {
   ManagedComponent,
   PersistentComponent,
 } from "../config/types";
-import type { TargetRecord } from "../domain/runtime";
-import {
-  currentRun,
-  runningNote,
-  stoppedStanding,
-  supervisionScope,
-} from "./supervision";
+import { currentRun, type TargetRecord } from "../domain/runtime";
+import { supervisionScope } from "../domain/restart-policy";
+import { runningNote, stoppedStanding } from "../domain/restart-wording";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 import type { ServiceHealth } from "../domain/project-status";
-import { healthStartPending, type HealthResults } from "./health-monitor";
-import { healthRestartDueAt } from "../domain/health-policy";
+import type { HealthResults } from "./health-monitor";
+import {
+  healthRestartDueAt,
+  healthStartPending,
+} from "../domain/health-policy";
 import { rigCommand } from "../domain/rig-command";
 import { plannedSites, serviceHostnames } from "./ports";
 /** A Service's hostnames for a report: `route` is the first, the one shown where only one fits, and `hostnames` all of

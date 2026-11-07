@@ -6,7 +6,6 @@ export {
   parseProjectConfig,
   parseHostConfig,
   projectConfigSchema,
-  hostConfigSchema,
   patchedSettings,
   targetOn,
   rolePatch,
@@ -16,6 +15,7 @@ export {
   type TargetRole,
   type ProjectSettings,
 } from "./schema";
+export { hostConfigSchema } from "./host-schema";
 export { resolveTargetPlan } from "./resolve";
 export {
   configJsonSchemas,

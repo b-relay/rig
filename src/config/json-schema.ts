@@ -3,7 +3,8 @@ import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
 import { HEALTHCHECK_DEFAULTS } from "./healthcheck";
-import { hostConfigSchema, projectConfigSchema } from "./schema";
+import { projectConfigSchema } from "./schema";
+import { hostConfigSchema } from "./host-schema";
 
 /** Where the committed schema files are served from; an editor fetches them by this address. */
 const SCHEMA_BASE =

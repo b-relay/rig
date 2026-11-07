@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,11 +35,15 @@ function names(modules: string[]): string[] {
   ].sort();
 }
 
-/** The modules a fresh Bun process has loaded once `rig args` ran in it, under a Rig root nothing has made, named as
- * `loaded` names them. */
-async function ranRig(args: string[]): Promise<string[]> {
+/** The modules a fresh Bun process has loaded once `rig args` ran in it, named as `loaded` names them. The Rig root is
+ * one nothing has made, or one holding only `hostConfig` as its config.yaml. */
+async function ranRig(args: string[], hostConfig?: string): Promise<string[]> {
   const base = await mkdtemp(join(tmpdir(), "rig-entry-imports-"));
   try {
+    if (hostConfig !== undefined) {
+      await mkdir(join(base, ".rig"), { mode: 0o700 });
+      await writeFile(join(base, ".rig", "config.yaml"), hostConfig);
+    }
     const child = Bun.spawn(
       [
         process.execPath,
@@ -129,4 +133,45 @@ test("rig's help loads the command grammar alone: no schema, rigd client or comm
   const read = await ranRig(["status", "--json"]);
   for (const module of EXECUTION.filter((m) => !m.includes("dns")))
     expect(read).toContain(module);
+}, 60_000);
+
+/** What reading or editing whole config documents needs: the YAML parser, the Host and Project schemas, and the document
+ * reader with its editor and JSON Schema. */
+const CONFIG_DOCUMENTS = [
+  "yaml",
+  "src/config/yaml-document.ts",
+  "src/config/host-schema.ts",
+  "src/config/schema.ts",
+  "src/config/documents.ts",
+  "src/config/editor.ts",
+  "src/config/json-schema.ts",
+];
+
+test("a read and a usage error open the diagnostic log without the YAML parser, a config schema or the config editor while config.yaml cannot set diagnostics", async () => {
+  for (const hostConfig of [undefined, "deploy:\n  production_branch: trunk\n"])
+    for (const args of [
+      ["list", "--json"],
+      ["status", "--json"],
+      ["list", "--json", "--bogus"],
+    ]) {
+      const run = await ranRig(args, hostConfig);
+      expect({
+        args,
+        hostConfig,
+        loaded: CONFIG_DOCUMENTS.filter((m) => run.includes(m)),
+      }).toEqual({ args, hostConfig, loaded: [] });
+      // Each opened its diagnostic log through Host config, so the absences above are not a log it never opened.
+      expect(run).toContain("src/config/host-diagnostics.ts");
+      expect(run).toContain("src/diagnostics/file-log.ts");
+    }
+  // A document that may set the section is parsed and checked as Host config, still without the Project schema or editor.
+  const configured = await ranRig(
+    ["list", "--json"],
+    "diagnostics:\n  level: debug\n",
+  );
+  expect(CONFIG_DOCUMENTS.filter((m) => configured.includes(m))).toEqual([
+    "yaml",
+    "src/config/yaml-document.ts",
+    "src/config/host-schema.ts",
+  ]);
 }, 60_000);

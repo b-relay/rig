@@ -21,6 +21,7 @@ import { rigCommand } from "../domain/rig-command";
 import type { ProcessObservation } from "../providers/contracts";
 import { isStopDetached } from "../domain/stop-budget";
 import { boundedObservations } from "./bounded-observations";
+import { observeLivePorts } from "./route-guard";
 import { plannedRoutes } from "./ports";
 import type { RuntimeDependencies } from "./contracts";
 import type { ActivationJournal, StartEvidence } from "./lifecycle";
@@ -655,47 +656,14 @@ export async function withholdRecoveryPaths(
   if (!target.recovery) return [];
   const live = await deps.lifecycle.livePorts(target);
   if (!live.size) return [];
-  const owners = new Map<number, Set<string>>();
-  const jobs = new Map<
-    string,
-    (signal: AbortSignal) => Promise<ProcessObservation>
-  >();
-  // The Target's own plan last: a Service in both plans is one process, observed once, as the plan it runs under now.
-  for (const form of [{ ...target, plan: target.recovery.plan }, target])
-    for (const { port, service } of plannedRoutes(form.plan)) {
-      const component = form.plan.components.find(
-        (candidate): candidate is ManagedComponent =>
-          candidate.kind === "managed" && candidate.name === service,
-      );
-      if (!component || !live.has(port)) continue;
-      owners.set(port, (owners.get(port) ?? new Set()).add(service));
-      jobs.set(service, (signal) =>
-        deps.observations.process(form, component, signal),
-      );
-    }
-  const services = [...jobs.keys()];
-  const observed = await boundedObservations(
-    [...jobs.values()],
-    deps.observationBudgetMs,
-    deps.observationDeadline,
+  // The Target's own plan last: a Service in both plans is one process, observed as the plan it runs under now.
+  const seen = await observeLivePorts(
+    [{ ...target, plan: target.recovery.plan }, target],
+    live,
+    deps,
   );
-  const seenAs = (state: ProcessObservation["state"]) =>
-    new Set(
-      services.filter((_service, index) => {
-        const seen = observed[index]!;
-        return seen.kind === "completed" && seen.value.state === state;
-      }),
-    );
-  const [running, stopped] = [seenAs("running"), seenAs("stopped")];
-  const withheld = new Set(
-    [...owners]
-      .filter(([, behind]) => [...behind].every((name) => stopped.has(name)))
-      .map(([port]) => port),
-  );
-  if (withheld.size) await deps.lifecycle.withholdPorts(target, withheld);
-  return services.filter(
-    (service) => !running.has(service) && !stopped.has(service),
-  );
+  if (seen.ports.size) await deps.lifecycle.withholdPorts(target, seen.ports);
+  return seen.uncertain;
 }
 
 /** Whether `run` makes a pass over its Service return before it withholds the paths of a Service it sees stopped: an outcome

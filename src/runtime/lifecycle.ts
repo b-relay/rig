@@ -3,6 +3,7 @@ import type {
   InstalledComponent,
   ManagedComponent,
   PlanJob,
+  TargetPlan,
 } from "../config/types";
 import type { PreparedEnvironment, TargetRecord } from "../domain/runtime";
 import { withoutReferenceVariables } from "../domain/process-environment";
@@ -24,6 +25,8 @@ import {
   retainFailureCauses,
 } from "../domain/errors";
 import { declaredPorts, plannedRoutes } from "./ports";
+import type { RouteGuard } from "./route-guard";
+import { tailOf } from "./tail";
 import {
   UPSTREAM_HOST,
   routeUpstream,
@@ -177,6 +180,9 @@ export interface StartEvidence {
 }
 /** How the stops one Operation makes wait, and who hears about them. Every stop honours each Service's stop_timeout. */
 export interface StopControl {
+  /** The Operation's route guard: every route change it makes, and every write to the effect journal those changes share,
+   * runs inside the guard's exclusive section. */
+  readonly guard?: RouteGuard;
   /** The kill for stops of `target`: aborted before or during a stop, it cuts the remaining grace to the kill wait
    * (`rig down --kill`). Asked as each stop begins, and as each start begins for the stop of a start that fails. */
   readonly kill?: (target: TargetRecord) => AbortSignal | undefined;
@@ -207,14 +213,16 @@ export interface TargetLifecycle {
   checkpoint(
     target: TargetRecord,
     previous?: TargetRecord,
+    stops?: StopControl,
   ): Promise<TargetEffectCheckpoint>;
   /** Rolls back the Target's interrupted effect transaction once its Services are down; the route comes back withheld
    * wherever the route as it is now reaches no upstream. */
-  restoreEffects(target: TargetRecord): Promise<void>;
-  commitEffects(target: TargetRecord): Promise<void>;
+  restoreEffects(target: TargetRecord, stops?: StopControl): Promise<void>;
+  commitEffects(target: TargetRecord, stops?: StopControl): Promise<void>;
   retireSuperseded(
     previous: TargetRecord,
     candidate: TargetRecord,
+    stops?: StopControl,
   ): Promise<void>;
   /** Installs the workspace's dependencies, then runs the selected build units in plan order, journaling each before and after.
    * A build a daemon that died left running is stopped first, so two never run in the workspace at once; each command's
@@ -287,7 +295,11 @@ export interface TargetLifecycle {
    * recovery that stops two plans' processes withholds this way first. With `services`, only the paths the plan routes to
    * them, as supervision does for a Service that exited on its own; its next verified start publishes them again.
    * ROUTE_WITHHOLD when the proxy cannot be made to. */
-  withhold(target: TargetRecord, services?: readonly string[]): Promise<void>;
+  withhold(
+    target: TargetRecord,
+    services?: readonly string[],
+    stops?: StopControl,
+  ): Promise<void>;
   /** The ports a path of the Target's published route reaches now, whatever plan it was published for. */
   livePorts(target: TargetRecord): Promise<ReadonlySet<number>>;
   /** Withholds only the paths of the published route that reach `ports`, whichever plan's they are, confirmed in the proxy.
@@ -295,17 +307,23 @@ export interface TargetLifecycle {
   withholdPorts(
     target: TargetRecord,
     ports: ReadonlySet<number>,
+    stops?: StopControl,
   ): Promise<void>;
   /** Stops every Service in reverse dependency order, each within its stop_timeout, then any build a daemon that died left
    * running (`observePreparation`). First every path the route publishes to
    * one of their ports is withheld, so no program that binds a freed port receives the Target's requests; a plan without
    * some Services (a deploy keeping them) leaves their paths as they are. Every Service is attempted, and STOP_INCOMPLETE
-   * names the failures, except when the stop is detached: STOP_DETACHED ends it at once; ROUTE_WITHHOLD, once every
-   * Service stopped, when the paths could not be withheld. A job run is not stopped here, so a deploy, which stops the
-   * previous plan this way, never cuts one off: `stopJob` stops one. */
+   * names the failures, except when the stop is detached: STOP_DETACHED ends it at once; ROUTE_WITHHOLD, with no Service
+   * that has a path stopped, when the paths could not be withheld. A job run is not stopped here, so a deploy, which stops
+   * the previous plan this way, never cuts one off: `stopJob` stops one.
+   * `startFollows` is given only when a start comes next that replaces what stops (a deploy's stop of the previous
+   * Deployment, `rig restart`), and is the whole plan, before any Service was removed from `target`'s: the Services at the
+   * end of the list that no path needs (`tailOf`) then stop first with every path still live, and the paths are withheld
+   * just before the first Service outside them stops. */
   down(
     target: TargetRecord,
     stops?: StopControl,
+    startFollows?: TargetPlan,
   ): Promise<{ outcome: "stopped" | "unchanged" }>;
   /** Stop, unroute, and uninstall a Target under one checkpoint.
    * Fails with RETIRE_COMMIT_PENDING (retirement done, finalization unfinished)
@@ -415,11 +433,14 @@ export function withStops(
     withdrawRoutes: (targets) => lifecycle.withdrawRoutes(targets),
     pruneRoutes: (owners, confinement) =>
       lifecycle.pruneRoutes(owners, confinement),
-    checkpoint: (target, previous) => lifecycle.checkpoint(target, previous),
-    restoreEffects: (target) => lifecycle.restoreEffects(target),
-    commitEffects: (target) => lifecycle.commitEffects(target),
-    retireSuperseded: (previous, candidate) =>
-      lifecycle.retireSuperseded(previous, candidate),
+    checkpoint: (target, previous, control) =>
+      lifecycle.checkpoint(target, previous, control ?? stops),
+    restoreEffects: (target, control) =>
+      lifecycle.restoreEffects(target, control ?? stops),
+    commitEffects: (target, control) =>
+      lifecycle.commitEffects(target, control ?? stops),
+    retireSuperseded: (previous, candidate, control) =>
+      lifecycle.retireSuperseded(previous, candidate, control ?? stops),
     prepare: (target, request) => lifecycle.prepare(target, request),
     up: (target, checkpoint, journal, control) =>
       lifecycle.up(target, checkpoint, journal, control ?? stops),
@@ -432,10 +453,13 @@ export function withStops(
       lifecycle.checkEnvironmentValues(target),
     stop: (target, service, control) =>
       lifecycle.stop(target, service, control ?? stops),
-    down: (target, control) => lifecycle.down(target, control ?? stops),
-    withhold: (target, services) => lifecycle.withhold(target, services),
+    down: (target, control, startFollows) =>
+      lifecycle.down(target, control ?? stops, startFollows),
+    withhold: (target, services, control) =>
+      lifecycle.withhold(target, services, control ?? stops),
     livePorts: (target) => lifecycle.livePorts(target),
-    withholdPorts: (target, ports) => lifecycle.withholdPorts(target, ports),
+    withholdPorts: (target, ports, control) =>
+      lifecycle.withholdPorts(target, ports, control ?? stops),
     retire: (target, publishRemoval, control) =>
       lifecycle.retire(target, publishRemoval, control ?? stops),
     startJob: (target, job, incarnation, rigEnv) =>
@@ -448,6 +472,47 @@ export function withStops(
       lifecycle.observeJob(target, job, signal),
     stopJob: (target, job, control) =>
       lifecycle.stopJob(target, job, control ?? stops),
+  };
+}
+/** `effects` with each route change of a stop or start, and each other write to the effect journal those changes share,
+ * inside `guard`'s exclusive section, from its first read to the journal's final capture. A route withdrawn whole
+ * (`withdrawRoute`) is a Target's that nothing watches. */
+function guardedEffects(
+  effects: TargetEffects,
+  guard: RouteGuard,
+): TargetEffects {
+  return {
+    ...effects,
+    async checkpoint(target, previous) {
+      const checkpoint = await guard.exclusive(() =>
+        effects.checkpoint(target, previous),
+      );
+      return {
+        targetId: checkpoint.targetId,
+        commit: () => guard.exclusive(() => checkpoint.commit()),
+        rollback: () =>
+          guard.exclusive(async () => {
+            await checkpoint.rollback();
+            guard.publishedUnder(previous ?? target);
+          }),
+      };
+    },
+    restoreEffects: (target) =>
+      guard.exclusive(() => effects.restoreEffects(target)),
+    commitEffects: (target) =>
+      guard.exclusive(() => effects.commitEffects(target)),
+    retireSuperseded: (previous, candidate) =>
+      guard.exclusive(() => effects.retireSuperseded(previous, candidate)),
+    install: (component, target) =>
+      guard.exclusive(() => effects.install(component, target)),
+    route: (target, change) =>
+      guard.exclusive(async () => {
+        await effects.route(target, change);
+        guard.publishedUnder(target);
+      }),
+    withhold: (target, ports) =>
+      guard.exclusive(() => effects.withhold(target, ports)),
+    removeRoute: (target) => guard.exclusive(() => effects.removeRoute(target)),
   };
 }
 /** The supervisor key a Target's build and dependency installation commands are recorded under, one at a time. A Service
@@ -476,6 +541,9 @@ export function createTargetLifecycle(
   timing: ReadinessTiming = readinessTiming,
   observer?: LifecycleObserver,
 ): TargetLifecycle {
+  /** The effects an Operation under `stops` acts through. */
+  const guarded = (stops: StopControl | undefined) =>
+    stops?.guard ? guardedEffects(effects, stops.guard) : effects;
   const lifecycle: TargetLifecycle = {
     pruneCheckpoints: (live) => effects.pruneCheckpoints(live),
     async checkRoute(target) {
@@ -540,19 +608,20 @@ export function createTargetLifecycle(
     },
     pruneRoutes: (owners, confinement) =>
       effects.pruneRoutes(owners, confinement),
-    async checkpoint(target, previous) {
-      return await effects.checkpoint(target, previous);
+    async checkpoint(target, previous, stops) {
+      return await guarded(stops).checkpoint(target, previous);
     },
-    async restoreEffects(target) {
-      await effects.restoreEffects(target);
+    async restoreEffects(target, stops) {
+      await guarded(stops).restoreEffects(target);
     },
-    async commitEffects(target) {
-      await effects.commitEffects(target);
+    async commitEffects(target, stops) {
+      await guarded(stops).commitEffects(target);
     },
-    async retireSuperseded(previous, candidate) {
-      await effects.retireSuperseded(previous, candidate);
+    async retireSuperseded(previous, candidate, stops) {
+      await guarded(stops).retireSuperseded(previous, candidate);
     },
     async retire(target, publishRemoval, stops) {
+      const effects = guarded(stops);
       const checkpoint = await effects.checkpoint(target);
       let finalizationPending = false;
       try {
@@ -639,6 +708,7 @@ export function createTargetLifecycle(
           "The effect checkpoint belongs to another Target.",
           "Use the checkpoint for the selected Target.",
         );
+      const effects = guarded(stops);
       const supervisor = effects.supervisor(target);
       const checkpoint =
         providedCheckpoint ?? (await effects.checkpoint(target));
@@ -738,6 +808,7 @@ export function createTargetLifecycle(
         await withholdServices(
           target,
           started.map((key) => componentOf(target, key).name),
+          stops,
         ).catch((failure: unknown) => rollbackErrors.push(failure));
         if (!rollbackErrors.length)
           for (const key of started.reverse())
@@ -942,7 +1013,7 @@ export function createTargetLifecycle(
           "Select a Service of the recorded plan.",
           { service },
         );
-      await withholdServices(target, [service]);
+      await withholdServices(target, [service], stops);
       const result = await stopService(target, component, stops);
       return {
         outcome: result.outcome === "stopped" ? "stopped" : "unchanged",
@@ -979,20 +1050,30 @@ export function createTargetLifecycle(
       effects.supervisor(target).observe(preparationProcessKey(target), signal),
     stopPreparation: (target, stops) => stopPreparation(target, stops),
     stopJob: (target, job, stops) => stopJob(target, job, stops),
-    withhold: (target, services) =>
-      services ? withholdServices(target, services) : effects.withhold(target),
+    withhold: (target, services, stops) =>
+      services
+        ? withholdServices(target, services, stops)
+        : guarded(stops).withhold(target),
     livePorts: (target) => effects.livePorts(target),
     withholdPorts,
-    async down(target, stops) {
+    async down(target, stops, startFollows) {
       let changed = false;
       const processFailures: unknown[] = [];
       const services = target.plan.components.filter(
         (component): component is ManagedComponent =>
           component.kind === "managed",
       );
-      // Withheld, and served so, before anything stops: once a process ends, any program may bind its port.
-      await withholdServices(target, managedServices(target));
+      const tail = new Set(
+        startFollows ? tailOf(startFollows, managedServices(target)) : [],
+      );
+      let withheld = false;
       for (const component of [...services].reverse()) {
+        // Withheld, and served so, before anything a path may need stops: once a process ends, any program may bind its
+        // port. No path reaches a Service of the tail, so all of them stop first when a start follows.
+        if (!withheld && !tail.has(component.name)) {
+          await withholdServices(target, managedServices(target), stops);
+          withheld = true;
+        }
         try {
           const result = await stopService(target, component, stops);
           changed = result.outcome === "stopped" || changed;
@@ -1018,26 +1099,28 @@ export function createTargetLifecycle(
       return { outcome: changed ? "stopped" : "unchanged" };
     },
   };
-  /** Withholds the paths the plan routes to `services`, served so, before any of them is stopped. ROUTE_WITHHOLD, with
-   * nothing stopped, when the proxy cannot be made to: it may still reach those ports, which any program could bind once
-   * freed. */
+  /** Withholds the paths the plan routes to `services`, served so, before any of them is stopped. ROUTE_WITHHOLD, with no
+   * Service that has a path stopped, when the proxy cannot be made to: it may still reach those ports, which any program
+   * could bind once freed. */
   async function withholdServices(
     target: TargetRecord,
     services: Iterable<string>,
+    stops?: StopControl,
   ): Promise<void> {
     const ports = routedPorts(target, services);
-    if (ports.size) await withholdPorts(target, ports);
+    if (ports.size) await withholdPorts(target, ports, stops);
   }
   async function withholdPorts(
     target: TargetRecord,
     ports: ReadonlySet<number>,
+    stops?: StopControl,
   ): Promise<void> {
     try {
-      await effects.withhold(target, ports);
+      await guarded(stops).withhold(target, ports);
     } catch (error) {
       throw new RigError(
         "ROUTE_WITHHOLD",
-        `The route of ${target.name} could not be withheld (${failureReason(error)}), so nothing was stopped: the proxy may still reach its Services' ports, which any program could bind once they are freed.`,
+        `The route of ${target.name} could not be withheld (${failureReason(error)}), so no Service with a path was stopped: the proxy may still reach its Services' ports, which any program could bind once they are freed.`,
         `Run rig doctor to check the proxy, then retry once it answers (or once it is stopped).`,
         {},
         failureCauses(error),

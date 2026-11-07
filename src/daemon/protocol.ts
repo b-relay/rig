@@ -613,7 +613,7 @@ export const monitorResultSchema = z
       .int()
       .positive()
       .describe(
-        "Seconds per point: one of Rig's fixed steps, sized to give the window about 360 points, and at least 60 when the points are read from per-minute history.",
+        "Seconds per point: one of Rig's fixed steps (up to a day), or a whole number of days for longer windows, sized to give the window about 360 points, and at least 60 when the points are read from per-minute history.",
       ),
     sampledEvery: z
       .number()

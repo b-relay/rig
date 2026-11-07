@@ -1,7 +1,6 @@
 import type { Command } from "commander";
 import { RigError } from "../domain/errors";
 import type { ExecuteCommand } from "./commands";
-import { logTimeWindow } from "./log-window";
 
 interface MonitorOptions {
   project?: string;
@@ -77,6 +76,8 @@ export function addMonitorCommand(
           "--all covers every Project, so it cannot be combined with --project.",
           "Drop --project to watch the whole Host, or drop --all to watch one Project.",
         );
+      // The time parser loads once rig monitor runs, since its help needs none of it.
+      const { logTimeWindow } = await import("./log-window");
       const window: MonitorWindowInput = {
         since: options.since,
         ...(options.until === undefined ? {} : { until: options.until }),

@@ -4,12 +4,8 @@ import { constants } from "node:fs";
 import { copyFile, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import {
-  RigError,
-  describeInvalidDocument,
-  failureCauses,
-  failureReason,
-} from "../domain/errors";
+import { RigError, failureCauses, failureReason } from "../domain/errors";
+import { describeInvalidDocument } from "../domain/invalid-document";
 import type { Router, RouteCheckpoint } from "../providers/caddy-router";
 import { liveUpstreams, withheldExcept } from "../providers/route-file";
 import type {

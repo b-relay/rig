@@ -7,6 +7,7 @@ import { formatBytes } from "../domain/bytes";
 import { shellWord } from "../domain/target-selector";
 import { killingText } from "./stop-display";
 import { terminalText } from "./terminal-text";
+import { LONG_LINE_CHARS } from "./logs-command";
 /** Human presenters consume the same domain report returned by structured commands. */
 export function renderResult(action: string, value: unknown): string {
   const report = object(value);
@@ -465,9 +466,6 @@ function renderDoctor(report: Record<string, unknown>): string {
   if (note) lines.push(note);
   return `${lines.join("\n")}\n`;
 }
-/** The longest log line rig prints whole unless asked for --full. Rig records up to 64K characters per line, which would
- * flood a terminal or an agent's context. */
-export const LONG_LINE_CHARS = 2000;
 /** Pure: a logs reply with every line longer than LONG_LINE_CHARS cut there, each such entry gaining `omitted`, the
  * characters left out; the reply unchanged with `full`. */
 export function shortenedLogs(value: unknown, full: boolean): unknown {

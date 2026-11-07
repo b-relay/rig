@@ -1,13 +1,12 @@
 import { z } from "zod";
 import { ConfigError } from "../config/errors";
 import { validateEditPath } from "../config/editor";
-import { projectConfigSchema } from "../config/schema";
+import { nameSchema, projectConfigSchema } from "../config/schema";
 import type {
   ConfigEditInput,
   ProjectConfigPreview,
   ProjectConfigSource,
 } from "../config/documents";
-import { nameSchema } from "../domain/names";
 
 const pathSchema = z
   .array(z.string().min(1).max(256))

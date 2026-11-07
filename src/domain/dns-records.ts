@@ -1,19 +1,13 @@
 import { z } from "zod";
+import {
+  AUTOMATIC_TTL,
+  DNS_RECORD_TYPES,
+  type DnsRecordType,
+} from "./dns-record-types";
 
-/** The record types Rig manages (ADR 0018). A zone may hold others (NS, SRV, HTTPS…); Rig lists them read-only. */
-export const DNS_RECORD_TYPES = [
-  "A",
-  "AAAA",
-  "CNAME",
-  "TXT",
-  "MX",
-  "CAA",
-] as const;
-export type DnsRecordType = (typeof DNS_RECORD_TYPES)[number];
+export { AUTOMATIC_TTL, DNS_RECORD_TYPES, type DnsRecordType };
 /** Types whose traffic a DNS provider can proxy through its own edge (Cloudflare's orange cloud). */
 export const PROXIABLE_TYPES: readonly DnsRecordType[] = ["A", "AAAA", "CNAME"];
-/** TTL 1 asks the provider to choose ("Auto" in Cloudflare); otherwise seconds from 60 to one day. */
-export const AUTOMATIC_TTL = 1;
 /** Cloudflare's limit on one TXT record, in bytes as DNS carries it: the text, and a length byte for each string of it. */
 export const TXT_MAX = 4096;
 /** The longest content Rig reads as written: a TXT record at TXT_MAX with every byte written as `\DDD`. */

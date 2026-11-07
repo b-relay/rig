@@ -9,13 +9,12 @@ import {
   verifyRigRoot,
 } from "./cli/entry-environment";
 import { createHostDiagnosticLog } from "./diagnostics/host-log";
-import { connectDaemon, isDaemonUnavailable } from "./daemon/connection";
 import type { CliDependencies } from "./cli/types";
 import type { DaemonClientOptions } from "./daemon/client";
 import { homedir } from "node:os";
 import { RigError } from "./domain/errors";
-// Help and the common reads need only the command line and rigd's client, so the local commands and the offline doctor
-// import their config, Caddy and certificate code when they run.
+// Help needs only the command line, so rigd's client loads with the first request, and the local commands and the
+// offline doctor import their config, Caddy and certificate code when they run.
 export async function main(args: readonly string[]): Promise<number> {
   const interrupts = interruptLadder((code) => process.exit(code));
   // A reader that has gone away ends the command the way Ctrl-C does; rigd keeps running whatever it was asked. A second
@@ -132,9 +131,12 @@ export function createCliClient(
 ): CliDependencies["client"] {
   return {
     async status(selection, signal) {
+      const { connectDaemon } = await import("./daemon/connection");
       return (await connectDaemon(root, connection)).status(selection, signal);
     },
     async command(request, signal) {
+      const { connectDaemon, isDaemonUnavailable } =
+        await import("./daemon/connection");
       try {
         return await (
           await connectDaemon(root, connection)

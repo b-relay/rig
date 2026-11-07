@@ -1317,7 +1317,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             (await deps.documents.host()).deploy.production_branch,
         });
         const commit = command.commit
-          ? await deps.sources.resolve(project.repoPath, command.commit)
+          ? await deps.sources.resolve(
+              project.repoPath,
+              command.commit,
+              project.id,
+            )
           : preflight.commit;
         deploySource = { ...deploySource, commit };
         assertDeploymentRecovered(target);

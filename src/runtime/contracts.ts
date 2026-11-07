@@ -147,7 +147,9 @@ export interface DeploymentSources {
   /** Remove a prepared workspace, its install output, and its worktree registration; a workspace
    * already deleted is only pruned. Callers pass only workspaces no inventory record references. */
   release(request: { project: string; workspacePath: string }): Promise<void>;
-  resolve(repository: string, ref: string): Promise<string>;
+  /** The full Commit id `ref` names in `repository`, or `ref` itself when it is a full Commit id the Project's own source
+   * mirror already holds, so a Deployment of it can be made again after the repository dropped it. */
+  resolve(repository: string, ref: string, project: string): Promise<string>;
   preflight(input: {
     repoPath: string;
     branch: string;

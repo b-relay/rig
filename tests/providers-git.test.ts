@@ -210,6 +210,88 @@ test("releasing a revision removes its worktree from the source mirror, and a re
   );
 });
 
+test("a Commit the source mirror holds is prepared again without the developer repository, even after it dropped that Commit, and a new Commit is still fetched", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-git-held-"));
+  roots.push(root);
+  const repository = join(root, "developer");
+  await mkdir(repository);
+  const git = async (...args: string[]) => {
+    const result = await gitRun({ command: ["git", ...args], cwd: repository });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.trim();
+  };
+  const commit = async (content: string, ...options: string[]) => {
+    await writeFile(join(repository, "app.txt"), content);
+    await git("add", ".");
+    await git(
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      ...options,
+      "-m",
+      content,
+    );
+    return await git("rev-parse", "HEAD");
+  };
+  await git("init", "-b", "main");
+  await git("config", "user.email", "rig@example.invalid");
+  await git("config", "user.name", "Rig Test");
+  const first = await commit("first");
+  /** Each Git command the store runs, as `<where> <subcommand>`: `developer` in the developer repository, `mirror` with
+   * the mirror as its Git directory. */
+  let commands: string[] = [];
+  const store = createGitSourceStore({
+    root: join(root, "sources"),
+    run: (request) => {
+      const mirror = request.command[1] === "--git-dir";
+      commands.push(
+        `${mirror ? "mirror" : request.cwd === repository ? "developer" : "other"} ${request.command[mirror ? 3 : 1]}`,
+      );
+      return gitRun(request);
+    },
+  });
+  const sources = createDeploymentSources(store, gitRun);
+  const prepare = (ref: string, name: string) =>
+    store.prepare({
+      project: "demo",
+      repository,
+      ref,
+      destination: join(root, "revisions", name),
+    });
+  await prepare(first, "one");
+  // The new mirror's clone already brought the Commit.
+  expect(commands).not.toContain("mirror fetch");
+  commands = [];
+  await prepare(first, "two");
+  expect(commands).toEqual(["mirror cat-file", "mirror worktree"]);
+  // The Branch is rewritten and the developer repository drops the first Commit.
+  await commit("rewritten", "--amend");
+  await git("reflog", "expire", "--expire=now", "--all");
+  await git("gc", "--prune=now");
+  expect(
+    (
+      await gitRun({
+        command: ["git", "cat-file", "-e", `${first}^{commit}`],
+        cwd: repository,
+      })
+    ).exitCode,
+  ).not.toBe(0);
+  expect(await sources.resolve(repository, first, "demo")).toBe(first);
+  const rollback = await prepare(first, "three");
+  expect(rollback.commit).toBe(first);
+  expect(await readFile(join(rollback.workspacePath, "app.txt"), "utf8")).toBe(
+    "first",
+  );
+  const next = await commit("next");
+  commands = [];
+  const fetched = await prepare("main", "four");
+  expect(fetched.commit).toBe(next);
+  expect(commands).toContain("mirror fetch");
+  expect(await readFile(join(fetched.workspacePath, "app.txt"), "utf8")).toBe(
+    "next",
+  );
+});
+
 test("a watch comparison asks the local repository which tracked files changed between two Commits, with paths, directories and globs", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-git-changed-"));
   roots.push(root);

@@ -40,13 +40,14 @@ export function createDeploymentSources(
     preflight: (input) => preflightDeployment(input, run),
     prepare: (request) => store.prepare(request),
     release: (request) => store.release(request),
-    async resolve(repository, ref) {
+    async resolve(repository, ref, project) {
       if (ref.startsWith("-"))
         throw new RigError(
           "GIT_REF",
           "The Git reference is invalid.",
           "Choose a Branch or Commit.",
         );
+      if (await store.holds(project, ref)) return ref;
       return await git(repository, [
         "rev-parse",
         "--verify",

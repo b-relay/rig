@@ -329,6 +329,46 @@ process.stdout.write(JSON.stringify({ unchanged, changed: reads }));
     expect((changed as unknown as { extra: number }).extra).toBe(1);
   });
 
+  test("a snapshot is frozen all the way down: no reader can change a nested record for the others", async () => {
+    // A Project record, and a key a newer rigd wrote, nested three levels below it.
+    const { store } = await storeWith({
+      ...empty,
+      projects: [
+        {
+          id: "p",
+          name: "p",
+          repoPath: "/repos/p",
+          configPath: "/repos/p/rig.yaml",
+          createdAt: "2026-11-07T00:00:00Z",
+        },
+      ],
+      newer: { nested: { deeper: { value: 1, list: [{ value: 1 }] } } },
+    });
+    type Newer = {
+      newer: {
+        nested: { deeper: { value: number; list: { value: number }[] } };
+      };
+    };
+    const first = await store.snapshot();
+    const deeper = () => (first as unknown as Newer).newer.nested.deeper;
+    expect(() => {
+      first.projects[0]!.name = "changed";
+    }).toThrow();
+    expect(() => {
+      deeper().value = 2;
+    }).toThrow();
+    expect(() => {
+      deeper().list[0]!.value = 2;
+    }).toThrow();
+    expect(() => deeper().list.push({ value: 2 })).toThrow();
+    const other = await store.snapshot();
+    expect(other.projects[0]!.name).toBe("p");
+    expect((other as unknown as Newer).newer.nested.deeper).toEqual({
+      value: 1,
+      list: [{ value: 1 }],
+    });
+  });
+
   test("has a new revision after each write and the same one until then", async () => {
     const { store } = await storeWith(empty);
     const before = await store.revision();

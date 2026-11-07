@@ -799,9 +799,14 @@ test("a failed status leaves Settings unable to say what is allowed: it shows th
     expect(open.disabled[word]).toBe(false);
 });
 
-test("the deploy history says when a new Commit began to serve, and that a failed one was stopped after it had", () => {
+test("the deploy history says when a new Commit began to serve, and never that a failed one stopped: a blocked rollback may leave it serving", () => {
   const servedAt = "2026-11-05T08:00:00.000Z";
-  const row = (id: string, outcome: "deployed" | "failed", served?: true) => ({
+  const row = (
+    id: string,
+    outcome: "deployed" | "failed",
+    served?: true,
+    message?: string,
+  ) => ({
     id,
     project: "demo",
     target: "stable",
@@ -810,27 +815,29 @@ test("the deploy history says when a new Commit began to serve, and that a faile
     commit: `${id}aaaaaa`,
     outcome,
     ...(served ? { servedAt } : {}),
+    ...(message ? { message } : {}),
     startedAt: servedAt,
     finishedAt: servedAt,
     durationMs: 0,
     current: false,
     rollback: false,
   });
-  const text = readable(
-    inRouter(
-      <DeploymentList
-        project="demo"
-        now={Date.parse(servedAt)}
-        rows={[
-          row("c3", "failed", true),
-          row("c2", "failed"),
-          row("c1", "deployed", true),
-        ]}
-      />,
-    ),
+  const html = inRouter(
+    <DeploymentList
+      project="demo"
+      now={Date.parse(servedAt)}
+      rows={[
+        // Its clean-up could not withhold its paths: it still serves.
+        row("c4", "failed", true, "DEPLOY_ROLLBACK_BLOCKED"),
+        row("c3", "failed", true),
+        row("c2", "failed"),
+        row("c1", "deployed", true),
+      ]}
+    />,
   );
-  expect(says(text, `served from ${when(servedAt)}, then stopped`)).toBe(1);
-  expect(says(text, `served from ${when(servedAt)}`)).toBe(2);
+  const text = readable(html);
+  expect(says(text, `served from ${when(servedAt)}`)).toBe(3);
+  expect(html).not.toContain("stopped");
 });
 
 test("a failed status on the Deployments page says why no rollback is offered, and keeps the history", async () => {

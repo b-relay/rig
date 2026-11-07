@@ -154,16 +154,11 @@ export function DeploymentList({
                   {row.servedAt ? (
                     <span
                       className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
-                      title={
-                        row.outcome === "failed"
-                          ? "The new Commit answered requests from then until the deploy failed and stopped it."
-                          : "The new Commit answered requests from then on."
-                      }
+                      title="When the new Commit began to answer requests. A failed deploy's record says nothing of when that ended: its Activity entry does."
                     >
                       <Globe className="size-3.5 shrink-0" aria-hidden />
                       <span className="truncate" suppressHydrationWarning>
                         served from {when(row.servedAt)}
-                        {row.outcome === "failed" ? ", then stopped" : ""}
                       </span>
                     </span>
                   ) : null}

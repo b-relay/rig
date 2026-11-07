@@ -2,7 +2,8 @@
 export interface UsageSample {
   /** CPU over the last sampling interval, Activity Monitor style: 100 is one full core, so a busy Component can read 350. */
   readonly cpuPercent: number;
-  /** Physical memory footprint in bytes: the memory figure Activity Monitor shows. */
+  /** Memory in bytes, each process's `ProcessReading.memoryBytes` summed: the physical footprint Activity Monitor shows
+   * with the native reader, the larger resident set with the `ps` fallback. */
   readonly memoryBytes: number;
 }
 
@@ -14,6 +15,8 @@ export interface ProcessReading {
   readonly started: number;
   /** CPU time the process has used since it started, user and system together, in nanoseconds. */
   readonly cpuNs: number;
+  /** Memory in bytes, by the reader's `kind`: `native` gives the physical footprint, `ps` the resident set, which counts
+   * shared memory and so reads higher. */
   readonly memoryBytes: number;
 }
 
@@ -39,7 +42,7 @@ export function cpuByProcess(
  * the previous reading (by pid and start, so a reused pid is a new process) started during the interval, so all of its
  * CPU time falls in it; it is capped at every core busy for the whole interval, which a process missed by an earlier
  * reading could otherwise exceed. CPU is `undefined` when there is no previous reading of the tree to measure from, as
- * at the first sight of a Component. Memory is the sum of the footprints now. */
+ * at the first sight of a Component. Memory is the sum of the processes' `memoryBytes` now. */
 export function treeUsage(input: {
   /** The previous reading of the same tree (`cpuByProcess`). Absent at the first sight of the tree. */
   readonly previous: ReadonlyMap<string, number> | undefined;

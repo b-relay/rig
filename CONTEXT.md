@@ -581,11 +581,15 @@ _Relationship_: Copying a Project repository to a second folder may become a
 new Rig Project on the same Host if the user chooses a new Project identity and
 the resulting routes do not collide.
 
-_Relationship_: `rig init` never adds, changes, or reads Git remotes.
+_Relationship_: `rig init` never adds or changes a Git remote, and never
+contacts or fetches one. It reads only local remote metadata: the branch
+`refs/remotes/origin/HEAD` names, as the default Production branch.
 
 _Relationship_: `rig init` may run from any subdirectory inside a Git
-repository, but it writes Project config at the repository root and tells
-the user where it wrote it.
+repository. A `rig.yaml` already at or above that directory inside the
+repository is registered where it is, unchanged; otherwise init writes new
+Project config at the repository root. Either way it names the config it
+registered.
 
 _Relationship_: If `rig init` runs outside a Git repository in an interactive
 TTY, it may warn that Rig needs Git and ask whether to create a new Git
@@ -923,8 +927,9 @@ logs requires an explicit `--follow` flag.
 _Relationship_: A job's output is recorded in its Target's logs under the
 job's name, so `rig logs --service <job>` reads it.
 
-_Relationship_: `rig logs` presents all streams together, merged
-chronologically across components. There is no stream filter.
+_Relationship_: `rig logs` presents all streams together by default, merged
+chronologically across components; `--stream stdout` or `--stream stderr`
+keeps one.
 
 _Relationship_: Each line is `HH:MM:SSZ  <component>  <marker> <line>`. The
 markers are `>` stdout, `!` stderr, `~` health-check evidence, and `?` an

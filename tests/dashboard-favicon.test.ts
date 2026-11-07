@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import "./support/dashboard-site";
 import {
   faviconCache,
   faviconSource,

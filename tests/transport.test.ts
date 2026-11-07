@@ -91,6 +91,87 @@ test("real localhost daemon authenticates clients and rejects foreign browser or
   }
 });
 
+test("every route refuses a request without this daemon's exact Bearer token, or from a foreign origin, before anything handles it", async () => {
+  const handled: string[] = [];
+  const server = startControlPlane({
+    port: 0,
+    token: "test-secret",
+    instanceId: "instance-1",
+    handle: async (command) => {
+      handled.push(`command ${command.action}`);
+      return "done";
+    },
+    editor: async () => {
+      handled.push("config");
+      return "edited";
+    },
+    env: async () => {
+      handled.push("env");
+      return "written";
+    },
+  });
+  const routes = [
+    { name: "health", method: "GET", path: "/health" },
+    {
+      name: "command status",
+      path: "/v1/command",
+      body: { action: "status" },
+    },
+    { name: "command up", path: "/v1/command", body: { action: "up" } },
+    { name: "config", path: "/v1/config", body: { action: "read" } },
+    { name: "env", path: "/v1/env", body: { action: "list" } },
+  ];
+  const send = (
+    route: (typeof routes)[number],
+    headers: Record<string, string>,
+  ) =>
+    fetch(`http://127.0.0.1:${server.port}${route.path}`, {
+      method: route.method ?? "POST",
+      headers: { "content-type": "application/json", ...headers },
+      ...(route.body ? { body: JSON.stringify(route.body) } : {}),
+    });
+  const answered = async (reply: Response) =>
+    `${reply.status} ${((await reply.json()) as { error?: { code?: string } }).error?.code}`;
+  try {
+    const refusals: string[] = [];
+    const expected: string[] = [];
+    for (const route of routes) {
+      for (const authorization of [
+        undefined,
+        "Bearer wrong-secret",
+        "Bearer test-secre",
+        "Bearer test-secrets",
+        "bearer test-secret",
+        "test-secret",
+        `Basic ${Buffer.from("rig:test-secret").toString("base64")}`,
+      ]) {
+        const reply = await send(route, authorization ? { authorization } : {});
+        refusals.push(
+          `${route.name}, ${authorization}: ${await answered(reply)}`,
+        );
+        expected.push(`${route.name}, ${authorization}: 401 UNAUTHORIZED`);
+      }
+      const foreign = await send(route, {
+        authorization: "Bearer test-secret",
+        origin: "https://evil.example",
+      });
+      refusals.push(
+        `${route.name}, foreign origin: ${await answered(foreign)}`,
+      );
+      expected.push(`${route.name}, foreign origin: 403 ORIGIN`);
+    }
+    expect(refusals).toEqual(expected);
+    expect(handled).toEqual([]);
+    for (const route of routes)
+      expect(
+        (await send(route, { authorization: "Bearer test-secret" })).status,
+      ).toBe(200);
+    expect(handled).toEqual(["command status", "command up", "config", "env"]);
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("a reply slower than the read deadline is reported as a timeout naming the operation, not as unreachable", async () => {
   // rigd answers only once the test has seen the deadline expire.
   const answer = Promise.withResolvers<void>();

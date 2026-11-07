@@ -179,6 +179,29 @@ test("an install script that does not match its release's SHA256SUMS never runs"
   expect(await f.ran()).toBe("");
 });
 
+test("SHA256SUMS must list the install script exactly once: none, the same line twice, or two digests never run", async () => {
+  const f = await releases(["v0.2.0"], "v0.2.0");
+  const sums = join(f.home, "download", "v0.2.0", "SHA256SUMS");
+  const line = await readFile(sums, "utf8");
+  const other = `${createHash("sha256").update("other").digest("hex")}  install\n`;
+  for (const listing of [
+    `${createHash("sha256").update("rig").digest("hex")}  rig.tar.gz\n`,
+    line + line,
+    line + other,
+    other + line,
+  ]) {
+    await writeFile(sums, listing);
+    await expect(upgrade(f.deps(), {})).rejects.toMatchObject({
+      code: "UPGRADE_FAILED",
+      message: "The install script of v0.2.0 does not match its SHA256SUMS.",
+    });
+  }
+  expect(await f.ran()).toBe("");
+  await writeFile(sums, line);
+  expect((await upgrade(f.deps(), {})).outcome).toBe("upgraded");
+  expect(await f.ran()).toBe("v0.2.0\n");
+});
+
 test("a failed install script fails the upgrade, naming its exit", async () => {
   const f = await releases(["v0.2.0"], "v0.2.0");
   await f.publish("v0.3.0", f.script("v0.3.0", 4));

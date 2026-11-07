@@ -1,4 +1,5 @@
 import { test, expect } from "bun:test";
+import "./support/dashboard-site";
 import {
   accessPolicy,
   admit,

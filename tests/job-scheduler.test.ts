@@ -105,8 +105,15 @@ const job = (
 });
 
 /** A scheduler over one Target whose runtime side (`start`, `settle`, `releaseCheckouts`) runs the real run journal against
- * the in-memory state, as rigd's runtime does under the Target's lease, with scripted processes: a started run stays
- * running until the test ends it. `restart` stands for a new rigd: a fresh scheduler, the same state and processes. */
+ * the in-memory state, with scripted processes: a started run stays running until the test ends it. `restart` stands for a
+ * new rigd: a fresh scheduler, the same state and processes.
+ * What it tests is the real scheduler and run journal. It stands in for rigd's admission: `start` calls startJobRun at once,
+ * where `RigRuntime.runScheduledJob` queues an Operation for the Target's lease and checks under it that the Target is still
+ * on, still runs the job, and is not past the late limit. No Operation queue or lease exists here; `setBusy` only sets the
+ * scheduler's `busy` predicate (and, with `setStartsWait`, holds a start until it is cleared). A regression about waiting
+ * behind another Operation, or what is decided under the lease, belongs in tests/jobs-runtime.test.ts, whose fixture runs
+ * runScheduledJob through the real queue: see "a timeout request queued behind the Target's lease while run A exits and
+ * run B starts never touches B" and "a time is passed over, and recorded so under the lease, ...". */
 function world(target: TargetRecord, jobs: JobRecord[] = []) {
   const store = memoryStore({
     version: STATE_VERSION,
@@ -272,6 +279,7 @@ function world(target: TargetRecord, jobs: JobRecord[] = []) {
       report: workReport(board, JOB_SCHEDULER),
     });
   let current = scheduler();
+  /** One scheduler pass and all the work it began, finished: unlike rigd's pass, which returns before its work ends. */
   const pass = async (iso?: string) => {
     if (iso) until(iso);
     await current.pass();

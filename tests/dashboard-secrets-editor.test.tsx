@@ -1,4 +1,5 @@
 import { afterAll, expect, mock, test } from "bun:test";
+import "./support/dashboard-site";
 import {
   elements,
   hasLabel,

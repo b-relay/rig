@@ -1,8 +1,10 @@
 ---
-status: accepted; implemented, with its open questions answered below (boot start shipped as `daemon.start: boot`; the per-Service `domain` is [0015](0015-service-domains.md))
+status: accepted
 ---
 
 # Rig runs the Host's one Caddy and terminates TLS
+
+Implemented. Its open questions are answered (see the end): boot start shipped as `daemon.start: boot`, and the per-Service `domain` as [ADR 0015](0015-service-domains.md).
 
 ## Today
 

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { shellQuote } from "./shell-quote";
 
 /** Where a system job's plist is staged where only root can write, then installed for launchd. */
 export const SYSTEM_STAGING = "/Library/Application Support/Rig";
@@ -23,10 +24,6 @@ export interface SystemJob {
   readonly source: string;
   /** A LaunchAgent this job replaces, removed only once the system plist is verified. */
   readonly replaces?: { readonly domain: string; readonly plist: string };
-}
-/** A path quoted for a POSIX shell. */
-export function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 export function plistDigest(plist: string): string {
   return createHash("sha256").update(plist).digest("hex");

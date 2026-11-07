@@ -114,14 +114,51 @@ export function proxyCheck(publication: ProxyPublication): ProxyCheck {
 export function routeOwnerToken(key: string): string {
   return createHash("sha256").update(key).digest("hex");
 }
+/** One complete marked block of a route file as it is written there: `# rig begin <token>`, a line break, its body, then
+ * `# rig end <token>` and the line break after it, when there is one. */
+export interface MarkedRouteBlock {
+  readonly token: string;
+  /** What lies between the begin marker's line and the end marker: the block's sites. */
+  readonly body: string;
+  /** The block's whole text, from its begin marker through the line break after its end marker. */
+  readonly text: string;
+}
+/** A complete marked block: a begin marker, the nearest end marker of the same token, and the line break after it. */
+const MARKED_BLOCK =
+  /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(?:\r?\n)?/g;
+/** Every complete marked block of a route file, in order. A begin marker with no end marker of its token is no block. */
+export function markedRouteBlocks(text: string): MarkedRouteBlock[] {
+  return [...text.matchAll(MARKED_BLOCK)].map((match) => ({
+    token: match[1]!,
+    body: match[2]!,
+    text: match[0],
+  }));
+}
+/** `text` with each complete marked block, the line break after it included, replaced by what `replace` makes of it, and
+ * everything else as it was. */
+export function replaceMarkedRouteBlocks(
+  text: string,
+  replace: (block: MarkedRouteBlock) => string,
+): string {
+  return text.replace(MARKED_BLOCK, (whole, token: string, body: string) =>
+    replace({ token, body, text: whole }),
+  );
+}
+/** The markers around the block of the owner whose token is `token`. */
+export function routeMarkers(token: string): { begin: string; end: string } {
+  return { begin: `# rig begin ${token}`, end: `# rig end ${token}` };
+}
+/** The marked block of the owner whose token is `token`, holding `sites`: rendered sites, each ending in a line break. */
+export function markedRouteBlock(token: string, sites: string): string {
+  const { begin, end } = routeMarkers(token);
+  return `${begin}\n${sites}${end}\n`;
+}
 /** Every complete marked block of a route file, in order: its token and the hostnames of its site headers (the lines of the
  * block that start at column 0 and end with `{`, as Rig renders them). Incomplete markers are not a block. */
 export function ownedRouteBlocks(text: string): OwnedRouteBlock[] {
-  return [
-    ...text.matchAll(/# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g),
-  ].map((match) => ({
-    token: match[1]!,
-    hostnames: [...match[2]!.matchAll(/^(\S+) \{\r?$/gm)].map(
+  return markedRouteBlocks(text).map((block) => ({
+    token: block.token,
+    hostnames: [...block.body.matchAll(/^(\S+) \{\r?$/gm)].map(
       (header) => header[1]!,
     ),
   }));

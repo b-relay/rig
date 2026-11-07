@@ -184,7 +184,7 @@ const jobRunReportSchema = z
       ])
       .optional()
       .describe(
-        "How it ended: exit 0; another exit or a signal; stopped at its timeout; stopped by Rig (rig down, a restart, a deploy); gone with nothing recording how (the Mac restarted); or never started. Absent while it runs.",
+        "How it ended: exit 0; another exit or a signal; stopped at its timeout; stopped by Rig (rig down, a Preview destroy or its Target turned off; a deploy or restart never stops a run); gone with nothing recording how (the Mac restarted); or never started. Absent while it runs.",
       ),
     exitCode: z
       .number()
@@ -294,18 +294,20 @@ const refusalSchema = z
   .passthrough();
 const targetRefusalsSchema = z
   .object({
-    up: refusalSchema.optional(),
-    restart: refusalSchema.optional(),
-    deploy: refusalSchema.optional(),
-    run: refusalSchema.optional(),
-    restore: refusalSchema.optional(),
+    up: refusalSchema.optional().describe("Why rig up is refused."),
+    restart: refusalSchema.optional().describe("Why rig restart is refused."),
+    deploy: refusalSchema.optional().describe("Why rig deploy is refused."),
+    run: refusalSchema.optional().describe("Why rig run is refused."),
+    restore: refusalSchema
+      .optional()
+      .describe("Why rig backup restore is refused."),
   })
   .passthrough();
 const projectRefusalsSchema = z
   .object({
-    rename: refusalSchema.optional(),
-    repoint: refusalSchema.optional(),
-    forget: refusalSchema.optional(),
+    rename: refusalSchema.optional().describe("Why rig rename is refused."),
+    repoint: refusalSchema.optional().describe("Why rig repoint is refused."),
+    forget: refusalSchema.optional().describe("Why rig forget is refused."),
   })
   .passthrough();
 const targetReportSchema = z

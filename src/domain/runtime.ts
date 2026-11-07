@@ -93,8 +93,9 @@ export interface ServiceSource {
    * when it could not be computed, and such a run is never kept. */
   environment?: string;
   /** Digest of the environments its checkout was prepared in, as recorded when it was prepared (`preparedBuild`): the
-   * dependency installation's, the shared build's and the Service's own build's. A restart never changes it, since it
-   * rebuilds nothing. Absent when they were not all recorded, and the run is then never kept. */
+   * dependency installation's, the shared build's and the Service's own build's. A deployed Target's starts reuse its
+   * Deployment's builds, so they carry the same value; an explicit start or restart of the working Target builds current
+   * source again (ADR 0004), so it may change. Absent when they were not all recorded, and the run is then never kept. */
   build?: string;
 }
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
@@ -242,8 +243,9 @@ export interface DeploymentRecord {
   /** The failure's error code; never a value from the environment. */
   message?: string;
 }
-/** How a job run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a restart or a
- * deploy), gone with nothing recording how (the Mac restarted, or its exit record was lost), or never started. */
+/** How a job run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a Preview
+ * destroy or its Target turned off; a deploy or restart never stops a run), gone with nothing recording how (the Mac
+ * restarted, or its exit record was lost), or never started. */
 export type JobOutcome =
   "succeeded" | "failed" | "timed-out" | "stopped" | "unknown" | "start-failed";
 /** One run of a scheduled job. */

@@ -3,19 +3,55 @@ import { z } from "zod";
 import { readPrivateFile, replacePrivateFile } from "./private-files";
 import { RigError } from "../domain/errors";
 import type { ManagedProcess } from "./contracts";
+/** What the capture wrapper (`rigd capture`) runs: one process, and where its output goes. */
 const captureRequestSchema = z.object({
-  key: z.string().min(1),
-  componentName: z.string().min(1),
-  command: z.array(z.string()).min(1),
-  cwd: z.string().min(1),
-  env: z.record(z.string(), z.string()),
-  logRoot: z.string().min(1),
-  incarnation: z.string().min(1),
-  /** The application's grace after SIGTERM, from its Service's stop_timeout; a request written by an older rigd has none. */
-  stopGraceMs: z.number().int().nonnegative().optional(),
-  /** The Rig root whose config.yaml `logs` settings the wrapper rotates the Target log by, read as rigd reads them; a
-   * request written by an older rigd has none and gets the defaults. */
-  configRoot: z.string().min(1).optional(),
+  key: z
+    .string()
+    .min(1)
+    .describe(
+      "The supervisor's key for the process: its Target's id and what runs, such as a Service or a job; the request file is named after it.",
+    ),
+  componentName: z
+    .string()
+    .min(1)
+    .describe(
+      "The component name each of its log entries carries, such as the Service's or job's name.",
+    ),
+  command: z
+    .array(z.string())
+    .min(1)
+    .describe("The program and its arguments, run as they are."),
+  cwd: z.string().min(1).describe("The directory the command runs in."),
+  env: z
+    .record(z.string(), z.string())
+    .describe("The environment the command is started with."),
+  logRoot: z
+    .string()
+    .min(1)
+    .describe(
+      "The Target's log directory, whose target.jsonl the wrapper appends the output to.",
+    ),
+  incarnation: z
+    .string()
+    .min(1)
+    .describe(
+      "The caller's name for this one process; every observation of it, running or exited, carries it back.",
+    ),
+  stopGraceMs: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      "Milliseconds the application may take to exit after SIGTERM, from its Service's stop_timeout; a request an older rigd wrote has none.",
+    ),
+  configRoot: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "The Rig root whose config.yaml logs settings the wrapper rotates the Target log by, read as rigd reads them; a request an older rigd wrote has none, and gets the defaults.",
+    ),
 });
 export type CaptureRequest = z.infer<typeof captureRequestSchema>;
 /** The document a capture wrapper reads: the process to run and, when the supervisor has one, the Rig root whose logs

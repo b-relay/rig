@@ -26,7 +26,8 @@ export interface DnsReport {
   }[];
   /** Every record of the zones reported, by name and then type. */
   readonly records: readonly DnsRecord[];
-  /** The hostnames those zones own: each is in the longest zone Rig manages that holds its name. */
+  /** The hostnames Rig's Caddy serves, each in the longest zone Rig manages that holds its name: those of the selected zone,
+   * or, without one, every hostname, one in no managed zone included. */
   readonly hostnames: readonly HostnameCheck[];
 }
 export type DnsWriteAction = "dns-create" | "dns-update" | "dns-delete";

@@ -14,7 +14,7 @@ const initialization = z.object({
   name: z
     .string()
     .describe(
-      "The name init would register: the one an existing rig.yaml declares, else --project, else one made from the directory's name.",
+      "The name an existing rig.yaml declares, else the one suggested from the directory's name. rigd answers from the directory alone, whatever --project says; the init request that follows applies --project.",
     ),
   productionBranch: z
     .string()
@@ -24,7 +24,9 @@ const initialization = z.object({
   currentBranch: z
     .string()
     .optional()
-    .describe("The Branch the checkout is on; absent when it is on none."),
+    .describe(
+      "The Branch the checkout is on, absent for a detached HEAD; outside a Git repository, Git's init.defaultBranch when it is set, the Branch a new repository starts on.",
+    ),
   gitRequired: z
     .boolean()
     .describe(
@@ -32,7 +34,9 @@ const initialization = z.object({
     ),
   existing: z
     .boolean()
-    .describe("A rig.yaml is already there, so init registers it as it is."),
+    .describe(
+      "A rig.yaml already exists at or above the directory within its repository, so init registers that Project as it is.",
+    ),
 });
 /** The `deployment-context` reply rig deploy asks before it announces the deploy. */
 const deployment = z.object({

@@ -134,7 +134,7 @@ export const commandSchema = z
         "monitor",
       ])
       .describe(
-        "What rigd is asked to do. Reads (initialization-info, deployment-context, list, status, doctor, config, logs, activity, queue, deployments, proxy, backups, dns, monitor) never wait behind a running Operation; every other action is an Operation.",
+        "What rigd is asked to do. Reads (initialization-info, deployment-context, list, status, doctor, config, logs, activity, queue, deployments, proxy, backups, dns, monitor) never wait behind a running Operation. Every other action runs as an Operation, except prepare-stop, which rigd's host answers itself.",
       ),
     operationId: z
       .string()
@@ -160,7 +160,7 @@ export const commandSchema = z
       .max(63)
       .optional()
       .describe(
-        "The Target selector: working, stable or preview, and a Preview then needs branch or deployment. Absent means the working Target; rig sends stable for a deploy that names none.",
+        "The Target selector: working, stable or preview, and a Preview then needs branch or deployment. Absent means the working Target, except for run and restore, which then use the stable Target; rig sends stable for a deploy that names none.",
       ),
     branch: z
       .string()
@@ -172,7 +172,7 @@ export const commandSchema = z
       .string()
       .optional()
       .describe(
-        "deploy only: a Commit of the Branch to deploy instead of the Branch's tip, as the dashboard's rollback names it. rig never sends one.",
+        "deploy only: the Commit to deploy instead of the Branch's tip; the dashboard names one of the Branch's, as its rollback does. rig never sends one.",
       ),
     deployment: previewName
       .optional()
@@ -262,7 +262,7 @@ export const commandSchema = z
       .boolean()
       .optional()
       .describe(
-        "Skip each Service's stop_timeout: SIGTERM, then SIGKILL after the kill wait. A stop already running on the Target is cut short too.",
+        "down, restart and destroy only: skip each Service's stop_timeout, SIGTERM then SIGKILL after the kill wait. A stop already running on the Target is cut short too.",
       ),
     lines: z
       .number()
@@ -281,7 +281,7 @@ export const commandSchema = z
           .max(64)
           .optional()
           .describe(
-            "Component names (Services, Tools or jobs) to keep; rigd refuses a name the Target does not have.",
+            "Component names (Services, Tools or jobs) to keep; on a first page, rigd refuses a name the Target does not have.",
           ),
         stream: z
           .enum(["stdout", "stderr"])
@@ -527,7 +527,7 @@ export const activityResultSchema = z
             .string()
             .optional()
             .describe(
-              "The Project's name; absent for rigd's own administration.",
+              "The Project's name; absent for a record about no Project, such as rigd's own administration.",
             ),
           target: z
             .string()
@@ -549,7 +549,7 @@ export const activityResultSchema = z
           message: z
             .string()
             .optional()
-            .describe("What happened, or why it failed, in a sentence."),
+            .describe("What happened, or why it failed."),
         }),
       )
       .describe("The records kept, oldest first."),
@@ -613,7 +613,7 @@ export const monitorResultSchema = z
       .int()
       .positive()
       .describe(
-        "Seconds per point: the smallest of Rig's fixed steps that gives the window at most 360 points, and at least 60 when the points are read from per-minute history.",
+        "Seconds per point: one of Rig's fixed steps, sized to give the window about 360 points, and at least 60 when the points are read from per-minute history.",
       ),
     sampledEvery: z
       .number()
@@ -745,7 +745,7 @@ const operationViewSchema = z
     action: z
       .string()
       .describe(
-        "The command's action, or reconcile or supervise for rigd's own passes.",
+        "The command's action, or the name of a pass rigd runs itself, such as reconcile or supervise.",
       ),
     project: z
       .string()
@@ -946,9 +946,13 @@ export const proxyResultSchema = z
           })
           .passthrough()
           .describe(
-            "The ports of the settings Caddy accepted; 80 and 443 before the first generation.",
+            "The ports of the settings Caddy accepted. Before the first generation, the ports Host config asks for, or 80 and 443 when it cannot be read.",
           ),
-        ca: z.string().describe("Where its certificates come from."),
+        ca: z
+          .string()
+          .describe(
+            "Where its certificates come from, as the accepted settings say; unknown before the first generation when Host config cannot be read.",
+          ),
         generation: z
           .string()
           .optional()
@@ -956,7 +960,7 @@ export const proxyResultSchema = z
       })
       .passthrough()
       .describe(
-        "Rig's Caddy: its job, and the ports and CA of the settings it accepted.",
+        "Rig's Caddy: its job, and the ports and CA of the settings it accepted, or of Host config before the first generation.",
       ),
     sites: z
       .array(
@@ -988,7 +992,7 @@ export const proxyResultSchema = z
                 .string()
                 .optional()
                 .describe(
-                  "The certificate subject that covers the hostname, its own or a wildcard; absent for plain HTTP.",
+                  "The certificate subject that covers the hostname, its own or a wildcard; absent for a plain HTTP site, an IP address, localhost, and a wildcard hostname, which the report does not name a certificate for.",
                 ),
             })
             .passthrough(),
@@ -1005,7 +1009,7 @@ export const proxyResultSchema = z
                 .string()
                 .optional()
                 .describe(
-                  "The certificate subject that covers the hostname, its own or a wildcard; absent for plain HTTP.",
+                  "The certificate subject that covers the hostname, its own or a wildcard; absent for a plain HTTP site, an IP address, localhost, and a wildcard hostname, which the report does not name a certificate for.",
                 ),
             })
             .passthrough(),
@@ -1203,7 +1207,7 @@ export const dnsResultSchema = z
       )
       .readonly()
       .describe(
-        "The hostnames those zones own, each with where it points now.",
+        "Where each hostname Rig's Caddy serves points now: the Targets' hostnames and proxy.routes. A read of one zone keeps those that zone owns; a read of every zone keeps them all, and one in no zone Rig manages has no zone and the verdict unknown.",
       ),
   })
   .passthrough();
@@ -1235,6 +1239,8 @@ export interface DaemonHealth {
   version?: string;
   /** Where rigd serves the dashboard; absent when it runs none. */
   dashboard?: string;
-  /** Why that dashboard is not served now; absent while it is, or while it first starts. */
+  /** Why the dashboard is not served as Host config asks: why it is not served, why a dashboard an earlier rigd left
+   * running is not stopped yet, or, while it is served, that Host config asks for another address than the one Rig's Caddy
+   * accepted. Absent when none of these holds. */
   dashboardProblem?: string;
 }

@@ -35,13 +35,15 @@ const healthSchema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe("Where rigd serves the dashboard; absent when it runs none."),
+    .describe(
+      "How rigd serves the dashboard: its local address, and the address it is published at with the clients it trusts, such as https://rig.example.com via http://127.0.0.1:4280. Absent when it runs none, or once a stop has stopped it.",
+    ),
   dashboardProblem: z
     .string()
     .min(1)
     .optional()
     .describe(
-      "Why that dashboard is not served now; absent while it is, or while it first starts.",
+      "Why the dashboard is not served as Host config asks: why it is not served, why a dashboard an earlier rigd left running is not stopped yet, or, while it is served at dashboard, that Host config asks for another address than the one Rig's Caddy accepted. Absent when none of these holds.",
     ),
 });
 /** A refused or failed command's reply: the tagged error rigd raised. */
@@ -49,7 +51,7 @@ const errorSchema = z.object({
   error: z
     .object({
       code: z.string().min(1).describe("The error code, such as TARGET_OFF."),
-      message: z.string().min(1).describe("What went wrong, in a sentence."),
+      message: z.string().min(1).describe("What went wrong."),
       hint: z.string().optional().describe("What to do about it."),
       details: z
         .record(z.string(), z.unknown())

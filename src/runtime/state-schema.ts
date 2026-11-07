@@ -254,12 +254,12 @@ export const targetPlanSchema = z.object({
     "The Target's name, which ${rig.target} resolves to: working, stable or the Preview's name.",
   ),
   branchSlug: text.describe(
-    "The same as deploymentName in every plan; kept for plans older Rig versions read.",
+    "The same as deploymentName in every plan Rig makes now; kept for older Rig versions, which read it.",
   ),
   subdomain: z
     .string()
     .describe(
-      "The same as deploymentName in every plan; kept for plans older Rig versions read.",
+      "The same as deploymentName in every plan Rig makes now; kept for older Rig versions, which read it.",
     ),
   branch: text
     .optional()
@@ -274,7 +274,7 @@ export const targetPlanSchema = z.object({
   providers: z
     .object({
       processSupervisor: text.describe(
-        "What supervises the Target's processes: always rigd. A plan recorded with launchd is read as rigd's.",
+        "What supervises the Target's processes: rigd in every plan Rig makes now. A plan recorded with launchd is read as rigd's.",
       ),
     })
     .describe("The providers the plan runs with."),
@@ -363,7 +363,7 @@ export const targetPlanSchema = z.object({
   domain: text
     .optional()
     .describe(
-      "The Target's hostname, ${rig.target} resolved; absent when the Target serves none.",
+      "The Project domain resolved for this Target's role, ${rig.target} filled in; absent when the role has none, or no Service is behind /. Service domains are separate, in serviceDomains.",
     ),
   proxy: z
     .object({
@@ -389,7 +389,9 @@ export const targetPlanSchema = z.object({
         ),
     })
     .optional()
-    .describe("The routes of domain; present exactly when domain is."),
+    .describe(
+      "The routes of domain, which the plan sets together with domain.",
+    ),
   serviceDomains: z
     .array(
       z.object({
@@ -815,7 +817,7 @@ const target = z.object({
     })
     .optional()
     .describe(
-      "A deploy that has not finished, or that failed or was interrupted before it settled: what it would roll back to. While it is present, only rig down settles the Target.",
+      "A deploy that has not finished, or that failed or was interrupted before it settled: what it would roll back to. While it is present, only rig down, or a Preview's destroy, settles the Target.",
     ),
 });
 const jobRun = z.object({
@@ -1010,10 +1012,7 @@ const operation = z.object({
     .enum(OPERATION_OUTCOMES)
     .describe("How the Operation ended, as rig activity shows it."),
   occurredAt: text.describe("When it ended (ISO 8601)."),
-  message: z
-    .string()
-    .optional()
-    .describe("What happened, or why it failed, in a sentence."),
+  message: z.string().optional().describe("What happened, or why it failed."),
 });
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an older rigd
  * refuses the file instead of silently dropping what it does not know. Two kinds of change are not bumped.

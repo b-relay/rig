@@ -1,7 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, test as bunTest, expect } from "bun:test";
+import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -23,22 +25,44 @@ const TEMPLATE = join(import.meta.dir, "..", "scripts", "install");
 const TAG = "v0.1.0";
 const SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 const homes: string[] = [];
+const packs: string[] = [];
+/** The running test's body and the processes it runs. Bun fails a test at its timeout but leaves its body running, so the
+ * teardown stops those processes, refuses it any more, and waits for it before removing its homes: nothing it started
+ * runs on into the next test. */
+let body: Promise<void> | undefined;
+let ended = false;
+const children = new Set<Subprocess>();
 afterEach(async () => {
+  ended = true;
+  for (const child of children) child.kill();
+  await body?.catch(() => {});
+  body = undefined;
+  ended = false;
   for (const home of homes.splice(0))
     await rm(home, { recursive: true, force: true });
 });
+afterAll(async () => {
+  for (const pack of packs.splice(0))
+    await rm(pack, { recursive: true, force: true });
+});
+function test(name: string, fn: () => Promise<void>, timeout?: number) {
+  bunTest(name, () => (body = fn()), timeout);
+}
 
 async function run(
   args: string[],
   env: Record<string, string> = {},
   cwd?: string,
 ) {
+  if (ended) throw new Error(`The test has ended, so ${args[0]} is not run.`);
   const child = Bun.spawn(args, {
     env: { PATH: SYSTEM_PATH, ...env },
     ...(cwd ? { cwd } : {}),
     stdout: "pipe",
     stderr: "pipe",
   });
+  children.add(child);
+  void child.exited.finally(() => children.delete(child));
   const [code, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -52,14 +76,69 @@ const exists = (path: string) =>
     () => false,
   );
 
+interface Contents {
+  /** `rigd: false` leaves rigd out of the archive, `dashboard: false` the dashboard. */
+  rigd?: boolean;
+  dashboard?: boolean;
+}
+const packed = new Map<string, Promise<{ dir: string; sums: string }>>();
+/** The release's archive per architecture, and the SHA256SUMS that names them: packed once per file for each `contents`,
+ * since every release with those contents holds the same bytes, so a test pays for its installs rather than for packing. */
+function archives(contents: Contents) {
+  const key = `${contents.rigd !== false} ${contents.dashboard !== false}`;
+  let packing = packed.get(key);
+  if (!packing) {
+    packing = pack(contents);
+    packed.set(key, packing);
+    // A test that ends while it packs leaves the next one to pack again.
+    packing.catch(() => packed.delete(key));
+  }
+  return packing;
+}
+async function pack(contents: Contents) {
+  const at = await mkdtemp(join(tmpdir(), "rig-install-archives-"));
+  packs.push(at);
+  const dir = join(at, "archives");
+  await mkdir(dir);
+  for (const arch of ["arm64", "x64"]) {
+    const build = `rig-${TAG}-darwin-${arch}`;
+    const tree = join(at, "build", build);
+    await mkdir(tree, { recursive: true });
+    await writeFile(join(tree, "rig"), `#!/bin/sh\necho ${arch}\n`);
+    if (contents.dashboard !== false) {
+      await mkdir(join(tree, "dashboard", "web"), { recursive: true });
+      await writeFile(join(tree, "dashboard", "web", "server.js"), "// served");
+    }
+    if (contents.rigd !== false)
+      await writeFile(
+        join(tree, "rigd"),
+        // rigd records the arguments it ran with in the installing home's rigd-ran. rigd status reports the release it
+        // serves: this one, unless the test says another. With RIG_TEST_LOCK set, rigd install records the descriptor it
+        // was handed, whether lockf can lock that descriptor (it already holds the lock) and the lock file (another does),
+        // and what the lock file records.
+        `#!/bin/sh\necho "$@" >> "$HOME/rigd-ran"\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\n` +
+          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; /usr/bin/lockf -s -t 0 "\${RIG_INSTALL_LOCK_FD:-none}"; own=$?; /usr/bin/lockf -s -t 0 "$lock" true; printf '%s %s %s %s' "\${RIG_INSTALL_LOCK_FD:-none}" "$own" "$?" "$(cat "$lock")" > "$RIG_TEST_LOCK"; fi\n` +
+          `echo "rigd $*"\n`,
+      );
+    await run([
+      "tar",
+      "-czf",
+      join(dir, `${build}.tar.gz`),
+      "-C",
+      join(at, "build"),
+      build,
+    ]);
+  }
+  const sums = (await run(["sh", "-c", "shasum -a 256 rig-*.tar.gz"], {}, dir))
+    .stdout;
+  return { dir, sums };
+}
+
 /** A fake release on local files, as the release workflow publishes one: per architecture an archive whose `rig` says
  * which build it is and whose `rigd` records the arguments it ran with, then SHA256SUMS and the install script with the
  * tag written in. The Mac it runs on is chosen with fake `uname` and `sysctl` commands. */
 async function release(
-  options: {
-    /** `rigd: false` leaves rigd out of the archive, `dashboard: false` the dashboard. */
-    rigd?: boolean;
-    dashboard?: boolean;
+  options: Contents & {
     /** Rewrites SHA256SUMS once it is written. */
     sums?(written: string): string;
     machine?: "arm64" | "x86_64";
@@ -72,37 +151,9 @@ async function release(
   const files = join(home, "releases", TAG);
   await mkdir(files, { recursive: true });
   const ran = join(home, "rigd-ran");
-  for (const arch of ["arm64", "x64"]) {
-    const build = `rig-${TAG}-darwin-${arch}`;
-    const dir = join(home, "build", build);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "rig"), `#!/bin/sh\necho ${arch}\n`);
-    if (options.dashboard !== false) {
-      await mkdir(join(dir, "dashboard", "web"), { recursive: true });
-      await writeFile(join(dir, "dashboard", "web", "server.js"), "// served");
-    }
-    if (options.rigd !== false)
-      await writeFile(
-        join(dir, "rigd"),
-        // rigd status reports the release it serves: this one, unless the test says another. With RIG_TEST_LOCK set,
-        // rigd install records the descriptor it was handed, whether lockf can lock that descriptor (it already holds the
-        // lock) and the lock file (another does), and what the lock file records.
-        `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\n` +
-          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; /usr/bin/lockf -s -t 0 "\${RIG_INSTALL_LOCK_FD:-none}"; own=$?; /usr/bin/lockf -s -t 0 "$lock" true; printf '%s %s %s %s' "\${RIG_INSTALL_LOCK_FD:-none}" "$own" "$?" "$(cat "$lock")" > "$RIG_TEST_LOCK"; fi\n` +
-          `echo "rigd $*"\n`,
-      );
-    await run([
-      "tar",
-      "-czf",
-      join(files, `${build}.tar.gz`),
-      "-C",
-      join(home, "build"),
-      build,
-    ]);
-  }
-  const sums = (
-    await run(["sh", "-c", "shasum -a 256 rig-*.tar.gz"], {}, files)
-  ).stdout;
+  const { dir, sums } = await archives(options);
+  for (const archive of await readdir(dir))
+    await copyFile(join(dir, archive), join(files, archive));
   await writeFile(
     join(files, "SHA256SUMS"),
     options.sums ? options.sums(sums) : sums,
@@ -171,10 +222,13 @@ test("install puts the release's rig and rigd in the Rig root's bin, runs rigd i
   expect(again.stdout).not.toContain("export PATH");
 });
 
-test("an Intel Mac gets the x64 build, and a shell under Rosetta on Apple Silicon the native arm64 one", async () => {
+test("an Intel Mac gets the x64 build", async () => {
   const intel = await release({ machine: "x86_64", translated: "0" });
   expect((await intel.install()).code).toBe(0);
   expect(await installedArch(intel.root)).toBe("x64");
+});
+
+test("a shell under Rosetta on Apple Silicon gets the native arm64 build", async () => {
   const rosetta = await release({ machine: "x86_64", translated: "1" });
   expect((await rosetta.install()).code).toBe(0);
   expect(await installedArch(rosetta.root)).toBe("arm64");

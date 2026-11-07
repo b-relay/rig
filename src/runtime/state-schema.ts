@@ -328,7 +328,9 @@ export const targetPlanSchema = z.object({
           .describe(
             "Seconds before the build is killed and recorded as failed.",
           ),
-        commandInputs,
+        commandInputs: commandInputs.describe(
+          "The public environment values the shared build's command was built from; an env file may not change them. Absent on a Service's or Tool's unit, whose Component's commandInputs cover it, and when the shared build used none.",
+        ),
       }),
     )
     .optional()

@@ -437,6 +437,33 @@ test("install refuses a destination that is not a regular file, before replacing
   expect(await exists(join(f.root, "bin", "rigd"))).toBe(false);
 });
 
+test("install refuses a rig or rigd that is a symbolic link, even to a regular file or to nothing, and leaves link and file alone", async () => {
+  for (const [name, target] of [
+    ["rig", "kept"],
+    ["rigd", "kept"],
+    ["rig", "missing"],
+  ] as const) {
+    const f = await release();
+    const bin = join(f.root, "bin");
+    await mkdir(bin, { recursive: true });
+    const referent = join(f.home, target);
+    if (target === "kept") await writeFile(referent, "the operator's own");
+    await symlink(referent, join(bin, name));
+    const result = await f.install();
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(
+      `${bin}/${name} is not a regular file; move it aside and run install again.`,
+    );
+    expect(await readdir(bin)).toEqual([name]);
+    expect((await lstat(join(bin, name))).isSymbolicLink()).toBe(true);
+    expect(await exists(referent)).toBe(target === "kept");
+    if (target === "kept")
+      expect(await readFile(referent, "utf8")).toBe("the operator's own");
+    expect(await exists(join(f.root, "dashboard"))).toBe(false);
+    expect(await exists(f.ran)).toBe(false);
+  }
+});
+
 test("install stages nothing through a linked bin or dashboard directory, or into one others can write, and a linked root still installs", async () => {
   for (const name of ["bin", "dashboard"]) {
     const f = await release();

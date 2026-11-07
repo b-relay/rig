@@ -3,17 +3,45 @@ import { join } from "node:path";
 import { z } from "zod";
 import { RigError } from "../domain/errors";
 
-/** Start time as ps reports it; absent in records written by an older rigd, whose pid alone cannot be verified. */
-const startedAt = z.string().min(1).optional();
+const startedAt = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    "The rigd process's start time as ps reports it, which tells it from a later process given the same pid; absent in records an older rigd wrote, whose pid alone cannot be verified.",
+  );
+/** `<RIG_ROOT>/daemon/owner.json`: the lease of the rigd that owns the Rig root. */
 export const ownerSchema = z.object({
-  pid: z.number().int().positive(),
-  instanceId: z.string().uuid(),
+  pid: z
+    .number()
+    .int()
+    .positive()
+    .describe("The process id of the rigd that wrote the record."),
+  instanceId: z
+    .string()
+    .uuid()
+    .describe(
+      "The id that rigd chose for itself at its start; health replies carry it, and rigd removes only records that name it.",
+    ),
   startedAt,
 });
+/** `<RIG_ROOT>/daemon/address.json`: where that rigd serves the control plane. */
 export const addressSchema = z.object({
-  port: z.number().int().min(1).max(65535),
-  pid: z.number().int().positive(),
-  instanceId: z.string().min(1),
+  port: z
+    .number()
+    .int()
+    .min(1)
+    .max(65535)
+    .describe("The control plane's port on 127.0.0.1."),
+  pid: z
+    .number()
+    .int()
+    .positive()
+    .describe("The process id of the rigd that wrote the record."),
+  instanceId: z
+    .string()
+    .min(1)
+    .describe("The id of the rigd serving there, as its lease records it."),
   startedAt,
 });
 

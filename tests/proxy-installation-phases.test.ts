@@ -14,6 +14,8 @@ const trace: string[] = [];
 const failing = new Map<string, Error>();
 /** The candidate binary installCaddyBinary reports while faking, or undefined to use the real modules. */
 let candidate: binaries.BinaryInstallation | undefined;
+/** The fake job: whether it ran before the install, and whether its install changes its definition. */
+const job = { running: true, definitionChanges: false };
 function step(name: string): void {
   const taken = trace.filter(
     (each) => each === name || each.startsWith(`${name} `),
@@ -54,11 +56,11 @@ mock.module("../src/providers/caddy-job", () => ({
     if (!candidate) return real.job.createCaddyJob(options);
     return {
       description: "the fake job",
-      state: async () => "running",
+      state: async () => (job.running ? "running" : "stopped"),
       matches: async () => true,
       install: async () => {
         step("job install");
-        return { changed: false };
+        return { changed: job.definitionChanges };
       },
       restart: async () => step("job restart"),
       remove: async () => {},
@@ -83,14 +85,21 @@ const { createProxyInstallation } =
 const roots: string[] = [];
 afterEach(async () => {
   candidate = undefined;
+  Object.assign(job, { running: true, definitionChanges: false });
   trace.length = 0;
   failing.clear();
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
 const TOKEN = "T".repeat(40);
-/** An installation under a temporary Rig root whose Caddy binary changes from a previous one that served. */
-async function installation() {
+/** An installation under a temporary Rig root whose Caddy binary changes from a previous one that served, unless `binary`
+ * says it is unchanged or has no previous copy. */
+async function installation(
+  binary: { changed: boolean; previous: boolean } = {
+    changed: true,
+    previous: true,
+  },
+) {
   const root = await mkdtemp(join(tmpdir(), "rig-phases-"));
   roots.push(root);
   await writeFile(
@@ -105,9 +114,11 @@ async function installation() {
     `listening\nusing ${TOKEN}\nthe new Caddy exited\n`,
   );
   candidate = {
-    changed: true,
+    changed: binary.changed,
     file: join(root, "caddy", "bin", "caddy-new"),
-    previous: join(root, "caddy", "bin", "caddy-old"),
+    ...(binary.previous
+      ? { previous: join(root, "caddy", "bin", "caddy-old") }
+      : {}),
     version: "v2.10.9",
   };
   return createProxyInstallation({
@@ -130,6 +141,98 @@ test("a complete install publishes before the job runs the new binary, restarts 
     "job restart",
     "confirm",
   ]);
+});
+
+test("a complete install restarts the job only when a changed binary would otherwise keep running the old one, and confirms only a changed binary", async () => {
+  for (const changed of [false, true])
+    for (const running of [false, true])
+      for (const definitionChanges of [false, true]) {
+        const restarts = changed && running && !definitionChanges;
+        const activation = [
+          "job install",
+          ...(restarts ? ["job restart"] : []),
+          ...(changed ? ["confirm"] : []),
+        ];
+        for (const publishedBy of ["here", "rigd"] as const) {
+          const proxy = await installation({ changed, previous: true });
+          Object.assign(job, { running, definitionChanges });
+          trace.length = 0;
+          if (publishedBy === "here") await proxy.install();
+          else
+            await proxy.installPublishedBy(async () => step("rigd publishes"));
+          expect({
+            changed,
+            running,
+            definitionChanges,
+            publishedBy,
+            trace,
+          }).toEqual({
+            changed,
+            running,
+            definitionChanges,
+            publishedBy,
+            trace: [
+              "binary",
+              ...(publishedBy === "here"
+                ? ["publish here", "close"]
+                : ["rigd publishes"]),
+              ...activation,
+            ],
+          });
+        }
+      }
+});
+
+test("a new binary with no previous copy that does not start is reverted, and its start failure passes through with no restart", async () => {
+  const proxy = await installation({ changed: true, previous: false });
+  const failure = new RigError(
+    "PROXY_START",
+    "Caddy did not answer.",
+    "Read its log.",
+  );
+  failing.set("job restart", failure);
+  const error = await proxy.install().catch((caught: unknown) => caught);
+  expect(error).toBe(failure);
+  expect(trace).toEqual([
+    "binary",
+    "publish here",
+    "close",
+    "job install",
+    "job restart",
+    "revert",
+  ]);
+});
+
+test("a revert that fails during either rollback ends the install with its own error, and nothing after it runs", async () => {
+  const revertFailure = new Error("the link could not be switched back");
+  const proxy = await installation();
+  failing.set(
+    "job restart",
+    new RigError("PROXY_START", "Caddy did not answer.", "Read its log."),
+  );
+  failing.set("revert", revertFailure);
+  expect(await proxy.install().catch((caught: unknown) => caught)).toBe(
+    revertFailure,
+  );
+  expect(trace).toEqual([
+    "binary",
+    "publish here",
+    "close",
+    "job install",
+    "job restart",
+    "revert",
+  ]);
+
+  trace.length = 0;
+  failing.clear();
+  failing.set("rigd publishes", new Error("rigd refused"));
+  failing.set("revert", revertFailure);
+  expect(
+    await proxy
+      .installPublishedBy(async () => step("rigd publishes"))
+      .catch((caught: unknown) => caught),
+  ).toBe(revertFailure);
+  expect(trace).toEqual(["binary", "rigd publishes", "revert"]);
 });
 
 test("staging stops once the routes are published: no job is defined and the new binary stays unconfirmed", async () => {

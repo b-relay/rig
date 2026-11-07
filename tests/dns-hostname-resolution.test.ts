@@ -370,3 +370,67 @@ test("a batch reports its names in order, each with its own zone, chain and wild
     },
   ]);
 });
+
+test("answered, unanswered and refused reports serialize field for field in their order", () => {
+  const sources = [{ kind: "route" as const }];
+  const results = checkHostnames({
+    hostnames: [
+      { hostname: "z.example.com", sources },
+      { hostname: "app.example.net", sources },
+      { hostname: "a.example.com", sources },
+    ],
+    zones: [com, lab],
+    records: [
+      record("a.example.com", "CNAME", "b.lab.example.com"),
+      record("*.lab.example.com", "A", MAC),
+    ],
+    address: MAC,
+  });
+  expect(results.map((result) => JSON.stringify(result))).toEqual(
+    [
+      {
+        hostname: "a.example.com",
+        sources,
+        zone: "example.com",
+        chain: ["a.example.com -> b.lab.example.com"],
+        wildcard: false,
+        answeredBy: "a.example.com",
+        addresses: [{ type: "A", content: MAC }],
+        verdict: "mac",
+        reason: "Points at this Mac.",
+      },
+      {
+        hostname: "app.example.net",
+        sources,
+        wildcard: false,
+        chain: [],
+        addresses: [],
+        verdict: "unknown",
+        reason:
+          "No zone Rig manages holds this name, so Rig cannot tell where it points.",
+      },
+      {
+        hostname: "z.example.com",
+        sources,
+        zone: "example.com",
+        chain: [],
+        wildcard: false,
+        addresses: [],
+        verdict: "missing",
+        reason: "It has no record, and no wildcard covers it.",
+        fix: {
+          op: "create",
+          zone: "example.com",
+          record: {
+            name: "z.example.com",
+            type: "A",
+            content: MAC,
+            ttl: 1,
+            proxied: false,
+            comment: POINT_COMMENT,
+          },
+        },
+      },
+    ].map((report) => JSON.stringify(report)),
+  );
+});

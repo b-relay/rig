@@ -29,6 +29,9 @@ import { elapsedNow } from "./system-clock";
 /** Signals that ask the wrapper to stop its application within its grace; the wrapper then ends by the same signal.
  * CAPTURE_KILL_SIGNAL asks it to stop the application and cut the grace to the kill wait. */
 const STOP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+/** How many times, this far apart, the wrapper reads its own identity before it gives up its start. */
+const IDENTITY_ATTEMPTS = 5;
+const IDENTITY_RETRY_MS = 100;
 /** Private rigd entrypoint that rigd's child supervisor spawns; owns signal handlers and the captured child lifetime.
  * Runs the requested application until it stops or the wrapper is asked to stop, and returns the wrapper's exit code: the
  * application's own when it stopped by itself. A wrapper asked to stop by a signal stops its application, then ends by that
@@ -129,12 +132,11 @@ async function runUntilStopped(
     received ? { exitCode, signal: received } : { exitCode };
   const inspect = dependencies.inspect ?? processInspection.identity;
   let applicationPid: number | undefined;
-  // rigd 1.1.0 refuses an observation without the wrapper's identity and time, so a rigd downgraded while this wrapper
-  // runs would take its application for unknown: both are still written, though nothing here reads them.
-  const wrapperIdentity = await processInspection
-    .identity(process.pid)
-    .catch(() => undefined);
   try {
+    // rigd 1.1.0 refuses an observation without the wrapper's identity and time, so a rigd downgraded while this wrapper
+    // runs would take its application for unknown: both are still written, though nothing here reads them, and no
+    // application starts without the identity, as under 1.1.0's wrapper.
+    const wrapperIdentity = await ownIdentity(processInspection.identity);
     const started = await supervisor.ensureRunning(request);
     applicationPid = started.pid!;
     await writeCaptureStatus(root, requestPath, {
@@ -148,7 +150,7 @@ async function runUntilStopped(
       ) =>
         writeCaptureObservation(root, requestPath, {
           wrapperPid: process.pid,
-          ...(wrapperIdentity ? { wrapperIdentity } : {}),
+          wrapperIdentity,
           observedAt: Date.now(),
           applicationIdentity,
           observation,
@@ -192,6 +194,21 @@ async function runUntilStopped(
     for (const [signal, handler] of handlers)
       process.removeListener(signal, handler);
     await supervisor.shutdown();
+  }
+}
+/** This process's birth identity, read again after a failed or empty read; PROCESS_INSPECT once IDENTITY_ATTEMPTS reads
+ * found none. */
+async function ownIdentity(identity: ProcessIdentityReader): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    const found = await identity(process.pid).catch(() => undefined);
+    if (found) return found;
+    if (attempt === IDENTITY_ATTEMPTS)
+      throw new RigError(
+        "PROCESS_INSPECT",
+        "Capture wrapper identity unavailable.",
+        "Check process inspection permissions.",
+      );
+    await new Promise((resolve) => setTimeout(resolve, IDENTITY_RETRY_MS));
   }
 }
 /** Stays installed once the wrapper's stop is over, until it exits. */

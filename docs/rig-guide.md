@@ -2059,8 +2059,9 @@ with a path, and has only such Services after it. A slow worker listed last then
 costs no `503` while it stops; a Service the site needs belongs above the last
 routed Service, or in a `depends_on`. `rig down`, `deploy --no-up` and every other
 stop withhold before their first stop, since nothing replaces what they stop.
-While a deploy or `rig restart` holds the Target, `rigd` looks at the Services
-behind the paths still live once a second: one seen stopped has its paths
+From the first stop of a deploy that starts, or of a `rig restart`, until it
+releases the Target, `rigd` looks at the Services behind the paths still live
+once a second: one seen stopped has its paths
 withheld, and the diagnostic log records `routes-withheld`; one whose state cannot
 be established keeps them until the next look. When Rig's Caddy cannot be made to
 withhold them, no Service with a path is stopped (`ROUTE_WITHHOLD`), and the

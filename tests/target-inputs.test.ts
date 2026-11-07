@@ -390,6 +390,30 @@ test("each invocation composes its own scope, lowest to highest: Project env, Se
   ]);
 });
 
+test("Project and Service environment replace the daemon's PATH and HOME for the child when no env file names them", async () => {
+  const { adapter, record, api, workspace } = await selected("", {
+    name: "app",
+    environment: { HOME: "/project/home" },
+    services: {
+      api: {
+        command: "api",
+        ports: { http: "auto" },
+        environment: { PATH: "/service/bin:/usr/bin:/bin" },
+      },
+    },
+  });
+  const result = await runCommand({
+    command: ["/bin/sh", "-c", 'printf "%s\\n%s\\n" "$HOME" "$PATH"'],
+    cwd: workspace,
+    env: await adapter.environment(record, api),
+    timeoutMs: 5000,
+  });
+  expect([result.exitCode, result.stdout]).toEqual([
+    0,
+    "/project/home\n/service/bin:/usr/bin:/bin\n",
+  ]);
+});
+
 test("role files follow the Target's role, not its display name, and a fresh file is read on the next invocation without touching the plan", async () => {
   const { adapter, record, api, root, plan } = await layered("stable");
   expect((await adapter.environment(record, api)).I).toBe("api-role");

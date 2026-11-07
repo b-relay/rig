@@ -2,12 +2,12 @@ import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { OPERATION_OUTCOMES } from "../domain/activity";
 import { CONTENT_MAX } from "../domain/dns-records";
-import { MAX_NAME_LENGTH } from "../domain/names";
+import { MAX_NAME_LENGTH, NAME_PATTERN } from "../domain/names";
 
 /** Only domain commands cross the local control plane, never arbitrary scripts. */
 /** The names rig checks before sending, so a bad flag is named instead of read as version skew. */
 export const projectName = z.string().min(1).max(MAX_NAME_LENGTH);
-export const previewName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);
+export const previewName = z.string().regex(NAME_PATTERN);
 /** A component name `rig logs --service` or `rig run` may send: the shape every Service, Tool and job name has. Like config, it sets no
  * length limit of its own; the control plane's request size bounds it. */
 export const logComponentName = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/);

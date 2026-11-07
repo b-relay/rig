@@ -25,9 +25,20 @@ import {
   type HealthcheckSettings,
 } from "./healthcheck";
 import { isTimeZone, parseCron } from "../domain/cron";
-import { MAX_NAME_LENGTH, nameSchema } from "../domain/names";
+import {
+  MAX_NAME_LENGTH,
+  NAME_CHARACTERS,
+  NAME_LENGTH,
+  NAME_PATTERN,
+} from "../domain/names";
 import { PREVIEW_SELECTOR } from "../domain/target-selector";
 const text = z.string().min(1);
+/** A Project or Preview name as config, the control plane and the editors accept it. */
+export const nameSchema = z
+  .string()
+  .min(1)
+  .max(MAX_NAME_LENGTH, NAME_LENGTH)
+  .regex(NAME_PATTERN, NAME_CHARACTERS);
 const name = nameSchema.describe(
   `Stable registered Project name, at most ${MAX_NAME_LENGTH} characters. It names the Project's operator env directory under <RIG_ROOT>/env, so no two Projects on a Host may have names that differ only in case. Change it with rig rename.`,
 );

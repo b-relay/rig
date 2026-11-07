@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { RigError } from "../domain/errors";
 import { renderLaunchdPlist } from "../domain/launchd-plist";
 import { LAUNCHCTL_NOT_FOUND } from "../domain/system-install";
+import { shellQuote } from "../domain/shell-quote";
 import type { ProxyPaths } from "../domain/managed-proxy";
 import {
   processExists,
@@ -51,8 +52,7 @@ export function caddyJobLabel(root: string): string {
  * rejection too), or does not exist. Otherwise it says why and exits without starting Caddy. `exec` hands Caddy the job's
  * own process, so launchd's signals and pid are Caddy's. */
 export function caddyCommand(paths: ProxyPaths): string[] {
-  const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
-  const token = quote(paths.token);
+  const token = shellQuote(paths.token);
   // Binary-safe, byte by byte: `tr` deletes every allowed byte, so anything left (a NUL, a newline, a high byte) is a
   // rejection; `wc -c` counts raw bytes. Then the plugin's lengths: 35 to 50 for a classic token, or a cfut_ / cfat_ prefix
   // and 32 to 256 more.
@@ -68,7 +68,7 @@ export function caddyCommand(paths: ProxyPaths): string[] {
     "    exit 78",
     "  fi",
     "fi",
-    `exec ${quote(paths.binary)} run --config ${quote(paths.entry)}`,
+    `exec ${shellQuote(paths.binary)} run --config ${shellQuote(paths.entry)}`,
   ].join("\n");
   return ["/bin/sh", "-c", script];
 }
@@ -125,6 +125,35 @@ async function observeLaunchd(
   return /^\s*state = running\s*$/m.test(result.stdout)
     ? { state: "unknown" }
     : { state: "stopped" };
+}
+/** Restarts Rig's Caddy as a launchd job, in either mode: Caddy is asked to exit and the job's KeepAlive starts it again. The
+ * restart holds once `observe` reports the job running with another pid than before and Caddy answers; it fails as cancelled
+ * when `signal` aborts first, and as a start failure at the deadline. */
+async function restartLaunchdJob(
+  job: {
+    readonly observe: () => Promise<{ state: CaddyJobState; pid?: number }>;
+    readonly admin: CaddyAdminClient;
+    readonly paths: ProxyPaths;
+    readonly deadlineMs: number;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const before = await job.observe();
+  await job.admin.stop();
+  const restarted = await until(
+    async () => {
+      const now = await job.observe();
+      return (
+        now.state === "running" &&
+        now.pid !== before.pid &&
+        (await job.admin.reachable())
+      );
+    },
+    job.deadlineMs,
+    signal,
+  );
+  if (!restarted && signal?.aborted) throw restartCancelled(job.paths);
+  if (!restarted) throw startFailure(job.paths, job.deadlineMs);
 }
 /** The plist of Rig's Caddy as a system job that runs as `userName` from boot (`daemon.start: boot`). */
 export function caddySystemPlist(options: {
@@ -184,24 +213,11 @@ export function createSystemCaddyJob(options: {
     matches,
     state: async () => (await observe()).state,
     pid: async () => (await observe()).pid,
-    async restart(signal) {
-      const before = await observe();
-      await options.admin.stop();
-      const restarted = await until(
-        async () => {
-          const now = await observe();
-          return (
-            now.state === "running" &&
-            now.pid !== before.pid &&
-            (await options.admin.reachable())
-          );
-        },
-        deadlineMs,
+    restart: (signal) =>
+      restartLaunchdJob(
+        { observe, admin: options.admin, paths: options.paths, deadlineMs },
         signal,
-      );
-      if (!restarted && signal?.aborted) throw restartCancelled(options.paths);
-      if (!restarted) throw startFailure(options.paths, deadlineMs);
-    },
+      ),
     async install() {
       if (!(await matches()) || (await observe()).state !== "running")
         throw needsSudo(
@@ -278,24 +294,11 @@ export function createLaunchAgentCaddyJob(options: {
       (await readFile(plistPath, "utf8").catch(() => undefined)) === plist,
     state: async () => (await observe()).state,
     pid: async () => (await observe()).pid,
-    async restart(signal) {
-      const before = await observe();
-      await options.admin.stop();
-      const restarted = await until(
-        async () => {
-          const now = await observe();
-          return (
-            now.state === "running" &&
-            now.pid !== before.pid &&
-            (await options.admin.reachable())
-          );
-        },
-        deadlineMs,
+    restart: (signal) =>
+      restartLaunchdJob(
+        { observe, admin: options.admin, paths: options.paths, deadlineMs },
         signal,
-      );
-      if (!restarted && signal?.aborted) throw restartCancelled(options.paths);
-      if (!restarted) throw startFailure(options.paths, deadlineMs);
-    },
+      ),
     async install() {
       const existing = await readFile(plistPath, "utf8").catch(() => undefined);
       const loaded = (await observe()).state === "running";

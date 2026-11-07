@@ -8,31 +8,85 @@ const absolutePath = text.refine(isAbsolute, {
   message: "must be an absolute path",
 });
 const envFiles = z
-  .array(z.object({ path: absolutePath, required: z.boolean() }))
-  .optional();
+  .array(
+    z.object({
+      path: absolutePath.describe("The env file's absolute path."),
+      required: z
+        .boolean()
+        .describe(
+          "true for a file rig.yaml lists in env_file, which must exist; false for an operator convention file under <RIG_ROOT>/env, read when present.",
+        ),
+    }),
+  )
+  .optional()
+  .describe(
+    "The env files an invocation loads, lowest to highest precedence; every file beats env. Only their paths are recorded, never their contents.",
+  );
 const commandInputs = z
-  .array(z.object({ name: text, source: text, value: z.string() }))
-  .optional();
+  .array(
+    z.object({
+      name: text.describe("The environment name, such as DATABASE_URL."),
+      source: text.describe(
+        "The config path that declares it, such as services.api.environment.DATABASE_URL.",
+      ),
+      value: z.string().describe("Its public value, references resolved."),
+    }),
+  )
+  .optional()
+  .describe(
+    "The public environment values the commands were built from; an env file may not change them. Absent when they were built from none.",
+  );
 const common = {
-  name: text,
-  env: z.record(z.string(), z.string()),
+  name: text.describe("The Component's name in rig.yaml."),
+  env: z
+    .record(z.string(), z.string())
+    .describe(
+      "Public environment values only, references resolved: the Project's environment, then a Service's own.",
+    ),
   envFiles,
   commandInputs,
-  dependsOn: z.array(text),
+  dependsOn: z
+    .array(text)
+    .describe(
+      "The Services it depends on (depends_on), which start before it; always empty for a Tool.",
+    ),
 };
 const component = z.discriminatedUnion("kind", [
   z.object({
     ...common,
-    kind: z.literal("managed"),
-    command: text,
+    kind: z.literal("managed").describe("A Service, which rigd runs."),
+    command: text.describe(
+      "The /bin/sh command that runs the Service, references resolved.",
+    ),
     workingDir: text
       .optional()
       .describe(
         "Directory the Service's command, build and healthcheck command run in, relative to the plan's workspace; absent means the workspace root.",
       ),
-    port: z.number().int().min(1).max(65535).optional(),
-    ports: z.record(text, z.number().int().min(1).max(65535)).optional(),
-    sitePort: z.number().int().min(1).max(65535).optional(),
+    port: z
+      .number()
+      .int()
+      .min(1)
+      .max(65535)
+      .optional()
+      .describe(
+        "The Service's first declared port, the one status reports; absent when it declares none.",
+      ),
+    ports: z
+      .record(text, z.number().int().min(1).max(65535))
+      .optional()
+      .describe(
+        "Every declared port by its name under ports; a plan recorded before named ports carries only port.",
+      ),
+    sitePort: z
+      .number()
+      .int()
+      .min(1)
+      .max(65535)
+      .optional()
+      .describe(
+        "A second port plans of older Rig versions recorded for the Service; it is still checked for a listener and kept from other Targets. Plans Rig makes now never set it.",
+      ),
     health: text
       .optional()
       .describe(
@@ -76,8 +130,16 @@ const component = z.discriminatedUnion("kind", [
       .int()
       .min(1)
       .max(MAX_STOP_TIMEOUT_SECONDS)
-      .optional(),
-    restart: z.enum(["always", "on-failure", "no"]).optional(),
+      .optional()
+      .describe(
+        "Seconds the Service may take to exit after SIGTERM before SIGKILL; absent in plans recorded before stop_timeout, which get 10.",
+      ),
+    restart: z
+      .enum(["always", "on-failure", "no"])
+      .optional()
+      .describe(
+        "When Rig starts the Service again after a known exit; absent means always.",
+      ),
     watch: z
       .array(text)
       .optional()
@@ -87,9 +149,15 @@ const component = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...common,
-    kind: z.literal("installed"),
-    entrypoint: text,
-    installName: text.optional(),
+    kind: z.literal("installed").describe("A Tool, which Rig publishes."),
+    entrypoint: text.describe(
+      "The absolute path of the Tool's executable: its bin, resolved against the workspace.",
+    ),
+    installName: text
+      .optional()
+      .describe(
+        "The name a plan of an older Rig version published the Tool under in place of its own; plans Rig makes now never set it.",
+      ),
     publishedAs: text
       .optional()
       .describe(
@@ -98,20 +166,28 @@ const component = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...common,
-    kind: z.literal("persistent"),
-    uses: z.literal("sqlite"),
-    path: text,
+    kind: z
+      .literal("persistent")
+      .describe(
+        "Storage that plans of older Rig versions recorded as a Component; Rig plans none now.",
+      ),
+    uses: z.literal("sqlite").describe("The storage kind: a SQLite database."),
+    path: text.describe("The database file."),
   }),
 ]);
 const planJob = z.object({
-  name: text,
+  name: text.describe("The job's name under jobs in rig.yaml."),
   command: text.describe("/bin/sh command the job runs, references resolved."),
   workingDir: text
     .optional()
     .describe(
       "Directory the job runs in, relative to the plan's workspace; absent means the workspace root.",
     ),
-  env: z.record(z.string(), z.string()),
+  env: z
+    .record(z.string(), z.string())
+    .describe(
+      "Public environment values only, references resolved: the Project's environment, then the job's own.",
+    ),
   envFiles,
   commandInputs,
   schedule: text.describe("Five-field cron expression, read in timeZone."),
@@ -162,24 +238,70 @@ const planJob = z.object({
     ),
 });
 export const targetPlanSchema = z.object({
-  project: text,
-  target: z.enum(["working", "stable", "preview"]),
-  workspacePath: text,
-  dataRoot: text,
-  deploymentName: text,
-  branchSlug: text,
-  subdomain: z.string(),
-  branch: text.optional(),
-  commit: text.optional(),
-  providers: z.object({ processSupervisor: text }),
-  env: z.record(z.string(), z.string()).optional(),
+  project: text.describe(
+    "The Project's name in rig.yaml when the plan was made.",
+  ),
+  target: z
+    .enum(["working", "stable", "preview"])
+    .describe("The role of the Target the plan is for."),
+  workspacePath: text.describe(
+    "The checkout the Target runs from: the Working copy for the working Target, a checkout of its Commit under the Rig root for the stable Target and a Preview.",
+  ),
+  dataRoot: text.describe(
+    "The Target's Persistent storage directory; each Service's ${services.<name>.data} is a directory in it.",
+  ),
+  deploymentName: text.describe(
+    "The Target's name, which ${rig.target} resolves to: working, stable or the Preview's name.",
+  ),
+  branchSlug: text.describe(
+    "The same as deploymentName in every plan Rig makes now; kept for older Rig versions, which read it.",
+  ),
+  subdomain: z
+    .string()
+    .describe(
+      "The same as deploymentName in every plan Rig makes now; kept for older Rig versions, which read it.",
+    ),
+  branch: text
+    .optional()
+    .describe(
+      "The Branch the checkout was materialized from; absent for the working Target.",
+    ),
+  commit: text
+    .optional()
+    .describe(
+      "The Commit the checkout was materialized from; absent for the working Target.",
+    ),
+  providers: z
+    .object({
+      processSupervisor: text.describe(
+        "What supervises the Target's processes: rigd in every plan Rig makes now. A plan recorded with launchd is read as rigd's.",
+      ),
+    })
+    .describe("The providers the plan runs with."),
+  env: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      "The Project's public environment values, references resolved, for Project-scope commands such as the shared build; absent on plans recorded before it.",
+    ),
   daemon: z
     .object({
-      enabled: z.boolean().optional(),
-      keepAlive: z.boolean().optional(),
+      enabled: z
+        .boolean()
+        .optional()
+        .describe("A setting of older Rig versions; nothing reads it now."),
+      keepAlive: z
+        .boolean()
+        .optional()
+        .describe("A setting of older Rig versions; nothing reads it now."),
     })
-    .optional(),
-  components: z.array(component),
+    .optional()
+    .describe(
+      "Settings plans of older Rig versions recorded; plans Rig makes now never set it.",
+    ),
+  components: z
+    .array(component)
+    .describe("The Target's Services and Tools, in dependency order."),
   jobs: z
     .array(planJob)
     .optional()
@@ -189,46 +311,111 @@ export const targetPlanSchema = z.object({
   builds: z
     .array(
       z.object({
-        id: text,
-        component: text.optional(),
-        command: text,
-        timeout: z.number().positive(),
-        commandInputs,
+        id: text.describe(
+          "shared, service:<name> or tool:<name>: the identity the unit's outcome is recorded under.",
+        ),
+        component: text
+          .optional()
+          .describe(
+            "The Service or Tool whose environment the command runs in; absent for the shared Project build.",
+          ),
+        command: text.describe(
+          "The /bin/sh build command, references resolved.",
+        ),
+        timeout: z
+          .number()
+          .positive()
+          .describe(
+            "Seconds before the build is killed and recorded as failed.",
+          ),
+        commandInputs: commandInputs.describe(
+          "The public environment values the shared build's command was built from; an env file may not change them. Absent on a Service's or Tool's unit, whose Component's commandInputs cover it, and when the shared build used none.",
+        ),
       }),
     )
-    .optional(),
-  preparedComponents: z.array(
-    z.discriminatedUnion("uses", [
-      z.object({ name: text, uses: z.literal("sqlite"), path: text }),
-      z.object({ name: text, uses: z.literal("convex"), stateDir: text }),
-      z.object({ name: text, uses: z.literal("postgres"), dataDir: text }),
-    ]),
-  ),
-  domain: text.optional(),
+    .optional()
+    .describe(
+      "Build units in run order: the shared build, then each Service's in dependency order, then each Tool's by name. Absent when there are none, and on plans recorded before builds were units.",
+    ),
+  preparedComponents: z
+    .array(
+      z.discriminatedUnion("uses", [
+        z.object({
+          name: text.describe("The Component's name."),
+          uses: z.literal("sqlite").describe("A SQLite database file."),
+          path: text.describe("The database file, created empty when missing."),
+        }),
+        z.object({
+          name: text.describe("The Component's name."),
+          uses: z.literal("convex").describe("A Convex state directory."),
+          stateDir: text.describe(
+            "The state directory, linked into the workspace.",
+          ),
+        }),
+        z.object({
+          name: text.describe("The Component's name."),
+          uses: z.literal("postgres").describe("A Postgres data directory."),
+          dataDir: text.describe("The data directory."),
+        }),
+      ]),
+    )
+    .describe(
+      "Storage plans of older Rig versions prepared before the first start; always empty in plans Rig makes now.",
+    ),
+  domain: text
+    .optional()
+    .describe(
+      "The Project domain resolved for this Target's role, ${rig.target} filled in; absent when the role has none, or no Service is behind /. Service domains are separate, in serviceDomains.",
+    ),
   proxy: z
     .object({
-      upstream: text,
+      upstream: text.describe("The Service behind /."),
       routes: z
         .array(
           z.object({
-            prefix: text,
-            service: text,
-            port: z.number().int().min(1).max(65535),
+            prefix: text.describe(
+              "The path prefix, matched at a slash boundary; the Service sees the path unchanged.",
+            ),
+            service: text.describe("The Service it reaches."),
+            port: z
+              .number()
+              .int()
+              .min(1)
+              .max(65535)
+              .describe("The Service's port it reaches."),
           }),
         )
-        .optional(),
+        .optional()
+        .describe(
+          "The hostname's whole route map, longest prefix first; a plan recorded before route maps has only upstream.",
+        ),
     })
-    .optional(),
+    .optional()
+    .describe(
+      "The routes of domain, which the plan sets together with domain.",
+    ),
   serviceDomains: z
     .array(
       z.object({
-        hostname: text,
-        service: text,
-        port: z.number().int().min(1).max(65535),
+        hostname: text.describe("The Service domain, ${rig.target} resolved."),
+        service: text.describe("The Service every path of it reaches."),
+        port: z
+          .number()
+          .int()
+          .min(1)
+          .max(65535)
+          .describe("The Service's port it reaches."),
       }),
     )
-    .optional(),
-  installTimeout: z.number().positive().optional(),
+    .optional()
+    .describe(
+      "The Target's Service domains, in Service order; published with domain as one route, and withdrawn with it. Absent when it serves none, as on every plan recorded before them.",
+    ),
+  installTimeout: z
+    .number()
+    .positive()
+    .optional()
+    .describe("Seconds dependency installation may take; absent means 600."),
   envFiles,
   referenceValues: z
     .record(z.string().regex(/^_RIG_[A-Za-z0-9_]+$/), z.string())
@@ -253,30 +440,45 @@ const preparation = z
         "Keyed digest of the Project-scope environment the workspace's dependency installation ran in, as it was when the preparation began; never a value.",
       ),
     writtenEnvironment,
-    units: z.record(
-      text,
-      z.object({
-        state: z
-          .enum(["started", "succeeded", "failed"])
-          .describe(
-            "started outside a running operation means the outcome is unknown.",
+    units: z
+      .record(
+        text,
+        z.object({
+          state: z
+            .enum(["started", "succeeded", "failed"])
+            .describe(
+              "started outside a running operation means the outcome is unknown.",
+            ),
+          policy: text.describe(
+            "Digest of the unit's public policy; never env-file values.",
           ),
-        policy: text.describe(
-          "Digest of the unit's public policy; never env-file values.",
-        ),
-        commit: text.optional(),
-        environment: text
-          .optional()
-          .describe(
-            "Keyed digest of the environment the unit's command ran in, as it was then; never a value.",
+          commit: text
+            .optional()
+            .describe(
+              "The Commit the workspace was materialized from; absent for the working Target.",
+            ),
+          environment: text
+            .optional()
+            .describe(
+              "Keyed digest of the environment the unit's command ran in, as it was then; never a value.",
+            ),
+          writtenEnvironment,
+          startedAt: text.describe(
+            "When the unit's command started (ISO 8601).",
           ),
-        writtenEnvironment,
-        startedAt: text,
-        finishedAt: text.optional(),
-      }),
-    ),
+          finishedAt: text
+            .optional()
+            .describe("When it ended (ISO 8601); absent while started."),
+        }),
+      )
+      .describe(
+        "Each build unit's latest outcome in the workspace, by unit id.",
+      ),
   })
-  .optional();
+  .optional()
+  .describe(
+    "What preparing the plan's workspace recorded: its dependency installation and each build unit's outcome. Absent before the first preparation.",
+  );
 const at = text.describe("When Rig recorded the outcome.");
 const hostRestart = z
   .enum(["reboot", "login"])
@@ -311,7 +513,7 @@ const services = z
           build: text
             .optional()
             .describe(
-              "Digest of the environments its checkout was prepared in, as recorded then: the dependency installation's, the shared build's and the Service's own build's. A restart never changes it, since it rebuilds nothing. Absent when they were not all recorded, and the run is then never kept.",
+              "Digest of the environments its checkout was prepared in, as recorded then: the dependency installation's, the shared build's and the Service's own build's. A deployed Target's starts reuse its Deployment's builds, so they carry the same value; an explicit start or restart of the working Target builds again, so it may change. Absent when they were not all recorded, and the run is then never kept.",
             ),
         })
         .optional()
@@ -336,9 +538,19 @@ const services = z
       outcome: z
         .discriminatedUnion("kind", [
           z.object({
-            kind: z.literal("exited"),
-            exitCode: z.number().int().optional(),
-            signal: text.optional(),
+            kind: z
+              .literal("exited")
+              .describe(
+                "The process ended, with the exit its own record or the wrapper's gives.",
+              ),
+            exitCode: z
+              .number()
+              .int()
+              .optional()
+              .describe("The exit code, when the process exited."),
+            signal: text
+              .optional()
+              .describe("The signal that ended it, when one did."),
             recordedBy: z
               .enum(["launchd", "rigd"])
               .optional()
@@ -348,12 +560,20 @@ const services = z
             at,
           }),
           z.object({
-            kind: z.enum(["activation-failed", "start-failed"]),
-            errorCode: text,
+            kind: z
+              .enum(["activation-failed", "start-failed"])
+              .describe(
+                "A start could not be verified and its process was stopped: activation-failed for an automatic attempt, which counts as a failure to retry; start-failed for an operator's own start, which is theirs to repeat.",
+              ),
+            errorCode: text.describe("The error code the start failed with."),
             at,
           }),
           z.object({
-            kind: z.literal("unknown"),
+            kind: z
+              .literal("unknown")
+              .describe(
+                "The process is gone and nothing recorded how; never treated as a clean exit, a failure or a requested stop.",
+              ),
             hostRestart: hostRestart
               .optional()
               .describe(
@@ -457,11 +677,17 @@ const services = z
 // `formerNames` and `renaming` joined without a STATE_VERSION bump: an older rigd keeps them as they are and only ignores
 // them, so it refuses a deployed Commit that names a former name, as it always did.
 const project = z.object({
-  id: text,
-  name: text,
-  repoPath: absolutePath,
-  configPath: absolutePath,
-  createdAt: text,
+  id: text.describe(
+    "The Project's stable id, kept across rename and repoint; its Targets and storage are filed under it.",
+  ),
+  name: text.describe(
+    "The Project's registered name, as rig.yaml declares it.",
+  ),
+  repoPath: absolutePath.describe(
+    "The repository directory it is registered at.",
+  ),
+  configPath: absolutePath.describe("Its rig.yaml."),
+  createdAt: text.describe("When it was registered (ISO 8601)."),
   formerNames: z
     .array(text)
     .optional()
@@ -486,18 +712,40 @@ const project = z.object({
     ),
 });
 const target = z.object({
-  id: text,
-  projectId: text,
-  name: text,
-  kind: z.enum(["working", "stable", "preview"]),
-  branch: text.optional(),
-  commit: text.optional(),
-  plan: targetPlanSchema,
-  desired: z.enum(["running", "stopped"]),
-  createdAt: text,
-  updatedAt: text,
-  logRoot: text,
-  sourceRoot: text.optional(),
+  id: text.describe(
+    "The Target's stable id, which a Preview made again under the same name does not share.",
+  ),
+  projectId: text.describe("The id of the Project it belongs to."),
+  name: text.describe("Its name: working, stable or the Preview's name."),
+  kind: z.enum(["working", "stable", "preview"]).describe("Its role."),
+  branch: text
+    .optional()
+    .describe(
+      "The Branch it was deployed from; absent for the working Target.",
+    ),
+  commit: text
+    .optional()
+    .describe("The Commit it was deployed at; absent for the working Target."),
+  plan: targetPlanSchema.describe(
+    "The runtime plan it runs: for a deployed Target the one its deploy recorded, for the working Target the one made from rig.yaml when it last started from stopped or restarted.",
+  ),
+  desired: z
+    .enum(["running", "stopped"])
+    .describe(
+      "Whether the Target is meant to run: running after up, restart or a deploy that starts it, stopped after down or a --no-up deploy.",
+    ),
+  createdAt: text.describe("When the Target was first recorded (ISO 8601)."),
+  updatedAt: text.describe(
+    "When an Operation last changed its record (ISO 8601).",
+  ),
+  logRoot: text.describe(
+    "The directory its logs are written in, under the Rig root; it stays when the Project is renamed.",
+  ),
+  sourceRoot: text
+    .optional()
+    .describe(
+      "The directory a deployed Target's checkouts are materialized in, under the Rig root; absent for the working Target.",
+    ),
   destructionPending: z
     .literal(true)
     .optional()
@@ -532,16 +780,24 @@ const target = z.object({
     ),
   recovery: z
     .object({
-      plan: targetPlanSchema,
+      plan: targetPlanSchema.describe(
+        "The previous Deployment's plan, which a rollback restores; a first deployment's own.",
+      ),
       preparation,
-      branch: text.optional(),
-      commit: text.optional(),
-      desired: z.enum(["running", "stopped"]),
+      branch: text.optional().describe("The previous Deployment's Branch."),
+      commit: text.optional().describe("The previous Deployment's Commit."),
+      desired: z
+        .enum(["running", "stopped"])
+        .describe("Whether the Target was meant to run before the deploy."),
       deploymentIncomplete: z
         .literal(true)
         .optional()
         .describe("The rollback plan has not completed a deployment."),
-      stage: z.enum(["pending", "blocked", "committing"]),
+      stage: z
+        .enum(["pending", "blocked", "committing"])
+        .describe(
+          "pending while the deploy runs, or after it was interrupted; blocked when a failed deploy's rollback could not be verified; committing once the deploy decided to keep its new Deployment. rig down settles each: it rolls a pending or blocked deploy back to plan, and completes a committing one.",
+        ),
       // Optional, so no STATE_VERSION bump (see there): an older rigd keeps it as it is, and its rig down settles without it.
       served: z
         .object({
@@ -561,7 +817,10 @@ const target = z.object({
           "What the candidate served: written before a publication gives it a path, so rig down after a crash can say that it may have served, and from when until when.",
         ),
     })
-    .optional(),
+    .optional()
+    .describe(
+      "A deploy that has not finished, or that failed or was interrupted before it settled: what it would roll back to. While it is present, only rig down, or a Preview's destroy, settles the Target.",
+    ),
 });
 const jobRun = z.object({
   id: text.describe(
@@ -575,7 +834,7 @@ const jobRun = z.object({
   scheduledFor: text
     .optional()
     .describe("The scheduled time a scheduled run is for (ISO 8601)."),
-  startedAt: text,
+  startedAt: text.describe("When the run started (ISO 8601)."),
   backup: z
     .object({
       id: text.describe("The backup's id, its run's start in UTC."),
@@ -641,7 +900,9 @@ const jobRun = z.object({
     .describe(
       "Seconds the run may take to exit after SIGTERM, as its plan said when it started.",
     ),
-  finishedAt: text.optional(),
+  finishedAt: text
+    .optional()
+    .describe("When the run ended (ISO 8601); absent while it runs."),
   outcome: z
     .enum([
       "succeeded",
@@ -653,10 +914,16 @@ const jobRun = z.object({
     ])
     .optional()
     .describe(
-      "How the run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a restart or a deploy), gone with nothing recording how, or never started.",
+      "How the run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a Preview destroy or its Target turned off; a deploy or restart never stops a run), gone with nothing recording how, or never started.",
     ),
-  exitCode: z.number().int().optional(),
-  signal: text.optional(),
+  exitCode: z
+    .number()
+    .int()
+    .optional()
+    .describe("Its process's exit code, when it exited."),
+  signal: text
+    .optional()
+    .describe("The signal that ended its process, when one did."),
   errorCode: text
     .optional()
     .describe("Why a start failed, as the error code Rig reported."),
@@ -712,25 +979,42 @@ const jobRecord = z.object({
     ),
 });
 const operation = z.object({
-  id: text,
-  projectId: text.optional(),
-  project: text.optional(),
-  target: text.optional(),
+  id: text.describe(
+    "The Operation's id, or a job run's id for the record of a run.",
+  ),
+  projectId: text
+    .optional()
+    .describe(
+      "The id of the Project it is about; absent when it is about none.",
+    ),
+  project: text
+    .optional()
+    .describe("That Project's name when it was recorded."),
+  target: text
+    .optional()
+    .describe("The Target's name; absent for a Project or Host record."),
   component: z
-    .object({ kind: z.enum(["service", "job"]), name: text })
+    .object({
+      kind: z
+        .enum(["service", "job"])
+        .describe("Whether it is a Service or a job."),
+      name: text.describe("Its name in rig.yaml."),
+    })
     .optional()
     .describe(
       "The Service or Job the record is about, by its name in rig.yaml; absent for a whole Target or Project.",
     ),
-  action: text,
+  action: text.describe(
+    "What the record is about: the command's action, such as deploy, or what rigd did itself, such as crash or job.",
+  ),
   // `forgotten`, and `updated` (an operator env file changed from the dashboard), joined this list without a STATE_VERSION
   // bump (see there). A rigd from before either refuses the state as
   // STATE_CORRUPT once such an entry is recorded, until rigd is upgraded again or the entry is deleted by hand.
   outcome: z
     .enum(OPERATION_OUTCOMES)
     .describe("How the Operation ended, as rig activity shows it."),
-  occurredAt: text,
-  message: z.string().optional(),
+  occurredAt: text.describe("When it ended (ISO 8601)."),
+  message: z.string().optional().describe("What happened, or why it failed."),
 });
 /** The state file format this rigd writes. Bump it whenever a record gains or changes a field so that an older rigd
  * refuses the file instead of silently dropping what it does not know. Two kinds of change are not bumped.
@@ -802,10 +1086,20 @@ const deployment = z.object({
 });
 export const runtimeStateSchema = z
   .object({
-    version: z.literal(STATE_VERSION),
-    projects: z.array(project),
-    targets: z.array(target),
-    activity: z.array(operation),
+    version: z
+      .literal(STATE_VERSION)
+      .describe(
+        "The state file format. A file of an older version this rigd reads is migrated as it is read; any other is refused unread.",
+      ),
+    projects: z.array(project).describe("Every registered Project."),
+    targets: z
+      .array(target)
+      .describe("Every recorded Target of every Project, running or stopped."),
+    activity: z
+      .array(operation)
+      .describe(
+        "The Activity log: final Operations and what rigd did on its own, oldest first, the newest 1000 kept.",
+      ),
     // A new optional top-level key, so no STATE_VERSION bump (see there): an older rigd keeps it as it is.
     deployments: z
       .array(deployment)

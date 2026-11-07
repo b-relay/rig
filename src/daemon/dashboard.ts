@@ -239,8 +239,13 @@ export function dashboardCheck(
 const recordPath = (root: string) => join(root, "dashboard", "process.json");
 /** The record of a running dashboard: its pid and the start time ps reported, which together name that one process. */
 const recordSchema = z.object({
-  pid: z.number().int().positive(),
-  startedAt: z.string().min(1),
+  pid: z.number().int().positive().describe("The dashboard process's id."),
+  startedAt: z
+    .string()
+    .min(1)
+    .describe(
+      "Its start time as ps reports it, which tells it from a later process given the same pid.",
+    ),
 });
 
 /** The dashboard an earlier rigd recorded and left running (one that was killed), or undefined, with its record removed,

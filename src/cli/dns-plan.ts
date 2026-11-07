@@ -24,26 +24,66 @@ import { terminalText } from "./terminal-text";
 
 /** The part of the `dns` reply a change is planned from; anything else in it is ignored. */
 const reportSchema = z.object({
-  zones: z.array(z.object({ id: z.string(), name: z.string() })),
-  records: z.array(
-    z.object({
-      id: z.string(),
-      zone: z.string(),
-      name: z.string(),
-      type: z.string(),
-      content: z.string(),
-      ttl: z.number(),
-      proxied: z.boolean().optional(),
-      priority: z.number().optional(),
-      comment: z.string().optional(),
-      modifiedOn: z.string(),
-    }),
-  ),
+  zones: z
+    .array(
+      z.object({
+        id: z.string().describe("The provider's id for the zone."),
+        name: z
+          .string()
+          .describe("The zone's apex name, lowercase, such as example.com."),
+      }),
+    )
+    .describe("The zones the reply reports."),
+  records: z
+    .array(
+      z.object({
+        id: z
+          .string()
+          .describe("The provider's id for the record, which a change names."),
+        zone: z.string().describe("The name of the zone it belongs to."),
+        name: z
+          .string()
+          .describe(
+            "Fully qualified, lowercase, without a trailing dot; a wildcard starts with *.",
+          ),
+        type: z
+          .string()
+          .describe("A, AAAA, CNAME, TXT, MX, CAA or another type."),
+        content: z.string().describe("The record's value, by type."),
+        ttl: z
+          .number()
+          .describe("Seconds; 1 means the provider's automatic TTL."),
+        proxied: z
+          .boolean()
+          .optional()
+          .describe(
+            "Answered by the provider's proxy edge rather than with content.",
+          ),
+        priority: z.number().optional().describe("MX preference."),
+        comment: z
+          .string()
+          .optional()
+          .describe("The note kept with the record."),
+        modifiedOn: z
+          .string()
+          .describe(
+            "When the provider last changed it; a change sends it back, so rigd refuses the change once it differs.",
+          ),
+      }),
+    )
+    .describe("Every record of those zones, as rigd read them just now."),
   unreadableZones: z
     .array(
-      z.object({ zone: z.string(), code: z.string(), message: z.string() }),
+      z.object({
+        zone: z.string().describe("The zone's name."),
+        code: z.string().describe("The error code its read failed with."),
+        message: z.string().describe("Why its read failed."),
+      }),
     )
-    .optional(),
+    .optional()
+    .describe(
+      "Zones whose records could not be read; a change to a name in one fails with why, rather than falling to a parent zone.",
+    ),
 });
 type Report = z.infer<typeof reportSchema>;
 interface ChangeOptions {

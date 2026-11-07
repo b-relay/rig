@@ -10,6 +10,8 @@ import { Confirm } from "../web/components/confirm";
 import { ProjectMonitor } from "../web/components/project-monitor";
 import { projectMonitor } from "../web/server/monitor";
 import { JobCards } from "../web/components/job-cards";
+import { DeploymentList } from "../web/components/deployment-list";
+import { when } from "../web/lib/present";
 import SettingsPage from "../web/app/projects/[name]/(sections)/settings/page";
 import DeploymentsPage from "../web/app/projects/[name]/(sections)/deployments/page";
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
@@ -795,6 +797,40 @@ test("a failed status leaves Settings unable to say what is allowed: it shows th
   expect(open.text).not.toContain(TIMEOUT.message);
   for (const word of ["Rename", "Repoint", "Forget Project"])
     expect(open.disabled[word]).toBe(false);
+});
+
+test("the deploy history says when a new Commit began to serve, and that a failed one was stopped after it had", () => {
+  const servedAt = "2026-11-05T08:00:00.000Z";
+  const row = (id: string, outcome: "deployed" | "failed", served?: true) => ({
+    id,
+    project: "demo",
+    target: "stable",
+    kind: "stable" as const,
+    branch: "main",
+    commit: `${id}aaaaaa`,
+    outcome,
+    ...(served ? { servedAt } : {}),
+    startedAt: servedAt,
+    finishedAt: servedAt,
+    durationMs: 0,
+    current: false,
+    rollback: false,
+  });
+  const text = readable(
+    inRouter(
+      <DeploymentList
+        project="demo"
+        now={Date.parse(servedAt)}
+        rows={[
+          row("c3", "failed", true),
+          row("c2", "failed"),
+          row("c1", "deployed", true),
+        ]}
+      />,
+    ),
+  );
+  expect(says(text, `served from ${when(servedAt)}, then stopped`)).toBe(1);
+  expect(says(text, `served from ${when(servedAt)}`)).toBe(2);
 });
 
 test("a failed status on the Deployments page says why no rollback is offered, and keeps the history", async () => {

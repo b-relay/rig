@@ -991,6 +991,19 @@ checkpoint, after which a deploy of the same Commit is `unchanged` again. After
 a build failure `rig up` is refused as `PREPARATION_INCOMPLETE`; redeploying
 the same Commit builds it again in a fresh Deployment.
 
+A deploy that fails after the new Commit's paths were published, so that it
+answered requests before the deploy stopped it, says so. The error and the
+deploy's Activity entry add when it began to serve and for how long, for example
+`The new Commit 470a510 was served from 2026-11-05T15:25:08.000Z for 2m14s.`,
+counted until its last path was withheld, before the previous Deployment
+started again. The deploy history records `servedAt`, when the new Commit began
+to serve, for a successful deploy too, and the dashboard's history page shows
+it. A deploy whose publication reached only Services it kept running serves no
+new code, and records none. When rigd stops during such a deploy, the `rig down`
+that settles it records the deploy in the history and Activity: served for at
+most as long as until its own withhold, or, when the publication was never
+confirmed, that the new Commit may have been served.
+
 Every port recorded by any Target in any Project is reserved while that record
 exists, whether the Target is running or stopped. A Target whose deployment
 transition is unresolved also keeps the ports of the plan that `rig down` may

@@ -81,8 +81,20 @@ export interface RouteGuard {
   exclusive<T>(change: () => Promise<T>): Promise<T>;
   /** The route of the Target it watches is now published under the plan of `target`. Call it from inside `exclusive`. */
   publishedUnder(target: TargetRecord): void;
+  /** Follows a start of `target` until release. Once it says what it published to the Services it started, the first
+   * withholding that leaves none of those paths live, a look's or one of the Operation's own (`withheld`), calls
+   * `withdrawn`, whose failure changes nothing. */
+  start(target: TargetRecord, withdrawn: () => Promise<void>): GuardedStart;
+  /** A route change of the Operation's withheld the paths of `target`'s route that reach `ports` (every path, without
+   * them), confirmed in the proxy. Call it from inside `exclusive`. Never rejects. */
+  withheld(target: TargetRecord, ports?: ReadonlySet<number>): Promise<void>;
   /** Ends looking and waits for the look in flight, so nothing is left running once the Target is released. Never rejects. */
   release(): Promise<void>;
+}
+/** A start the guard follows (`RouteGuard.start`). */
+export interface GuardedStart {
+  /** The proxy confirmed paths to `ports`, which reach Services this start started. */
+  published(ports: ReadonlySet<number>): void;
 }
 
 /** A guard that does nothing until `watch`. `deps.lifecycle` must not be under this guard (`StopControl.guard`): a look's own
@@ -101,6 +113,23 @@ export function createRouteGuard(
     | undefined;
   /** What the last refused withholding said, so the next look's identical refusal says nothing new. */
   let refused: string | undefined;
+  /** The starts followed, each with the ports of its own Services still live. */
+  const starts: {
+    readonly targetId: string;
+    readonly serving: Set<number>;
+    readonly withdrawn: () => Promise<void>;
+  }[] = [];
+  const withheld = async (
+    target: TargetRecord,
+    ports?: ReadonlySet<number>,
+  ) => {
+    for (const start of starts) {
+      if (start.targetId !== target.id || !start.serving.size) continue;
+      for (const port of ports ?? [...start.serving])
+        start.serving.delete(port);
+      if (!start.serving.size) await start.withdrawn().catch(() => {});
+    }
+  };
 
   const tell = async (
     target: TargetRecord,
@@ -129,6 +158,7 @@ export function createRouteGuard(
       // the section waits for it before its change.
       if (!seen.ports.size) return;
       await deps.lifecycle.withholdPorts(target, seen.ports);
+      await withheld(target, seen.ports);
       refused = undefined;
       await tell(target, {
         outcome: "routes-withheld",
@@ -187,6 +217,20 @@ export function createRouteGuard(
     publishedUnder(target) {
       if (watched?.id === target.id) watched = target;
     },
+    start(target, withdrawn) {
+      const start = {
+        targetId: target.id,
+        serving: new Set<number>(),
+        withdrawn,
+      };
+      starts.push(start);
+      return {
+        published(ports) {
+          for (const port of ports) start.serving.add(port);
+        },
+      };
+    },
+    withheld,
     async release() {
       released = true;
       await quiet();

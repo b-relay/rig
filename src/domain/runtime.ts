@@ -181,7 +181,17 @@ export interface TargetRecord {
     stage: "pending" | "blocked" | "committing";
     /** Operation that opened the transition; live only inside the daemon that ran it. */
     operationId?: string;
+    /** What the candidate served (ADR 0020): written before a publication gives a path to a Service its start started, so
+     * `rig down` after a crash still says that it may have served. */
+    served?: Served;
   };
+}
+/** When a deploy's candidate served (ADR 0020). Present: a publication may have given it a path. */
+export interface Served {
+  /** When the router confirmed that publication (ISO 8601). */
+  from?: string;
+  /** When a confirmed route change removed the last path reaching a Service its start started (ISO 8601); the first stands. */
+  until?: string;
 }
 
 export interface OperationRecord {
@@ -226,6 +236,9 @@ export interface DeploymentRecord {
   kept?: string[];
   startedAt: string;
   finishedAt: string;
+  /** When the new Commit began to answer requests: when the router confirmed a path to a Service the deploy started (ADR
+   * 0020). Absent when it never did. A failed deploy may have one: it served, then was rolled back. */
+  servedAt?: string;
   /** The failure's error code; never a value from the environment. */
   message?: string;
 }

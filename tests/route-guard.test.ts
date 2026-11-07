@@ -446,6 +446,10 @@ function recordingGuard() {
     publishedUnder() {
       published.push(depth ? "published inside" : "published outside");
     },
+    start: () => ({ published() {} }),
+    async withheld() {
+      published.push(depth ? "withheld inside" : "withheld outside");
+    },
     async release() {},
   };
   const published: string[] = [];
@@ -562,5 +566,7 @@ test("a lifecycle under a guard runs every route change and journal write inside
     "route",
   ])
     expect(ran).toContain(`${change} inside`);
-  expect(new Set(published)).toEqual(new Set(["published inside"]));
+  expect(new Set(published)).toEqual(
+    new Set(["published inside", "withheld inside"]),
+  );
 });

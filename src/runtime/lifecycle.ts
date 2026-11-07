@@ -172,6 +172,14 @@ export interface BuildJournal {
 export interface ActivationJournal {
   starting(service: string, evidence?: StartEvidence): Promise<string>;
   activated(service: string, incarnation: string): Promise<void>;
+  /** Told before a route change gives a path to a Service this start started (ADR 0020): from here it may serve. When it
+   * rejects, nothing is published and the start fails. */
+  publishing?(): Promise<void>;
+  /** Told once the proxy confirmed that publication. Never rejects. */
+  published?(): Promise<void>;
+  /** Told once a confirmed route change removed the last path reaching a Service this start started, whichever change of
+   * the Operation's it was; told only under a route guard. Never rejects. */
+  withdrawn?(): Promise<void>;
 }
 /** What the lifecycle knows about a start before it spawns the process, for the journal to record with it. */
 export interface StartEvidence {
@@ -509,9 +517,13 @@ function guardedEffects(
       guard.exclusive(async () => {
         await effects.route(target, change);
         guard.publishedUnder(target);
+        if ("withhold" in change) await guard.withheld(target, change.withhold);
       }),
     withhold: (target, ports) =>
-      guard.exclusive(() => effects.withhold(target, ports)),
+      guard.exclusive(async () => {
+        await effects.withhold(target, ports);
+        await guard.withheld(target, ports);
+      }),
     removeRoute: (target) => guard.exclusive(() => effects.removeRoute(target)),
   };
 }
@@ -714,6 +726,11 @@ export function createTargetLifecycle(
         providedCheckpoint ?? (await effects.checkpoint(target));
       const started: string[] = [];
       let installed = false;
+      // Whichever change of the Operation's takes this start's last path away ends what it served.
+      const following = stops?.guard?.start(
+        target,
+        async () => await journal?.withdrawn?.(),
+      );
       try {
         await effects.prepare(target);
         const observations = await observeManaged(target, supervisor);
@@ -793,8 +810,18 @@ export function createTargetLifecycle(
             verified.add(port);
         // Those checks took time too: right before publication, every Service of the start is still the process it verified.
         await assertStillActive(activated, target);
-        // A path an earlier failed start left withheld is released only by its own Service passing the gate.
+        // A path an earlier failed start left withheld is released only by its own Service passing the gate. What this start
+        // started serves from here: recorded first, so a rigd that dies meanwhile still says it may have.
+        const serving = routedPorts(
+          target,
+          started.map((key) => componentOf(target, key).name),
+        );
+        if (serving.size) await journal?.publishing?.();
         await effects.route(target, { verified });
+        if (serving.size) {
+          following?.published(serving);
+          await journal?.published?.();
+        }
         if (!providedCheckpoint) await checkpoint.commit();
         return {
           outcome: started.length || installed ? "started" : "unchanged",

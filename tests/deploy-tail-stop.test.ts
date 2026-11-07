@@ -102,8 +102,8 @@ test("destroying a Preview withholds before its first stop, and nothing looks", 
 test("the rollback of a candidate that was published withholds before it stops the candidate's tail", async () => {
   const f = await fixture();
   await f.deployedThenChanged(["web", "search"]);
-  f.failNextWrite.afterPublish = true;
-  await expect(f.deploy("c2")).rejects.toThrow("the disk is full");
+  f.failCommit();
+  await expect(f.deploy("c2")).rejects.toThrow("was served from");
   // The previous plan's stop kept the tail first; the candidate's clean-up did not.
   expect(f.stops).toEqual(["search", "web", "search", "web"]);
   expect(f.pathsAtStop.get("search")).toEqual({ "/": "503", "/api": API });
@@ -197,8 +197,7 @@ test("once the new plan is published the guard reads a path by it: a Service tha
   f.listening.web = [MOVED];
   f.reset();
   const write = gate();
-  f.failNextWrite.afterPublish = true;
-  f.failNextWrite.hold = write;
+  f.failCommit({ hold: write });
   const deploying = f.deploy("c2");
   await write.reached;
   expect(await f.paths()).toEqual({ "/": MOVED, "/api": API });
@@ -402,14 +401,14 @@ test("the guard's withhold is journalled as the transaction's own: the rollback 
   const f = await fixture();
   await f.deployedThenChanged(["web", "search"]);
   const start = f.holdStart("web");
-  f.failNextWrite.afterPublish = true;
+  f.failCommit();
   const deploying = f.deploy("c2");
   await start.reached;
   await f.exit("api");
   await f.look();
   expect(await f.paths()).toEqual(NONE);
   start.open();
-  await expect(deploying).rejects.toThrow("the disk is full");
+  await expect(deploying).rejects.toThrow("was served from");
   // Not DEPLOY_ROLLBACK_BLOCKED: the previous plan is back, api started again by its own start.
   expect((await f.stable()).commit).toBe("c1");
   expect((await f.stable()).recovery).toBeUndefined();

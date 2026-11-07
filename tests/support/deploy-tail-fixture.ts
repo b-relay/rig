@@ -11,7 +11,7 @@ import type {
   Supervisor,
 } from "../../src/providers/contracts";
 import { stopDetached } from "../../src/domain/stop-budget";
-import type { TargetRecord } from "../../src/domain/runtime";
+import type { RuntimeState, TargetRecord } from "../../src/domain/runtime";
 import type { RuntimeDependencies } from "../../src/runtime/contracts";
 import { ROUTE_LOOK_INTERVAL_MS } from "../../src/runtime/route-guard";
 import { runtimeWorld } from "./runtime-world";
@@ -235,12 +235,27 @@ export async function fixture(config: ProjectConfig = melody()) {
       inEffect--;
     }
   };
-  /** The write that decides a commit, once the candidate is published: failed, or held until the gate opens. */
-  const failNextWrite: {
-    armed?: boolean;
-    afterPublish?: boolean;
+  /** The next write whose result `matches`, told apart by what it writes: failed, or held before it enters the store's
+   * queue until the gate opens, so other writes go on meanwhile, then made unless it `fails`. */
+  const failing: {
+    matches?: (state: RuntimeState) => boolean;
     hold?: ReturnType<typeof gate>;
+    fails?: boolean;
   } = {};
+  const failWrite = (
+    matches: (state: RuntimeState) => boolean,
+    options: { hold?: ReturnType<typeof gate>; fails?: boolean } = {},
+  ) => {
+    failing.matches = matches;
+    failing.fails = options.fails ?? !options.hold;
+    if (options.hold) failing.hold = options.hold;
+    else delete failing.hold;
+  };
+  /** Start checks held until released, by Service; a held one ignores its cancellation, as an uncooperative provider. */
+  const heldHealth = new Map<
+    string,
+    ReturnType<typeof gate> & { signal?: AbortSignal }
+  >();
   const git = { head: "c1" };
   const world = await runtimeWorld({
     name: "tail-stop",
@@ -292,12 +307,17 @@ export async function fixture(config: ProjectConfig = melody()) {
           return effects.observations.process(target, component, signal);
         },
       },
+      async health(component, target, signal) {
+        const held = heldHealth.get(component.name);
+        if (!held) return effects.health(component, target, signal);
+        heldHealth.delete(component.name);
+        held.signal = signal;
+        held.reach();
+        await held.opened;
+        return { ready: true };
+      },
       route: (target, change) =>
-        exclusiveEffect("route", async () => {
-          await effects.route(target, change);
-          if ("verified" in change && failNextWrite.afterPublish)
-            failNextWrite.armed = true;
-        }),
+        exclusiveEffect("route", () => effects.route(target, change)),
       withhold: (target, ports) =>
         exclusiveEffect("withhold", () => effects.withhold(target, ports)),
       restoreEffects: (target) =>
@@ -341,20 +361,30 @@ export async function fixture(config: ProjectConfig = melody()) {
             ...(errorCode !== undefined ? { errorCode } : {}),
           });
       },
-      // The write that decides a commit fails when asked to: the published candidate is rolled back.
+      // A write fails or waits when the test says: the write that decides a commit, say, so the candidate is rolled back.
       store: new Proxy(store, {
         get(real, property) {
           if (property === "update")
-            return (change: Parameters<typeof real.update>[0]) => {
-              if (failNextWrite.armed) {
-                failNextWrite.armed = failNextWrite.afterPublish = false;
-                const hold = failNextWrite.hold;
-                if (!hold) return Promise.reject(new Error("the disk is full"));
-                delete failNextWrite.hold;
-                hold.reach();
-                return hold.opened.then(() => real.update(change));
+            return async (change: Parameters<typeof real.update>[0]) => {
+              const matches = failing.matches;
+              if (!matches) return await real.update(change);
+              const matched = new Error("the write the test waits for");
+              try {
+                return await real.update(async (state) => {
+                  await change(state);
+                  if (matches(state)) throw matched;
+                });
+              } catch (error) {
+                if (error !== matched) throw error;
               }
-              return real.update(change);
+              const { hold, fails } = failing;
+              delete failing.matches;
+              if (hold) {
+                hold.reach();
+                await hold.opened;
+              }
+              if (fails) throw new Error("the disk is full");
+              return await real.update(change);
             };
           const value = Reflect.get(real, property);
           return typeof value === "function" ? value.bind(real) : value;
@@ -432,7 +462,31 @@ export async function fixture(config: ProjectConfig = melody()) {
     look,
     proxy,
     listening,
-    failNextWrite,
+    failWrite,
+    /** The write that decides a deploy's commit (`recovery.stage` = `committing`): see `failWrite`. */
+    failCommit: (options?: Parameters<typeof failWrite>[1]) =>
+      failWrite(
+        (state) =>
+          state.targets.some((t) => t.recovery?.stage === "committing"),
+        options,
+      ),
+    /** Stops of `service` from now on run at once; one already held stays held. */
+    releaseStop(service: string) {
+      heldStops.delete(service);
+    },
+    /** Starts of `service` from now on run at once; one already held stays held. */
+    releaseStart(service: string) {
+      heldStarts.delete(service);
+    },
+    clock: world.clock,
+    root: world.root,
+    store: world.store,
+    /** The next start check of `service` waits until the test releases it, ignoring its cancellation. */
+    holdHealth(service: string) {
+      const held: ReturnType<typeof gate> & { signal?: AbortSignal } = gate();
+      heldHealth.set(service, held);
+      return held;
+    },
     pathsAtStop,
     deploy,
     reset,

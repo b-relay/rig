@@ -122,9 +122,11 @@ export async function rigFixture(
     ]);
     return await git(["rev-parse", "HEAD"]);
   };
+  let removed = false;
   /** Stops what the root records and removes it. When any of that cannot be confirmed, the root is kept, for what it
-   * records, and the cleanup fails saying why. */
+   * records, and the cleanup fails saying why. Once the root is removed, a further cleanup has nothing to do. */
   const cleanup = async () => {
+    if (removed) return;
     const problems: string[] = [];
     const succeeded = async (
       args: string[],
@@ -180,6 +182,7 @@ export async function rigFixture(
         `The fixture could not confirm its cleanup, so its root is kept at ${base}:\n${problems.join("\n")}`,
       );
     await rm(base, { recursive: true, force: true });
+    removed = true;
   };
   return {
     base,

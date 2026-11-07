@@ -22,7 +22,7 @@ import {
   dashboardServing,
   servedDashboard,
   pendingDashboard,
-  openDashboard,
+  openDashboard as openRigdDashboard,
   stopLeftOverDashboard,
   type DashboardDependencies,
 } from "../src/daemon/dashboard";
@@ -44,10 +44,28 @@ import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
 
 const roots: string[] = [];
+/** Stops what a test started, after it whether its assertions passed or not, before its root is removed. */
+const stops: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
+  for (const stop of stops.splice(0)) await stop();
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
+/** rigd's openDashboard, with the dashboard it opens stopped after the test. */
+async function openDashboard(deps: DashboardDependencies) {
+  const dashboard = await openRigdDashboard(deps);
+  if (dashboard) stops.push(() => dashboard.stop());
+  return dashboard;
+}
+/** A process a test runs beside rigd's, killed after the test. */
+function spawn(...args: Parameters<typeof Bun.spawn>) {
+  const child = Bun.spawn(...args);
+  stops.push(async () => {
+    child.kill();
+    await child.exited;
+  });
+  return child;
+}
 
 /** A port nothing listens on now. */
 function freePort(): number {
@@ -187,9 +205,9 @@ test("rigd serves the installed dashboard on 127.0.0.1 at its port, records its 
 });
 
 test("a dashboard that exits is started again after a back-off that doubles while it keeps exiting, and doctor hears of it", async () => {
-  // Exits with code 3 twice, then serves.
+  // Exits with code 3 twice, then serves. It counts its runs beside itself, inside the test's root.
   const f = await installed(`
-const counter = ${JSON.stringify(join(tmpdir(), `rig-dashboard-runs-${process.pid}-${Date.now()}`))};
+const counter = require("node:path").join(__dirname, "runs");
 const fs = require("node:fs");
 const runs = fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0;
 fs.writeFileSync(counter, String(runs + 1));
@@ -214,7 +232,7 @@ ${SERVER}`);
 test("a dashboard an earlier rigd left running is stopped before this one starts, so the port is free", async () => {
   const f = await installed(SERVER);
   // What a rigd that was killed leaves: its dashboard serving, and the record of it.
-  const left = Bun.spawn([process.execPath, "server.js"], {
+  const left = spawn([process.execPath, "server.js"], {
     cwd: join(f.directory, "web"),
     env: { ...process.env, PORT: String(f.deps.port), HOSTNAME: "127.0.0.1" },
     stdout: "ignore",
@@ -241,7 +259,7 @@ test("a dashboard an earlier rigd left running is stopped before this one starts
 
 test("a recorded process that is not the one recorded (its pid reused) is left alone", async () => {
   const f = await installed(SERVER);
-  const other = Bun.spawn(["/bin/sleep", "30"]);
+  const other = spawn(["/bin/sleep", "30"]);
   await writeFile(
     join(f.root, "dashboard", "process.json"),
     JSON.stringify({ pid: other.pid, startedAt: "Mon Jan  1 00:00:00 2001" }),
@@ -286,7 +304,7 @@ test("rigd's health reply names where it serves the dashboard and why it is not 
 
 test("a left-over dashboard is stopped even when this rigd serves none, and a record that is not one is cleared without stopping anything", async () => {
   const f = await installed(SERVER);
-  const left = Bun.spawn([process.execPath, "server.js"], {
+  const left = spawn([process.execPath, "server.js"], {
     cwd: join(f.directory, "web"),
     env: { ...process.env, PORT: String(f.deps.port), HOSTNAME: "127.0.0.1" },
     stdout: "ignore",

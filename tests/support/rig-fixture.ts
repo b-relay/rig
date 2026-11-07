@@ -1,12 +1,18 @@
 import { mkdtemp, mkdir, readFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-/** Targets come from the root's own record, so generated Previews are found as well as the working and stable Targets. */
+/** Targets come from the root's own record, so generated Previews are found as well as the working and stable Targets. A
+ * root with no record has none; a record that cannot be read is a string saying why. */
 async function recordedTargets(root: string) {
+  let text: string;
   try {
-    const state = JSON.parse(
-      await readFile(join(root, "runtime", "state.json"), "utf8"),
-    ) as {
+    text = await readFile(join(root, "runtime", "state.json"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    return `its Targets could not be read (${error}), so none was stopped`;
+  }
+  try {
+    const state = JSON.parse(text) as {
       projects: { id: string; name: string }[];
       targets: { projectId: string; name: string; kind: string }[];
     };
@@ -19,8 +25,8 @@ async function recordedTargets(root: string) {
           ?.name ?? "",
       ],
     }));
-  } catch {
-    return [];
+  } catch (error) {
+    return `its Targets could not be read (${error}), so none was stopped`;
   }
 }
 /** When the process `pid` started and what it runs, while it is alive and a rigd: a later process of that pid differs. */
@@ -116,28 +122,64 @@ export async function rigFixture(
     ]);
     return await git(["rev-parse", "HEAD"]);
   };
+  /** Stops what the root records and removes it. When any of that cannot be confirmed, the root is kept, for what it
+   * records, and the cleanup fails saying why. */
   const cleanup = async () => {
-    // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped by its role or Preview name.
-    for (const target of await recordedTargets(root))
-      await rig(
-        target.kind === "preview"
-          ? ["down", "preview", "--deployment", target.name, ...target.project]
-          : ["down", target.kind, ...target.project],
-        base,
-      ).catch(() => {});
+    const problems: string[] = [];
+    const succeeded = async (
+      args: string[],
+      ran: Promise<{ code: number; stderr: string }>,
+    ) => {
+      const result = await ran.catch((error: unknown) => ({
+        code: -1,
+        stderr: String(error),
+      }));
+      if (result.code !== 0)
+        problems.push(
+          `${args.join(" ")} exited with ${result.code}: ${result.stderr.trim()}`,
+        );
+      return result.code === 0;
+    };
+    // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped by its role or Preview name,
+    // through the rigd that serves the root. A test that already stopped its rigd has nothing left that rig down could ask.
     const daemon = await recordedDaemon(root);
-    const uninstall = await rigd(["uninstall"]).catch(() => undefined);
-    // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up.
-    const left =
-      daemon !== undefined && !(await daemonExited(daemon))
-        ? daemon
-        : undefined;
-    if (left !== undefined) process.kill(left.pid, "SIGKILL");
-    await rm(base, { recursive: true, force: true });
-    if (left !== undefined)
+    const targets = daemon === undefined ? [] : await recordedTargets(root);
+    if (typeof targets === "string") problems.push(targets);
+    else
+      for (const target of targets) {
+        const args =
+          target.kind === "preview"
+            ? [
+                "down",
+                "preview",
+                "--deployment",
+                target.name,
+                ...target.project,
+              ]
+            : ["down", target.kind, ...target.project];
+        await succeeded(["rig", ...args], rig(args, base));
+      }
+    const uninstalled = await succeeded(
+      ["rigd", "uninstall"],
+      rigd(["uninstall"]),
+    );
+    // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up. One rigd
+    // uninstall could not stop is asked to stop here; one that will not is killed.
+    if (daemon !== undefined) {
+      if (!uninstalled && daemonIdentity(daemon.pid) === daemon.identity)
+        process.kill(daemon.pid, "SIGTERM");
+      if (!(await daemonExited(daemon))) {
+        process.kill(daemon.pid, "SIGKILL");
+        problems.push(
+          `rigd ${daemon.pid} did not stop, and was killed${(await daemonExited(daemon)) ? "" : ", but is still running"}`,
+        );
+      }
+    }
+    if (problems.length > 0)
       throw new Error(
-        `rigd ${left.pid} outlived its fixture: rigd uninstall said ${uninstall?.stderr}`,
+        `The fixture could not confirm its cleanup, so its root is kept at ${base}:\n${problems.join("\n")}`,
       );
+    await rm(base, { recursive: true, force: true });
   };
   return {
     base,

@@ -6,10 +6,9 @@ import {
   rm,
   realpath,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { runCommand } from "../../src/providers/command-runner";
-import { createProcessIdentityReader } from "../../src/providers/process-identity";
 import {
   processLeaseRoot,
   processLeaseSchema,
@@ -42,19 +41,37 @@ async function recordedTargets(root: string) {
     return `its Targets could not be read (${error}), so none was stopped`;
   }
 }
-/** When the process `pid` started and what it runs, while it is alive: a later process of that pid differs. */
+/** `ps` with the locale and zone rigd reads process birth times in, so a birth here is the one its leases digest. */
+const ps = (args: string[]) =>
+  Bun.spawnSync(["/bin/ps", ...args], {
+    stdout: "pipe",
+    stderr: "ignore",
+    env: { LC_ALL: "C", TZ: "UTC", PATH: "/usr/bin:/bin" },
+  }).stdout.toString();
+/** When the process `pid` started, while it is alive: with its pid, all that names it, since a process that execs keeps
+ * both, and a later process of that pid has another. */
 export function processIdentity(pid: number): string | undefined {
-  return (
-    Bun.spawnSync(
-      ["ps", "-p", String(pid), "-o", "lstart=", "-o", "command="],
-      { stdout: "pipe", stderr: "ignore" },
-    ).stdout.toString() || undefined
-  );
+  return ps(["-p", String(pid), "-o", "lstart="]).trim() || undefined;
 }
 /** `processIdentity`, while the process is a rigd. */
 export function daemonIdentity(pid: number): string | undefined {
-  const seen = processIdentity(pid);
-  return seen?.includes("rigd") ? seen : undefined;
+  // lstart is 24 characters in the C locale; what the process runs follows it.
+  const seen = ps(["-p", String(pid), "-o", "lstart=", "-o", "command="]);
+  return seen.slice(24).includes("rigd") ? seen.slice(0, 24).trim() : undefined;
+}
+/** What the process `pid` runs, for a report: never what decides which process it is. */
+const commandOf = (pid: number) =>
+  ps(["-p", String(pid), "-o", "command="]).trim();
+/** Every process with its group and birth, read at one instant, so a member and its birth are of the same process. */
+function processTable() {
+  return ps(["-axo", "pid=,pgid=,lstart="])
+    .split("\n")
+    .flatMap((line) => {
+      const row = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
+      return row
+        ? [{ pid: Number(row[1]), pgid: Number(row[2]), birth: row[3]! }]
+        : [];
+    });
 }
 /** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits. */
 export async function recordedDaemon(root: string) {
@@ -64,21 +81,13 @@ export async function recordedDaemon(root: string) {
   const identity = pid === undefined ? undefined : daemonIdentity(pid);
   return identity === undefined ? undefined : { pid: pid!, identity };
 }
-/** The processes `root`'s leases name now, read apart from its Target record, so a Service is found whatever that record
- * holds: every member of each leased process group whose leader is still the process its lease names. A group whose leader
- * is gone cannot be told from a stranger's, so it is only named, never signalled. Read before rig down or rigd uninstall,
- * which remove the leases of what they stop. */
-async function leasedProcesses(root: string) {
-  const identityOf = createProcessIdentityReader(runCommand);
-  const groups = Bun.spawnSync(["ps", "-axo", "pid=,pgid="])
-    .stdout.toString()
-    .trim()
-    .split("\n")
-    .map((row) => row.trim().split(/\s+/).map(Number));
-  const owned: { pid: number; identity: string }[] = [];
-  const leaderless: number[] = [];
+/** The process groups `root`'s leases name, read apart from its Target record, so a Service is found whatever that record
+ * holds: rigd's leases, and those of the capture wrappers it runs, which lease the applications. A lease's leader birth is
+ * kept when, in `table`, its pid is still the process the lease names; the group is the fixture's while that leader runs.
+ * Read before rig down or rigd uninstall, which remove the leases of what they stop. */
+async function leasedGroups(root: string, table: ProcessTable) {
+  const groups: { pgid: number; leader?: string }[] = [];
   const unreadable: string[] = [];
-  // rigd's leases, and those of the capture wrappers it runs, which lease the applications.
   for (const directory of [root, join(root, "capture")].map(processLeaseRoot)) {
     const names = await readdir(directory).catch((error) => {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT")
@@ -94,20 +103,41 @@ async function leasedProcesses(root: string) {
           .then((text) => JSON.parse(text))
           .catch(() => undefined),
       );
-      if (!lease.success) unreadable.push(join(directory, name));
-      else if ((await identityOf(lease.data.pid)) !== lease.data.identity)
-        leaderless.push(lease.data.pid);
-      else
-        for (const [pid, pgid] of groups) {
-          const identity =
-            pgid === lease.data.pid ? processIdentity(pid!) : undefined;
-          if (identity !== undefined) owned.push({ pid: pid!, identity });
-        }
+      if (!lease.success) {
+        unreadable.push(join(directory, name));
+        continue;
+      }
+      const { pid, identity } = lease.data;
+      const leader = table.find((row) => row.pid === pid)?.birth;
+      groups.push({
+        pgid: pid,
+        ...(leader !== undefined &&
+        createHash("sha256").update(`${pid}:${leader}`).digest("hex") ===
+          identity
+          ? { leader }
+          : {}),
+      });
     }
   }
-  return { owned, leaderless, unreadable };
+  return { groups, unreadable };
 }
-/** Signals `owned` while it is still that process; one that has just exited is left alone. */
+type ProcessTable = ReturnType<typeof processTable>;
+/** Adds to `owned` (pid to birth) every member `table` shows of a leased group whose leader is, in it, still the process
+ * its lease named: only then is the group provably the fixture's. */
+function adoptMembers(
+  owned: Map<number, string>,
+  groups: readonly { pgid: number; leader?: string }[],
+  table: ProcessTable,
+) {
+  for (const group of groups)
+    if (
+      group.leader !== undefined &&
+      table.some((row) => row.pid === group.pgid && row.birth === group.leader)
+    )
+      for (const row of table)
+        if (row.pgid === group.pgid) owned.set(row.pid, row.birth);
+}
+/** Signals `owned` while it is still that process; one that has just exited, or whose pid another now has, is left alone. */
 function signalOwned(
   owned: { pid: number; identity: string },
   signal: NodeJS.Signals,
@@ -117,15 +147,6 @@ function signalOwned(
     process.kill(owned.pid, signal);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
-}
-/** Whether process group `group` has a member. */
-function groupRuns(group: number): boolean {
-  try {
-    process.kill(-group, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== "ESRCH";
   }
 }
 /** How long a rigd or a Service may take to exit once it has been told to, on a machine as loaded as a test run makes it. */
@@ -228,9 +249,12 @@ export async function rigFixture(
     // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped by its role or Preview name,
     // through the rigd that serves the root. A test that already stopped its rigd has nothing left that rig down could ask.
     const daemon = await recordedDaemon(root);
-    const leased = await leasedProcesses(root);
+    const leased = await leasedGroups(root, processTable());
     for (const path of leased.unreadable)
       problems.push(`the lease ${path} could not be read`);
+    // The fixture's processes by pid and birth, gathered whenever a leased group's leader still proves the group is its own.
+    const owned = new Map<number, string>();
+    adoptMembers(owned, leased.groups, processTable());
     const targets = daemon === undefined ? [] : await recordedTargets(root);
     if (typeof targets === "string") problems.push(targets);
     else
@@ -247,10 +271,12 @@ export async function rigFixture(
             : ["down", target.kind, ...target.project];
         await succeeded(["rig", ...args], rig(args, base));
       }
+    adoptMembers(owned, leased.groups, processTable());
     const uninstalled = await succeeded(
       ["rigd", "uninstall"],
       rigd(["uninstall"]),
     );
+    adoptMembers(owned, leased.groups, processTable());
     // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up. One rigd
     // uninstall could not stop is asked to stop here; one that will not is killed.
     if (daemon !== undefined) {
@@ -264,27 +290,36 @@ export async function rigFixture(
       }
     }
     // What rigd ran and did not stop is stopped here, and the root goes only once it has exited.
-    const surviving = leased.owned.filter(
-      (owned) => processIdentity(owned.pid) === owned.identity,
-    );
+    const table = processTable();
+    adoptMembers(owned, leased.groups, table);
+    const surviving = table
+      .filter((row) => owned.get(row.pid) === row.birth)
+      .map((row) => ({
+        pid: row.pid,
+        identity: row.birth,
+        named: `${row.pid} (${commandOf(row.pid)})`,
+      }));
     if (surviving.length > 0) {
-      for (const owned of surviving) signalOwned(owned, "SIGTERM");
+      for (const each of surviving) signalOwned(each, "SIGTERM");
       const stubborn: typeof surviving = [];
-      for (const owned of surviving)
-        if (!(await processExited(owned))) stubborn.push(owned);
-      for (const owned of stubborn) signalOwned(owned, "SIGKILL");
-      const running: number[] = [];
-      for (const owned of stubborn)
-        if (!(await processExited(owned))) running.push(owned.pid);
+      for (const each of surviving)
+        if (!(await processExited(each))) stubborn.push(each);
+      for (const each of stubborn) signalOwned(each, "SIGKILL");
+      for (const each of stubborn) await processExited(each);
       problems.push(
-        `processes ${surviving.map(({ pid }) => pid).join(", ")} that rigd ran outlived rigd, and were stopped${stubborn.length > 0 ? `; ${stubborn.map(({ pid }) => pid).join(", ")} had to be killed` : ""}${running.length > 0 ? `, but ${running.join(", ")} still run` : ""}`,
+        `processes ${surviving.map(({ named }) => named).join(", ")} that rigd ran outlived rigd, and were stopped${stubborn.length > 0 ? `; ${stubborn.map(({ pid }) => pid).join(", ")} had to be killed` : ""}`,
       );
     }
-    for (const group of leased.leaderless)
-      if (groupRuns(group))
-        problems.push(
-          `process group ${group}, which a lease names, still runs without the leader the lease recorded, so it was not signalled`,
-        );
+    // Nothing may run on in a leased group: a member born once its leader had gone cannot be tied to the lease, so it is
+    // named, never signalled.
+    const pgids = new Set(leased.groups.map((group) => group.pgid));
+    const running = processTable().filter(
+      (row) => pgids.has(row.pgid) || owned.get(row.pid) === row.birth,
+    );
+    if (running.length > 0)
+      problems.push(
+        `processes ${running.map((row) => `${row.pid} (${commandOf(row.pid)})`).join(", ")} still run in process groups the root's leases name; the fixture signals only those it can tie to a lease`,
+      );
     if (problems.length > 0)
       throw new Error(
         `The fixture could not confirm its cleanup, so its root is kept at ${base}:\n${problems.join("\n")}`,

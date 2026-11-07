@@ -13,12 +13,24 @@ import { WORKING_TOOL_SUFFIX } from "../config/schema";
 import { RigError, describeInvalidDocument } from "../domain/errors";
 import type { RuntimeState, StateStore } from "../domain/runtime";
 
+/** A change waiting for the next write, and how to answer its caller once that write is durable or the change is refused. */
+interface QueuedChange {
+  readonly change: (state: RuntimeState) => void | Promise<void>;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+}
+
 /** Filesystem Adapter; caller supplies isolated root. One daemon is the writer. */
 export class FileStateStore implements StateStore {
-  private queue: Promise<void> = Promise.resolve();
   private readonly path: string;
   /** The file as it last passed validation: rigd reads the state many times a second and it rarely changes. */
   private validated: { revision: string | undefined; raw: string } | undefined;
+  /** The one frozen copy readers that change nothing share, and the revision it was read at. */
+  private shared:
+    { revision: string; state: Promise<RuntimeState> } | undefined;
+  /** Changes asked for while a write is under way; the next write takes all of them. */
+  private queued: QueuedChange[] = [];
+  private writing = false;
   constructor(private readonly root: string) {
     this.path = join(root, "runtime", "state.json");
   }
@@ -27,11 +39,27 @@ export class FileStateStore implements StateStore {
    * whole millisecond, as on a filesystem too coarse (HFS+, exFAT) to tell two writes apart. A finer filesystem lands on one
    * about once in a million writes; until the next write, every read then reads the file again and supervision goes without
    * its shared snapshot. */
-  async revision(): Promise<string | undefined> {
-    const seen = await stat(this.path, { bigint: true }).catch(() => undefined);
-    return seen && seen.mtimeNs % 1_000_000n !== 0n
-      ? `${seen.ino}:${seen.size}:${seen.mtimeNs}`
-      : undefined;
+  revision(): Promise<string | undefined> {
+    return revisionOf(this.path);
+  }
+
+  /** The state as `read` gives it, frozen through and through and shared by every caller while the file keeps its revision,
+   * so a Host's many readers parse it once per write rather than once each. A file whose revision cannot be told is read
+   * for each caller. */
+  async snapshot(): Promise<RuntimeState> {
+    const revision = await this.revision();
+    if (revision === undefined) return deepFreeze(await this.read());
+    if (this.shared?.revision !== revision) {
+      // Read after the revision was taken, so it is at least as new as that revision: a write in between is read again
+      // by the next caller, whose revision differs.
+      const state = this.read().then(deepFreeze);
+      const shared = { revision, state };
+      this.shared = shared;
+      state.catch(() => {
+        if (this.shared === shared) this.shared = undefined;
+      });
+    }
+    return await this.shared.state;
   }
 
   async read(): Promise<RuntimeState> {
@@ -120,29 +148,94 @@ export class FileStateStore implements StateStore {
   }
 
   /** Durable replace: the new state is flushed to disk before it becomes `state.json`, and the version it
-   * replaces stays readable as `state.json.bak` (one generation). */
+   * replaces stays readable as `state.json.bak` (one generation). Changes asked for while a write is under way are
+   * applied in order to one state and written together: each is validated after it runs, and one that fails or leaves the
+   * state invalid is refused alone and leaves nothing behind. Each caller is answered once the write that holds its change is durable. */
   update(change: (state: RuntimeState) => void | Promise<void>): Promise<void> {
-    const operation = this.queue.then(async () => {
-      const state = await this.read();
-      await change(state);
-      schema.parse(state);
-      await replacePrivateFile(
-        this.root,
-        this.path,
-        `${JSON.stringify(state, null, 2)}\n`,
-        {
-          durable: true,
-          // Once the new state is safely on disk, just before it replaces the current one.
-          confirm: () => keepPreviousGeneration(this.path, this.backupPath),
+    const done = new Promise<void>((resolve, reject) =>
+      this.queued.push({ change, resolve, reject }),
+    );
+    if (!this.writing) void this.writeQueued();
+    return done;
+  }
+  private async writeQueued(): Promise<void> {
+    this.writing = true;
+    try {
+      while (this.queued.length) {
+        const changes = this.queued.splice(0);
+        // Whatever goes wrong unforeseen fails every change not yet answered; an answer already given stands.
+        await this.write(changes).catch((error: unknown) => {
+          for (const queued of changes) queued.reject(error);
+        });
+      }
+    } finally {
+      // In the same turn as the last look at the queue, so a change queued after it starts the next write.
+      this.writing = false;
+    }
+  }
+  private async write(changes: readonly QueuedChange[]): Promise<void> {
+    let state: RuntimeState;
+    try {
+      state = await this.read();
+    } catch (error) {
+      for (const queued of changes) queued.reject(error);
+      return;
+    }
+    const applied: QueuedChange[] = [];
+    for (const queued of changes) {
+      // A change written with others gets a copy of its own, as a read of its own would give it, so one refused leaves
+      // nothing behind; alone, a refused change writes nothing anyway.
+      const draft =
+        changes.length > 1
+          ? (JSON.parse(JSON.stringify(state)) as RuntimeState)
+          : state;
+      try {
+        await queued.change(draft);
+        schema.parse(draft);
+        state = draft;
+        applied.push(queued);
+      } catch (error) {
+        queued.reject(error);
+      }
+    }
+    if (!applied.length) return;
+    const raw = `${JSON.stringify(state, null, 2)}\n`;
+    let written: string | undefined;
+    try {
+      await replacePrivateFile(this.root, this.path, raw, {
+        durable: true,
+        // Once the new state is safely on disk, just before it replaces the current one.
+        confirm: async (file) => {
+          await keepPreviousGeneration(this.path, this.backupPath);
+          // The renamed file keeps its inode, size and time, so this is the revision it will have as state.json.
+          written = await revisionOf(file);
         },
-      );
-    });
-    this.queue = operation.catch(() => {});
-    return operation;
+      });
+    } catch (error) {
+      for (const queued of applied) queued.reject(error);
+      return;
+    }
+    // Validated just now: the next read takes it as it was written, without reading or validating the file again.
+    if (written !== undefined) this.validated = { revision: written, raw };
+    for (const queued of applied) queued.resolve();
   }
   private get backupPath(): string {
     return `${this.path}.bak`;
   }
+}
+async function revisionOf(path: string): Promise<string | undefined> {
+  const seen = await stat(path, { bigint: true }).catch(() => undefined);
+  return seen && seen.mtimeNs % 1_000_000n !== 0n
+    ? `${seen.ino}:${seen.size}:${seen.mtimeNs}`
+    : undefined;
+}
+/** `value` with every object and array in it frozen, so a reader of a shared snapshot cannot change it for the others. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
 }
 type Loose = Record<string, unknown>;
 const loose = (value: unknown): value is Loose =>

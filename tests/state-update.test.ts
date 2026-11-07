@@ -241,3 +241,92 @@ test("a change that fails, at once or after waiting, saves nothing and fails onl
   ]);
   expect(await fs.readFile(`${at.path}.bak`, "utf8")).toBe(committed);
 });
+
+/** Holds the store's next write until `open`, then queues `changes` behind it; answers what each queued update came to,
+ * and how many times state.json was replaced from the held write on. */
+async function queuedBehindAWrite(
+  at: Awaited<ReturnType<typeof storeRoot>>,
+  changes: ((state: RuntimeState) => void)[],
+) {
+  let replaced = 0;
+  intercept(
+    fs,
+    "rename",
+    (original) =>
+      (async (from: string, to: string) => {
+        if (to === at.path) replaced++;
+        return await original(from, to);
+      }) as typeof fs.rename,
+  );
+  const { promise: started, resolve: start } = Promise.withResolvers<void>();
+  const { promise: gate, resolve: open } = Promise.withResolvers<void>();
+  const held = at.store.update(async (state) => {
+    start();
+    await gate;
+    add("held")(state);
+  });
+  await started;
+  const outcomes = changes.map((change) =>
+    at.store.update(change).then(
+      async () => ({ saved: names(await new FileStateStore(at.root).read()) }),
+      (error: Error) => ({ refused: error.message }),
+    ),
+  );
+  open();
+  await held;
+  return { outcomes: await Promise.all(outcomes), replaced: () => replaced };
+}
+
+test("updates asked for while a write is under way are written together, and each is answered once that write is on disk", async () => {
+  const at = await storeRoot();
+  await at.store.update(add("first"));
+  const { outcomes, replaced } = await queuedBehindAWrite(
+    at,
+    ["a", "b", "c"].map(add),
+  );
+  const written = ["first", "held", "a", "b", "c"];
+  expect(outcomes).toEqual([
+    { saved: written },
+    { saved: written },
+    { saved: written },
+  ]);
+  expect(replaced()).toBe(2);
+});
+
+test("a change written with others that fails, or leaves the state invalid, is undone and refused alone", async () => {
+  const at = await storeRoot();
+  await at.store.update(add("first"));
+  const { outcomes, replaced } = await queuedBehindAWrite(at, [
+    add("a"),
+    (state) => {
+      add("partial")(state);
+      throw new Error("refused part-way");
+    },
+    (state) => {
+      add("invalid")(state);
+      (state as { targets: unknown }).targets = 1;
+    },
+    add("b"),
+  ]);
+  const written = ["first", "held", "a", "b"];
+  expect(outcomes).toMatchObject([
+    { saved: written },
+    { refused: "refused part-way" },
+    { refused: expect.any(String) },
+    { saved: written },
+  ]);
+  expect(replaced()).toBe(2);
+});
+
+test("an update asked for at any moment after the write before it is answered is written too", async () => {
+  const at = await storeRoot();
+  const written: string[] = [];
+  // However many turns later the next update comes, it never lands between the last look at the queue and the end of
+  // the write that looked.
+  for (let turns = 0; turns < 8; turns++) {
+    await at.store.update(add(`after-${turns}`));
+    written.push(`after-${turns}`);
+    for (let turn = 0; turn < turns; turn++) await null;
+  }
+  expect(names(await new FileStateStore(at.root).read())).toEqual(written);
+}, 5000);

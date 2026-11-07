@@ -1,4 +1,4 @@
-import type { StateStore } from "../domain/runtime";
+import { readOnlyState, type StateStore } from "../domain/runtime";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { MonitoredProcess } from "./usage-sampler";
@@ -12,7 +12,7 @@ export async function monitoredProcesses(deps: {
   readonly lifecycle: Pick<TargetLifecycle, "observeJob">;
   readonly signal: AbortSignal;
 }): Promise<MonitoredProcess[]> {
-  const state = await deps.store.read();
+  const state = await readOnlyState(deps.store);
   const projects = new Map(
     state.projects.map((project) => [project.id, project.name]),
   );

@@ -23,6 +23,7 @@ import type {
   StateStore,
   TargetRecord,
 } from "../domain/runtime";
+import { readOnlyState } from "../domain/runtime";
 import type { RuntimeDependencies, WorkReport } from "./contracts";
 import type { ObservationEffects } from "./status";
 import { currentRun } from "./supervision";
@@ -97,7 +98,7 @@ export interface HealthRestartRequest {
   restarts: readonly number[];
 }
 export interface HealthMonitorDependencies {
-  store: Pick<StateStore, "read" | "update">;
+  store: Pick<StateStore, "read" | "update" | "snapshot">;
   observations: Pick<ObservationEffects, "process" | "health">;
   /** Wall-clock time for what is recorded and shown, and the elapsed time every check interval and restart back-off is
    * waited in (`systemClock` in rigd, the clock `restart` reads too). */
@@ -413,7 +414,7 @@ export function createHealthMonitor(
       for (const key of [...unwritten.keys()])
         if (!inFlight.has(key)) await writeRecords(key);
       const since = clock;
-      const recorded = await deps.store.read();
+      const recorded = await readOnlyState(deps.store);
       if (stopped) return;
       const monitored = new Set<string>();
       /** Targets not meant to run that an Operation holds, whose Services keep what is known of them (see the forgetting). */

@@ -41,6 +41,7 @@ import type {
   RuntimeState,
   TargetRecord,
 } from "../domain/runtime";
+import { readOnlyState } from "../domain/runtime";
 import {
   RigError,
   asRigError,
@@ -3217,7 +3218,7 @@ async function releaseHeldCheckouts(
   target: TargetRecord,
   deps: RuntimeDependencies,
 ): Promise<RigError[]> {
-  const held = ((await deps.store.read()).heldCheckouts ?? []).filter(
+  const held = ((await readOnlyState(deps.store)).heldCheckouts ?? []).filter(
     (checkout) => checkout.target === target.id,
   );
   const failures: RigError[] = [];

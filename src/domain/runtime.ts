@@ -421,4 +421,13 @@ export interface StateStore {
   revision?(): Promise<string | undefined>;
   /** One daemon owns writes. Updates are serialized and committed atomically. */
   update(change: (state: RuntimeState) => void | Promise<void>): Promise<void>;
+  /** The state as `read` gives it, for a reader that changes nothing in it: one copy every such reader shares while nothing
+   * is written, frozen so that none can change it. Absent when the store keeps none. */
+  snapshot?(): Promise<RuntimeState>;
+}
+/** The state for a reader that changes nothing in it: the store's shared snapshot, or else a read of its own. */
+export function readOnlyState(
+  store: Pick<StateStore, "read" | "snapshot">,
+): Promise<RuntimeState> {
+  return store.snapshot ? store.snapshot() : store.read();
 }

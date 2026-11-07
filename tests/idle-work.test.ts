@@ -282,6 +282,53 @@ process.stdout.write(JSON.stringify({ unchanged, changed: reads }));
     expect((await store.read()).projects).toEqual([]);
   });
 
+  test("an update's own write is read without reading the file or validating it again", async () => {
+    const { store } = await storeWith(empty);
+    await store.read();
+    const parse = runtimeStateSchema.parse.bind(runtimeStateSchema);
+    let validations = 0;
+    Object.defineProperty(runtimeStateSchema, "parse", {
+      configurable: true,
+      value: (input: unknown) => {
+        validations++;
+        return parse(input);
+      },
+    });
+    try {
+      await store.update((state) => {
+        state.projects.push({
+          id: "p",
+          name: "p",
+          repoPath: "/repos/p",
+          configPath: "/repos/p/rig.yaml",
+          createdAt: "2026-11-07T00:00:00Z",
+        });
+      });
+      // The update validates its change once; what it wrote is not validated again.
+      expect(validations).toBe(1);
+      expect((await store.read()).projects).toHaveLength(1);
+      expect(validations).toBe(1);
+    } finally {
+      delete (runtimeStateSchema as { parse?: unknown }).parse;
+    }
+  });
+
+  test("shared as one frozen snapshot while it does not change, and a new one as soon as it does", async () => {
+    const { root, store } = await storeWith(empty);
+    const [first, second] = await Promise.all([
+      store.snapshot(),
+      store.snapshot(),
+    ]);
+    expect(second).toBe(first);
+    expect(await store.snapshot()).toBe(first);
+    expect(() => first.projects.push({ id: "p" } as never)).toThrow();
+    expect((await store.read()).projects).toEqual([]);
+    await write(root, { ...empty, extra: 1 });
+    const changed = await store.snapshot();
+    expect(changed).not.toBe(first);
+    expect((changed as unknown as { extra: number }).extra).toBe(1);
+  });
+
   test("has a new revision after each write and the same one until then", async () => {
     const { store } = await storeWith(empty);
     const before = await store.revision();

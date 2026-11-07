@@ -46,6 +46,7 @@ export function reportingTransitions(
   return {
     read: () => store.read(),
     revision: async () => await store.revision?.(),
+    ...(store.snapshot ? { snapshot: () => store.snapshot!() } : {}),
     update: (change) =>
       store.update(async (state) => {
         const before = snapshot(state);

@@ -13,6 +13,7 @@ import type {
   StateStore,
   TargetRecord,
 } from "../domain/runtime";
+import { readOnlyState } from "../domain/runtime";
 import type { ProcessObservation } from "../providers/contracts";
 import {
   backupStorage,
@@ -307,7 +308,7 @@ export async function stopJobRuns(
   },
   stops?: StopControl,
 ): Promise<number> {
-  const running = ((await deps.store.read()).jobs ?? []).filter(
+  const running = ((await readOnlyState(deps.store)).jobs ?? []).filter(
     (record) => record.target === target.id && record.running,
   );
   const failures: unknown[] = [];

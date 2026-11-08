@@ -439,7 +439,11 @@ export async function doctor(
         ok: true,
         message: `The deployed revision's rig.yaml names '${source.formerName}', this Project's name before it was renamed '${project.name}'; it runs as '${project.name}'. Commit rig.yaml with the new name, and the next deploy records it.`,
       });
-    const hostnames = hostnamesCheck(target, publication);
+    let hostnames = hostnamesCheck(target, publication);
+    // The record was read before the route file, and a change of the Target (a restart that replaces its hostnames, say)
+    // may have begun since: a missing route is judged only while the record is still the one it was compared with.
+    if (hostnames?.ok === false && !(await stillRecorded(target, deps.store)))
+      hostnames = hostnamesCheck(target, undefined);
     if (hostnames) checks.push(hostnames);
     // A Preview awaiting destruction starts nothing again.
     const envFiles = target.destructionPending
@@ -521,6 +525,17 @@ function hostnamesCheck(
     reason: "route-missing",
     hint: `Run ${rigCommand("up", { target })} to publish its route again; its running Services keep running.`,
   };
+}
+/** Whether state still records `target` exactly as it was read; false when it changed, is gone, or cannot be read. */
+async function stillRecorded(
+  target: TargetRecord,
+  store: RuntimeDependencies["store"],
+): Promise<boolean> {
+  const live = await store.read().then(
+    (state) => state.targets.find((each) => each.id === target.id),
+    () => undefined,
+  );
+  return live !== undefined && isDeepStrictEqual(live, target);
 }
 /** A failing `<target>/env-files` check when a start of `target` would refuse env files its plan lists, each named with who
  * reads it and the refusal it would give; what already runs keeps running. Undefined when every one is usable, or when the

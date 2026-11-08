@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { inspectHostProxy } from "../src/adapters/proxy-publication";
 import { parseHostConfig, parseProjectConfig } from "../src/config";
 import type { DoctorCheck } from "../src/daemon/offline-doctor";
@@ -13,7 +13,10 @@ import type {
 import type { Router } from "../src/providers/caddy-router";
 import { proxyPaths } from "../src/domain/managed-proxy";
 import { managedCaddyWorld } from "./support/managed-caddy-double";
-import { runtimeWorld } from "./support/runtime-world";
+import {
+  runtimeWorld,
+  type RuntimeWorldOptions,
+} from "./support/runtime-world";
 
 /** What doctor says of a recorded Target's own prerequisites, through the real runtime, Target effects and route files over a
  * scripted supervisor: the env files a start reads (#422) and the route block its hostnames are served from (#572). */
@@ -26,13 +29,20 @@ afterEach(async () => {
 
 const WEB = 47411;
 
+/** One Project `demo` of `project`, its rig.yaml read live from `config`, so a test may edit it. `proxy` replaces the route
+ * file under the root with another router's; `wrapEffects` lets a test act between two steps of the Target effects. */
 async function world(
   project: Record<string, unknown>,
-  proxy?: {
-    router: Router;
-    inspect: () => ReturnType<typeof inspectHostProxy>;
-  },
+  options: {
+    proxy?: {
+      router: Router;
+      inspect: () => ReturnType<typeof inspectHostProxy>;
+    };
+    wrapEffects?: RuntimeWorldOptions["wrapEffects"];
+  } = {},
 ) {
+  const { proxy } = options;
+  const config = parseProjectConfig({ name: "demo", ...project });
   const processes = new Map<string, ProcessObservation>();
   /** Every Service start, in order. */
   const starts: string[] = [];
@@ -60,8 +70,9 @@ async function world(
   };
   const w = await runtimeWorld({
     name: "doctor-evidence",
-    config: parseProjectConfig({ name: "demo", ...project }),
+    config,
     supervisor: () => supervisor,
+    ...(options.wrapEffects ? { wrapEffects: options.wrapEffects } : {}),
     startsAt: "2026-11-08T08:00:00.000Z",
     readinessDeadlineMs: 300,
     activation: {
@@ -98,6 +109,7 @@ async function world(
     };
   return {
     ...w,
+    config,
     starts,
     command: runtime.command.bind(runtime),
     doctor,
@@ -173,6 +185,144 @@ test("doctor fails a Target whose env file lies in the repository without Git ig
   expect(await w.check("working/env-files")).toBeUndefined();
 });
 
+test.each([
+  ["a NUL in a value", "TOKEN=synthetic-secret\0bad\n", "line 1"],
+  ["bytes that are not UTF-8", Buffer.from([84, 61, 255, 10]), "line 1"],
+])(
+  "doctor fails a Target whose env file holds %s, which its next start refuses, stopped or running, never showing the value",
+  async (_, content, line) => {
+    const scratch = await mkdtemp(join(tmpdir(), "rig-doctor-value-"));
+    roots.push(scratch);
+    const file = join(scratch, "values.env");
+    const w = await world({
+      env_file: file,
+      services: { web: { command: "serve", ports: { http: WEB } } },
+      targets: { working: true },
+    });
+    const finding = {
+      name: "working/env-files",
+      ok: false,
+      message: expect.stringMatching(
+        new RegExp(
+          `^The environment file ${file} has .* on ${line}.* Read by the whole Project\\. Nothing that reads it can start until then; what already runs keeps running\\.$`,
+        ),
+      ),
+      reason: "env-file-unusable",
+      hint: expect.any(String),
+    };
+    const unshown = async () =>
+      expect(JSON.stringify(await w.doctor())).not.toContain(
+        "synthetic-secret",
+      );
+    // Stopped: the start is refused, and doctor says why.
+    await writeFile(file, content, { mode: 0o600 });
+    await expect(
+      w.command({ action: "up", project: "demo", target: "working" }),
+    ).rejects.toMatchObject({ code: "ENV_VALUE" });
+    expect(await w.check("working/env-files")).toEqual(finding);
+    await unshown();
+    // Running from a good file, the same edit leaves it running, and its next start would be refused.
+    await writeFile(file, "TOKEN=synthetic-secret\n");
+    await w.command({ action: "up", project: "demo", target: "working" });
+    expect(await w.check("working/env-files")).toBeUndefined();
+    await writeFile(file, content);
+    expect(await w.check("working/env-files")).toEqual(finding);
+    await unshown();
+  },
+);
+
+test("doctor fails a Target whose optional operator env file is present but refused, naming who reads it, never a value", async () => {
+  const w = await world({
+    services: { web: { command: "serve", ports: { http: WEB } } },
+    targets: { working: true },
+  });
+  const project = join(w.root, "env", "demo", "all.env");
+  const service = join(w.root, "env", "demo", "web", "working.env");
+  await mkdir(dirname(service), { recursive: true });
+  await writeFile(project, "TOKEN=hunter3-value\nnot an assignment\n");
+  await writeFile(service, 'OTHER="hunter3-value\n');
+  await expect(
+    w.command({ action: "up", project: "demo", target: "working" }),
+  ).rejects.toMatchObject({ code: "ENV_FILE" });
+  const report = await w.doctor();
+  expect(
+    report.checks.find((check) => check.name === "working/env-files"),
+  ).toEqual({
+    name: "working/env-files",
+    ok: false,
+    message: `The environment file ${project} has an unsupported assignment on line 2. Read by the whole Project. The environment file ${service} has an unmatched quote on line 1. Read by Service web. Nothing that reads them can start until then; what already runs keeps running.`,
+    reason: "env-file-unusable",
+    hint: "Use one KEY=value assignment per line; a bare KEY without = is not an assignment. Close the quote on the same line; a value cannot span lines.",
+  });
+  expect(JSON.stringify(report)).not.toContain("hunter3-value");
+  // Fixed, the optional files load and the Target starts.
+  await writeFile(project, "TOKEN=hunter3-value\n");
+  await writeFile(service, 'OTHER="hunter3-value"\n');
+  expect(await w.check("working/env-files")).toBeUndefined();
+  await w.command({ action: "up", project: "demo", target: "working" });
+});
+
+test("doctor does not take a route a restart is replacing for a missing one: the Target it compared is no longer what state records", async () => {
+  let holdRoute = false;
+  let routeEntered!: () => void, resumeRoute!: () => void;
+  const routeSeen = new Promise<void>((resolve) => (routeEntered = resolve));
+  const routeGate = new Promise<void>((resolve) => (resumeRoute = resolve));
+  const w = await world(routed("old.probe.test"), {
+    // The restart pauses once its new hostname is published, before it records the Target running again.
+    wrapEffects: (effects) => ({
+      ...effects,
+      async route(target, change) {
+        await effects.route(target, change);
+        if (holdRoute && target.plan.domain === "new.probe.test") {
+          holdRoute = false;
+          routeEntered();
+          await routeGate;
+        }
+      },
+    }),
+  });
+  await w.command({ action: "up", project: "demo", target: "working" });
+  // Doctor pauses in its Host checks, after it read the Target and before it reads the route file.
+  let hostEntered!: () => void, releaseHost!: () => void;
+  const inHost = new Promise<void>((resolve) => (hostEntered = resolve));
+  const hostGate = new Promise<void>((resolve) => (releaseHost = resolve));
+  w.deps.inspectHost = async () => {
+    hostEntered();
+    await hostGate;
+    return [];
+  };
+  const pending = w.doctor();
+  await inHost;
+  w.config.targets!.working = { domain: "new.probe.test" };
+  holdRoute = true;
+  const restart = w.command({
+    action: "restart",
+    project: "demo",
+    target: "working",
+  });
+  await routeSeen;
+  releaseHost();
+  const report = await pending;
+  expect(
+    report.checks.filter((check) => check.reason === "route-missing"),
+  ).toEqual([]);
+  expect(
+    report.checks.find((check) => check.name === "working/hostnames"),
+  ).toEqual({
+    name: "working/hostnames",
+    ok: true,
+    message: "Recorded hostnames: old.probe.test (web).",
+  });
+  resumeRoute();
+  await restart;
+  w.deps.inspectHost = async () => [];
+  expect(await w.check("working/hostnames")).toEqual({
+    name: "working/hostnames",
+    ok: true,
+    message: "Recorded hostnames: new.probe.test (web).",
+  });
+});
+
 test("doctor fails a running Target whose route block is gone from the route file, until rig up publishes it again without a restart", async () => {
   const w = await world(routed());
   await w.command({ action: "up", project: "demo", target: "working" });
@@ -213,8 +363,10 @@ test("doctor fails a running Target whose block in Rig's own Caddy's route file 
   roots.push(managed.root);
   const host = parseHostConfig({ proxy: { caddy: "/usr/local/bin/caddy" } });
   const w = await world(routed(), {
-    router: managed.caddy.router,
-    inspect: () => inspectHostProxy(managed.root, host, {}),
+    proxy: {
+      router: managed.caddy.router,
+      inspect: () => inspectHostProxy(managed.root, host, {}),
+    },
   });
   await w.command({ action: "up", project: "demo", target: "working" });
   expect(await w.check("working/hostnames")).toMatchObject({ ok: true });

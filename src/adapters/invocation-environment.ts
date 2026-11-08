@@ -174,8 +174,9 @@ export function createInvocationEnvironment(options: {
       const unusable: UnusableEnvFile[] = [];
       for (const { ref, readers } of files.values())
         try {
-          // As a check of a running process reads it, so a value Rig refuses since it started is no finding here.
-          await loadEnvironmentFiles([ref], plan.workspacePath, ignored, true);
+          // As the next start reads it, which refuses a value no process could get exactly (ENV_VALUE), whether or not a
+          // process started before Rig refused such values still runs.
+          await loadEnvironmentFiles([ref], plan.workspacePath, ignored);
         } catch (refusal) {
           if (!(refusal instanceof RigError)) throw refusal;
           unusable.push({ path: ref.path, readers, refusal });

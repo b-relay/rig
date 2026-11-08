@@ -657,6 +657,75 @@ test("status reports each Service's named ports, its automatic restarts and the 
   expect(report!.components[1]).not.toHaveProperty("ports");
 });
 
+test("a running Service judged by cached health or by nothing settles three microtasks after its process answers, so a deadline after that keeps its report", async () => {
+  const cachedAndPlain = {
+    ...target,
+    plan: {
+      components: [
+        {
+          name: "cached",
+          kind: "managed",
+          port: 4444,
+          healthcheck: {
+            interval: 30,
+            timeout: 5,
+            retries: 3,
+            onFailure: "report",
+          },
+        },
+        { name: "plain", kind: "managed", port: 4445 },
+      ],
+    },
+  } as TargetRecord;
+  // Expires the deadline `ticks` microtasks after both processes answer.
+  const expiredAfter = async (ticks: number) => {
+    const deadline = controlledDeadline();
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    const reports = observeTargets(
+      [cachedAndPlain],
+      {
+        async process() {
+          await answered;
+          return { state: "running", pid: 22 };
+        },
+        async health() {
+          throw new Error("a cached Service is never checked here");
+        },
+        async artifact() {
+          return "installed";
+        },
+        async listening() {
+          return [];
+        },
+        async persistent() {
+          return true;
+        },
+      },
+      100,
+      deadline,
+      () => ({ status: "healthy", failures: 0, retries: 3, restarts: 0 }),
+    );
+    // Let both observations start and wait on their process.
+    await Promise.resolve();
+    await Promise.resolve();
+    answer();
+    for (let tick = 0; tick < ticks; tick++) await Promise.resolve();
+    deadline.expire();
+    return (await reports)[0]!.components.map((c) => [c.name, c.state]);
+  };
+  expect(await expiredAfter(2)).toEqual([
+    ["cached", "unknown"],
+    ["plain", "unknown"],
+  ]);
+  expect(await expiredAfter(3)).toEqual([
+    ["cached", "healthy"],
+    ["plain", "running"],
+  ]);
+});
+
 test("each Target gets back its own Components' reports in plan order, whatever order their observations complete in", async () => {
   const deadline = controlledDeadline();
   const managed = (name: string, port: number) => ({

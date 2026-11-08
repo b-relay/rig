@@ -164,6 +164,20 @@ test("configuredTarget and unrecordedReport show a Target only rig.yaml has as c
     "stable.app.example.test",
     "api.stable.app.example.test",
   ]);
+  expect(stable.components.map((c) => [c.name, c.kind, c.state])).toEqual([
+    ["web", "managed", "configured"],
+    ["api", "managed", "configured"],
+    ["worker", "managed", "configured"],
+    ["cli", "installed", "configured"],
+  ]);
+  expect(stable.components[0]).toMatchObject({
+    port: 4100,
+    route: "stable.app.example.test",
+  });
+  expect(stable.jobs.map((job) => [job.name, job.state])).toEqual([
+    ["backup", "idle"],
+    ["nightly", "idle"],
+  ]);
   const report = unrecordedReport("stable", stable, "app");
   expect(Object.keys(report)).toEqual([
     "name",

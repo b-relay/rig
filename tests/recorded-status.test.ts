@@ -85,11 +85,21 @@ test("recordedReport ranks its evidence: an unresolved recovery overrides an act
     configured: [
       { name: "cli", kind: "installed" as const, state: "configured" as const },
     ],
-    jobs: [],
+    jobs: [
+      {
+        name: "nightly",
+        schedule: "0 5 * * *",
+        timeZone: "UTC",
+        state: "idle" as const,
+        scheduled: true,
+      },
+    ],
     stops: [stop("api", "2026-11-07T05:00:10.000Z")],
     build: { kind: "completed" as const, value: { state: "running" as const } },
   };
   const stopping = recordedReport(observed(), evidence);
+  expect(stopping.jobs).toEqual(evidence.jobs);
+  expect(stopping.leftoverBuild).toBe(true);
   expect(stopping.state).toBe("stopping");
   expect(stopping.components.map((c) => c.state)).toEqual([
     "running",

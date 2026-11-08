@@ -331,31 +331,48 @@ test("a registered directory that no longer exists is told apart from a director
   });
 });
 
+const YAML_SYNTAX_HINT =
+  "Fix the YAML syntax, such as a key given twice, an unclosed bracket or a custom tag, then retry.";
+const YAML_SPELLED_OUT_HINT =
+  "Write each value out in full, without an anchor (&), alias (*) or tag (!).";
 test.each([
-  ["duplicate keys", `name: a\n${MINIMAL}`, "invalid_yaml"],
-  ["anchors", MINIMAL.replace("pantry", "&n pantry"), "invalid_yaml"],
+  ["duplicate keys", `name: a\n${MINIMAL}`, YAML_SYNTAX_HINT],
+  ["anchors", MINIMAL.replace("pantry", "&n pantry"), YAML_SPELLED_OUT_HINT],
   [
     "explicit tags",
     MINIMAL.replace("pantry", "!custom pantry"),
-    "invalid_yaml",
+    YAML_SYNTAX_HINT,
   ],
-  ["several documents", `${MINIMAL}---\nname: b\n`, "invalid_yaml"],
+  [
+    "several documents",
+    `${MINIMAL}---\nname: b\n`,
+    "Write the config as one YAML document: remove any later '---' separator, or add the config if the file is empty.",
+  ],
   [
     "merge keys",
     "name: a\nservices:\n  web: {<<: {}, command: serve}\n",
-    "invalid_yaml",
+    "Replace each '<<' key with the keys it would merge.",
   ],
-  ["aliases", MINIMAL.replace("pantry", "*n"), "invalid_yaml"],
-])("restricted YAML refuses %s", async (_label, raw, code) => {
-  const root = await fixture();
-  await writeFile(join(root, "rig.yaml"), raw);
-  await expect(readProjectConfig(root)).rejects.toMatchObject({ code });
-});
+  ["aliases", MINIMAL.replace("pantry", "*n"), YAML_SPELLED_OUT_HINT],
+])(
+  "restricted YAML refuses %s, with a hint for that refusal",
+  async (_label, raw, hint) => {
+    const root = await fixture();
+    await writeFile(join(root, "rig.yaml"), raw);
+    await expect(readProjectConfig(root)).rejects.toMatchObject({
+      code: "invalid_yaml",
+      hint: `In ${join(root, "rig.yaml")}: ${hint}`,
+    });
+  },
+);
 
 test("YAML 1.1 directives are rejected instead of changing scalar meaning", async () => {
   const root = await fixture();
   await writeFile(join(root, "rig.yaml"), `%YAML 1.1\n---\n${MINIMAL}`);
-  await expect(readProjectConfig(root)).rejects.toThrow("YAML 1.2");
+  await expect(readProjectConfig(root)).rejects.toMatchObject({
+    message: "Config must use YAML 1.2.",
+    hint: `In ${join(root, "rig.yaml")}: Remove the %YAML directive, or make it %YAML 1.2.`,
+  });
 });
 
 test("discovery searches upward and never falls through a nearer invalid or retired document", async () => {

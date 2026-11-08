@@ -93,6 +93,17 @@ test("rig's diagnostic log takes config.yaml's diagnostics section exactly where
       context: { path },
       hint: `Make ${path} a file you can read, then retry.`,
     });
+    // One that is not Host config says where the fields to fix are named, and what the log does meanwhile.
+    await rm(path, { recursive: true });
+    await writeFile(path, "diagnostics:\n  level: loud\n");
+    expect(
+      await readHostDiagnostics(root).catch((error: unknown) => error),
+    ).toMatchObject({
+      code: "invalid_config",
+      message: "Invalid Host configuration.",
+      context: { path },
+      hint: `Fix the Host config fields rigd names when it reads ${path}; until then the diagnostic log keeps its default level and retention.`,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

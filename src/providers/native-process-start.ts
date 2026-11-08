@@ -1,3 +1,5 @@
+import { RigError } from "../domain/errors";
+
 const LIBSYSTEM = "/usr/lib/libSystem.B.dylib";
 const CTL_KERN = 1;
 const KERN_PROC = 14;
@@ -27,7 +29,7 @@ const MONTHS = [
 ];
 const two = (value: number) => String(value).padStart(2, "0");
 
-/** When a process started, in Unix seconds; undefined when no process has the pid. Throws when the kernel refuses to say. */
+/** When a process started, in Unix seconds; undefined when no process has the pid. Throws PROCESS_INSPECT when the kernel refuses to say. */
 export type ProcessStartReader = (pid: number) => number | undefined;
 
 export interface NativeProcessStart {
@@ -80,9 +82,6 @@ async function load(): Promise<NativeProcessStart | undefined> {
         returns: FFIType.u64,
       },
     });
-    const name = new Int32Array([CTL_KERN, KERN_PROC, KERN_PROC_PID, 0]);
-    const info = new BigInt64Array(KINFO_WORDS);
-    const size = new BigUint64Array(1);
     const encode = (text: string) => new TextEncoder().encode(`${text}\0`);
     symbols.tzset();
     const locale = symbols.newlocale(LC_ALL_MASK, ptr(encode("")), null);
@@ -91,13 +90,9 @@ async function load(): Promise<NativeProcessStart | undefined> {
     const fields = new BigInt64Array(TM_WORDS);
     const text = new Uint8Array(TEXT_BYTES);
     return {
-      start(pid) {
-        name[3] = pid;
-        size[0] = BigInt(info.byteLength);
-        if (symbols.sysctl(ptr(name), 4, ptr(info), ptr(size), null, 0) !== 0)
-          throw new Error(`sysctl could not read process ${pid}.`);
-        return size[0] === 0n ? undefined : Number(info[0]!);
-      },
+      start: kernelStartReader((name, info, size) =>
+        symbols.sysctl(ptr(name), 4, ptr(info), ptr(size), null, 0),
+      ),
       printed(seconds) {
         if (locale === null) return undefined;
         time[0] = BigInt(seconds);
@@ -120,6 +115,35 @@ async function load(): Promise<NativeProcessStart | undefined> {
   } catch {
     return undefined;
   }
+}
+
+/** `sysctl(3)` asked for one process's record: `name` is the four-word MIB, `info` receives the record and `size` its
+ * length in bytes. Returns 0 when the kernel answers. */
+export type KernelProcessQuery = (
+  name: Int32Array,
+  info: BigInt64Array,
+  size: BigUint64Array,
+) => number;
+
+/** Reads start times through `query`. A refused query is PROCESS_INSPECT, never a process that is gone. */
+export function kernelStartReader(
+  query: KernelProcessQuery,
+): ProcessStartReader {
+  const name = new Int32Array([CTL_KERN, KERN_PROC, KERN_PROC_PID, 0]);
+  const info = new BigInt64Array(KINFO_WORDS);
+  const size = new BigUint64Array(1);
+  return (pid) => {
+    name[3] = pid;
+    size[0] = BigInt(info.byteLength);
+    if (query(name, info, size) !== 0)
+      throw new RigError(
+        "PROCESS_INSPECT",
+        `sysctl could not read process ${pid}.`,
+        "Check process inspection permissions before retrying.",
+        { pid },
+      );
+    return size[0] === 0n ? undefined : Number(info[0]!);
+  };
 }
 
 /** Pure: a start time as `ps -o lstart=` prints it under `LC_ALL=C TZ=UTC`, such as `Mon Oct 12 10:00:00 2026`. */

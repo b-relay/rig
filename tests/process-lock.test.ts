@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { closeSync, constants, openSync } from "node:fs";
 import {
   mkdtemp,
   readFile,
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   acquireProcessLock,
+  inheritProcessLock,
   type LockHeld,
 } from "../src/adapters/process-lock";
 import { processStartTime } from "../src/daemon/process-identity";
@@ -230,4 +232,22 @@ test("an acquisition whose lock file a releasing holder removed meanwhile does n
   });
   expect(await new Response(child.stdout).text()).toBe("refused");
   expect(await child.exited).toBe(0);
+});
+
+test("a passed-down lock lockf(1) cannot take is PROCESS_LOCK_FAILED, naming the lock file and lockf's exit", async () => {
+  const path = await lockPath();
+  // flock(2) refuses a FIFO, so lockf fails on it (EX_CANTCREAT) rather than finding it held.
+  expect(Bun.spawnSync(["/usr/bin/mkfifo", path]).exitCode).toBe(0);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    await expect(inheritProcessLock(path, fd)).rejects.toMatchObject({
+      _tag: "RigError",
+      code: "PROCESS_LOCK_FAILED",
+      message: `lockf could not lock ${path} (exit 73).`,
+      hint: `Make ${path} a regular file, or remove it if nothing is using it, then run the command again.`,
+      details: { lockPath: path, exitCode: 73 },
+    });
+  } finally {
+    closeSync(fd);
+  }
 });

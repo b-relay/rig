@@ -123,9 +123,12 @@ export function resolveTargetPlan(
       settings.services?.[entry.service]?.ports,
     );
     if ("problem" in port)
-      throw new ConfigError(port.problem, "invalid_domain", {
-        path: entry.path,
-      });
+      throw new ConfigError(
+        port.problem,
+        "invalid_domain",
+        { path: entry.path },
+        `Make ${entry.path} reach a port services.${entry.service}.ports declares, or remove it.`,
+      );
     return {
       hostname,
       service: entry.service,

@@ -177,6 +177,22 @@ export function spoiling(
   };
 }
 
+/** `inspect`, except that the `n`th read of the whole process table shows `rows(n)`, by field, in place of the rows of
+ * `pids`: as when a process exits, or another takes its pid, between two reads. */
+export function rewritingTables(
+  inspect: Inspect,
+  pids: readonly number[],
+  rows: (read: number) => readonly Record<string, string>[],
+): Inspect {
+  let reads = 0;
+  return (args) => {
+    const answer = inspect(args);
+    if (args[0] !== "-axo") return answer;
+    const shown = rows(++reads).map((values) => rowWith(args, values));
+    return { ...answer, stdout: rowsBut(args, answer, pids, shown) };
+  };
+}
+
 /** A pid no real process has: ps refuses one this large, so it answers only through a double. */
 export const FAKE_PID = 987654321;
 /** A process at `FAKE_PID` that runs `command`, shown to whatever reads processes through `inspect`, with the birth

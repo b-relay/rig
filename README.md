@@ -186,7 +186,12 @@ which `bunfig.toml` preloads: once the tests are done, it stops what the
 fixture left running and removes its root, and fails the run when it cannot
 confirm that. From then until a test starts again, a new fixture, or a command
 of a fixture being cleaned up, is refused. That cleanup is not guaranteed under
-`--bail`, which skips it, nor in a nested `bun test` its parent kills. After
+`--bail`, which skips it, nor in a nested `bun test` its parent kills.
+`bunfig.toml` also preloads `tests/support/test-stall.ts`: a test process in
+which no test begins or ends for fifteen minutes, which Bun's own timeouts cannot
+end when the test's thread is blocked, prints its file, its child processes and
+its threads' stacks, and is killed, so the run fails naming that file instead of
+waiting for CI to cancel it. Its fixtures are then not cleaned up. After
 adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.

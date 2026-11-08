@@ -192,6 +192,22 @@ export async function processExited(
   }
   return true;
 }
+/** The cleanup of every fixture whose cleanup has not yet answered. */
+const unfinished = new Set<() => Promise<void>>();
+/** Cleans up each fixture a test left unfinished, as Bun leaves one when it times the test out or the test throws before its
+ * cleanup, and waits for a cleanup already under way: run once every test is done, so no fixture is still in use. Fails
+ * naming each root it had to keep. */
+export async function stopAbandonedFixtures() {
+  const failed = (
+    await Promise.allSettled([...unfinished].map((cleanup) => cleanup()))
+  ).flatMap((result) =>
+    result.status === "rejected" ? [String(result.reason)] : [],
+  );
+  if (failed.length > 0)
+    throw new Error(
+      `A test left fixtures unfinished, and their cleanup failed:\n${failed.join("\n")}`,
+    );
+}
 /** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
  * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. `HOME` does the same for the home
  * directory, which is where the Services the daemon runs find the operator's caches. `inspect` replaces the `ps` cleanup
@@ -257,11 +273,9 @@ export async function rigFixture(
     ]);
     return await git(["rev-parse", "HEAD"]);
   };
-  let removed = false;
   /** Stops what the root records and removes it. When any of that cannot be confirmed, the root is kept, for what it
-   * records, and the cleanup fails saying why. Once the root is removed, a further cleanup has nothing to do. */
-  const cleanup = async () => {
-    if (removed) return;
+   * records, and the cleanup fails saying why. */
+  const stop = async () => {
     const problems: string[] = [];
     const succeeded = async (
       args: string[],
@@ -375,8 +389,13 @@ export async function rigFixture(
         `The fixture could not confirm its cleanup, so its root is kept at ${base}:\n${problems.join("\n")}`,
       );
     await rm(base, { recursive: true, force: true });
-    removed = true;
   };
+  let stopped: Promise<void> | undefined;
+  /** `stop`, once: a later or concurrent cleanup, such as the test's own `finally` and `stopAbandonedFixtures` after a
+   * timeout, answers as the first did. */
+  const cleanup = () =>
+    (stopped ??= stop().finally(() => unfinished.delete(cleanup)));
+  unfinished.add(cleanup);
   return {
     base,
     root,

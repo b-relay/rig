@@ -30,3 +30,6 @@ if [ -d web/public ]; then cp -R web/public "$out/web/public"; fi
 # Next.js traces its image library in although no page uses next/image (images are unoptimized); it is native code
 # for one architecture, so leaving it out keeps one build for both.
 rm -rf "$out/node_modules/sharp" "$out/node_modules/@img"
+# It also traces in the font metrics next/font reads while it builds (4 MB): the built CSS already holds the fallback
+# adjustments, and only font-utils.js, which nothing that serves pages loads, reads them.
+rm -f "$out/node_modules/next/dist/server/capsize-font-metrics.json"

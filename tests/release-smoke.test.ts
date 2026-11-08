@@ -55,12 +55,21 @@ async function release(
     arm64: NOTICES,
     x64: NOTICES,
   },
+  /** Files under the archive's dashboard, by path, that a release should not carry. */
+  strays: Partial<Record<"arm64" | "x64", string>> = {},
 ) {
   const dist = await mkdtemp(join(base, "dist-"));
   for (const arch of ["arm64", "x64"] as const) {
     const build = `rig-${TAG}-darwin-${arch}`;
     await mkdir(join(dist, build, "dashboard", "web"), { recursive: true });
     await writeFile(join(dist, build, "dashboard", "web", "server.js"), "");
+    const stray = strays[arch];
+    if (stray !== undefined) {
+      await mkdir(dirname(join(dist, build, "dashboard", stray)), {
+        recursive: true,
+      });
+      await writeFile(join(dist, build, "dashboard", stray), "{}");
+    }
     const archNotices = notices[arch];
     if (archNotices !== undefined)
       await writeFile(
@@ -251,6 +260,19 @@ test("an archive without third-party notices, or whose notices miss a bundled pa
   expect(partial.stderr).toContain(
     `rig-${TAG}-darwin-arm64/dashboard/THIRD_PARTY_NOTICES has no notice for tldts-core.`,
   );
+});
+
+test("a dashboard that carries Next.js's build-only font metrics fails the smoke test", async () => {
+  const result = await smoke(
+    await release({}, undefined, undefined, undefined, {
+      x64: "node_modules/next/dist/server/capsize-font-metrics.json",
+    }),
+  );
+  expect(result.code).toBe(1);
+  expect(result.stderr).toContain(
+    `rig-${TAG}-darwin-x64 carries Next.js's build-only font metrics in its dashboard.`,
+  );
+  expect(result.stdout).not.toContain("report");
 });
 
 test("an install that does not keep the third-party notices fails the smoke test", async () => {

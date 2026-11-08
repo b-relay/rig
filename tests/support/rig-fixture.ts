@@ -72,9 +72,37 @@ export const platformInspect = inspectWith(["/bin/ps"], INSPECT_ANSWER_MS);
 /** A process as `ps` shows it: when it started, which with its pid is all that names it, since a process that execs keeps
  * both, and a later process of that pid has another; and what it runs. */
 type ProcessRow = { birth: string; command: string };
-/** One row of `ps -o pid=,lstart=,command=`, its lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`. */
+/** One whole row of `ps -o pid=,lstart=,command=`, its lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`. */
 const PROCESS_ROW =
-  /^\s*(\d+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})(?:\s+(.*))?$/;
+  /^\s*(\d+)\s+(([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ([ \d]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4}))\s+(\S.*)$/;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
+/** Whether an lstart's parts name an instant ps can print: in the UTC the fixture reads it in, on the weekday it says, from
+ * 1970 on. */
+function realBirth(row: RegExpExecArray) {
+  const [weekday, month] = [row[3]!, row[4]!];
+  const [day, hour, minute, second, year] = row.slice(5, 10).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const at = new Date(
+    Date.UTC(year, MONTHS.indexOf(month), day, hour, minute, second),
+  );
+  return (
+    MONTHS.includes(month) &&
+    year >= 1970 &&
+    year <= 2200 &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    at.getUTCDate() === day &&
+    at.getUTCMonth() === MONTHS.indexOf(month) &&
+    WEEKDAYS[at.getUTCDay()] === weekday
+  );
+}
 /** One read of `pid`, asked together with the fixture's own process, which every read that worked lists: the row it shows
  * for `pid`; `gone` when it lists the fixture's process but not `pid`; `unknown` when it failed, or came back empty or
  * malformed, which shows nothing either way. */
@@ -91,9 +119,10 @@ function readProcess(
   if (listed.exitCode !== 0) return "unknown";
   const rows = new Map<number, ProcessRow>();
   for (const line of listed.stdout.split("\n").filter((line) => line.trim())) {
+    // A row missing its command, or with a birth no clock gives, is no answer about the process.
     const row = PROCESS_ROW.exec(line);
-    if (!row) return "unknown";
-    rows.set(Number(row[1]), { birth: row[2]!, command: row[3] ?? "" });
+    if (!row || !realBirth(row)) return "unknown";
+    rows.set(Number(row[1]), { birth: row[2]!, command: row[10]! });
   }
   if (
     !rows.has(process.pid) ||

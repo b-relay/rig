@@ -1,8 +1,22 @@
 import { platformInspect, type Inspect } from "./rig-fixture";
 
-/** Reads that show they prove nothing about a process: one that failed, one that came back empty, and one cut off inside a
- * row. */
-export const MALFORMED = ["failed", "empty", "partial"] as const;
+/** Reads that show they prove nothing about a process:
+ * - `failed`, `empty` and `partial`: ps failed, answered nothing, or was cut off inside a row;
+ * - `commandless`: its row stops after the birth;
+ * - `misborn`: its row has a birth no clock gives (`Xxx Yyy 99 99:99:99 9999`);
+ * - `unlisted`: whole rows without the process, but of a process not asked for in place of the fixture's own;
+ * - `unasked`: the fixture's row and a process not asked for, without the process;
+ * - `failing`: the fixture's row alone, as an exit would show, but with ps exiting 1. */
+export const MALFORMED = [
+  "failed",
+  "empty",
+  "partial",
+  "commandless",
+  "misborn",
+  "unlisted",
+  "unasked",
+  "failing",
+] as const;
 /** Spoiled reads of a process: the malformed ones, and one cut off before its row, which still lists every other process
  * it asked for and so reads as the process gone; only a second read can tell it from an exit. */
 export const FAULTS = [...MALFORMED, "truncated"] as const;
@@ -22,6 +36,11 @@ function fieldsOf(args: readonly string[]) {
       : [],
   );
 }
+/** A row of the read `args` with `values`, by field. */
+const rowWith = (args: readonly string[], values: Record<string, string>) =>
+  fieldsOf(args)
+    .map((field) => values[field] ?? "")
+    .join(" ");
 /** Whether `args` asks for `pid` by name. */
 export function asksFor(args: readonly string[], pid: number) {
   const at = args.indexOf("-p");
@@ -30,6 +49,23 @@ export function asksFor(args: readonly string[], pid: number) {
 /** Whether `line`, a row of the read `args`, is the row of `pid`: a read that asks for no pid field asks for one pid. */
 const rowOf = (args: readonly string[], line: string, pid: number) =>
   fieldsOf(args)[0] !== "pid" || Number(line.trim().split(/\s+/)[0]) === pid;
+/** An lstart in the C locale. */
+const LSTART = /[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4}/;
+/** `answer`'s rows, each of `pid` as `change` makes it. */
+function changeRows(
+  args: readonly string[],
+  answer: ReturnType<Inspect>,
+  pid: number,
+  change: (line: string) => string,
+) {
+  const stdout = answer.stdout
+    .split("\n")
+    .map((line) =>
+      line.trim() && rowOf(args, line, pid) ? change(line) : line,
+    )
+    .join("\n");
+  return { ...answer, stdout };
+}
 /** `inspect`, except that a read asking for `pid()` by name shows it born at `birth`, as once another process has its
  * pid. */
 export function reborn(
@@ -39,34 +75,67 @@ export function reborn(
 ): Inspect {
   return (args) => {
     const answer = inspect(args);
-    if (!asksFor(args, pid())) return answer;
-    const stdout = answer.stdout
-      .split("\n")
-      .map((line) =>
-        line.trim() && rowOf(args, line, pid())
-          ? line.replace(
-              /[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4}/,
-              birth,
-            )
-          : line,
-      )
-      .join("\n");
-    return { ...answer, stdout };
+    return asksFor(args, pid())
+      ? changeRows(args, answer, pid(), (line) => line.replace(LSTART, birth))
+      : answer;
   };
 }
-/** `answer` without its row for `pid`, as a read cut off before it: a read that asks for no pid field asks for `pid` alone. */
-function withoutRow(
+/** `answer`'s rows but those of `pids`, with `added` after them: a read that asks for no pid field asks for one pid. */
+function rowsBut(
   args: readonly string[],
   answer: ReturnType<Inspect>,
-  pid: number,
+  pids: readonly number[],
+  added: readonly string[] = [],
 ) {
   const rows = answer.stdout
     .split("\n")
-    .filter((line) => line.trim() && !rowOf(args, line, pid));
-  return {
-    exitCode: rows.length > 0 ? 0 : 1,
-    stdout: rows.map((row) => `${row}\n`).join(""),
-  };
+    .filter(
+      (line) => line.trim() && !pids.some((pid) => rowOf(args, line, pid)),
+    );
+  return [...rows, ...added].map((row) => `${row}\n`).join("");
+}
+/** `answer` as `fault` spoils it, for a read `args` asking for `pid`. */
+function spoil(
+  fault: Fault,
+  args: readonly string[],
+  answer: ReturnType<Inspect>,
+  pid: number,
+): ReturnType<Inspect> {
+  const stranger = rowWith(args, {
+    pid: "1",
+    pgid: "1",
+    lstart: "Thu Jan  1 00:00:00 1970",
+    command: "/sbin/launchd",
+  });
+  switch (fault) {
+    case "failed":
+      return { exitCode: 1, stdout: "" };
+    case "empty":
+      return { exitCode: 0, stdout: "" };
+    case "partial":
+      return { exitCode: 0, stdout: "Thu Jan\n" };
+    case "commandless":
+      return changeRows(args, answer, pid, (line) =>
+        line.replace(new RegExp(`(${LSTART.source}).*$`), "$1"),
+      );
+    case "misborn":
+      return changeRows(args, answer, pid, (line) =>
+        line.replace(LSTART, "Xxx Yyy 99 99:99:99 9999"),
+      );
+    case "unlisted":
+      return {
+        exitCode: 0,
+        stdout: rowsBut(args, answer, [pid, process.pid], [stranger]),
+      };
+    case "unasked":
+      return { exitCode: 0, stdout: rowsBut(args, answer, [pid], [stranger]) };
+    case "failing":
+      return { exitCode: 1, stdout: rowsBut(args, answer, [pid]) };
+    case "truncated": {
+      const stdout = rowsBut(args, answer, [pid]);
+      return { exitCode: stdout ? 0 : 1, stdout };
+    }
+  }
 }
 
 /** `inspect`, except that the `n`th read asking for the process `pid()` answers as `fault(n)` spoils it, when it does. */
@@ -79,11 +148,8 @@ export function spoiling(
   return (args) => {
     if (!asksFor(args, pid())) return inspect(args);
     const spoiled = fault(++reads);
-    if (spoiled === "failed") return { exitCode: 1, stdout: "" };
-    if (spoiled === "empty") return { exitCode: 0, stdout: "" };
-    if (spoiled === "partial") return { exitCode: 0, stdout: "Thu Jan\n" };
     const answer = inspect(args);
-    return spoiled === "truncated" ? withoutRow(args, answer, pid()) : answer;
+    return spoiled ? spoil(spoiled, args, answer, pid()) : answer;
   };
 }
 
@@ -122,15 +188,12 @@ export function fakeProcess(options: {
           )
         : { exitCode: 1, stdout: "" };
     if (!alive) return real;
-    const values: Record<string, string> = {
+    const row = rowWith(args, {
       pid: String(pid),
       pgid: String(pid),
       lstart: table ? birth(reads) : birth(++reads),
       command: options.command,
-    };
-    const row = fieldsOf(args)
-      .map((field) => values[field] ?? "")
-      .join(" ");
+    });
     return { exitCode: 0, stdout: `${real.stdout}${row}\n` };
   };
   const answered = spoiling(

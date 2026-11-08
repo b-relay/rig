@@ -4,12 +4,20 @@ import { writeSync } from "node:fs";
 
 declare const self: Worker;
 type Progress = {
-  readonly file: string;
+  readonly file?: string;
   readonly begun: number;
   readonly ended: number;
   readonly at: number;
   readonly stallMs: number;
 };
+/** Where the process is, as far as `progress` shows: a file is seen only once its hooks or tests run. */
+function whereStalled({ file, begun, ended }: Progress) {
+  if (file === undefined)
+    return "before any test file's hooks or tests ran: in loading the first file, or its first hooks";
+  if (begun > ended)
+    return `in a test of ${file} (${begun} began, ${ended} ended)`;
+  return `in ${file} with no test running (${begun} began and ended): in its hooks, or in loading the next file or its hooks`;
+}
 /** How long each piece of evidence may take to gather. */
 const EVIDENCE_MS = 15_000;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -21,9 +29,8 @@ self.onmessage = ({ data }: MessageEvent<Progress>) => {
 async function stalled(progress: Progress) {
   const say = (text: string) => writeSync(2, `${text}\n`);
   say(
-    `\nTest stall: ${progress.file || "the test run"} has had no test begin or end for ${progress.stallMs / 1000} s ` +
-      `(${progress.begun} began, ${progress.ended} ended; the last change at ${new Date(progress.at).toISOString()}). ` +
-      `Bun's own timeouts did not end it, so its thread is blocked or waits on something they do not reach. ` +
+    `\nTest stall: no test has begun or ended for ${progress.stallMs / 1000} s, since ` +
+      `${new Date(progress.at).toISOString()}, ${whereStalled(progress)}. Bun's own timeouts did not end it, so its thread is blocked or waits on something they do not reach. ` +
       `Its child processes and its threads follow; then test process ${process.pid} is killed, and what its fixtures ` +
       `started is not cleaned up.`,
   );

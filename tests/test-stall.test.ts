@@ -1,24 +1,28 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const roots: string[] = [];
+const children: number[] = [];
 afterEach(async () => {
+  for (const pid of children.splice(0))
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* Already gone. */
+    }
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
-/** A test whose thread is blocked for a minute, where no Bun timeout can end it. */
-const BLOCKED = `import { test } from "bun:test";
-test("blocks its thread", () => {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);
-}, 500);
-`;
+/** Blocks the thread it runs on for a minute, where no Bun timeout can end it. */
+const BLOCK =
+  "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);";
 const PASSES = `import { test } from "bun:test";
 test("passes", () => {});
 `;
 /** Runs `files` (name to source) with `bun test` from the repository, so the run is configured as every test run here is,
- * with a stall limit of `stallMs`. A run still going after a deadline well inside the blocked test's minute is killed and
+ * with a stall limit of `stallMs`. A run still going after a deadline well inside a blocked thread's minute is killed and
  * answers `overran`. */
 async function testRun(
   files: Record<string, string>,
@@ -64,30 +68,94 @@ async function testRun(
     work,
   };
 }
+/** A stall the run was ended for, `where` it says it was. */
+function expectStall(run: Awaited<ReturnType<typeof testRun>>, where: string) {
+  expect(run.overran).toBe(false);
+  expect(run.code).not.toBe(0);
+  expect(run.output).toMatch(
+    /Test stall: no test has begun or ended for 2 s, since \d{4}-\d\d-\d\dT[\d:.]+Z, /,
+  );
+  expect(run.output).toContain(`, ${where}. Bun's own timeouts did not end it`);
+}
 
-test("a test file whose thread is blocked past the stall limit is named, shown, and killed, and the files beside it still run", async () => {
+test("a test whose thread is blocked past the stall limit is named with its child processes and its threads' stacks, and killed, and the file beside it still runs", async () => {
   const run = await testRun(
-    { "blocked.test.ts": BLOCKED, "passes.test.ts": PASSES },
+    {
+      "blocked.test.ts": `import { test } from "bun:test";
+import { writeFileSync } from "node:fs";
+test("blocks its thread", () => {
+  const sleep = Bun.spawn(["/bin/sleep", "30"]);
+  writeFileSync(import.meta.dir + "/sleep.pid", String(sleep.pid));
+  ${BLOCK}
+}, 500);
+`,
+      "passes.test.ts": PASSES,
+    },
     2_000,
     ["--parallel=2"],
   );
-  expect(run.overran).toBe(false);
-  expect(run.code).not.toBe(0);
-  expect(run.output).toContain(
-    `Test stall: ${join(run.work, "blocked.test.ts")} has had no test begin or end for 2 s (1 began, 0 ended;`,
+  const sleep = Number(await readFile(join(run.work, "sleep.pid"), "utf8"));
+  children.push(sleep);
+  expectStall(
+    run,
+    `in a test of ${join(run.work, "blocked.test.ts")} (1 began, 0 ended)`,
   );
-  expect(run.output).toContain("--- child processes of");
-  expect(run.output).toContain("--- threads of");
+  expect(run.output).toMatch(
+    new RegExp(`--- child processes of \\d+\\n *${sleep} .*/bin/sleep 30\\n`),
+  );
+  expect(run.output).toMatch(
+    /--- threads of \d+\n[^]*Call graph:\n[^]*com\.apple\.main-thread/,
+  );
   expect(run.output).toContain("blocked.test.ts (worker crashed: SIGKILL)");
   expect(run.output).toMatch(/^ 1 pass\n 1 fail$/m);
 }, 60_000);
 
-test("a run of one process is killed at the stall limit too", async () => {
-  const run = await testRun({ "blocked.test.ts": BLOCKED }, 2_000);
-  expect(run.overran).toBe(false);
-  expect(run.code).not.toBe(0);
-  expect(run.output).toContain(
-    `Test stall: ${join(run.work, "blocked.test.ts")} has had no test begin or end`,
+test("a file that blocks while it loads, before any hook or test, is caught by the limit from the run's start", async () => {
+  const run = await testRun(
+    { "loading.test.ts": `${BLOCK}\n${PASSES}` },
+    2_000,
+  );
+  expectStall(
+    run,
+    "before any test file's hooks or tests ran: in loading the first file, or its first hooks",
+  );
+}, 60_000);
+
+test("a file that blocks in its beforeAll under --parallel is named, with no test running", async () => {
+  const run = await testRun(
+    {
+      "setup.test.ts": `import { beforeAll, test } from "bun:test";
+beforeAll(() => {
+  ${BLOCK}
+}, 500);
+test("never runs", () => {});
+`,
+    },
+    2_000,
+    ["--parallel=2"],
+  );
+  expectStall(
+    run,
+    `in ${join(run.work, "setup.test.ts")} with no test running (0 began and ended): in its hooks, or in loading the next file or its hooks`,
+  );
+}, 60_000);
+
+test("in one process, a stall in a later file's beforeAll is said to follow the last file seen, never blamed on it", async () => {
+  const run = await testRun(
+    {
+      "a-first.test.ts": PASSES,
+      "b-second.test.ts": `import { beforeAll, test } from "bun:test";
+beforeAll(() => {
+  ${BLOCK}
+}, 500);
+test("never runs", () => {});
+`,
+    },
+    2_000,
+  );
+  expectStall(
+    run,
+    `in ${join(run.work, "a-first.test.ts")} with no test running (1 began and ended): in its hooks, or in loading the next file or its hooks`,
   );
 }, 60_000);
 

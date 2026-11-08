@@ -6,7 +6,7 @@ import type {
 } from "../providers/contracts";
 import { RigError, failureCauses } from "../domain/errors";
 import { rigCommand } from "../domain/rig-command";
-import { preparationProcessKey } from "../runtime/lifecycle";
+import { preparationProcessKey } from "../runtime/build-preparation";
 import type { TargetOutput } from "./target-output";
 
 /** Runs a Target's build or dependency installation: `command` through /bin/sh in `cwd` (the workspace when absent) with

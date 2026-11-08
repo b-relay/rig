@@ -74,7 +74,11 @@ Target's pages, rigd's health, queue and Activity on Monitor, and Activity on
 `/activity` (one Operation, `?operation=`, is a read of its own). A command, a
 restore, a config apply, a DNS record delete or an env file write from the site
 leaves a read already in flight to the requests sharing it, and the next request reads afresh, so the page it refreshes
-shows what the command changed. A link
+shows what the command changed. Anything else, such as a `rig` command or a
+crash `rigd` records, does not: a page whose read joins one already in flight
+can miss a change made during that read, at most one read's duration, as the
+top bar can. The change moves the pulse stamp, so the live refresh's next poll
+redraws the page with it. A link
 prefetches its page only once it is pointed at, touched or focused
 (`web/components/link.tsx`), never merely for being on screen, so a redraw does
 not prefetch every link on the page again; a link followed without any of those

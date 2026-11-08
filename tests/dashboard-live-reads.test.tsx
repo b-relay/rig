@@ -89,6 +89,7 @@ const { pulseReadings } = await import("../web/server/pulse");
 const { runCommand, runDnsDelete, runEnvEdit } =
   await import("../web/server/actions");
 const { default: ActivityPage } = await import("../web/app/activity/page");
+const { redrawDue } = await import("../web/lib/pulse");
 beforeAll(() => {
   reading = true;
 });
@@ -355,6 +356,44 @@ test.each([
     expect(asked.filter((name) => name === "activity")).toHaveLength(2);
   },
 );
+
+test("an Activity page that joins a pulse read in flight may miss a CLI restart made during it, and the live refresh's next poll shows it", async () => {
+  const restarted = {
+    id: "op-cli",
+    project: "pantry",
+    target: "working",
+    action: "restart",
+    outcome: "restarted",
+    message: "Restarted from the command line",
+    occurredAt: "2026-11-08T10:00:00.000Z",
+  };
+  answer = (name) =>
+    name === "activity" ? { operations: [...recorded] } : idle()(name);
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const seen = pulseOf();
+  await whenAsked(3);
+  // `rig restart` ends while that read is out: rigd records it, and the dashboard is not told.
+  recorded.push(restarted);
+  const page = ActivityPage({ searchParams: Promise.resolve({}) });
+  open();
+  const missed = renderToStaticMarkup(await page);
+  expect(missed).toContain("Nothing has happened yet.");
+  expect(asked).toHaveLength(3);
+  // The next poll reads afresh: its stamp has moved, so the page redraws, and the redraw shows the restart.
+  const before = await seen;
+  const next = await pulseOf();
+  expect(next.stamp).not.toBe(before.stamp);
+  expect(next.stamp).toContain(restarted.occurredAt);
+  expect(
+    redrawDue(next, { stamp: before.stamp, inFlight: 0, stale: false }),
+  ).toBe(true);
+  const redrawn = renderToStaticMarkup(
+    await ActivityPage({ searchParams: Promise.resolve({}) }),
+  );
+  expect(redrawn).toContain(restarted.message);
+  expect(redrawn).not.toContain("Nothing has happened yet.");
+});
 
 test("a request with no session is refused on its own, even while a signed-in one's read is in flight", async () => {
   answer = idle();

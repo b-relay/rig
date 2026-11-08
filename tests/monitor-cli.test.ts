@@ -4,6 +4,7 @@ import { RigError } from "../src/domain/errors";
 import { fitted, type TerminalSize } from "../src/cli/live-region";
 import { runRigCli } from "../src/cli/rig";
 import { monitorLines } from "../src/cli/monitor-output";
+import { cliHarness } from "./support/cli-harness";
 
 const stats = (median: number, high: number) => ({
   low: 0,
@@ -154,39 +155,16 @@ function harness(
   reply: (request: RuntimeCommand, count: number) => unknown,
   terminal?: Partial<TerminalSize>,
 ) {
-  const requests: RuntimeCommand[] = [];
   const size = { ...terminal };
   const shown = screenOf(size);
-  let out = "";
-  let err = "";
   const stop = new AbortController();
   let waits = 0;
   const delays: number[] = [];
-  const deps = {
-    root: "/isolated/.rig",
+  const cli = cliHarness({
     cwd: "/workspace/fletcher",
-    client: {
-      async status(): Promise<never> {
-        throw new Error("not used");
-      },
-      async command(request: RuntimeCommand) {
-        requests.push(request);
-        return reply(request, requests.length);
-      },
-    },
-    output: {
-      write: (value: string) => {
-        out += value;
-        shown.write(value);
-      },
-      error: (value: string) => void (err += value),
-    },
-    diagnostics: {
-      async record() {
-        return { path: "/isolated/log" };
-      },
-    },
-    newOperationId: () => "op-1",
+    command: (request) => reply(request, cli.requests.length),
+    output: { write: (value) => shown.write(value) },
+    record: async () => ({ path: "/isolated/log" }),
     signal: stop.signal,
     /** Three redraws a second apart, then Ctrl-C. */
     wait: async (ms: number) => {
@@ -197,16 +175,8 @@ function harness(
     ...(terminal
       ? { outputTerminal: () => size as TerminalSize, terminalColumns: 80 }
       : {}),
-  };
-  return {
-    deps,
-    requests,
-    size,
-    out: () => out,
-    err: () => err,
-    screen: shown,
-    delays,
-  };
+  });
+  return { ...cli, size, screen: shown, delays };
 }
 
 test("the table shows each Target's total with its own Services and Jobs under it, now, median and peak, and – where nothing runs", () => {

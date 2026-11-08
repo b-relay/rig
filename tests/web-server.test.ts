@@ -18,9 +18,12 @@ import { join } from "node:path";
 import {
   DEMO_PROJECTS,
   downCommands,
+  seedFailure,
   seedSandbox,
+  seedStepRunner,
   seedSteps,
 } from "../web/server/seed";
+import { userCorrectable } from "../src/domain/errors";
 import { readProjectConfig, targetOn } from "../src/config";
 
 const KEY = "k".repeat(43);
@@ -221,7 +224,29 @@ test("a malformed trusted-client entry stops the server instead of widening acce
     "office",
     "10.0.0",
   ])
-    expect(() => parseTrustedClients(entry)).toThrow(TypeError);
+    expect(() => parseTrustedClients(` 10.1.2.3, ${entry}`)).toThrow(
+      expect.objectContaining({
+        _tag: "RigError",
+        code: "WEB_TRUSTED_CLIENTS_INVALID",
+        message: `"${entry}" is not an IP address or an IPv4 block such as 100.64.0.0/10.`,
+        hint: "Fix dashboard.trusted_clients in Host config (config.yaml under the Rig root), which rigd passes to the dashboard in RIG_WEB_TRUSTED_CLIENTS, then run rigd install.",
+        details: { entry },
+      }),
+    );
+  // The dashboard reads its settings through the same parser, so a malformed entry stops it with the same failure.
+  expect(() =>
+    siteSettings(
+      { PORT: "4100", RIG_WEB_TRUSTED_CLIENTS: "100.64.0.0/10,office" },
+      "/home",
+      "/checkout",
+    ),
+  ).toThrow(
+    expect.objectContaining({
+      code: "WEB_TRUSTED_CLIENTS_INVALID",
+      details: { entry: "office" },
+    }),
+  );
+  expect(userCorrectable("WEB_TRUSTED_CLIENTS_INVALID")).toBe(true);
   expect(parseTrustedClients("")).toEqual([]);
   expect(trustedClient("10.1.2.3", parseTrustedClients("10.1.2.3"))).toBe(true);
   expect(trustedClient("10.1.2.4", parseTrustedClients("10.1.2.3"))).toBe(
@@ -366,25 +391,68 @@ test("every demo Project's rig.yaml turns on each Target its seed deploys", asyn
 
 test("seeding skips Projects already present and reports a failure without stopping the rest", async () => {
   const ran: string[] = [];
+  // The runner the site seeds with, over commands stood in for: the broken Project's init exits 1.
+  const run = seedStepRunner("/data", async (step) => {
+    if (step.kind === "rig" && step.args.includes("/data/broken"))
+      return { exitCode: 1, output: "init refused\n" };
+    if (step.kind === "rig") ran.push(step.args.join(" "));
+    return { exitCode: 0, output: "" };
+  });
+  const thrown = await run(
+    { kind: "rig", args: ["init", "--path", "/data/broken"] },
+    "broken",
+  ).catch((error: unknown) => error);
+  expect(thrown).toMatchObject({
+    _tag: "RigError",
+    code: "WEB_DEMO_SEED_FAILED",
+    message: "`rig init --path /data/broken` failed: init refused",
+    hint: "Fix what the step printed, then delete /data/broken and restart the Preview to seed broken again.",
+    details: { project: "broken", step: "rig init --path /data/broken" },
+  });
   const failures = await seedSandbox(
     "/site/demo",
     "/data",
-    {
-      exists: async (path) => path === "/data/kept",
-      run: async (step) => {
-        if (step.kind === "rig" && step.args.includes("/data/broken"))
-          throw new Error("init refused");
-        if (step.kind === "rig") ran.push(step.args.join(" "));
-      },
-    },
+    { exists: async (path) => path === "/data/kept", run },
     [
       { name: "kept", deployStable: true },
       { name: "broken", deployStable: true },
       { name: "fine", deployStable: false },
     ],
   );
-  expect(failures).toEqual([{ project: "broken", cause: "init refused" }]);
+  // The log line says which step failed, what it printed, and how to seed the Project again.
+  expect(failures).toEqual([
+    {
+      project: "broken",
+      cause:
+        "`rig init --path /data/broken` failed: init refused Fix what the step printed, then delete /data/broken and restart the Preview to seed broken again.",
+    },
+  ]);
   expect(ran).toEqual(["init --path /data/fine"]);
+});
+
+test("a failed demo seed step is WEB_DEMO_SEED_FAILED, naming the Project and the step, with what the step printed", () => {
+  const failure = seedFailure(
+    "pantry",
+    { kind: "exec", argv: ["git", "-C", "/data/pantry", "init"] },
+    "  fatal: not a directory\n",
+    "/data/pantry",
+  );
+  expect(failure).toMatchObject({
+    _tag: "RigError",
+    code: "WEB_DEMO_SEED_FAILED",
+    message: "`git -C /data/pantry init` failed: fatal: not a directory",
+    hint: "Fix what the step printed, then delete /data/pantry and restart the Preview to seed pantry again.",
+    details: { project: "pantry", step: "git -C /data/pantry init" },
+  });
+  // A step that printed nothing still ends its sentence.
+  expect(
+    seedFailure(
+      "ledger",
+      { kind: "rig", args: ["deploy", "stable"] },
+      "",
+      "/data/ledger",
+    ).message,
+  ).toBe("`rig deploy stable` failed.");
 });
 
 test("shutdown stops every started Target, naming a Preview by its deployment and the others by their role", () => {

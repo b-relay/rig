@@ -52,6 +52,7 @@ import {
   type FailureCauses,
   retainFailureCauses,
   failureCauses,
+  internalInvariant,
 } from "../domain/errors";
 import { resolve as resolvePath } from "node:path";
 import { routeOwnerToken } from "../domain/proxy-publication";
@@ -545,7 +546,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       async admit(scopes, subject) {
         // One admission per selection: a second would hold two leases, and nothing could release the first.
         if (lease)
-          throw new Error(`Operation ${operationId} was admitted twice.`);
+          throw internalInvariant(
+            `Operation ${operationId} was admitted twice.`,
+            { operationId },
+          );
         if (subject.project) entry.view.project = subject.project;
         if (subject.target) entry.view.target = subject.target;
         lease = await locks.acquire(operationId, scopes);
@@ -929,7 +933,12 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       if (command.action === "doctor" && !command.project) {
         try {
           if (!command.repoPath)
-            throw new ConfigError("No Project selected.", "missing_config");
+            throw new ConfigError(
+              "No Project selected.",
+              "missing_config",
+              {},
+              "Run rig doctor in a Project repository, or pass --project <name>, to check that Project too.",
+            );
           const found = await deps.documents.discover(command.repoPath);
           const state = await deps.store.read();
           // A directory whose config names no registered Project still gets Host checks, with the reason Project checks are absent.

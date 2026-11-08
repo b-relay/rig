@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import type { ListResult } from "../lib/types";
-import { projectList } from "./status";
+import { projectList, refusalError } from "./status";
 
 export type Project = ListResult["projects"][number];
 /** The registered Project a page is about, or the not-found page when this Host has none by that name.
@@ -10,8 +10,7 @@ export async function project(
 ): Promise<Project> {
   const { name } = await params;
   const list = await projectList();
-  if (!list.ok)
-    throw Object.assign(new Error(list.failure.message), list.failure);
+  if (!list.ok) throw refusalError(list.failure);
   const found = list.value.projects.find((each) => each.name === name);
   if (!found) notFound();
   return found;

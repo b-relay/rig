@@ -20,9 +20,12 @@ export async function readHostDiagnostics(
     raw = await readFile(path, "utf8");
   } catch (error) {
     if (missing(error)) return undefined;
-    throw new ConfigError("Unable to read config document.", "read_failed", {
-      path,
-    });
+    throw new ConfigError(
+      "Unable to read config document.",
+      "read_failed",
+      { path },
+      `Make ${path} a file you can read, then retry.`,
+    );
   }
   if (!raw.includes("diagnostics") && !raw.includes("\\")) return undefined;
   const [{ yamlValue }, { checkedHostConfigSchema }] = await Promise.all([

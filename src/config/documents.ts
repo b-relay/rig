@@ -33,9 +33,12 @@ async function locateConfig(
     return path;
   } catch (error) {
     if (missing(error)) return undefined;
-    throw new ConfigError("Unable to inspect config document.", "read_failed", {
-      path,
-    });
+    throw new ConfigError(
+      "Unable to inspect config document.",
+      "read_failed",
+      { path },
+      `Make ${printablePath(path)} and every directory above it readable by you, then retry.`,
+    );
   }
 }
 function decodeDocument<T>(
@@ -183,9 +186,12 @@ async function readDocumentSource<T>(
         { ...error.context, path },
         `In ${printablePath(path)}: ${error.hint}`,
       );
-    throw new ConfigError("Unable to read config document.", "read_failed", {
-      path,
-    });
+    throw new ConfigError(
+      "Unable to read config document.",
+      "read_failed",
+      { path },
+      `Make ${printablePath(path)} a file you can read, then retry.`,
+    );
   }
 }
 /** Reads one Project config; does not create, migrate, or modify it. */
@@ -293,9 +299,12 @@ export async function readProjectConfigSource(
 ): Promise<ProjectConfigSource> {
   const path = await locateConfig(resolve(repoPath), "rig");
   if (!path)
-    throw new ConfigError("No rig.yaml found.", "missing_config", {
-      repoPath,
-    });
+    throw new ConfigError(
+      "No rig.yaml found.",
+      "missing_config",
+      { repoPath },
+      "Run rig init from the Project repository.",
+    );
   return readDocumentSource(path, parseProjectConfig, readText);
 }
 function prepareEdit(
@@ -363,6 +372,7 @@ export async function editProjectConfig(
         "Config changed during editing.",
         "revision_conflict",
         { path: document.path },
+        "Read the current config before retrying the edit.",
       );
     await rename(temporary, file);
     temporary = undefined;

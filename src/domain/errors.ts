@@ -136,7 +136,24 @@ const userCorrectableCodes: ReadonlySet<string> = new Set([
   "JOB_RUNNING",
   "JOB_UNAVAILABLE",
   "JOB_STOP_UNVERIFIED",
+  // The dashboard: a Host config entry to fix, a demo step's output to act on, or a page to reload.
+  "WEB_TRUSTED_CLIENTS_INVALID",
+  "WEB_DEMO_SEED_FAILED",
+  "WEB_PROTOCOL",
 ]);
+/** A check that fails only on a bug in Rig; `details` names the ids involved. Not user-correctable, so the CLI adds the
+ * Operation and the diagnostic path to the report. */
+export function internalInvariant(
+  message: string,
+  details: Readonly<Record<string, unknown>>,
+): RigError {
+  return new RigError(
+    "INTERNAL_INVARIANT",
+    message,
+    "This is a bug in Rig; report it with this message.",
+    details,
+  );
+}
 /** The user ended the command before it changed anything; the hint says what, if anything, still runs. */
 export function cancelled(hint = "No runtime change was requested."): RigError {
   return new RigError("CANCELLED", "The operation was cancelled.", hint);

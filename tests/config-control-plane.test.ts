@@ -109,8 +109,31 @@ test("editor rejects unregistered identities, arbitrary paths, identity edits an
       }),
     ).rejects.toMatchObject({
       code: path[0] === "name" ? "identity_change" : "invalid_edit",
+      ...(path[0] === "name"
+        ? {}
+        : path[0] === "constructor"
+          ? {
+              message: "Unsafe or empty config edit path.",
+              hint: "Name the field by its keys, such as services.web.command; a key cannot be empty, __proto__, prototype or constructor.",
+            }
+          : {
+              message: "Unsupported config field path.",
+              hint: "Edit only a field the config editor's read lists, such as services.<name>.command.",
+            }),
     });
   }
+  // The editor's request schema refuses an empty key first; the document editor itself refuses it the same way.
+  await expect(
+    previewProjectConfig({
+      repoPath: f.root,
+      expectedRevision: read.revision!,
+      edits: [{ op: "remove", path: ["services", ""] }],
+    }),
+  ).rejects.toMatchObject({
+    code: "invalid_edit",
+    message: "Unsafe or empty config edit path.",
+    hint: "Name the field by its keys, such as services.web.command; a key cannot be empty, __proto__, prototype or constructor.",
+  });
   expect(await readdir(f.root)).toEqual(["rig.yaml"]);
   expect(await readFile(f.path, "utf8")).toBe(f.raw);
   expect(f.locks()).toBe(0);

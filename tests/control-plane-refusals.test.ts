@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { startControlPlane } from "../src/daemon/server";
-import { RigError } from "../src/domain/errors";
+import { RigError, internalInvariant } from "../src/domain/errors";
 import { RIG_BUILD } from "../src/domain/version";
 
 const token = "test-secret";
@@ -351,6 +351,46 @@ test("every refusal and failure of the control plane is one tagged document with
         },
       });
     }
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("a control plane without a token is refused as DAEMON_TOKEN before it listens", () => {
+  expect(() => controlPlane({ token: "", port: 4321 })).toThrow(
+    expect.objectContaining({
+      _tag: "RigError",
+      code: "DAEMON_TOKEN",
+      message: "A local daemon token is required.",
+      hint: "Run 'rigd install' to reissue the daemon credential.",
+      details: { port: 4321 },
+    }),
+  );
+});
+
+test("a bug the runtime detects reaches rig as INTERNAL_INVARIANT with its hint, not as an unexpected failure", async () => {
+  const { server } = controlPlane({
+    handle: async () => {
+      throw internalInvariant("Operation op-1 was admitted twice.", {
+        operationId: "op-1",
+      });
+    },
+  });
+  try {
+    const response = await post(
+      server.port!,
+      "/v1/command",
+      JSON.stringify({ action: "list", operationId: "op-1" }),
+    );
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "INTERNAL_INVARIANT",
+        message: "Operation op-1 was admitted twice.",
+        hint: "This is a bug in Rig; report it with this message.",
+      },
+      operationId: "op-1",
+    });
   } finally {
     await server.stop(true);
   }

@@ -401,8 +401,10 @@ asked. A request is admitted only when all of these hold:
 - The request presents the access key (below), from this Mac as from anywhere
   else. Only the sign-in page and its own action are served without it.
 
-A malformed `RIG_WEB_TRUSTED_CLIENTS` entry stops the server at startup rather
-than being skipped or widened. The proxy runs on every path. Only the readiness
+A malformed `RIG_WEB_TRUSTED_CLIENTS` entry stops the server at startup
+(`WEB_TRUSTED_CLIENTS_INVALID`, naming the entry and Host config's
+`dashboard.trusted_clients`, where it comes from) rather than being skipped or
+widened. The proxy runs on every path. Only the readiness
 probe (`/healthz`), `/favicon.ico` and the build's own files under
 `/_next/static/` are served without the key, each matched exactly, so a path
 that only starts like one is decided like any page. The root layout decides the
@@ -486,7 +488,9 @@ Preview's data directory, committed, and registered (`web/server/seed.ts`);
 `pantry` and `ledger` are deployed and `pantry` also gets a Preview, so every
 screen has something to show. Seeding runs after the site starts serving, and a
 Project already present is left alone, so a restart keeps what a visitor
-changed. Sandbox Targets get ports but no published URLs. When the Service
+changed. A step that fails (`WEB_DEMO_SEED_FAILED`) is logged with the step and what
+it printed; that Project's directory stays, so delete it before a restart seeds
+it again. Sandbox Targets get ports but no published URLs. When the Service
 stops, the site stops every sandbox Target through the sandbox's control plane
 and then runs `rigd uninstall`; `rig down preview <branch> --destroy` deletes
 the rest with the Preview's data.

@@ -535,11 +535,9 @@ export class DaemonAdmin {
     // No rigd runs now, so Rig's Caddy is set up (or taken down) with nothing else publishing, before rigd starts.
     // A proxy failure from here on must not leave the Host without rigd: rigd starts anyway, its startup republish fails
     // closed and doctor reports it, and the failure is still this command's outcome.
-    let proxyWarnings: string[] = [];
     let proxyFailure: unknown;
     try {
-      if (proxyMode === "managed")
-        proxyWarnings = await this.options.proxy!.install();
+      if (proxyMode === "managed") await this.options.proxy!.install();
       else await this.options.proxy?.remove();
     } catch (error) {
       proxyFailure = error;
@@ -560,12 +558,10 @@ export class DaemonAdmin {
       const status = await this.status();
       if (status.reachable) {
         if (proxyFailure) throw proxyFailure;
-        const warnings = [...(status.warnings ?? []), ...proxyWarnings];
         return {
           ...status,
           outcome: "installed",
           ...(replaced ? { replaced } : {}),
-          ...(warnings.length ? { warnings } : {}),
         };
       }
       // The daemon reports its own failed start; waiting longer would not change it.
@@ -797,14 +793,13 @@ export class DaemonAdmin {
       }
       await this.awaitSystemDaemon(serving?.pid);
     }
-    let warnings: string[] = [];
     if (proxyMode === "managed") {
       const address = await readDaemonAddress(root);
       const client = new DaemonClient({
         port: address!.port,
         token: await readDaemonToken(root),
       });
-      warnings = await this.options.proxy!.installPublishedBy(() =>
+      await this.options.proxy!.installPublishedBy(() =>
         client.command({ action: "proxy-apply" }),
       );
     }
@@ -813,7 +808,6 @@ export class DaemonAdmin {
     const stable = join(root, "bin", "rigd");
     const allWarnings = [
       ...(status.warnings ?? []),
-      ...warnings,
       ...(this.options.command[0] !== stable
         ? [
             `The rigd system job runs ${this.options.command[0]}, not ${stable}; installing a rigd from another path asks for sudo again.`,

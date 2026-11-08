@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { removeFileDurably } from "../providers/private-files";
 import { readHostConfig } from "../config";
+import type { HostConfig } from "../config/types";
 import type { ProxyMode, ProxySettings } from "../config/proxy-schema";
 import { inspectProxyToken } from "../adapters/proxy-token";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
@@ -49,11 +50,11 @@ export interface ProxyInstallation {
    * it and answering, and a current generation accepted with the proxy section and the dashboard's domain it names. */
   inSync(): Promise<boolean>;
   /** Installs Rig's Caddy completely and has it serve the current routes and proxy.routes, published from here: the binary
-   * proxy.caddy names, its job defined and running that binary, and the binary confirmed. Resolves to warnings. */
-  install(): Promise<string[]>;
+   * proxy.caddy names, its job defined and running that binary, and the binary confirmed. */
+  install(): Promise<void>;
   /** Installs Rig's Caddy completely, as install does, beside a system rigd that keeps running: `publish` has that rigd
-   * publish the current routes (proxy-apply) in place of publishing here. Resolves to warnings. */
-  installPublishedBy(publish: () => Promise<unknown>): Promise<string[]>;
+   * publish the current routes (proxy-apply) in place of publishing here. */
+  installPublishedBy(publish: () => Promise<unknown>): Promise<void>;
   /** Prepares Rig's Caddy for a system job that needs the owner's sudo first: the binary put in place and the current routes
    * published, but no job defined, so the binary stays pending until a complete install confirms it. */
   stage(): Promise<void>;
@@ -88,8 +89,8 @@ interface Prepared {
   readonly job: InstallableCaddyJob;
   /** Whether the job ran before this install. */
   readonly wasRunning: boolean;
-  /** Publishes the current routes from this process, for an install with no rigd running to publish them. */
-  publishHere(): Promise<void>;
+  /** Host config as it read once the job was known. */
+  readonly host: HostConfig;
 }
 export function createProxyInstallation(
   options: ProxyInstallationOptions,
@@ -162,18 +163,25 @@ export function createProxyInstallation(
     );
   }
   /** What every install reads before it changes anything: Host config's proxy section and the token it needs, the Caddy job
-   * and whether it runs, and how to publish the current routes from here. */
+   * and whether it runs, and Host config again. */
   async function prepare(): Promise<Prepared> {
     const wanted = await settings();
     await requireToken(options.root, wanted);
     const job = await currentJob();
     const wasRunning = (await job.state()) === "running";
+    // Read again here, so a config.yaml that can no longer be read is refused before anything changes.
+    const host = await readHostConfig(options.root);
+    return { wanted, job, wasRunning, host };
+  }
+  /** How an install with no rigd running publishes the current routes from this process. It reads the dashboard's route
+   * when called, so an install calls it before anything changes. */
+  async function publisherHere({
+    job,
+    host,
+  }: Prepared): Promise<() => Promise<void>> {
     // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
     // does.
-    const configured = await configuredDashboardRoute(
-      options.root,
-      await readHostConfig(options.root),
-    );
+    const configured = await configuredDashboardRoute(options.root, host);
     const withheld = configured && {
       domain: configured.domain,
       port: null,
@@ -186,15 +194,10 @@ export function createProxyInstallation(
       job,
       admin,
     });
-    return {
-      wanted,
-      job,
-      wasRunning,
-      async publishHere() {
-        await caddy.republish();
-        // This install published nothing more after it, and says so for the rigd it starts (see ProxyPaths.cleanStop).
-        await caddy.close();
-      },
+    return async () => {
+      await caddy.republish();
+      // This install published nothing more after it, and says so for the rigd it starts (see ProxyPaths.cleanStop).
+      await caddy.close();
     };
   }
   /** Until the new binary serves, any failure puts the previous one back, so the link never names a binary the running Caddy
@@ -283,22 +286,19 @@ export function createProxyInstallation(
     },
     async install() {
       const prepared = await prepare();
-      await activate(
-        prepared,
-        await stageBinary(prepared, prepared.publishHere),
-      );
-      return [];
+      const publish = await publisherHere(prepared);
+      await activate(prepared, await stageBinary(prepared, publish));
     },
     async installPublishedBy(publish) {
       const prepared = await prepare();
       await activate(prepared, await stageBinary(prepared, publish));
-      return [];
     },
     async stage() {
       const prepared = await prepare();
+      const publish = await publisherHere(prepared);
       // No job is defined, so nothing runs the new binary yet: it stays pending, and the complete install after the owner's
       // sudo confirms it.
-      await stageBinary(prepared, prepared.publishHere);
+      await stageBinary(prepared, publish);
     },
     async preflight() {
       checkProxyRoot(paths);

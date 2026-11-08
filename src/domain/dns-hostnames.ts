@@ -78,7 +78,7 @@ export const MAX_HOPS = 8;
 export const POINT_COMMENT = "Points at this Mac; created by Rig";
 type Lookup =
   | { kind: "records"; owner: string; wildcard: boolean; records: DnsRecord[] }
-  | { kind: "nodata"; owner: string; parentOnly: boolean }
+  | { kind: "nodata"; owner: string }
   | { kind: "nxdomain" };
 /** Pure: what the zone's authoritative server answers for `name`, by the DNS rules for wildcards (RFC 4592): the name's own
  * records when it has any; nothing when it exists only as the parent of other names; otherwise the wildcard at its closest
@@ -97,7 +97,7 @@ export function lookupName(
   const own = inThisZone.filter((record) => record.name === name);
   if (own.length)
     return { kind: "records", owner: name, wildcard: false, records: own };
-  if (exists(name)) return { kind: "nodata", owner: name, parentOnly: true };
+  if (exists(name)) return { kind: "nodata", owner: name };
   let encloser = name.slice(name.indexOf(".") + 1);
   while (encloser !== zone && encloser.includes(".") && !exists(encloser))
     encloser = encloser.slice(encloser.indexOf(".") + 1);
@@ -357,9 +357,7 @@ export function verdictOf(
 function unansweredReason(subject: string, lookup: Unanswered): string {
   if (lookup.kind === "nxdomain")
     return `${subject} has no record, and no wildcard covers it.`;
-  return lookup.parentOnly
-    ? `${subject} exists only as the parent of other records, so no wildcard answers for it and it has no address.`
-    : `${subject} has records, but no A record.`;
+  return `${subject} exists only as the parent of other records, so no wildcard answers for it and it has no address.`;
 }
 function checkHostname(
   served: ServedHostname,

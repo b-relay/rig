@@ -175,7 +175,7 @@ test("verdictOf words each end of the walk, naming the name a CNAME leads to", (
     verdictOf(
       {
         kind: "unanswered",
-        lookup: { kind: "nodata", owner: "app.example.com", parentOnly: true },
+        lookup: { kind: "nodata", owner: "app.example.com" },
       },
       MAC,
     ),

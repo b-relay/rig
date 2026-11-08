@@ -106,7 +106,18 @@ function archives(contents: Contents) {
   );
   return entry.packing;
 }
-async function pack(contents: Contents) {
+/** Runs one packing step with `PATH`, answering what it printed. A step that fails or is killed fails the pack, so a pack
+ * that is not whole never reaches the cache. */
+async function packingStep(args: string[], PATH: string, cwd?: string) {
+  const result = await run(args, { PATH }, cwd);
+  if (result.code !== 0)
+    throw new Error(
+      `Packing the fake release: ${args.join(" ")} exited with ${result.code}: ${result.stderr.trim()}`,
+    );
+  return result.stdout;
+}
+/** Packs `contents` with the `tar` and `shasum` that `PATH` finds. */
+async function pack(contents: Contents, PATH = SYSTEM_PATH) {
   const at = await mkdtemp(join(tmpdir(), "rig-install-archives-"));
   packs.push(at);
   const dir = join(at, "archives");
@@ -131,17 +142,23 @@ async function pack(contents: Contents) {
           `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; /usr/bin/lockf -s -t 0 "\${RIG_INSTALL_LOCK_FD:-none}"; own=$?; /usr/bin/lockf -s -t 0 "$lock" true; printf '%s %s %s %s' "\${RIG_INSTALL_LOCK_FD:-none}" "$own" "$?" "$(cat "$lock")" > "$RIG_TEST_LOCK"; fi\n` +
           `echo "rigd $*"\n`,
       );
-    await run([
-      "tar",
-      "-czf",
-      join(dir, `${build}.tar.gz`),
-      "-C",
-      join(at, "build"),
-      build,
-    ]);
+    await packingStep(
+      [
+        "tar",
+        "-czf",
+        join(dir, `${build}.tar.gz`),
+        "-C",
+        join(at, "build"),
+        build,
+      ],
+      PATH,
+    );
   }
-  const sums = (await run(["sh", "-c", "shasum -a 256 rig-*.tar.gz"], {}, dir))
-    .stdout;
+  const sums = await packingStep(
+    ["sh", "-c", "shasum -a 256 rig-*.tar.gz"],
+    PATH,
+    dir,
+  );
   return { dir, sums };
 }
 
@@ -204,6 +221,30 @@ async function release(
 }
 const installedArch = async (root: string) =>
   (await run([join(root, "bin", "rig")])).stdout.trim();
+
+// The fixture's own guard: a pack that is not whole must fail, so the cache never offers it to the next test.
+for (const [what, tool, body] of [
+  ["tar fails", "tar", "exit 1"],
+  ["shasum fails", "shasum", "exit 1"],
+  ["shasum is killed", "shasum", "kill -TERM $$"],
+] as const)
+  test(`packing the fake release fails when ${what}, rather than answering a pack without its archives or checksums`, async () => {
+    const home = await mkdtemp(join(tmpdir(), "rig-install-"));
+    homes.push(home);
+    const fakes = join(home, "fakes");
+    await mkdir(fakes);
+    await writeFile(join(fakes, tool), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    const failure = await pack({}, `${fakes}:${SYSTEM_PATH}`).then(
+      () => "packed",
+      (error: Error) => error.message,
+    );
+    expect(failure).toStartWith(
+      `Packing the fake release: ${tool === "tar" ? "tar -czf" : "sh -c shasum -a 256"}`,
+    );
+    expect(failure).toContain(
+      `exited with ${what === "shasum is killed" ? 143 : 1}`,
+    );
+  });
 
 test("install puts the release's rig and rigd in the Rig root's bin, runs rigd install, and says how to reach them", async () => {
   const f = await release();

@@ -12,11 +12,6 @@ import {
 // How a test that ends while it still runs processes is stopped (tests/support/test-processes.ts): what it waits on is
 // killed, descendants included, and it can start nothing more.
 
-const dirs: string[] = [];
-afterEach(async () => {
-  for (const dir of dirs.splice(0))
-    await rm(dir, { recursive: true, force: true });
-});
 const env = { PATH: "/usr/bin:/bin" };
 const alive = (pid: number) => {
   try {
@@ -31,11 +26,36 @@ async function until(holds: () => boolean | Promise<boolean>) {
   while (!(await holds()) && Date.now() < deadline) await Bun.sleep(20);
   return await holds();
 }
+/** The number a file the test's shell wrote holds, once it is there, or undefined. */
+const recordedNumber = async (path: string) =>
+  Number(await readFile(path, "utf8").catch(() => "")) || undefined;
+
+/** Each test's directory, and the file its shell records the sleep it starts in. */
+const started: { dir: string; descendant: string }[] = [];
+// Whatever the test came to, and without the helper it tests, the sleep it left is killed, while its pid is still that sleep.
+afterEach(async () => {
+  for (const { dir, descendant } of started.splice(0)) {
+    await until(async () => (await recordedNumber(descendant)) !== undefined);
+    const sleep = await recordedNumber(descendant);
+    if (
+      sleep !== undefined &&
+      Bun.spawnSync(["/bin/ps", "-p", String(sleep), "-o", "command="])
+        .stdout.toString()
+        .trim() === "/bin/sleep 60"
+    )
+      try {
+        process.kill(sleep, "SIGKILL");
+      } catch {
+        // It has just gone.
+      }
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("ending a test kills a descendant that holds a process's output open, and the test's body settles at once", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rig-test-processes-"));
-  dirs.push(dir);
   const recorded = join(dir, "descendant.pid");
+  started.push({ dir, descendant: recorded });
   const scope = testScope();
   // The shell exits at once; the sleep it leaves behind keeps its output open, so the run waits on it.
   const body = within(scope, async () => {
@@ -46,11 +66,9 @@ test("ending a test kills a descendant that holds a process's output open, and t
     await runOwned(["/usr/bin/true"], { env });
   });
   expect(
-    await until(async () =>
-      Boolean(await readFile(recorded, "utf8").catch(() => "")),
-    ),
+    await until(async () => (await recordedNumber(recorded)) !== undefined),
   ).toBe(true);
-  const descendant = Number(await readFile(recorded, "utf8"));
+  const descendant = (await recordedNumber(recorded))!;
   expect(alive(descendant)).toBe(true);
   expect(await endScope(scope, body, 3_000)).toBe(true);
   // Refused the run it asked for after the end.

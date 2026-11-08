@@ -2939,9 +2939,10 @@ that holds secrets. When Git is present but cannot answer, the command fails
 as `ENV_FILE_UNVERIFIED` rather than loading an unchecked file. A file other users can read still loads, with a warning in
 the Target log asking for `chmod 600`. `rig doctor` reads each env file a
 recorded Target's plan lists, as a start would, and fails `<target>/env-files`
-(`env-file-unusable`) for each one a start would refuse with these codes, naming
-the file, who reads it and the refusal's hint, never a value. An absent optional
-file under `<RIG_ROOT>/env/` is no finding.
+(`env-file-unusable`) for each one the next start would refuse, with these codes
+or `ENV_VALUE`, naming the file, who reads it and the refusal's hint, never a
+value. A running Target is judged so too: what runs keeps running, but its next
+start is refused. An absent optional file under `<RIG_ROOT>/env/` is no finding.
 
 When a file supplies a name that `environment` or a lower file also supplies,
 the Target log notes the name and the sources, never the values. One case is

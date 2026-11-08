@@ -115,13 +115,14 @@ test.each([
   },
 );
 
-// #838: what the proxy report and doctor read of a generation record is checked to be an object first; one that is not
-// gives no evidence, as one that is not JSON does (#568 owns how doctor reports either).
+// #838, #568: what the proxy report and doctor read of a generation record is checked as Rig's Caddy checks it; one that is
+// not a record gives no evidence, as one that is not JSON does, and says why.
 test.each([
   ["null", "null"],
   ["a list", "[]"],
+  ["malformed JSON", "{"],
 ])(
-  "the generation a report reads from a record holding %s is the one an unreadable record gives",
+  "the generation a report reads from a record holding %s takes nothing from it and names it damaged",
   async (_, content) => {
     const w = await world();
     await w.caddy.router.apply(app());
@@ -132,11 +133,20 @@ test.each([
       "g001",
       "generation.json",
     );
-    await writeFile(path, "{");
-    const unreadable = await currentGeneration(w.root);
-    expect(unreadable).toMatchObject({ id: "g001", customRoutes: [] });
     await writeFile(path, content);
-    expect(await currentGeneration(w.root)).toEqual(unreadable);
+    const { damaged, ...evidence } = (await currentGeneration(w.root))!;
+    expect(evidence).toMatchObject({ id: "g001", customRoutes: [] });
+    expect(evidence).not.toHaveProperty("proxy");
+    expect(evidence).not.toHaveProperty("dashboard");
+    expect(evidence).toHaveProperty("adapted");
+    expect(damaged).toEqual({ metadata: expect.any(Error) });
+    expect(damaged!.metadata).toMatchObject(
+      corrupt(
+        path,
+        "Rig cannot read the record of Caddy generation g001.",
+        "Delete it, then run rig proxy reload: Rig builds a new generation from Host config.",
+      ),
+    );
   },
 );
 
@@ -446,4 +456,115 @@ test("a valid Caddy process record still reads as before, and none is a stopped 
   // An older rigd's record, without a start time: the pid is alive, so it cannot be verified.
   await writeFile(paths.processRecord, JSON.stringify({ pid: process.pid }));
   expect(await job.state()).toBe("unknown");
+});
+
+// #568: a file of the current generation that is missing or damaged is named by the doctor check that relies on it, which
+// claims nothing it cannot compare; the repair it names makes the generation complete again.
+const RELOAD =
+  "run rig proxy reload: Rig builds a new generation from Host config.";
+test.each([
+  ["generation.json", "missing", "proxy-settings", "proxy-settings-unknown"],
+  ["generation.json", "not JSON", "proxy-settings", "proxy-settings-unknown"],
+  ["adapted.json", "missing", "proxy-serving", "proxy-serving-unknown"],
+  ["adapted.json", "not JSON", "proxy-serving", "proxy-serving-unknown"],
+])(
+  "doctor names a current generation's %s that is %s, the other checks still report, and the repair it names clears it",
+  async (file, damage, check, reason) => {
+    const w = await world();
+    await w.caddy.router.apply(app());
+    const inspect = async (reachable: boolean) =>
+      await inspectManagedProxy(w.root, settings(), "process", {
+        admin: {
+          reachable: async () => reachable,
+          config: async () => w.control.loaded,
+          stop: async () => true,
+          load: async () => undefined,
+        },
+        job: {
+          state: async () => (reachable ? "running" : "stopped"),
+          description: "test",
+        },
+      });
+    const failing = async () =>
+      (await inspect(true)).filter((each) => !each.ok);
+    // Intact, nothing fails.
+    expect(await failing()).toEqual([]);
+    const path = join(w.root, "caddy", "generations", "g001", file);
+    await (damage === "missing" ? rm(path) : writeFile(path, "{"));
+    const what =
+      file === "generation.json"
+        ? "the record of Caddy generation g001"
+        : "the configuration Caddy generation g001 was validated as";
+    const expected = {
+      name: check,
+      ok: false,
+      message: expect.stringContaining(`Rig cannot read ${what}.`),
+      reason,
+      hint:
+        damage === "missing"
+          ? `${path} is missing. To make the generation complete again, ${RELOAD}`
+          : expect.stringMatching(
+              new RegExp(
+                `^${escape(path)} is not valid JSON.* Delete it, then ${escape(RELOAD)}$`,
+              ),
+            ),
+    };
+    // Reported whether or not Caddy answers, and only by the check that relies on the file.
+    for (const reachable of [true, false]) {
+      const checks = await inspect(reachable);
+      expect(checks.filter((each) => !each.ok)).toEqual([
+        ...(reachable
+          ? []
+          : [expect.objectContaining({ name: "proxy-process", ok: false })]),
+        expected,
+      ]);
+      expect(checks.map((each) => each.name)).toEqual(
+        expect.arrayContaining([
+          "proxy-binary",
+          "proxy-process",
+          "proxy-settings",
+          ...(reachable || check === "proxy-serving" ? ["proxy-serving"] : []),
+        ]),
+      );
+    }
+    // The repair the hint names.
+    if (damage === "not JSON") await rm(path);
+    expect(await w.caddy.republish()).toEqual({ published: true });
+    expect(await w.current()).not.toBe("g001");
+    expect(await failing()).toEqual([]);
+  },
+);
+
+test("a generation record without settings this Rig reads is compared by their digest: served while Host config matches it, pending once it changes", async () => {
+  const w = await world();
+  await w.caddy.router.apply(app());
+  const path = join(w.root, "caddy", "generations", "g001", "generation.json");
+  const { proxy: _, ...digestOnly } = JSON.parse(await Bun.file(path).text());
+  await writeFile(path, JSON.stringify(digestOnly));
+  const proxySettings = async (requested: ReturnType<typeof settings>) =>
+    (
+      await inspectManagedProxy(w.root, requested, "process", {
+        admin: {
+          reachable: async () => true,
+          config: async () => w.control.loaded,
+          stop: async () => true,
+          load: async () => undefined,
+        },
+        job: { state: async () => "running", description: "test" },
+      })
+    ).find((check) => check.name === "proxy-settings");
+  expect(await proxySettings(settings())).toEqual({
+    name: "proxy-settings",
+    ok: true,
+    message: "Rig's Caddy serves the proxy section of config.yaml.",
+  });
+  const edited = { routes: { "own.example.test": 3005 } };
+  expect(await proxySettings(settings(edited))).toMatchObject({
+    ok: false,
+    reason: "proxy-settings-pending",
+    hint: "Run rig proxy reload to apply it.",
+  });
+  w.setSettings(edited);
+  expect(await w.caddy.republish()).toEqual({ published: true });
+  expect(await proxySettings(settings(edited))).toMatchObject({ ok: true });
 });

@@ -1,5 +1,4 @@
 import { resolve as resolvePath } from "node:path";
-import { ConfigError } from "../config/errors";
 import type {
   DnsRequest,
   ListResult,
@@ -283,37 +282,42 @@ export async function initializationInfo(
     );
   return await deps.documents.initializationInfo(command.repoPath);
 }
-/** `rig doctor` with no Project named: the Host checks alone, with the reason Project checks are absent, unless the
- * directory it runs in names a registered Project, which is checked as if named (undefined). */
-export async function unregisteredDoctor(
+/** `rig doctor` when it can check the Host alone: the Host checks, with the reason Project checks are absent. That is when
+ * runtime state cannot be read, so no registration is known, or when no Project is named and the directory it runs in names
+ * no registered one. Undefined when there is a Project to check, named or found in that directory. */
+export async function hostOnlyDoctor(
   command: RuntimeCommand,
   deps: RuntimeDependencies,
 ): Promise<DoctorReport | undefined> {
+  let state;
   try {
-    if (!command.repoPath)
-      throw new ConfigError(
-        "No Project selected.",
-        "missing_config",
-        {},
-        "Run rig doctor in a Project repository, or pass --project <name>, to check that Project too.",
-      );
-    const found = await deps.documents.discover(command.repoPath);
-    const state = await deps.store.read();
-    // A directory whose config names no registered Project still gets Host checks, with the reason Project checks are absent.
-    if (
-      !state.projects.some(
-        (p) =>
-          p.name === found.document.config.name ||
-          resolvePath(p.repoPath) === resolvePath(found.repoPath),
-      )
-    )
-      throw new RigError(
-        "PROJECT_MISSING",
-        `Project '${found.document.config.name}' is not registered.`,
-        "Run rig init in this Project directory.",
-      );
-  } catch (error) {
-    return await hostDoctor(deps, error);
+    state = await deps.store.read();
+  } catch {
+    return await hostDoctor(deps, { stage: "state" });
   }
+  if (command.project) return undefined;
+  if (!command.repoPath)
+    return await hostDoctor(deps, {
+      stage: "selection",
+      why: "no Project selected.",
+    });
+  let found;
+  try {
+    found = await deps.documents.discover(command.repoPath);
+  } catch (failure) {
+    return await hostDoctor(deps, { stage: "discovery", failure });
+  }
+  // A directory whose config names no registered Project still gets Host checks, with the reason Project checks are absent.
+  if (
+    !state.projects.some(
+      (p) =>
+        p.name === found.document.config.name ||
+        resolvePath(p.repoPath) === resolvePath(found.repoPath),
+    )
+  )
+    return await hostDoctor(deps, {
+      stage: "selection",
+      why: `Project '${found.document.config.name}' is not registered. Run rig init in this Project directory.`,
+    });
   return undefined;
 }

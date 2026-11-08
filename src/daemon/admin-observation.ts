@@ -190,11 +190,16 @@ export function unverifiedHint(root: string, records: ProcessRecord[]): string {
   const pids = [...new Set(records.map((record) => record.pid))].join(", ");
   return `The recorded daemon pid ${pids} is alive but was recorded by an older rigd without process identity, so it cannot be verified as rigd. If no rigd is running for this root, remove ${files.join(" and ")} and retry.`;
 }
-/** A recorded program that no longer exists explains an unreachable daemon before anyone reads launchd logs. */
+/** A recorded program that no longer exists explains an unreachable daemon before anyone reads launchd logs. A record that
+ * cannot be read is named with its repair, since rigd install and uninstall refuse it. */
 async function installationWarnings(root: string): Promise<string[]> {
-  const installation = await readInstallationRecord(root).catch(
-    () => undefined,
-  );
+  let installation;
+  try {
+    installation = await readInstallationRecord(root);
+  } catch (error) {
+    if (!(error instanceof RigError)) throw error;
+    return [`${error.message} ${error.hint}`];
+  }
   const executable = installation?.command?.[0];
   if (!executable) return [];
   try {

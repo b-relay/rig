@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   BuildUnit,
+  EnvFileRef,
   InstalledComponent,
   ManagedComponent,
   PlanComponent,
@@ -24,6 +25,7 @@ import { RigError, diagnosticErrorCode } from "../domain/errors";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import { privateDirectory } from "../providers/private-files";
 import type { TargetOutput } from "./target-output";
+import type { UnusableEnvFile } from "../runtime/status";
 
 /** The scope one invocation's environment is composed for: a Service, Tool or job, or the Project without one. */
 export type InvocationScope = ManagedComponent | InstalledComponent | PlanJob;
@@ -49,6 +51,8 @@ export interface InvocationEnvironment {
   ): Promise<Record<string, string>>;
   /** Fails ENV_VALUE when a Service of `target` could not start for a value Rig refuses. */
   checkEnvironmentValues(target: TargetRecord): Promise<void>;
+  /** The env files of `target`'s plan that `compose` would refuse now; see `ObservationEffects.unusableEnvFiles`. */
+  unusableFiles(target: TargetRecord): Promise<UnusableEnvFile[]>;
 }
 /** Invocation environments over the baseline `environment`, with each Target's TMPDIR under `root`. `run` asks git whether
  * an env file inside the checkout is ignored; notes go to `output`. */
@@ -134,6 +138,49 @@ export function createInvocationEnvironment(options: {
           },
           component.name,
         );
+    },
+    async unusableFiles(target) {
+      const { plan } = target;
+      // A file the Project lists is in every scope's list too; it is named once, as the whole Project's.
+      const project = new Set((plan.envFiles ?? []).map(({ path }) => path));
+      const scopes: [string, readonly EnvFileRef[] | undefined][] = [
+        ["the whole Project", plan.envFiles],
+        ...plan.components.flatMap(
+          (component): [string, EnvFileRef[] | undefined][] =>
+            component.kind === "persistent"
+              ? []
+              : [
+                  [
+                    `${component.kind === "managed" ? "Service" : "Tool"} ${component.name}`,
+                    component.envFiles,
+                  ],
+                ],
+        ),
+        ...(plan.jobs ?? []).map((job): [string, EnvFileRef[] | undefined] => [
+          `job ${job.name}`,
+          job.envFiles,
+        ]),
+      ];
+      const files = new Map<string, { ref: EnvFileRef; readers: string[] }>();
+      for (const [reader, refs] of scopes)
+        for (const ref of refs ?? []) {
+          const file = files.get(ref.path) ?? { ref, readers: [] };
+          // Required wherever one scope lists it.
+          if (ref.required) file.ref = ref;
+          if (!project.has(ref.path) || reader === "the whole Project")
+            file.readers.push(reader);
+          files.set(ref.path, file);
+        }
+      const unusable: UnusableEnvFile[] = [];
+      for (const { ref, readers } of files.values())
+        try {
+          // As a check of a running process reads it, so a value Rig refuses since it started is no finding here.
+          await loadEnvironmentFiles([ref], plan.workspacePath, ignored, true);
+        } catch (refusal) {
+          if (!(refusal instanceof RigError)) throw refusal;
+          unusable.push({ path: ref.path, readers, refusal });
+        }
+      return unusable;
     },
   };
 }

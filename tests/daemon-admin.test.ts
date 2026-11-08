@@ -833,6 +833,84 @@ test("doctor reports a recorded bun that is now a directory as tool-bun, and pas
   }
 });
 
+test("an installation record rigd cannot read is named with its repair by rigd status and doctor while rigd still serves, and that repair clears both", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-admin-record-"));
+  const script = join(root, "child.ts");
+  const hostModule = join(import.meta.dir, "../src/daemon/host.ts");
+  await writeFile(
+    script,
+    `import { runDaemonHost } from ${JSON.stringify(hostModule)}; await runDaemonHost({root:process.env.RIG_ROOT!,handle:async()=>({ready:true}),shutdown:async()=>{},port:0});`,
+  );
+  const admin = new DaemonAdmin({
+    root,
+    command: [process.execPath, script],
+    mode: "process",
+    userHome: root,
+  });
+  const path = join(root, "daemon", "install.json");
+  const repair =
+    "Delete it, then run rigd install, which records the rigd that is running, or starts one when none is.";
+  const installation = async () =>
+    (await inspectHost(root)).find(
+      (check) => check.name === "daemon-installation",
+    );
+  try {
+    await admin.install();
+    expect(await installation()).toBeUndefined();
+    for (const [damage, state, problem] of [
+      ["not-json", "invalid", "is not valid JSON"],
+      ['{"mode":"elsewhere"}', "invalid", "has an invalid value at mode"],
+      [undefined, "unreadable", "cannot be read"],
+    ] as const) {
+      await rm(path, { recursive: true });
+      // A directory in its place cannot be read as a file.
+      await (damage === undefined ? mkdir(path) : writeFile(path, damage));
+      const refusal = {
+        code: "DAEMON_INSTALL_STATE",
+        message: `The installation record ${path} is ${state}.`,
+        hint: expect.stringMatching(
+          new RegExp(`^${path} ${problem}.*\\. ${repair}$`),
+        ),
+      };
+      const status = await admin.status();
+      expect(status).toMatchObject({
+        installed: true,
+        running: true,
+        reachable: true,
+      });
+      expect(status.warnings).toEqual([
+        expect.stringMatching(
+          new RegExp(
+            `^The installation record ${path} is ${state}\\. ${path} ${problem}.*\\. ${repair}$`,
+          ),
+        ),
+      ]);
+      expect(await installation()).toEqual({
+        name: "daemon-installation",
+        ok: false,
+        message: `${refusal.message} rigd install and rigd uninstall refuse to run until it is repaired.`,
+        reason: "installation-corrupt",
+        hint: refusal.hint,
+      });
+      // What doctor says: both refuse it, with the same hint.
+      await expect(admin.install()).rejects.toMatchObject(refusal);
+      await expect(admin.uninstall()).rejects.toMatchObject(refusal);
+    }
+    // The repair: the next install adopts the rigd that still serves, and both reports are clear.
+    await rm(path, { recursive: true });
+    expect(await admin.install()).toMatchObject({
+      outcome: "installed",
+      reachable: true,
+    });
+    expect((await admin.status()).warnings).toBeUndefined();
+    expect(await installation()).toBeUndefined();
+    expect(await admin.uninstall()).toMatchObject({ outcome: "uninstalled" });
+  } finally {
+    await admin.uninstall().catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+}, 20000);
+
 test("the daemon command prefers the PATH entry that resolves to the running executable", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-exec-"));
   try {

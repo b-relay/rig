@@ -174,6 +174,7 @@ export function createTargetEffects(
       persistent: (_target, component) => exists(component.path),
       toolRunsFrom: (target, checkout) =>
         artifacts.toolRunsFrom(target, checkout),
+      unusableEnvFiles: (target) => environment.unusableFiles(target),
       async listening(_target, component, signal) {
         const ports = [
           ...new Set([

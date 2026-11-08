@@ -18,6 +18,7 @@ import { startControlPlane } from "../src/daemon/server";
 import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
+import type { DoctorCheck } from "../src/daemon/offline-doctor";
 import {
   parseProjectConfig,
   parseHostConfig,
@@ -3826,6 +3827,85 @@ test("unreadable runtime state leaves the daemon serving: reconcile records the 
     ok: false,
     reason: "state-corrupt",
     hint: expect.stringContaining("/tmp/isolated-rig/runtime/state.json"),
+  });
+});
+test("doctor in a Project directory or for a named Project, over unreadable runtime state, reports that state and not the Project's valid config, and says why Project checks were skipped", async () => {
+  const { runtime, deps } = fixture();
+  await runtime.command({ action: "init", repoPath: "/tmp/developer" });
+  const read = deps.store.read;
+  deps.store.read = async () => {
+    throw new RigError(
+      "STATE_CORRUPT",
+      "Invalid runtime state; nothing was changed.",
+      "Runtime state at /tmp/isolated-rig/runtime/state.json is not valid JSON. Restore a known-good copy of the file, or repair it by hand, before retrying.",
+      { path: "/tmp/isolated-rig/runtime/state.json" },
+    );
+  };
+  const skipped =
+    "Project checks were skipped: runtime state could not be read, so which Projects are registered is unknown. The runtime-state check says how to repair it.";
+  for (const command of [
+    { action: "doctor", repoPath: "/tmp/developer" },
+    { action: "doctor", project: "demo" },
+  ] as const) {
+    const report = (await runtime.command(command)) as {
+      ok: boolean;
+      note?: string;
+      project?: string;
+      checks: {
+        name: string;
+        ok: boolean;
+        message: string;
+        reason?: string;
+        hint?: string;
+      }[];
+    };
+    expect(report).toMatchObject({ ok: false, note: skipped });
+    expect(report.project).toBeUndefined();
+    expect(report.checks.filter((check) => !check.ok)).toEqual([
+      {
+        name: "runtime-state",
+        ok: false,
+        message: "Invalid runtime state; nothing was changed.",
+        reason: "state-corrupt",
+        hint: expect.stringContaining("/tmp/isolated-rig/runtime/state.json"),
+      },
+    ]);
+  }
+  // Repaired, the same Project is checked, its config valid.
+  deps.store.read = read;
+  const repaired = (await runtime.command({
+    action: "doctor",
+    repoPath: "/tmp/developer",
+  })) as { project?: string; checks: { name: string; ok: boolean }[] };
+  expect(repaired.project).toBe("demo");
+  expect(
+    repaired.checks.find((check) => check.name === "project-config"),
+  ).toMatchObject({ ok: true });
+});
+test("doctor in a directory whose Git discovery fails keeps that failure's message and hint", async () => {
+  const { runtime, deps } = fixture();
+  deps.documents.discover = async () => {
+    throw new RigError(
+      "GIT_DISCOVERY",
+      "Git Project discovery failed.",
+      "Check Git availability and repository permissions.",
+    );
+  };
+  const report = (await runtime.command({
+    action: "doctor",
+    repoPath: "/tmp/developer",
+  })) as { note?: string; checks: DoctorCheck[] };
+  expect(report.note).toBe(
+    "Project checks were skipped: the Project config could not be read.",
+  );
+  expect(
+    report.checks.find((check) => check.name === "project-config"),
+  ).toEqual({
+    name: "project-config",
+    ok: false,
+    message: "Git Project discovery failed.",
+    reason: "config-invalid",
+    hint: "Check Git availability and repository permissions.",
   });
 });
 test("reconcile prunes effect checkpoints whose Target is absent from state and records each result", async () => {

@@ -8,7 +8,8 @@ control-plane action. There is no landing page; the overview is the root.
 
 Next.js (App Router) and React, run by Bun itself.
 `scripts/build-dashboard.sh` builds it (`output: "standalone"`, images
-unoptimized so no native image library is carried) and assembles a
+unoptimized so no native image library is carried, and without the font
+metrics only Next's build reads) and assembles a
 self-contained server, `web/server.js` with the modules it needs and the static
 files beside it. A release ships that build, and `rigd` runs it with the Bun
 inside its own executable (`BUN_BE_BUN=1`); this repository's `rig.yaml` builds
@@ -19,7 +20,11 @@ the server and streams its rows as they arrive, so the browser never holds the
 control-plane token and never talks to `rigd` directly. Changes go through
 Server Actions (`web/server/actions.ts`), which validate the command with the
 same Zod schema `rigd` uses and answer an `Outcome`, a value or a failure with
-`rigd`'s code and hint, rather than throwing.
+`rigd`'s code and hint, rather than throwing. The browser's code carries none
+of `rigd`'s schemas: what it checks itself, the pulse, it checks with Zod's
+compact API (`zod/mini`). The server loads a page's code when the page is first
+asked for (`preloadEntriesOnStart: false`), since the dashboard mostly waits
+unopened.
 
 ## How it reaches rigd
 
@@ -90,7 +95,7 @@ where it links, says it in full with its hint.
 A sidebar (`web/components/shell/sidebar.tsx`) lists the Host-wide sections
 (Overview, Monitor, Proxy) and every Project with its icon,
 health and Targets, each with a state dot, streamed in as `rigd` answers. Below the width where it
-stays open it is a drawer the top bar opens, and a phone keeps the sections as
+stays open the same sidebar, rendered once (`web/components/shell/navigation.tsx`), is a drawer the top bar opens, and a phone keeps the sections as
 tabs along the bottom. Status reads are shared per request
 (`web/server/status.ts`), so the sidebar and the page pay for one observation.
 A Project the page reads itself is shown in the sidebar as the page read it,
@@ -243,7 +248,8 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   (`PROXY_UNMANAGED`), every hostname comes from status. Its DNS section
   (ADR 0018) reads through `web/lib/dns.ts`: rigd's `dns` read gives the
   hostname check, with a Point at this Mac button per hostname that does not
-  point here, and each zone's records, with Add and Edit dialogs and a Delete
+  point here, and each zone's records, with Add and Edit dialogs (the server
+  checks a dialog's draft against `rigd`'s record rules, `checkDnsRecord`) and a Delete
   dialog that needs the record's name typed. Each change is a `dns-create`,
   `dns-update` or `dns-delete` command carrying the record as the page read
   it, so rigd refuses it once the record changed. rigd reads the token; the
@@ -501,7 +507,7 @@ runs its commands as you.
 | `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/monitor`, `/activity`, `/proxy`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon; `/usage` and `/log-lines` the polled reads.                                                                                 |
 | `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                                                                                        |
 | `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts`, `work.ts` and `env.ts` (per-request reads), `pulse.ts` (the shared pulse read), `navigation.ts` (the sidebar's kept statuses), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server).            |
-| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `link.tsx` the site's link, which prefetches on intent; `operations.tsx` owns in-flight actions and reconciliation.                                                                           |
+| `web/components`      | Server and client components; `shell/` the sidebar and its drawer; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `link.tsx` the site's link, which prefetches on intent; `operations.tsx` owns in-flight actions and reconciliation.                                                                     |
 | `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                                                                                                 |
 | `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-work.ts`, `target-detail.ts`, `logs.ts`, `usage.ts`, `chart-layout.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `page-reads.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
 | `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                                                                                      |

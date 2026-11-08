@@ -2876,6 +2876,36 @@ test("an env key the parser would drop silently is refused by name", () => {
   );
 });
 
+// #834: the refused map was never checked as strings, yet the reference rules read it.
+test.each([
+  [
+    "services.web.environment",
+    "services:\n  web:\n    command: x\n    environment:\n      __proto__: v\n      A: false\n",
+  ],
+  [
+    "environment",
+    "environment:\n  __proto__: v\n  A: 1\nservices:\n  web:\n    command: x\n",
+  ],
+  [
+    "jobs.nightly.environment",
+    "jobs:\n  nightly:\n    command: x\n    schedule: '0 3 * * *'\n    environment:\n      __proto__: v\n      A: 1\n",
+  ],
+  [
+    "targets.working.environment",
+    "services:\n  web:\n    command: x\ntargets:\n  working:\n    environment:\n      __proto__: v\n      A: 1\n",
+  ],
+])(
+  "__proto__ beside a value that is not text in %s is invalid_config",
+  (field, yaml) => {
+    expect(failureOf(parse(`name: app\n${yaml}`))).toMatchObject({
+      _tag: "ConfigError",
+      code: "invalid_config",
+      hint: `Fix ${field}: __proto__ is not an environment variable name.`,
+    });
+    expect(issuePaths(parse(`name: app\n${yaml}`))).toEqual([field]);
+  },
+);
+
 test.each([
   ["relative/work", "/data", "workspacePath"],
   ["/work", "relative/data", "dataRoot"],

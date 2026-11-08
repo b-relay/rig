@@ -73,6 +73,35 @@ test("corrupt admin history rejects read and returns warning on append without a
   ).toBeTruthy();
   expect(await readFile(path, "utf8")).toBe('{"outcome":"installed"}\n');
 });
+test("corrupt admin history names the journal and its first invalid line, an entry cut short before its newline too", async () => {
+  const root = await fixture(),
+    journal = createAdminActivityJournal({
+      root,
+      now: () => "2026-09-09T10:00:00Z",
+      id: () => "id",
+    });
+  await journal.append({ action: "daemon-install", outcome: "installed" });
+  const path = join(root, "runtime", "admin-activity.jsonl");
+  const valid = await readFile(path, "utf8");
+  const corrupt = (line: number) => ({
+    _tag: "RigError",
+    code: "ADMIN_ACTIVITY_CORRUPT",
+    message: "Daemon activity history is invalid.",
+    hint: `Preserve ${path} and restore verified activity evidence at line ${line} before retrying.`,
+    details: { path, line },
+  });
+  // A writer stopped mid-append left a whole entry without its newline.
+  await writeFile(path, `${valid}${valid.trimEnd()}`);
+  await expect(journal.read()).rejects.toMatchObject(corrupt(2));
+  await writeFile(path, `${valid}{"outcome":"installed"}\n${valid}`);
+  await expect(journal.read()).rejects.toMatchObject(corrupt(2));
+  expect(
+    (await journal.append({ action: "daemon-uninstall", outcome: "failed" }))
+      .warning,
+  ).toBe(
+    `Daemon activity could not be recorded; the administration outcome is unchanged. ${corrupt(2).hint}`,
+  );
+});
 test("daemon administration records final no-op and failed outcomes with the supplied correlation identity", async () => {
   const root = await fixture(),
     admin = new DaemonAdmin({

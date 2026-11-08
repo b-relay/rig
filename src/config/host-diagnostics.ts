@@ -34,8 +34,11 @@ export async function readHostDiagnostics(
   ]);
   const host = checkedHostConfigSchema.safeParse(yamlValue(raw, path));
   if (!host.success)
-    throw new ConfigError("Invalid Host configuration.", "invalid_config", {
-      path,
-    });
+    throw new ConfigError(
+      "Invalid Host configuration.",
+      "invalid_config",
+      { path },
+      `Fix the Host config fields rigd names when it reads ${path}; until then the diagnostic log keeps its default level and retention.`,
+    );
   return host.data.diagnostics;
 }

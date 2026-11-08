@@ -10,6 +10,7 @@ import { lstat, open, readFile, unlink } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { z } from "zod";
 import { processStartTime, recordedProcess } from "../daemon/process-identity";
+import { RigError } from "../domain/errors";
 
 /** macOS open(2) flags Node does not name: O_EXLOCK takes flock(2)'s exclusive lock as the file opens (with O_NONBLOCK,
  * failing EAGAIN at once when another descriptor holds it); O_CLOEXEC keeps the lock out of child processes. The kernel
@@ -112,7 +113,12 @@ export async function inheritProcessLock(
   if (code === EX_TEMPFAIL)
     return { held: { lockPath, ...(await recordedPid(lockPath)) } };
   if (code !== 0)
-    throw new Error(`lockf could not lock ${lockPath} (exit ${code}).`);
+    throw new RigError(
+      "PROCESS_LOCK_FAILED",
+      `lockf could not lock ${lockPath} (exit ${code}).`,
+      `Make ${lockPath} a regular file, or remove it if nothing is using it, then run the command again.`,
+      { lockPath, exitCode: code },
+    );
   // The process that passed the lock down holds it after this one; released, the file names it again.
   const passer = await readFile(lockPath, "utf8").catch(() => "");
   await recordHolder(fd);

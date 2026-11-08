@@ -104,19 +104,24 @@ export function createAdminActivityJournal(options: {
         "Inspect the private activity journal permissions.",
       );
     }
-    try {
-      if (raw && !raw.endsWith("\n")) throw Error("incomplete entry");
-      return raw
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => entrySchema.parse(JSON.parse(line)));
-    } catch {
-      throw new RigError(
+    // `line` is the first invalid one, counted from 1; an entry without its newline was cut short.
+    const corrupt = (line: number) =>
+      new RigError(
         "ADMIN_ACTIVITY_CORRUPT",
         "Daemon activity history is invalid.",
-        "Preserve the journal and restore verified activity evidence before retrying.",
+        `Preserve ${path} and restore verified activity evidence at line ${line} before retrying.`,
+        { path, line },
       );
-    }
+    const lines = raw.split("\n");
+    return lines.flatMap((line, index) => {
+      if (!line) return [];
+      if (index === lines.length - 1) throw corrupt(index + 1);
+      try {
+        return [entrySchema.parse(JSON.parse(line))];
+      } catch {
+        throw corrupt(index + 1);
+      }
+    });
   };
   return {
     read,

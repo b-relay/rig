@@ -18,6 +18,7 @@ import { createChildSupervisor } from "../src/providers/child-supervisor";
 import { runCommand } from "../src/providers/command-runner";
 import type { CommandRunner } from "../src/providers/contracts";
 import {
+  kernelStartReader,
   lstartText,
   nativeProcessStart,
 } from "../src/providers/native-process-start";
@@ -93,6 +94,32 @@ describe("a process's start time", () => {
     expect(await identity(42)).not.toBe(first!);
     started = undefined;
     expect(await identity(42)).toBeUndefined();
+  });
+
+  test("a sysctl the kernel refuses is PROCESS_INSPECT naming the pid; one it answers gives the start, or none for no record", () => {
+    const answers: number[] = [];
+    let start: bigint | undefined;
+    const read = kernelStartReader((name, info, size) => {
+      answers.push(name[3]!);
+      if (start === undefined) size[0] = 0n;
+      else info[0] = start;
+      return start === -1n ? -1 : 0;
+    });
+    start = -1n;
+    expect(() => read(42)).toThrow(
+      expect.objectContaining({
+        _tag: "RigError",
+        code: "PROCESS_INSPECT",
+        message: "sysctl could not read process 42.",
+        hint: "Check process inspection permissions before retrying.",
+        details: { pid: 42 },
+      }),
+    );
+    start = 1_792_000_000n;
+    expect(read(43)).toBe(1_792_000_000);
+    start = undefined;
+    expect(read(44)).toBeUndefined();
+    expect(answers).toEqual([42, 43, 44]);
   });
 
   test("that the kernel will not give is an inspection failure, never a process that is gone", async () => {

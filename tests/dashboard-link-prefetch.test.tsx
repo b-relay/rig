@@ -39,6 +39,33 @@ test.each(["onMouseEnter", "onTouchStart", "onFocus"])(
   },
 );
 
+test("a link hands Next every attribute and its ref as given, before and after intent", () => {
+  const ref = { current: null };
+  const given = {
+    href: "/projects/pantry/targets/stable",
+    target: "_blank",
+    rel: "noreferrer",
+    title: "stable: healthy",
+    className: "item active",
+    "aria-current": "page",
+    "aria-label": "stable",
+    replace: true,
+    scroll: false,
+    ref,
+    children: "stable",
+  };
+  const mounted = mount(given);
+  const forwarded = () => {
+    for (const [name, value] of Object.entries(given))
+      expect(shown(mounted).props[name]).toBe(value);
+  };
+  forwarded();
+  mounted.act(() =>
+    (shown(mounted).props.onMouseEnter as (e: unknown) => void)({}),
+  );
+  forwarded();
+});
+
 test("a link that asks for a full prefetch gets it once someone shows intent", () => {
   const mounted = mount({ prefetch: true });
   expect(shown(mounted).props.prefetch).toBe(false);

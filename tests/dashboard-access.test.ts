@@ -8,6 +8,7 @@ import {
 } from "./support/dashboard-site";
 import { NextRequest } from "next/server";
 import * as proxyModule from "../web/proxy";
+import { PAGE_PATH_HEADER } from "../web/lib/page-reads";
 
 /** Who reaches the dashboard: every page, Server Action and route takes the key, from this Mac as from anywhere
  * else: on the loopback address the key itself, which the browser keeps for that origin, and under the published
@@ -212,6 +213,23 @@ test("a path that only starts like a public one is decided like any page, and ca
       "default-src 'none'",
     );
   }
+});
+
+test("the page's render learns the path asked for from the proxy, never from a header the browser sent", async () => {
+  const headers = { ...local(), authorization: basic() };
+  const answer = await page(
+    { ...headers, [PAGE_PATH_HEADER]: "/monitor" },
+    "/projects/pantry/logs",
+  );
+  expect(passed(answer)).toBe(true);
+  expect(answer.headers.get(`x-middleware-request-${PAGE_PATH_HEADER}`)).toBe(
+    "/projects/pantry/logs",
+  );
+  expect(
+    (await rsc(headers)).headers.get(
+      `x-middleware-request-${PAGE_PATH_HEADER}`,
+    ),
+  ).toBe("/projects/pantry");
 });
 
 test("the readiness probe and the build's static files need no session, and carry the CSP too", async () => {

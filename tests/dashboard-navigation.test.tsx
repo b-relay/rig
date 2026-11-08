@@ -12,12 +12,20 @@ import { basic, local } from "./support/dashboard-site";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";
 import { elements } from "./support/hook-harness";
+import { PAGE_PATH_HEADER, pageReads } from "../web/lib/page-reads";
 
 /** The sidebar's Projects: each Project's status is kept for a moment under rigd's pulse, so a page that shows one Project
  * does not observe every other. Every read of rigd is stood in for and counted; the clock is the test's. */
 
+/** The page being rendered, as the proxy names it. */
+let path = "/monitor";
 mock.module("next/headers", () => ({
-  headers: async () => new Headers({ ...local(), authorization: basic() }),
+  headers: async () =>
+    new Headers({
+      ...local(),
+      authorization: basic(),
+      [PAGE_PATH_HEADER]: path,
+    }),
   cookies: async () => ({ get: () => undefined, set() {} }),
 }));
 let health: () => unknown;
@@ -101,6 +109,7 @@ afterAll(() => {
 beforeEach(() => {
   forgetNavigation();
   asked = [];
+  path = "/monitor";
   health = () => ({ instanceId: "i-1", pid: 42, running: true });
   queue = () => ({ waiting: 0, operations: [] });
   activity = () => ({ operations: [] });
@@ -257,4 +266,103 @@ test("a command from the page drops what is kept, even one that ended while a re
   asked = [];
   await shown();
   expect(statusReads().sort()).toEqual(["status:ledger", "status:pantry"]);
+});
+
+test("a Project the page reads itself is shown as the page read it, a failure or a changed Target list included", async () => {
+  expect(await shown()).toEqual(SHOWN);
+  // pantry's own page: its read fails, while ledger, which the page does not read, is still the kept one.
+  path = "/projects/pantry/logs";
+  asked = [];
+  status = (project) =>
+    project === "pantry"
+      ? Object.assign(new Error("The connection to rigd closed."), {
+          code: "DAEMON_INTERRUPTED",
+        })
+      : reports[project];
+  const failed = await shown();
+  expect(statusReads()).toEqual(["status:pantry"]);
+  expect(failed).toContainEqual(["/projects/pantry", "red"]);
+  expect(
+    failed.filter(([href]) => String(href).startsWith("/projects/pantry/")),
+  ).toEqual([]);
+  expect(failed).toContainEqual(["/projects/ledger/targets/working", "failed"]);
+  // A config change took the stable Target away: its own Target page lists what the page read.
+  path = "/projects/pantry/targets/working";
+  status = (project) =>
+    project === "pantry"
+      ? {
+          project: "pantry",
+          targets: [target("working", "working", "running")],
+        }
+      : reports[project];
+  const changed = await shown();
+  expect(
+    changed.filter(([href]) => String(href).startsWith("/projects/pantry")),
+  ).toEqual([
+    ["/projects/pantry", "green"],
+    ["/projects/pantry/targets/working", "running"],
+  ]);
+  // The Overview reads every Project, so the sidebar shows every one as read now.
+  path = "/";
+  asked = [];
+  await shown();
+  expect(statusReads().sort()).toEqual(["status:ledger", "status:pantry"]);
+});
+
+test("a record dated before the newest, as after the clock went back, still reads every Project afresh", async () => {
+  const record = (id: string, occurredAt: string) => ({
+    id,
+    action: "up",
+    outcome: "started",
+    occurredAt,
+  });
+  activity = () => ({
+    operations: [record("a", "2026-11-08T10:00:00.000Z")],
+    total: 1,
+  });
+  await shown();
+  asked = [];
+  // A crash recorded with an earlier time: neither the count of what is returned nor the newest time moves.
+  activity = () => ({
+    operations: [
+      record("crash", "2026-11-08T09:00:00.000Z"),
+      record("a", "2026-11-08T10:00:00.000Z"),
+    ].slice(-1),
+    total: 2,
+  });
+  await shown();
+  expect(statusReads().sort()).toEqual(["status:ledger", "status:pantry"]);
+  // Within the newest returned, only the ids move.
+  asked = [];
+  activity = () => ({
+    operations: [
+      record("crash-2", "2026-11-08T09:30:00.000Z"),
+      record("a", "2026-11-08T10:00:00.000Z"),
+    ],
+  });
+  await shown();
+  asked = [];
+  activity = () => ({
+    operations: [
+      record("crash-3", "2026-11-08T09:30:00.000Z"),
+      record("a", "2026-11-08T10:00:00.000Z"),
+    ],
+  });
+  await shown();
+  expect(statusReads().sort()).toEqual(["status:ledger", "status:pantry"]);
+});
+
+test("the pages that read Projects themselves are known by their path", () => {
+  expect(pageReads("/")).toBe("all");
+  expect(pageReads("/proxy")).toBe("all");
+  expect(pageReads(null)).toBe("all");
+  expect(pageReads("/projects/%E0%A4%A")).toBe("all");
+  expect(pageReads("/projects/pantry")).toEqual(["pantry"]);
+  expect(pageReads("/projects/pantry/targets/working/logs")).toEqual([
+    "pantry",
+  ]);
+  expect(pageReads("/projects/my%20app/jobs")).toEqual(["my app"]);
+  expect(pageReads("/projects/new")).toEqual([]);
+  expect(pageReads("/monitor")).toEqual([]);
+  expect(pageReads("/activity")).toEqual([]);
 });

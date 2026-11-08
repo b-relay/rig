@@ -4,6 +4,8 @@ import { Plus } from "lucide-react";
 import { projectHealth } from "@/lib/health";
 import { orderedTargets } from "@/lib/overview";
 import { projectHref, targetHref } from "@/lib/target";
+import { headers } from "next/headers";
+import { PAGE_PATH_HEADER, pageReads } from "@/lib/page-reads";
 import { navigationStatuses } from "@/server/navigation";
 import { projectList } from "@/server/status";
 import { Dot, EYEBROW, HealthDot } from "../bits";
@@ -101,6 +103,7 @@ export async function ProjectTree() {
     list.value.projects
       .filter((project) => !project.missing)
       .map((project) => project.name),
+    pageReads((await headers()).get(PAGE_PATH_HEADER)),
   );
   const entries = list.value.projects.map((project) => ({
     project,

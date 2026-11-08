@@ -16,6 +16,7 @@ import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { processLeasePath } from "../src/providers/process-lease";
 import {
   daemonIdentity,
+  inspectWith,
   platformInspect,
   processExited,
   processIdentity,
@@ -372,3 +373,61 @@ test("a process table that cannot be read keeps the root: it is no proof that no
     await rm(work, { recursive: true, force: true });
   }
 }, 60_000);
+
+test("a ps that does not answer in time is killed and throws, naming what it ran, rather than holding the test's thread", () => {
+  const started = Date.now();
+  const silent = inspectWith(
+    ["/bin/sh", "-c", "exec /bin/sleep 30", "sh"],
+    300,
+  );
+  expect(() => silent(["-p", "1"])).toThrow(
+    "`/bin/sh -c exec /bin/sleep 30 sh -p 1` did not answer within 0.3 s",
+  );
+  expect(Date.now() - started).toBeLessThan(5_000);
+});
+
+for (const read of ["the process table", "the recorded rigd"] as const)
+  test(`a ps that does not answer for ${read} proves nothing: the root is kept and named, and the reason given`, async () => {
+    const work = await mkdtemp(join(tmpdir(), "rig-fixture-silent-ps-"));
+    const owned: { pid: number; identity: string }[] = [];
+    let base: string | undefined;
+    try {
+      let silent = false;
+      // As platformInspect fails once ps has not answered within its time.
+      const inspect: Inspect = (args) => {
+        if (
+          silent &&
+          args[0] === (read === "the process table" ? "-axo" : "-p")
+        )
+          throw new Error(
+            `\`/bin/ps ${args.join(" ")}\` did not answer within 10 s`,
+          );
+        return platformInspect(args);
+      };
+      const { fixture } = await scriptedFixture(work, undefined, inspect);
+      base = fixture.base;
+      const leased = await leasedShell(fixture.root, "exec /bin/sleep 120");
+      owned.push(leased);
+      // Cleanup reads a recorded rigd's process before anything else it reads by pid.
+      if (read === "the recorded rigd") {
+        await mkdir(join(fixture.root, "daemon"), { recursive: true });
+        await writeFile(
+          join(fixture.root, "daemon", "address.json"),
+          JSON.stringify({ pid: leased.pid }),
+        );
+      }
+      silent = true;
+      const failure = await cleanupFailure(fixture.cleanup);
+      expect(failure).toContain(`its root is kept at ${fixture.base}:`);
+      expect(failure).toContain(
+        read === "the recorded rigd"
+          ? "cleanup stopped short, so what it had yet to stop may still run: Error: `/bin/ps -p"
+          : "the process table could not be read",
+      );
+      expect(await exists(fixture.root)).toBe(true);
+    } finally {
+      for (const each of owned) await stopOwned(each);
+      if (base) await rm(base, { recursive: true, force: true });
+      await rm(work, { recursive: true, force: true });
+    }
+  }, 60_000);

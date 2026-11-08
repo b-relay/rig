@@ -41,21 +41,34 @@ async function recordedTargets(root: string) {
     return `its Targets could not be read (${error}), so none was stopped`;
   }
 }
-/** Runs `ps` with `args`: its exit status and what it printed. A test substitutes one to see what cleanup does with what
- * it is told. */
+/** Runs `ps` with `args`: its exit status and what it printed. It throws when `ps` gave no answer to trust, which cleanup
+ * treats as a read that proves nothing, keeping the root. A test substitutes one to see what cleanup does with what it is
+ * told. */
 export type Inspect = (args: readonly string[]) => {
   exitCode: number;
   stdout: string;
 };
-/** `ps` with the locale and zone rigd reads process birth times in, so a birth here is the one its leases digest. */
-export const platformInspect: Inspect = (args) => {
-  const ran = Bun.spawnSync(["/bin/ps", ...args], {
-    stdout: "pipe",
-    stderr: "ignore",
-    env: { LC_ALL: "C", TZ: "UTC", PATH: "/usr/bin:/bin" },
-  });
-  return { exitCode: ran.exitCode, stdout: ran.stdout.toString() };
-};
+/** How long `ps` may take to answer. It blocks the test's thread meanwhile, where no Bun timeout reaches it. */
+const INSPECT_ANSWER_MS = 10_000;
+/** `command` with `args` appended, in the locale and zone rigd reads process birth times in, so a birth here is the one
+ * its leases digest. One that has not answered within `ms` is killed, and throws. */
+export function inspectWith(command: readonly string[], ms: number): Inspect {
+  return (args) => {
+    const ran = Bun.spawnSync([...command, ...args], {
+      stdout: "pipe",
+      stderr: "ignore",
+      env: { LC_ALL: "C", TZ: "UTC", PATH: "/usr/bin:/bin" },
+      timeout: ms,
+      killSignal: "SIGKILL",
+    });
+    if (ran.exitedDueToTimeout)
+      throw new Error(
+        `\`${[...command, ...args].join(" ")}\` did not answer within ${ms / 1000} s`,
+      );
+    return { exitCode: ran.exitCode, stdout: ran.stdout.toString() };
+  };
+}
+export const platformInspect = inspectWith(["/bin/ps"], INSPECT_ANSWER_MS);
 /** When the process `pid` started, while it is alive: with its pid, all that names it, since a process that execs keeps
  * both, and a later process of that pid has another. */
 export function processIdentity(
@@ -88,7 +101,12 @@ const commandOf = (pid: number, inspect: Inspect) =>
 /** Every process with its group and birth, read at one instant, so a member and its birth are of the same process;
  * undefined when `ps` failed, which proves nothing about what runs. */
 function processTable(inspect: Inspect) {
-  const listed = inspect(["-axo", "pid=,pgid=,lstart="]);
+  let listed: ReturnType<Inspect>;
+  try {
+    listed = inspect(["-axo", "pid=,pgid=,lstart="]);
+  } catch {
+    return undefined;
+  }
   const table = listed.stdout.split("\n").flatMap((line) => {
     const row = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
     return row
@@ -349,9 +367,17 @@ async function createFixture(options: FixtureOptions) {
   const inFlight = new Set<{
     named: string;
     group: number;
-    leader: string | undefined;
+    leader: string | undefined | Error;
     answered: Promise<unknown>;
   }>();
+  /** `processIdentity`, or the error of a `ps` that gave no answer to trust. */
+  const identityOf = (pid: number): string | undefined | Error => {
+    try {
+      return processIdentity(pid, options.inspect ?? platformInspect);
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  };
   /** `execute`, in a process group of its own, until cleanup has begun: a command asked for later, as by a body Bun
    * abandoned, could start what nothing stops, so it is refused. */
   const run = async (args: string[], cwd = repo) => {
@@ -365,7 +391,7 @@ async function createFixture(options: FixtureOptions) {
     const command = {
       named: `\`${args.join(" ")}\``,
       group,
-      leader: processIdentity(group, options.inspect ?? platformInspect),
+      leader: identityOf(group),
       answered,
     };
     inFlight.add(command);
@@ -409,11 +435,17 @@ async function createFixture(options: FixtureOptions) {
     const killed: typeof waiting = [];
     for (const command of waiting.filter((each) => inFlight.has(each))) {
       // The group is the command's only while its leader is still the process it started, read just before the signal.
-      if (
-        command.leader === undefined ||
-        processIdentity(command.group, options.inspect ?? platformInspect) !==
-          command.leader
-      ) {
+      const leader = identityOf(command.group);
+      const unread = [command.leader, leader].find(
+        (read): read is Error => read instanceof Error,
+      );
+      if (unread) {
+        problems.push(
+          `${command.named} ${late}, and its process group's leader could not be read (${unread.message}), so nothing was signalled; what holds its output open may still run`,
+        );
+        continue;
+      }
+      if (command.leader === undefined || leader !== command.leader) {
         problems.push(
           `${command.named} ${late}, and its process group's leader is no longer the process it started, so nothing was signalled; what holds its output open may still run`,
         );
@@ -433,9 +465,9 @@ async function createFixture(options: FixtureOptions) {
         `commands ${killed.map(({ named }) => named).join(", ")} ${late}, so their process groups were killed${(await answeredWithin(killed, COMMAND_ANSWER_MS)) ? "" : ", and they still have not answered"}`,
       );
   };
-  /** Stops what the root records and removes it, after `problems` already found. When any of that cannot be confirmed,
-   * the root is kept, for what it records, and the cleanup fails saying why. */
-  const stop = async (problems: string[]) => {
+  /** Stops what the root records, adding to `problems` what it cannot confirm. It throws when a `ps` gives no answer to
+   * trust. */
+  const stopRecorded = async (problems: string[]) => {
     const succeeded = async (
       args: string[],
       ran: Promise<{ code: number; stderr: string }>,
@@ -547,6 +579,15 @@ async function createFixture(options: FixtureOptions) {
       problems.push(
         `processes ${running.map((row) => `${row.pid} (${commandOf(row.pid, inspect)})`).join(", ")} still run in process groups the root's leases name; the fixture signals only those it can tie to a lease`,
       );
+  };
+  /** Stops what the root records and removes it, after `problems` already found. When any of that cannot be confirmed,
+   * the root is kept, for what it records, and the cleanup fails saying why. */
+  const stop = async (problems: string[]) => {
+    await stopRecorded(problems).catch((error: unknown) => {
+      problems.push(
+        `cleanup stopped short, so what it had yet to stop may still run: ${error}`,
+      );
+    });
     if (problems.length > 0)
       throw new Error(
         `The fixture could not confirm its cleanup, so its root is kept at ${base}:\n${problems.join("\n")}`,

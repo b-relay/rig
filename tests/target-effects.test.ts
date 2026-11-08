@@ -12,10 +12,13 @@ import {
   readdir,
   symlink,
 } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { destroyPreview } from "../src/adapters/preview-storage";
 import { createTargetEffects } from "../src/adapters/target-effects";
+import { createTargetCommand } from "../src/adapters/target-commands";
+import { createTargetPreparation } from "../src/adapters/target-preparation";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
@@ -1548,6 +1551,212 @@ test("build output is recorded line by line as it arrives, with the time each li
     { timestamp: "t3", component: "setup", stream: "stdout", line: "two" },
   ]);
 });
+
+const stuckLeftover: Supervisor = {
+  async observe() {
+    return { state: "stopped" };
+  },
+  async ensureRunning() {
+    throw new Error("no Service runs here");
+  },
+  async stop() {
+    return { outcome: "unchanged" };
+  },
+  async shutdown() {},
+  async detach() {},
+  async disown() {
+    throw new Error("the group did not stop");
+  },
+};
+for (const { failure, because, streams, rejects } of [
+  {
+    failure: "PREPARATION_LEFTOVER",
+    because: "a process it left cannot be stopped",
+    streams: true,
+    rejects: false,
+  },
+  {
+    failure: "PREPARATION_LEFTOVER",
+    because:
+      "a process it left cannot be stopped, from a runner that hands over its output only at the end,",
+    streams: false,
+    rejects: false,
+  },
+  {
+    failure: "COMMAND_CANCELLED",
+    because: "its runner rejects",
+    streams: true,
+    rejects: true,
+  },
+])
+  test(`a build that fails ${failure} because ${because} has every line it printed in the Target log by the time it fails`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-build-failed-output-"));
+    roots.push(root);
+    const adapter = createTargetEffects({
+      ...localActivation(),
+      root,
+      recordingTime: () => "now",
+      supervisors: new Map([["child", stuckLeftover]]),
+      run: async ({ onOutput }) => {
+        if (streams) onOutput?.("stdout", "one\ntwo");
+        if (rejects)
+          throw new RigError(
+            "COMMAND_CANCELLED",
+            "A provider command was cancelled before it finished.",
+            "Retry the operation.",
+          );
+        return { exitCode: 0, stdout: streams ? "" : "one\ntwo", stderr: "" };
+      },
+      installer: createArtifactInstaller({
+        run: runCommand,
+        bunExecutable: process.execPath,
+      }),
+      router: noRoutes(),
+      environment: {},
+    });
+    const record = target(root);
+    await expect(
+      adapter.build({ id: "shared", command: "build", timeout: 600 }, record),
+    ).rejects.toMatchObject({ code: failure });
+    // Read at once: a write still queued when the build failed would not be there yet.
+    const log = join(record.logRoot, "target.jsonl");
+    const lines = existsSync(log)
+      ? readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).line)
+      : [];
+    expect(lines).toEqual(["one", "two"]);
+  });
+
+for (const recording of ["rejects", "never settles"] as const)
+  for (const { failure, message, streams, rejects } of [
+    {
+      failure: "PREPARATION_LEFTOVER",
+      message:
+        "A process the setup command of working left running could not be stopped.",
+      streams: true,
+      rejects: false,
+    },
+    {
+      failure: "PREPARATION_LEFTOVER",
+      message:
+        "A process the setup command of working left running could not be stopped.",
+      streams: false,
+      rejects: false,
+    },
+    {
+      failure: "COMMAND_CANCELLED",
+      message: "A provider command was cancelled before it finished.",
+      streams: true,
+      rejects: true,
+    },
+  ])
+    test(`a command that fails ${failure}${streams ? "" : " with output handed over at the end"} while recording its output ${recording} reports its own failure, within the recording deadline`, async () => {
+      const outcome = () =>
+        recording === "rejects"
+          ? Promise.reject(new Error("log write failed"))
+          : new Promise<never>(() => {});
+      const command = createTargetCommand({
+        run: async ({ onOutput }) => {
+          if (streams) onOutput?.("stdout", "one\ntwo");
+          if (rejects)
+            throw new RigError(
+              "COMMAND_CANCELLED",
+              "A provider command was cancelled before it finished.",
+              "Retry the operation.",
+            );
+          return { exitCode: 0, stdout: "one\ntwo", stderr: "" };
+        },
+        supervisors: new Map([["child", stuckLeftover]]),
+        output: {
+          liveRecorder: () => ({
+            receive() {},
+            finish: () => (streams ? outcome() : Promise.resolve(false)),
+          }),
+          recordOutput: outcome,
+        },
+        failureRecordingMs: 50,
+      });
+      const started = Date.now();
+      // Caught rather than through expect().rejects, which in Bun 1.4.2 blocks the thread on a promise that never
+      // settles, so the test's timeout could not end it.
+      const error = await command("build", target("/nowhere"), {}, 600).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(error).toMatchObject({ code: failure, message });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+for (const recording of ["rejects", "never settles"] as const)
+  for (const { step, failure, timedOut } of [
+    { step: "build", failure: "BUILD_FAILED", timedOut: false },
+    { step: "build", failure: "BUILD_TIMEOUT", timedOut: true },
+    { step: "install", failure: "DEPENDENCIES_FAILED", timedOut: false },
+    { step: "install", failure: "DEPENDENCIES_TIMEOUT", timedOut: true },
+  ] as const)
+    test(`${step === "build" ? "a build" : "a dependency installation"} that fails ${failure} while recording its output ${recording} reports ${failure}, within the recording deadline`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "rig-failed-recording-"));
+      roots.push(root);
+      const outcome = () =>
+        recording === "rejects"
+          ? Promise.reject(new Error("log write failed"))
+          : new Promise<never>(() => {});
+      const output = {
+        liveRecorder: () => ({
+          receive() {},
+          finish: () => Promise.resolve(false),
+        }),
+        recordOutput: outcome,
+      };
+      const preparation = createTargetPreparation({
+        root,
+        run: runCommand,
+        baseline: {},
+        command: createTargetCommand({
+          run: async () => ({
+            exitCode: 1,
+            stdout: "failed\n",
+            stderr: "",
+            ...(timedOut ? { timedOut: true as const } : {}),
+          }),
+          supervisors: new Map(),
+          output,
+          failureRecordingMs: 50,
+        }),
+        environment: { environment: async () => ({}) },
+        output,
+      });
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      await writeFile(join(workspace, "package.json"), "{}\n");
+      const record: TargetRecord = {
+        ...target(root),
+        kind: "stable",
+        name: "stable",
+        plan: {
+          ...target(root).plan,
+          target: "stable",
+          workspacePath: workspace,
+        },
+      };
+      const started = Date.now();
+      // Caught rather than through expect().rejects, which blocks on a promise that never settles (#822).
+      const error = await (
+        step === "build"
+          ? preparation.build(
+              { id: "shared", command: "build", timeout: 600 },
+              record,
+            )
+          : preparation.prepare(record)
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(error).toMatchObject({ code: failure });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
 
 test("a health check's answer never depends on writing its evidence: an unwritable Target log is said, and the next check writes it", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-unlogged-"));

@@ -74,7 +74,23 @@ mock.module("../web/server/daemon", () => ({
     throw new Error(`unexpected ${command.action}`);
   },
 }));
+// React shares a Project's status read across one request; outside a render it does not, so a test that needs one
+// request's reads shared, the page's and the sidebar's, holds them here.
+const realStatus = await import("../web/server/status");
+const statusModule = { ...realStatus };
+let request:
+  Map<string, ReturnType<typeof realStatus.projectStatusRead>> | undefined;
+mock.module("../web/server/status", () => ({
+  ...statusModule,
+  projectStatusRead(project: string) {
+    if (!standingIn || !request) return statusModule.projectStatusRead(project);
+    if (!request.has(project))
+      request.set(project, statusModule.projectStatusRead(project));
+    return request.get(project)!;
+  },
+}));
 const { ProjectTree } = await import("../web/components/shell/sidebar");
+const { projectStatusRead } = await import("../web/server/status");
 const { forgetNavigation, NAVIGATION_KEPT_MS } =
   await import("../web/server/navigation");
 const { runCommand } = await import("../web/server/actions");
@@ -110,6 +126,7 @@ beforeEach(() => {
   forgetNavigation();
   asked = [];
   path = "/monitor";
+  request = undefined;
   health = () => ({ instanceId: "i-1", pid: 42, running: true });
   queue = () => ({ waiting: 0, operations: [] });
   activity = () => ({ operations: [] });
@@ -350,6 +367,48 @@ test("a record dated before the newest, as after the clock went back, still read
   });
   await shown();
   expect(statusReads().sort()).toEqual(["status:ledger", "status:pantry"]);
+});
+
+test("a status the page began reading before its pulse answered is not kept, so the next page reads that Project again", async () => {
+  let now = clock;
+  (
+    performance.now as unknown as { mockImplementation(f: () => number): void }
+  ).mockImplementation(() => now);
+  const stopped = {
+    project: "pantry",
+    targets: [target("working", "working", "stopped")],
+  };
+  // pantry's own page: its read of pantry begins while pantry is still stopped...
+  path = "/projects/pantry";
+  request = new Map();
+  status = (project) => (project === "pantry" ? stopped : reports[project]);
+  await projectStatusRead("pantry").outcome;
+  // ...and an up finishes before the page's pulse answers, which records it.
+  now += 5;
+  activity = () => ({
+    operations: [
+      {
+        id: "op-up",
+        action: "up",
+        outcome: "started",
+        occurredAt: "2026-11-08T10:00:00.000Z",
+      },
+    ],
+    total: 1,
+  });
+  status = (project) => reports[project];
+  const own = await shown();
+  // The page and its sidebar agree on what the page read.
+  expect(own).toContainEqual(["/projects/pantry/targets/working", "stopped"]);
+  // The next page, under the same pulse, reads pantry again: the read it would reuse holds less than that pulse covers.
+  request = new Map();
+  path = "/monitor";
+  asked = [];
+  now += 5;
+  const next = await shown();
+  expect(statusReads()).toEqual(["status:pantry"]);
+  expect(next).toContainEqual(["/projects/pantry/targets/working", "running"]);
+  expect(next).toContainEqual(["/projects/pantry/targets/stable", "healthy"]);
 });
 
 test("the pages that read Projects themselves are known by their path", () => {

@@ -10,7 +10,13 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { processExited, processIdentity } from "./support/rig-fixture";
+import {
+  platformInspect,
+  processExited,
+  processIdentity,
+  rigFixture,
+  type Inspect,
+} from "./support/rig-fixture";
 
 const exists = (path: string) =>
   stat(path).then(
@@ -363,7 +369,8 @@ test("waits on a command whose background process holds its output", async () =>
   const reports = process.env.FIXTURE_REPORTS!;
   const f = await rigFixture({ commands: { rig: ["/usr/bin/true"], rigd: ["/usr/bin/true"] } });
   const pidFile = join(reports, "background.pid");
-  const ran = f.run(["/bin/sh", "-c", "/bin/sleep 600 & echo $! > '" + pidFile + "'"]);
+  // The shell, which leads the group, waits on its background sleep, so the group is provably the fixture's.
+  const ran = f.run(["/bin/sh", "-c", "/bin/sleep 600 & echo $! > '" + pidFile + "'; wait"]);
   for (let i = 0; i < 500 && !(await Bun.file(pidFile).exists()); i++) await Bun.sleep(10);
   const pid = Number((await readFile(pidFile, "utf8")).trim());
   await writeFile(
@@ -374,7 +381,7 @@ test("waits on a command whose background process holds its output", async () =>
 }, 1_000);
 `;
 
-test("cleanup waits only a while for a command a process in its group holds open, then kills that group and names the root it keeps", async () => {
+test("a timed-out test's command that a background process holds open is waited on only a while, signals nothing once Bun has killed its leader, and its root is kept and named", async () => {
   const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
   const reports: Report[] = [];
   try {
@@ -393,18 +400,202 @@ test("cleanup waits only a while for a command a process in its group holds open
     expect(overran).toBe(false);
     expect(Date.now() - started).toBeLessThan(45_000);
     expect(output).toContain("this test timed out after 1000ms");
+    // Bun kills the test's own child, the group's leader, at the timeout: nothing then proves the group is the fixture's.
     expect(output).toContain(
-      "had not answered 5 s after cleanup began, so their process groups were killed",
+      "had not answered 5 s after cleanup began, and its process group's leader is no longer the process it started, so nothing was signalled",
     );
     expect(output).toContain(`its root is kept at ${backgrounded_!.base}:`);
+    // Sent nothing, so it runs on, for the finally below to stop.
     const [sleeper] = backgrounded_!.processes;
     expect(sleeper!.identity).toBeDefined();
-    expect(processIdentity(sleeper!.pid)).not.toBe(sleeper!.identity);
+    expect(processIdentity(sleeper!.pid)).toBe(sleeper!.identity);
   } finally {
     await stopLeftBehind(reports);
     await rm(work, { recursive: true, force: true });
   }
 }, 90_000);
+
+/** A fixture whose rigd is a script that marks `uninstalled` in `work` when asked to uninstall, so a test sees that
+ * cleanup went on to the daemon. `inspect` is the `ps` cleanup reads processes with. */
+async function markingFixture(work: string, inspect?: Inspect) {
+  const rigd = join(work, "rigd");
+  await writeFile(
+    rigd,
+    `#!/bin/sh\n[ "$1" = uninstall ] && touch '${join(work, "uninstalled")}'\nexit 0\n`,
+    { mode: 0o755 },
+  );
+  return rigFixture({
+    commands: { rig: ["/usr/bin/true"], rigd: [rigd] },
+    ...(inspect ? { inspect } : {}),
+  });
+}
+/** Runs `script` in a shell through the fixture's `run`, which answers only once nothing holds its output open, and waits
+ * for the script to write to `$PIDS` the pids it names. Answers those processes, by pid and birth, and the run. */
+async function holdingOutput(
+  f: Awaited<ReturnType<typeof rigFixture>>,
+  work: string,
+  script: string,
+) {
+  const pids = join(work, "pids");
+  const ran = f.run(["/bin/sh", "-c", `PIDS='${pids}'; ${script}`]);
+  let text = "";
+  for (let i = 0; i < 500 && !text.endsWith("\n"); i++) {
+    text = await readFile(pids, "utf8").catch(() => "");
+    await Bun.sleep(10);
+  }
+  const processes = text
+    .trim()
+    .split(" ")
+    .map(Number)
+    .map((pid) => ({ pid, identity: processIdentity(pid)! }));
+  return { ran, processes };
+}
+/** Stops each of `processes` while it is still that process, then waits for `ran`, which answers once they have gone. */
+async function stopHeld(
+  processes: readonly { pid: number; identity: string }[],
+  ran: Promise<unknown> | undefined,
+) {
+  for (const owned of processes) {
+    if (processIdentity(owned.pid) !== owned.identity) continue;
+    process.kill(owned.pid, "SIGKILL");
+    if (!(await processExited(owned)))
+      throw new Error(`process ${owned.pid} is still running`);
+  }
+  await ran;
+}
+
+test("a command whose leader is still the process it started, but which has not answered, has its whole group killed, and the root is kept and named", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  let held: Awaited<ReturnType<typeof holdingOutput>> | undefined;
+  let base: string | undefined;
+  try {
+    const f = await markingFixture(work);
+    base = f.base;
+    held = await holdingOutput(
+      f,
+      work,
+      "/bin/sleep 600 & echo $$ $! > $PIDS; wait",
+    );
+    const failure = await f.cleanup().then(
+      () => undefined,
+      (error: Error) => error.message,
+    );
+    expect(failure).toContain(`its root is kept at ${f.base}:`);
+    expect(failure).toContain(
+      "had not answered 5 s after cleanup began, so their process groups were killed",
+    );
+    expect(await exists(join(work, "uninstalled"))).toBe(true);
+    // The shell and its sleep, both gone by the time cleanup answered.
+    for (const { pid, identity } of held.processes)
+      expect(processIdentity(pid)).not.toBe(identity);
+  } finally {
+    await stopHeld(held?.processes ?? [], held?.ran);
+    if (base) await rm(base, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a command whose leader has gone while what it left holds its output open has nothing signalled, and its cleanup goes on and names the root it keeps", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  let held: Awaited<ReturnType<typeof holdingOutput>> | undefined;
+  let base: string | undefined;
+  try {
+    const f = await markingFixture(work);
+    base = f.base;
+    // The shell exits at once; its sleep holds the output open, and nothing now proves its group is the fixture's.
+    held = await holdingOutput(f, work, "/bin/sleep 600 & echo $! > $PIDS");
+    const failure = await f.cleanup().then(
+      () => undefined,
+      (error: Error) => error.message,
+    );
+    expect(failure).toContain(`its root is kept at ${f.base}:`);
+    expect(failure).toContain(
+      "process group's leader is no longer the process it started, so nothing was signalled",
+    );
+    expect(await exists(join(work, "uninstalled"))).toBe(true);
+    // Sent nothing: the same process still runs.
+    const [sleeper] = held.processes;
+    expect(processIdentity(sleeper!.pid)).toBe(sleeper!.identity);
+  } finally {
+    await stopHeld(held?.processes ?? [], held?.ran);
+    if (base) await rm(base, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a command whose leader's birth differs when cleanup looks, as a reused pid's would, has nothing signalled, and the root is kept and named", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  let held: Awaited<ReturnType<typeof holdingOutput>> | undefined;
+  let base: string | undefined;
+  try {
+    // Once the leader is known, ps says another process now has its pid.
+    let leader = 0;
+    const inspect: Inspect = (args) =>
+      leader !== 0 && args.join(" ") === `-p ${leader} -o lstart=`
+        ? { exitCode: 0, stdout: "Thu Jan  1 00:00:00 1970\n" }
+        : platformInspect(args);
+    const f = await markingFixture(work, inspect);
+    base = f.base;
+    held = await holdingOutput(
+      f,
+      work,
+      "/bin/sleep 600 & echo $$ $! > $PIDS; wait",
+    );
+    leader = held.processes[0]!.pid;
+    const failure = await f.cleanup().then(
+      () => undefined,
+      (error: Error) => error.message,
+    );
+    expect(failure).toContain(`its root is kept at ${f.base}:`);
+    expect(failure).toContain("so nothing was signalled");
+    expect(await exists(join(work, "uninstalled"))).toBe(true);
+    // The shell and its sleep both still run as they were.
+    for (const { pid, identity } of held.processes)
+      expect(processIdentity(pid)).toBe(identity);
+  } finally {
+    await stopHeld(held?.processes ?? [], held?.ran);
+    if (base) await rm(base, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a group signal that fails is reported, and cleanup still stops the daemon and names the root it keeps", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  let held: Awaited<ReturnType<typeof holdingOutput>> | undefined;
+  let base: string | undefined;
+  const kill = process.kill;
+  try {
+    const f = await markingFixture(work);
+    base = f.base;
+    held = await holdingOutput(
+      f,
+      work,
+      "/bin/sleep 600 & echo $$ $! > $PIDS; wait",
+    );
+    // Only this command's group is refused; every other signal goes through.
+    const group = -held.processes[0]!.pid;
+    process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (pid === group)
+        throw Object.assign(new Error("injected EPERM"), { code: "EPERM" });
+      return kill.call(process, pid, signal);
+    }) as typeof process.kill;
+    const failure = await f.cleanup().then(
+      () => undefined,
+      (error: Error) => error.message,
+    );
+    process.kill = kill;
+    expect(failure).toContain(`its root is kept at ${f.base}:`);
+    expect(failure).toContain(
+      "its process group could not be killed: Error: injected EPERM",
+    );
+    expect(await exists(join(work, "uninstalled"))).toBe(true);
+  } finally {
+    process.kill = kill;
+    await stopHeld(held?.processes ?? [], held?.ran);
+    if (base) await rm(base, { recursive: true, force: true });
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
 
 /** A preload that loads the sweep, then, in a later teardown, asks for a fixture and catches its refusal, as a caller may. */
 const catchingTeardown = `import { afterAll } from "bun:test";

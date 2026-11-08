@@ -341,11 +341,12 @@ async function createFixture(options: FixtureOptions) {
   };
   /** Set once cleanup has begun: from then the fixture runs only what its cleanup does. */
   let stopping = false;
-  /** The test's commands that have not yet answered, each with the process group it leads: a process it starts in the
-   * background, holding its output open, is in that group too. */
+  /** The test's commands that have not yet answered, each with the process group it leads and that leader's birth: a
+   * process it starts in the background, holding its output open, is in that group too. */
   const inFlight = new Set<{
     named: string;
     group: number;
+    leader: string | undefined;
     answered: Promise<unknown>;
   }>();
   /** `execute`, in a process group of its own, until cleanup has begun: a command asked for later, as by a body Bun
@@ -358,7 +359,12 @@ async function createFixture(options: FixtureOptions) {
     let group = 0;
     // Spawned before `execute` first waits, so the group is known here.
     const answered = execute(args, cwd, true, (pid) => (group = pid));
-    const command = { named: `\`${args.join(" ")}\``, group, answered };
+    const command = {
+      named: `\`${args.join(" ")}\``,
+      group,
+      leader: processIdentity(group, options.inspect ?? platformInspect),
+      answered,
+    };
     inFlight.add(command);
     try {
       return await answered;
@@ -390,24 +396,39 @@ async function createFixture(options: FixtureOptions) {
   };
   /** Waits a while for the test's commands still running, since what they start is in the record only once they have
    * answered. One that does not answer in time, as when a process it left in the background holds its output open, has
-   * its process group killed, while the process table shows that group still has members. Adds to `problems` each that
-   * had to be. */
+   * its process group killed while that group's leader is still the process it started; otherwise nothing is signalled.
+   * Adds to `problems` each that did not answer, and a signal that failed, and never throws, so the daemon and leased
+   * processes are still stopped. */
   const settleCommands = async (problems: string[]) => {
     const waiting = [...inFlight];
     if (await answeredWithin(waiting, COMMAND_ANSWER_MS)) return;
-    const late = waiting.filter((command) => inFlight.has(command));
-    const table = processTable(options.inspect ?? platformInspect) ?? [];
-    for (const { group } of late)
-      if (table.some((row) => row.pgid === group))
-        try {
-          process.kill(-group, "SIGKILL");
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
-    const killed = await answeredWithin(late, COMMAND_ANSWER_MS);
-    problems.push(
-      `commands ${late.map(({ named }) => named).join(", ")} had not answered ${COMMAND_ANSWER_MS / 1000} s after cleanup began, so their process groups were killed${killed ? "" : ", and they still have not answered"}`,
-    );
+    const late = `had not answered ${COMMAND_ANSWER_MS / 1000} s after cleanup began`;
+    const killed: typeof waiting = [];
+    for (const command of waiting.filter((each) => inFlight.has(each))) {
+      // The group is the command's only while its leader is still the process it started, read just before the signal.
+      if (
+        command.leader === undefined ||
+        processIdentity(command.group, options.inspect ?? platformInspect) !==
+          command.leader
+      ) {
+        problems.push(
+          `${command.named} ${late}, and its process group's leader is no longer the process it started, so nothing was signalled; what holds its output open may still run`,
+        );
+        continue;
+      }
+      try {
+        process.kill(-command.group, "SIGKILL");
+        killed.push(command);
+      } catch (error) {
+        problems.push(
+          `${command.named} ${late}, and its process group could not be killed: ${error}`,
+        );
+      }
+    }
+    if (killed.length > 0)
+      problems.push(
+        `commands ${killed.map(({ named }) => named).join(", ")} ${late}, so their process groups were killed${(await answeredWithin(killed, COMMAND_ANSWER_MS)) ? "" : ", and they still have not answered"}`,
+      );
   };
   /** Stops what the root records and removes it, after `problems` already found. When any of that cannot be confirmed,
    * the root is kept, for what it records, and the cleanup fails saying why. */

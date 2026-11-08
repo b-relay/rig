@@ -166,7 +166,7 @@ function adoptMembers(
         if (row.pgid === group.pgid) owned.set(row.pid, row.birth);
 }
 /** Signals `owned` while it is still that process; one that has just exited, or whose pid another now has, is left alone. */
-function signalOwned(
+export function signalOwned(
   owned: { pid: number; identity: string },
   signal: NodeJS.Signals,
   inspect: Inspect,
@@ -506,7 +506,7 @@ async function createFixture(options: FixtureOptions) {
       )
         process.kill(daemon.pid, "SIGTERM");
       if (!(await processExited(daemon, inspect))) {
-        process.kill(daemon.pid, "SIGKILL");
+        signalOwned(daemon, "SIGKILL", inspect);
         problems.push(
           `rigd ${daemon.pid} did not stop, and was killed${(await processExited(daemon, inspect)) ? "" : ", but is still running"}`,
         );

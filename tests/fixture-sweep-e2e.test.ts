@@ -15,6 +15,7 @@ import {
   processExited,
   processIdentity,
   rigFixture,
+  signalOwned,
   type Inspect,
 } from "./support/rig-fixture";
 
@@ -71,7 +72,8 @@ async function stopLeftBehind(reports: readonly Report[]) {
         continue;
       process.kill(owned.pid, "SIGTERM");
       const known = { pid: owned.pid, identity: owned.identity };
-      if (!(await processExited(known))) process.kill(owned.pid, "SIGKILL");
+      if (!(await processExited(known)))
+        signalOwned(known, "SIGKILL", platformInspect);
       if (!(await processExited(known)))
         throw new Error(
           `process ${owned.pid} is still running; its root is kept at ${report.base}`,

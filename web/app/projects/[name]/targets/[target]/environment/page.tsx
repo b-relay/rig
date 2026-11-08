@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { layeredKeys } from "@/lib/env";
 import { projectHref } from "@/lib/target";
 import { envFiles } from "@/server/env";

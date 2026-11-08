@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { cn } from "@/lib/utils";
 
 /** The site's mark and name: a monogram tile like a Project's, in the palette's ink, and an amber

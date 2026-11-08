@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from "react";
-import Link from "next/link";
+import Link from "@/components/link";
 import { AlertTriangle, Rocket } from "lucide-react";
 import { Failure, HealthDot, Mono, PageHeader } from "@/components/bits";
 import { ProjectIcon } from "@/components/project-icon";

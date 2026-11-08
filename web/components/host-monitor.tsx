@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/link";
 import { projectColor } from "@/lib/health";
 import type { ActivityResult, DoctorReport, QueueResult } from "@/lib/types";
 import {

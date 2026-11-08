@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { FolderX } from "lucide-react";
 import { Empty, Failure } from "@/components/bits";
 import { CompletedOperation } from "@/components/completed-operation";

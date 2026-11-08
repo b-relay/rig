@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import Link from "@/components/link";
 import { SearchX } from "lucide-react";
 import { attempt } from "@/lib/outcome";
 import type { ActivityResult } from "@/lib/types";

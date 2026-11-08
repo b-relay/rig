@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { targetJobs } from "@/lib/jobs";
 import { orderedTargets } from "@/lib/overview";
 import { targetHref } from "@/lib/target";

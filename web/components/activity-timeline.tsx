@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { Activity } from "lucide-react";
 import { activityDays } from "@/lib/activity";
 import type { ActivityResult } from "@/lib/types";

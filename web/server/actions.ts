@@ -89,7 +89,12 @@ export async function runDnsDelete(input: unknown): Promise<Outcome<unknown>> {
   if (denied) return refused(denied);
   const confirmed = confirmedDnsDelete(input);
   if (!confirmed.ok) return refused(confirmed.failure);
-  return attempt(read(confirmed.command));
+  try {
+    return await attempt(read(confirmed.command));
+  } finally {
+    // rigd records the delete in Activity.
+    readPulseAfresh();
+  }
 }
 /** Checks the record dialog's draft against rigd's record rules, field by field, before the dialog sends its command. */
 export async function checkDnsRecord(
@@ -133,7 +138,13 @@ export async function runEnvEdit(input: unknown): Promise<Outcome<unknown>> {
       : input,
   );
   if (!request.success) return refused(invalid("an env file change"));
-  return attempt(editEnv(request.data));
+  // A write is recorded in Activity; a read or a reveal changes nothing.
+  if (request.data.action !== "write") return attempt(editEnv(request.data));
+  try {
+    return await attempt(editEnv(request.data));
+  } finally {
+    readPulseAfresh();
+  }
 }
 /** Where an Operation stands whose reply never reached the browser: still queued or running,
  * finished with a recorded outcome, or unknown to rigd. */

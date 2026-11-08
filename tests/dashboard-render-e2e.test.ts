@@ -232,9 +232,10 @@ const OPERATIONS = {
   total: 1,
 };
 
-test("one render of each page asks rigd each thing at most once: the pages take rigd's health, queue and Activity from the page's pulse", async () => {
+test("one render of each page asks rigd each thing at most once: the pages take rigd's health, queue and Activity from the page's pulse, and Monitor says what the queue says of new work", async () => {
   // Its own site and stand-in, since this file's tests run at once and every read here is counted.
   let asked: string[] = [];
+  let queue: object = { waiting: 0, operations: [] };
   const counting = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -260,7 +261,7 @@ test("one render of each page asks rigd each thing at most once: the pages take 
           : command.action === "status"
             ? PANTRY
             : command.action === "queue"
-              ? { waiting: 0, operations: [] }
+              ? queue
               : command.action === "activity"
                 ? OPERATIONS
                 : undefined;
@@ -272,6 +273,14 @@ test("one render of each page asks rigd each thing at most once: the pages take 
   const counted = await serveSite(join(work, "counted"), counting.port!);
   const pulse = ["health", '{"action":"queue"}', '{"action":"activity"}'];
   const work100 = '{"action":"activity","project":"pantry","lines":100}';
+  const render = async (path: string) => {
+    const page = await fetch(`${counted.base}${path}`, {
+      headers: {
+        authorization: `Basic ${Buffer.from(`rig:${KEY}`).toString("base64")}`,
+      },
+    });
+    return { status: page.status, body: await page.text() };
+  };
   try {
     for (const [path, pageReads] of [
       ["/", [work100]],
@@ -285,13 +294,8 @@ test("one render of each page asks rigd each thing at most once: the pages take 
       ],
     ] as const) {
       asked = [];
-      const page = await fetch(`${counted.base}${path}`, {
-        headers: {
-          authorization: `Basic ${Buffer.from(`rig:${KEY}`).toString("base64")}`,
-        },
-      });
-      const body = await page.text();
-      expect(page.status, path).toBe(200);
+      const { status, body } = await render(path);
+      expect(status, path).toBe(200);
       expect(body, path).not.toContain("This page did not render");
       expect(body, path).toContain("pantry");
       // The whole page has streamed, so every read it made has reached the stand-in.
@@ -302,6 +306,34 @@ test("one render of each page asks rigd each thing at most once: the pages take 
       expect(asked, path).toEqual(
         expect.arrayContaining([...pulse, ...pageReads]),
       );
+    }
+    // Monitor's rigd card and Uninstall readiness follow the queue read's `draining`, which the pulse reading carries.
+    for (const [draining, shown, hidden] of [
+      [
+        undefined,
+        [">Prepare uninstall<"],
+        ["Cancel uninstall", "Prepared for uninstall", "New work"],
+      ],
+      [
+        "uninstall-prepared",
+        [
+          "Prepared for uninstall",
+          "Cancel uninstall",
+          "refused: prepared for uninstall",
+        ],
+        [">Prepare uninstall<", "rigd is stopping"],
+      ],
+      [
+        "stopping",
+        ["rigd is stopping", "refused: rigd is stopping"],
+        [">Prepare uninstall<", "Cancel uninstall", "Prepared for uninstall"],
+      ],
+    ] as const) {
+      queue = { waiting: 0, operations: [], ...(draining && { draining }) };
+      const { status, body } = await render("/monitor");
+      expect(status, draining).toBe(200);
+      for (const text of shown) expect(body, draining).toContain(text);
+      for (const text of hidden) expect(body, draining).not.toContain(text);
     }
   } finally {
     counted.process.kill();

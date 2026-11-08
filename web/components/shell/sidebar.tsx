@@ -1,10 +1,11 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { Suspense } from "react";
 import { Plus } from "lucide-react";
 import { projectHealth } from "@/lib/health";
 import { orderedTargets } from "@/lib/overview";
 import { projectHref, targetHref } from "@/lib/target";
-import { projectList, projectStatus } from "@/server/status";
+import { navigationStatuses } from "@/server/navigation";
+import { projectList } from "@/server/status";
 import { Dot, EYEBROW, HealthDot } from "../bits";
 import { ProjectIcon } from "../project-icon";
 import { Brand } from "./brand";
@@ -81,7 +82,8 @@ async function ProjectNames() {
     </ul>
   );
 }
-async function ProjectTree() {
+/** The Projects with their health and Targets, each a link, as the sidebar lists them. */
+export async function ProjectTree() {
   const list = await projectList();
   if (!list.ok)
     return (
@@ -95,12 +97,15 @@ async function ProjectTree() {
         None yet. <Link href="/projects/new">Add one</Link>.
       </p>
     );
-  const entries = await Promise.all(
-    list.value.projects.map(async (project) => ({
-      project,
-      status: project.missing ? undefined : await projectStatus(project.name),
-    })),
+  const statuses = await navigationStatuses(
+    list.value.projects
+      .filter((project) => !project.missing)
+      .map((project) => project.name),
   );
+  const entries = list.value.projects.map((project) => ({
+    project,
+    status: statuses.get(project.name),
+  }));
   return (
     <ul className="flex flex-col gap-0.5">
       {entries.map(({ project, status }) => {

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { RigError } from "../domain/errors";
-import { TARGET_ROLES } from "../config/schema";
+import { TARGET_ROLES } from "../config/target-roles";
 import {
   assertNoSymlinkBelow,
   describeEnvFile,

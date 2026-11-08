@@ -17,7 +17,8 @@ import { pendingRenameAdvice } from "./rename";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { ConfigError } from "../config/errors";
-import { targetOn, usesRenamedKeys } from "../config/schema";
+import { targetOn } from "../config/target-roles";
+import { usesRenamedKeys } from "../config/validation-messages";
 import {
   formerName,
   reservedBecause,

@@ -13,7 +13,8 @@ import { hasLabel, mountWithoutDom, textOf } from "./support/hook-harness";
 const pending = new Set<{ path: string; aborted: Promise<void> }>();
 let arrived: () => void = () => {};
 let expected = 0;
-/** How the stand-in answers a request, by its path or action; undefined holds it until the caller goes. */
+/** How the stand-in answers a request, by its path or action, as it stands when the request arrives; undefined holds it
+ * until the caller goes. */
 let answer: (name: string) => unknown = () => undefined;
 /** Every request the stand-in received, by path or action, and a gate that holds each answer until it opens. */
 let asked: string[] = [];
@@ -29,8 +30,9 @@ const rigd = Bun.serve({
         ? "health"
         : ((await request.json()) as { action: string }).action;
     asked.push(name);
-    if (gate) await gate;
     const reply = answer(name);
+    // The gate holds the pulse's reads; a command passes.
+    if (gate && ["health", "queue", "activity"].includes(name)) await gate;
     if (reply !== undefined)
       return Response.json(name === "health" ? reply : { result: reply });
     const aborted = new Promise<void>((resolve) =>
@@ -46,6 +48,8 @@ const client = new DaemonClient({ port: rigd.port!, token: "test" });
 const real = { ...daemon };
 let reading = false;
 let monitored: ((command: RuntimeCommand) => unknown) | undefined;
+/** What the stand-in's Activity holds; an env file write, which goes to rigd's editor route, records itself here. */
+let recorded: object[] = [];
 /** Whether the request being served holds the key, and how many times rigd was looked for. */
 let signedIn = true;
 let discoveries = 0;
@@ -65,10 +69,27 @@ mock.module("../web/server/daemon", () => ({
     if (reading) return client.command(command, signal);
     return real.read(command as never, signal);
   },
+  async editEnv(request: { action: string }, root?: string) {
+    if (!reading) return real.editEnv(request as never, root);
+    asked.push(`env-${request.action}`);
+    recorded.push(written);
+    return {
+      name: "all.env",
+      path: "/env/all.env",
+      exists: true,
+      revision: "r2",
+      keys: ["TOKEN"],
+    };
+  },
 }));
 const { GET: pulseRoute } = await import("../web/app/pulse/route");
 const { GET: usageRoute } = await import("../web/app/usage/route");
 const { DaemonStatus } = await import("../web/components/top-bar");
+const { pulseReadings } = await import("../web/server/pulse");
+const { runCommand, runDnsDelete, runEnvEdit } =
+  await import("../web/server/actions");
+const { default: ActivityPage } = await import("../web/app/activity/page");
+const { redrawDue } = await import("../web/lib/pulse");
 beforeAll(() => {
   reading = true;
 });
@@ -84,6 +105,7 @@ afterEach(() => {
   gate = undefined;
   signedIn = true;
   discoveries = 0;
+  recorded = [];
 });
 
 test("a pulse whose browser goes abandons every read it started, at once", async () => {
@@ -153,6 +175,22 @@ const idle =
                 ]
               : [],
           };
+/** What rigd records of the two writes that go around `runCommand`. */
+const deleted = {
+  id: "op-dns",
+  action: "dns-delete",
+  outcome: "deleted",
+  message: "Deleted app.example.com",
+  occurredAt: "2026-11-08T10:00:00.000Z",
+};
+const written = {
+  id: "op-env",
+  project: "pantry",
+  action: "env-write",
+  outcome: "written",
+  message: "Set TOKEN in all.env",
+  occurredAt: "2026-11-08T10:00:00.000Z",
+};
 const pulseOf = async (signal?: AbortSignal) =>
   (await (
     await pulseRoute(new Request("http://rig.test/pulse", { signal }))
@@ -239,6 +277,122 @@ test("a browser that goes is answered at once, cancelled, before the read it sha
   await staying;
   expect(stayed!.stamp).toBe("i-1:42|-:0:|0:");
   expect(asked).toHaveLength(3);
+});
+
+test("a command from the site that ends while a pulse read is in flight leaves that read to those sharing it: the next one reads rigd afresh", async () => {
+  answer = (name) =>
+    name === "up" ? { operationId: "op-1", outcome: "started" } : idle()(name);
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const begun = pulseReadings();
+  await whenAsked(3);
+  expect((await runCommand({ action: "up", project: "pantry" })).ok).toBe(true);
+  const after = pulseReadings();
+  await whenAsked(7);
+  open();
+  await Promise.all([begun, after]);
+  expect(asked.filter((name) => name === "queue")).toHaveLength(2);
+  // Without a command, a read asked meanwhile still shares the one in flight.
+  asked = [];
+  gate = new Promise((resolve) => (open = resolve));
+  const shared = [pulseReadings(), pulseReadings()];
+  await whenAsked(3);
+  open();
+  await Promise.all(shared);
+  expect(asked.sort()).toEqual(["activity", "health", "queue"]);
+});
+
+test.each([
+  [
+    "a confirmed DNS delete",
+    deleted,
+    () =>
+      runDnsDelete({
+        action: "dns-delete",
+        dns: {
+          zone: "example.com",
+          id: "a1",
+          modifiedOn: "2026-10-01T00:00:00Z",
+          confirm: "app.example.com",
+        },
+      }),
+  ],
+  [
+    "an env file write",
+    written,
+    () =>
+      runEnvEdit({
+        action: "write",
+        project: "pantry",
+        scope: {},
+        expectedRevision: "absent",
+        changes: [{ op: "set", key: "TOKEN", value: "secret" }],
+      }),
+  ],
+])(
+  "the Activity page loaded after %s shows it, though a pulse read from before it is still in flight",
+  async (_what, record, write) => {
+    answer = (name) =>
+      name === "dns-delete"
+        ? (recorded.push(deleted), { deleted: "app.example.com" })
+        : name === "activity"
+          ? { operations: [...recorded] }
+          : idle()(name);
+    let open = () => {};
+    gate = new Promise((resolve) => (open = resolve));
+    const before = pulseReadings();
+    await whenAsked(3);
+    expect((await write()).ok).toBe(true);
+    const page = ActivityPage({ searchParams: Promise.resolve({}) });
+    open();
+    // The read from before the write answers what rigd held then; the page's own pulse is read after it.
+    expect((await before).activity).toEqual({
+      ok: true,
+      value: { operations: [] },
+    });
+    const html = renderToStaticMarkup(await page);
+    expect(html).toContain(record.message);
+    expect(html).not.toContain("Nothing has happened yet.");
+    expect(asked.filter((name) => name === "activity")).toHaveLength(2);
+  },
+);
+
+test("an Activity page that joins a pulse read in flight may miss a CLI restart made during it, and the live refresh's next poll shows it", async () => {
+  const restarted = {
+    id: "op-cli",
+    project: "pantry",
+    target: "working",
+    action: "restart",
+    outcome: "restarted",
+    message: "Restarted from the command line",
+    occurredAt: "2026-11-08T10:00:00.000Z",
+  };
+  answer = (name) =>
+    name === "activity" ? { operations: [...recorded] } : idle()(name);
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const seen = pulseOf();
+  await whenAsked(3);
+  // `rig restart` ends while that read is out: rigd records it, and the dashboard is not told.
+  recorded.push(restarted);
+  const page = ActivityPage({ searchParams: Promise.resolve({}) });
+  open();
+  const missed = renderToStaticMarkup(await page);
+  expect(missed).toContain("Nothing has happened yet.");
+  expect(asked).toHaveLength(3);
+  // The next poll reads afresh: its stamp has moved, so the page redraws, and the redraw shows the restart.
+  const before = await seen;
+  const next = await pulseOf();
+  expect(next.stamp).not.toBe(before.stamp);
+  expect(next.stamp).toContain(restarted.occurredAt);
+  expect(
+    redrawDue(next, { stamp: before.stamp, inFlight: 0, stale: false }),
+  ).toBe(true);
+  const redrawn = renderToStaticMarkup(
+    await ActivityPage({ searchParams: Promise.resolve({}) }),
+  );
+  expect(redrawn).toContain(restarted.message);
+  expect(redrawn).not.toContain("Nothing has happened yet.");
 });
 
 test("a request with no session is refused on its own, even while a signed-in one's read is in flight", async () => {

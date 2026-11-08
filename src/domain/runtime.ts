@@ -1,5 +1,5 @@
 import type { TargetPlan } from "../config/types";
-import type { TargetRole } from "../config/schema";
+import type { TargetRole } from "../config/target-roles";
 import type { HostRestart, HostSession } from "./host-session";
 import type { OperationOutcome } from "./activity";
 

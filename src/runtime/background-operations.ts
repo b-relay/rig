@@ -1,4 +1,4 @@
-import { targetOn } from "../config/schema";
+import { targetOn } from "../config/target-roles";
 import { clockOr } from "../domain/clock";
 import {
   RigError,

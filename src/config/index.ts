@@ -6,15 +6,19 @@ export {
   parseProjectConfig,
   parseHostConfig,
   projectConfigSchema,
-  patchedSettings,
+} from "./schema";
+export {
   targetOn,
-  rolePatch,
   PREVIEW_SELECTOR,
   TARGET_ROLES,
   WORKING_TOOL_SUFFIX,
   type TargetRole,
+} from "./target-roles";
+export {
+  patchedSettings,
+  rolePatch,
   type ProjectSettings,
-} from "./schema";
+} from "./target-patch";
 export { hostConfigSchema } from "./host-schema";
 export { resolveTargetPlan } from "./resolve";
 export {

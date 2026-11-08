@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { ConfigError } from "../config/errors";
 import { validateEditPath } from "../config/editor";
-import { nameSchema, projectConfigSchema } from "../config/schema";
+import { nameSchema } from "../config/project-fields";
+import { projectConfigSchema } from "../config/schema";
 import type {
   ConfigEditInput,
   ProjectConfigPreview,

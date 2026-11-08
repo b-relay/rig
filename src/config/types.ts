@@ -1,4 +1,5 @@
-import type { parseHostConfig, ProjectConfig, TargetRole } from "./schema";
+import type { parseHostConfig, ProjectConfig } from "./schema";
+import type { TargetRole } from "./target-roles";
 import type { PublicInput } from "./references";
 
 export type { ProjectConfig } from "./schema";

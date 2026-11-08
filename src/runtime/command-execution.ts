@@ -1,5 +1,5 @@
 import type { ConfigDocument, ProjectConfig } from "../config/types";
-import { PREVIEW_SELECTOR } from "../config/schema";
+import { PREVIEW_SELECTOR } from "../config/target-roles";
 import { readActions, type RuntimeCommand } from "../daemon/protocol";
 import type {
   ProjectStatusReport,

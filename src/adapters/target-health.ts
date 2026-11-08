@@ -1,5 +1,5 @@
 import type { ManagedComponent } from "../config/types";
-import { isHealthUrl } from "../config/schema";
+import { isHealthUrl } from "../config/healthcheck";
 import type { TargetRecord } from "../domain/runtime";
 import type {
   CommandResult,

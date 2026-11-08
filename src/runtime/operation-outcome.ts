@@ -12,7 +12,7 @@ import type {
   TargetRecord,
 } from "../domain/runtime";
 import type { RuntimeCommand } from "../daemon/protocol";
-import { PREVIEW_SELECTOR } from "../config/schema";
+import { PREVIEW_SELECTOR } from "../config/target-roles";
 import type { RuntimeDependencies } from "./contracts";
 import type { ServedReceipt } from "./served";
 import { killedMessage, type StopTracking } from "./stop-progress";

@@ -8,10 +8,12 @@ import { stopLeftBehind } from "./support/left-behind";
 import {
   FAKE_PID,
   SPOILED,
+  TABLE_SPOILED,
   fakeProcess,
+  rewritingTables,
   type Fault,
 } from "./support/process-double";
-import { rigFixture } from "./support/rig-fixture";
+import { rigFixture, type Inspect } from "./support/rig-fixture";
 
 // Sequential on purpose: each test replaces Date.now and process.kill, which every test running beside it would share.
 
@@ -22,21 +24,29 @@ const exists = (path: string) =>
   );
 
 /** Runs a fixture's cleanup over a process no real one has (`fakeProcess`), which the root records as its rigd, or leases
- * as a Service rigd ran. `uninstall` is whether `rigd uninstall` succeeds. Answers the failure's lines, the signals sent to
- * the process, and whether the root was kept. */
+ * as a Service rigd ran, or which has the pid and group of a Service the root leases but another birth (a `successor`).
+ * `uninstall` is whether `rigd uninstall` succeeds; `lease` replaces the pid and birth the Service's lease names, and
+ * `tables` the reads of the whole process table. Answers the failure's lines, the signals sent to the process, and
+ * whether the root was kept. */
 async function cleanupOver(
-  as: "rigd" | "Service",
+  as: "rigd" | "Service" | "successor",
   shown: Parameters<typeof fakeProcess>[0],
-  uninstall = true,
+  options: {
+    uninstall?: boolean;
+    lease?: { pid: number; birth: string };
+    tables?: (inspect: Inspect) => Inspect;
+  } = {},
 ) {
   const fake = fakeProcess(shown);
   try {
     const f = await rigFixture({
       commands: {
         rig: ["/usr/bin/true"],
-        rigd: [uninstall ? "/usr/bin/true" : "/usr/bin/false"],
+        rigd: [
+          options.uninstall === false ? "/usr/bin/false" : "/usr/bin/true",
+        ],
       },
-      inspect: fake.inspect,
+      inspect: options.tables?.(fake.inspect) ?? fake.inspect,
     });
     try {
       if (as === "rigd") {
@@ -46,15 +56,19 @@ async function cleanupOver(
           JSON.stringify({ pid: fake.pid }),
         );
       } else {
-        const key = `fake:${fake.pid}`;
+        const lease = options.lease ?? {
+          pid: fake.pid,
+          birth: as === "Service" ? fake.identity : "Fri Jan  2 00:00:00 1970",
+        };
+        const key = `fake:${lease.pid}`;
         await mkdir(join(f.root, "process-leases"), { recursive: true });
         await writeFile(
           processLeasePath(f.root, key),
           JSON.stringify({
             key,
-            pid: fake.pid,
+            pid: lease.pid,
             identity: createHash("sha256")
-              .update(`${fake.pid}:${fake.identity}`)
+              .update(`${lease.pid}:${lease.birth}`)
               .digest("hex"),
           }),
         );
@@ -218,13 +232,161 @@ for (const point of points)
             endsOn: point.endsOn,
             fault: spoiledFrom(point.from, fault, spoiled),
           },
-          point.uninstall ?? true,
+          { uninstall: point.uninstall ?? true },
         );
         expect(outcome.kept).toBe(true);
         expect(outcome.lines).toContain(point[spoiled].says);
         expect(outcome.signals).toEqual(point[spoiled].signals);
       },
     );
+
+/** Each look at the process table takes two reads that count, so with none before it spoiled, look `n` starts at read
+ * `(n - 1) * 2 + 1` of the table. */
+const TABLE_READS_PER_LOOK = 2;
+const unreadTable =
+  "the reads of the process table were inconclusive, so nothing shows that the processes the leases name have exited";
+const stillRuns = `processes ${pid} (/bin/sleep 600) still run in process groups the root's leases name; the fixture signals only those it can tie to a lease`;
+/** Where cleanup reads the whole process table to decide what to do, and what it reports and signals with one spoiled
+ * read there (`once`), with every read of the table from there on spoiled (`always`), and with one read there that
+ * counts followed by two that fail, which runs out the look's reads (`exhausted`). `look` is which of cleanup's five looks
+ * at the table it is: the first ties each leased group to its leader, the next two gather its members while rig down and
+ * rigd uninstall run, the fourth finds what outlived rigd, and the last what still runs in a leased group. */
+const tablePoints: {
+  at: string;
+  as: "Service" | "successor";
+  look: number;
+  endsOn: NodeJS.Signals[];
+  once: { signals: string[]; says: string[] };
+  always: { signals: string[]; says: string[] };
+  exhausted: { signals: string[]; says: string[] };
+}[] = [
+  {
+    at: "the table read that ties a leased group to its leader",
+    as: "Service",
+    look: 1,
+    endsOn: ["SIGTERM", "SIGKILL"],
+    once: { signals: ["SIGTERM"], says: [service] },
+    always: { signals: [], says: [unreadTable] },
+    // Its group is never tied to it, so the later looks only name it.
+    exhausted: { signals: [], says: [unreadTable, stillRuns] },
+  },
+  {
+    at: "the table read that finds what outlived rigd",
+    as: "Service",
+    look: 4,
+    endsOn: ["SIGTERM", "SIGKILL"],
+    once: { signals: ["SIGTERM"], says: [service] },
+    always: { signals: [], says: [unreadTable] },
+    exhausted: { signals: [], says: [unreadTable, stillRuns] },
+  },
+  // A process with a leased pid and group but another birth is not the fixture's to signal: only this read names it.
+  {
+    at: "the table read of what still runs in a leased group",
+    as: "successor",
+    look: 5,
+    endsOn: [],
+    once: { signals: [], says: [stillRuns] },
+    always: { signals: [], says: [unreadTable] },
+    exhausted: { signals: [], says: [unreadTable] },
+  },
+];
+
+/** Cleanup over the process at `point`, with its table reads spoiled as `fault` says by number: it keeps the root,
+ * reports only what `expected` says, and sends only its signals. */
+async function spoilTable(
+  point: (typeof tablePoints)[number],
+  fault: (read: number) => Fault | undefined,
+  expected: { signals: string[]; says: string[] },
+) {
+  const outcome = await cleanupOver(point.as, {
+    command: "/bin/sleep 600",
+    endsOn: point.endsOn,
+    tableFault: fault,
+  });
+  expect(outcome.kept).toBe(true);
+  expect(outcome.lines.slice(1)).toEqual(expected.says);
+  expect(outcome.signals).toEqual(expected.signals);
+}
+for (const point of tablePoints) {
+  const first = (point.look - 1) * TABLE_READS_PER_LOOK + 1;
+  for (const [fault, spoiled] of TABLE_SPOILED)
+    test(
+      spoiled === "once"
+        ? `one ${fault} read at ${point.at} is not taken as proof that a process is gone: cleanup reads the table again and acts on what it shows`
+        : `${fault} reads from ${point.at} on keep the root, name it, and signal nothing`,
+      () =>
+        spoilTable(point, spoiledFrom(first, fault, spoiled), point[spoiled]),
+    );
+  // The first read of the look is whole: what it shows runs, whatever the second leaves out.
+  test(`a truncated second read at ${point.at} does not outweigh the first: a process either read shows still runs`, () =>
+    spoilTable(point, spoiledFrom(first + 1, "truncated", "once"), point.once));
+  // The one read that counts leaves the process out, as a cut-short one can, and nothing confirms it.
+  test(`one read that counts at ${point.at}, then two that fail, prove nothing: the table authorises no signal, and the root is kept and named`, () =>
+    spoilTable(
+      point,
+      (read) =>
+        read === first
+          ? "truncated"
+          : read === first + 1 || read === first + 2
+            ? "failed"
+            : undefined,
+      point.exhausted,
+    ));
+}
+
+const A = "Thu Jan  1 00:00:00 1970";
+const B = "Fri Jan  2 00:00:00 1970";
+const sleeping = (values: Record<string, string>) => ({
+  command: "/bin/sleep 600",
+  ...values,
+});
+
+test("a leased leader whose pid another process takes between two reads of the table is not signalled: the replacement is named, not adopted", async () => {
+  // The first table read shows the leader the lease names; every later read, and every read by pid, shows a replacement.
+  const outcome = await cleanupOver(
+    "Service",
+    {
+      command: "/bin/sleep 600",
+      endsOn: ["SIGTERM", "SIGKILL"],
+      birth: () => B,
+    },
+    {
+      lease: { pid, birth: A },
+      tables: (inspect) =>
+        rewritingTables(inspect, [pid], (read) => [
+          sleeping({
+            pid: String(pid),
+            pgid: String(pid),
+            lstart: read === 1 ? A : B,
+          }),
+        ]),
+    },
+  );
+  expect(outcome.kept).toBe(true);
+  expect(outcome.lines.slice(1)).toEqual([stillRuns]);
+  expect(outcome.signals).toEqual([]);
+});
+
+test("a member the table shows only once its leased leader has gone is not adopted: no one read shows them together", async () => {
+  // The first table read shows the leader alone; every later read shows only a member of its group born since.
+  const leader = pid - 1;
+  const outcome = await cleanupOver(
+    "Service",
+    { command: "/bin/sleep 600", endsOn: ["SIGTERM", "SIGKILL"] },
+    {
+      lease: { pid: leader, birth: A },
+      tables: (inspect) =>
+        rewritingTables(inspect, [pid], (read) => [
+          read === 1
+            ? sleeping({ pid: String(leader), pgid: String(leader), lstart: A })
+            : sleeping({ pid: String(pid), pgid: String(leader), lstart: B }),
+        ]),
+    },
+  );
+  expect(outcome.kept).toBe(true);
+  expect(outcome.lines.slice(1)).toEqual([stillRuns]);
+  expect(outcome.signals).toEqual([]);
+});
 
 test("a rigd whose pid another process takes while cleanup waits for it to exit is not sent SIGKILL", async () => {
   // The daemon is there at cleanup's first look and at the first of its wait, by when the wait has run out; from then on

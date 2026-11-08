@@ -72,16 +72,24 @@ export const platformInspect = inspectWith(["/bin/ps"], INSPECT_ANSWER_MS);
 /** A process as `ps` shows it: when it started, which with its pid is all that names it, since a process that execs keeps
  * both, and a later process of that pid has another; and what it runs. */
 type ProcessRow = { birth: string; command: string };
-/** One whole row of `ps -o pid=,lstart=,command=`, its lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`. */
+/** An lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`, by its parts. */
+const LSTART =
+  /^([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ([ \d]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
+/** One whole row of `ps -o pid=,lstart=,command=`. */
 const PROCESS_ROW =
-  /^\s*(\d+)\s+(([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ([ \d]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4}))\s+(\S.*)$/;
+  /^\s*(\d+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+(\S.*)$/;
+/** One whole row of `ps -axo pid=,pgid=,lstart=,command=`. */
+const TABLE_ROW =
+  /^\s*(\d+)\s+(\d+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+(\S.*)$/;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
-/** Whether an lstart's parts name an instant ps can print: in the UTC the fixture reads it in, on the weekday it says, from
- * 1970 on. */
-function realBirth(row: RegExpExecArray) {
-  const [weekday, month] = [row[3]!, row[4]!];
-  const [day, hour, minute, second, year] = row.slice(5, 10).map(Number) as [
+/** Whether an lstart names an instant ps can print: in the UTC the fixture reads it in, on the weekday it says, from 1970
+ * on. */
+function realBirth(lstart: string) {
+  const row = LSTART.exec(lstart);
+  if (!row) return false;
+  const [weekday, month] = [row[1]!, row[2]!];
+  const [day, hour, minute, second, year] = row.slice(3, 8).map(Number) as [
     number,
     number,
     number,
@@ -121,8 +129,8 @@ function readProcess(
   for (const line of listed.stdout.split("\n").filter((line) => line.trim())) {
     // A row missing its command, or with a birth no clock gives, is no answer about the process.
     const row = PROCESS_ROW.exec(line);
-    if (!row || !realBirth(row)) return "unknown";
-    rows.set(Number(row[1]), { birth: row[2]!, command: row[10]! });
+    if (!row || !realBirth(row[2]!)) return "unknown";
+    rows.set(Number(row[1]), { birth: row[2]!, command: row[3]! });
   }
   if (
     !rows.has(process.pid) ||
@@ -177,25 +185,50 @@ export function processIdentity(
 /** What the process `pid` runs, for a report: never what decides which process it is. */
 const commandOf = (pid: number, inspect: Inspect) =>
   inspect(["-p", String(pid), "-o", "command="]).stdout.trim();
-/** Every process with its group and birth, read at one instant, so a member and its birth are of the same process;
- * undefined when `ps` failed, which proves nothing about what runs. */
-function processTable(inspect: Inspect) {
-  let listed: ReturnType<Inspect>;
-  try {
-    listed = inspect(["-axo", "pid=,pgid=,lstart="]);
-  } catch {
-    return undefined;
+/** A process as the process table shows it: its pid, its group and its birth, read at one instant, so a member and its
+ * birth are of the same process. */
+type TableRow = { pid: number; pgid: number; birth: string };
+/** One read of every process: its rows, or `unknown` when ps failed, a row is not whole (a pid, a group, a birth
+ * `realBirth` accepts and a command), or it does not list the fixture's own process, which every read that worked lists.
+ * A read that counts can still have been cut short, leaving rows out. */
+function readTable(inspect: Inspect): TableRow[] | "unknown" {
+  const listed = inspect(["-axo", "pid=,pgid=,lstart=,command="]);
+  if (listed.exitCode !== 0) return "unknown";
+  const rows: TableRow[] = [];
+  for (const line of listed.stdout.split("\n").filter((line) => line.trim())) {
+    const row = TABLE_ROW.exec(line);
+    if (!row || !realBirth(row[3]!)) return "unknown";
+    rows.push({ pid: Number(row[1]), pgid: Number(row[2]), birth: row[3]! });
   }
-  const table = listed.stdout.split("\n").flatMap((line) => {
-    const row = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
-    return row
-      ? [{ pid: Number(row[1]), pgid: Number(row[2]), birth: row[3]! }]
-      : [];
-  });
-  // The fixture's own process is always in a table that was read.
-  return listed.exitCode === 0 && table.length > 0 ? table : undefined;
+  return rows.some((row) => row.pid === process.pid) ? rows : "unknown";
 }
-type ProcessTable = NonNullable<ReturnType<typeof processTable>>;
+/** Two reads of every process that counted, within `READS_PER_LOOK` reads, each kept whole: one cut short can leave a row
+ * out, so a row is absent only when both leave it out. Each read is one instant, and only rows of the same read are tied
+ * together. Undefined when no two reads counted, or when `ps` gave no answer to trust, which is not read again: that
+ * proves nothing about what runs. */
+function processTable(inspect: Inspect): ProcessTable | undefined {
+  const counted: TableRow[][] = [];
+  for (let read = 0; read < READS_PER_LOOK && counted.length < 2; read++) {
+    let seen: TableRow[] | "unknown";
+    try {
+      seen = readTable(inspect);
+    } catch {
+      return undefined;
+    }
+    if (seen !== "unknown") counted.push(seen);
+  }
+  return counted.length < 2 ? undefined : counted;
+}
+type ProcessTable = TableRow[][];
+/** A process by its pid and birth, which together name it. */
+const processKey = (row: TableRow) => `${row.pid} ${row.birth}`;
+/** Every process either read of `table` shows, once: what may still run, never what ties a process to a lease. */
+function present(table: ProcessTable): TableRow[] {
+  const rows = new Map<string, TableRow>();
+  for (const row of table.flat())
+    rows.set(`${processKey(row)} ${row.pgid}`, row);
+  return [...rows.values()];
+}
 /** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits:
  * undefined when it records none, or none runs at the pid it records. Throws when the reads of that pid prove neither. */
 export async function recordedDaemon(
@@ -240,33 +273,41 @@ async function readLeases(root: string) {
   }
   return { leases, unreadable };
 }
-/** The process group `lease` names, with its leader's birth when, in `table`, its pid is still the process the lease
- * names: the group is the fixture's while that leader runs. */
+/** The process group `lease` names, with its leader's birth when a read of `table` shows its pid still the process the
+ * lease names: the group is the fixture's while that leader runs. */
 function leasedGroup(
   lease: { pid: number; identity: string },
   table: ProcessTable,
 ): { pgid: number; leader?: string } {
-  const leader = table.find((row) => row.pid === lease.pid)?.birth;
-  return leader !== undefined &&
-    createHash("sha256").update(`${lease.pid}:${leader}`).digest("hex") ===
-      lease.identity
+  const leader = table
+    .flat()
+    .find(
+      (row) =>
+        row.pid === lease.pid &&
+        createHash("sha256")
+          .update(`${lease.pid}:${row.birth}`)
+          .digest("hex") === lease.identity,
+    )?.birth;
+  return leader !== undefined
     ? { pgid: lease.pid, leader }
     : { pgid: lease.pid };
 }
-/** Adds to `owned` (pid to birth) every member `table` shows of a leased group whose leader is, in it, still the process
- * its lease named: only then is the group provably the fixture's. */
+/** Adds to `owned` (by `processKey`) every member a read of `table` shows of a leased group whose leader that same read
+ * shows still the process its lease named: only then is the group provably the fixture's. A process of another birth at
+ * a member's pid is another process, owned only when a read ties it to its leader too. */
 function adoptMembers(
-  owned: Map<number, string>,
+  owned: Set<string>,
   groups: readonly { pgid: number; leader?: string }[],
   table: ProcessTable,
 ) {
-  for (const group of groups)
-    if (
-      group.leader !== undefined &&
-      table.some((row) => row.pid === group.pgid && row.birth === group.leader)
-    )
-      for (const row of table)
-        if (row.pgid === group.pgid) owned.set(row.pid, row.birth);
+  for (const read of table)
+    for (const group of groups)
+      if (
+        group.leader !== undefined &&
+        read.some((row) => row.pid === group.pgid && row.birth === group.leader)
+      )
+        for (const row of read)
+          if (row.pgid === group.pgid) owned.add(processKey(row));
 }
 /** Signals `owned` while a read just before shows it is still that process: `sent`, or, unsignalled, `gone` when it has
  * exited or another process has its pid, and `unknown` when the reads prove neither. */
@@ -591,7 +632,8 @@ async function createFixture(options: FixtureOptions) {
     const leased = await readLeases(root);
     for (const path of leased.unreadable)
       problems.push(`the lease ${path} could not be read`);
-    // The process table is read only when a lease names something to look for. One that cannot be read keeps the root.
+    // The process table is read only when a lease names something to look for. Reads that prove nothing signal nothing
+    // and keep the root.
     let unlisted = false;
     const scan = (): ProcessTable => {
       if (leased.leases.length === 0) return [];
@@ -599,7 +641,7 @@ async function createFixture(options: FixtureOptions) {
       if (table) return table;
       if (!unlisted)
         problems.push(
-          "the process table could not be read, so nothing shows that the processes the leases name have exited",
+          "the reads of the process table were inconclusive, so nothing shows that the processes the leases name have exited",
         );
       unlisted = true;
       return [];
@@ -607,7 +649,7 @@ async function createFixture(options: FixtureOptions) {
     const first = scan();
     const groups = leased.leases.map((lease) => leasedGroup(lease, first));
     // The fixture's processes by pid and birth, gathered whenever a leased group's leader still proves the group is its own.
-    const owned = new Map<number, string>();
+    const owned = new Set<string>();
     adoptMembers(owned, groups, first);
     const targets = daemon === undefined ? [] : await recordedTargets(root);
     if (typeof targets === "string") problems.push(targets);
@@ -658,13 +700,17 @@ async function createFixture(options: FixtureOptions) {
     // What rigd ran and did not stop is stopped here, and the root goes only once it has exited.
     const table = scan();
     adoptMembers(owned, groups, table);
-    const surviving = table
-      .filter((row) => owned.get(row.pid) === row.birth)
-      .map((row) => ({
-        pid: row.pid,
-        identity: row.birth,
-        named: `${row.pid} (${commandOf(row.pid, inspect)})`,
-      }));
+    const surviving = [
+      ...new Map(
+        present(table)
+          .filter((row) => owned.has(processKey(row)))
+          .map((row) => [processKey(row), row]),
+      ).values(),
+    ].map((row) => ({
+      pid: row.pid,
+      identity: row.birth,
+      named: `${row.pid} (${commandOf(row.pid, inspect)})`,
+    }));
     if (surviving.length > 0) {
       for (const each of surviving) signalOwned(each, "SIGTERM", inspect);
       const stubborn: typeof surviving = [];
@@ -688,8 +734,8 @@ async function createFixture(options: FixtureOptions) {
     // Nothing may run on in a leased group: a member born once its leader had gone cannot be tied to the lease, so it is
     // named, never signalled.
     const pgids = new Set(groups.map((group) => group.pgid));
-    const running = scan().filter(
-      (row) => pgids.has(row.pgid) || owned.get(row.pid) === row.birth,
+    const running = present(scan()).filter(
+      (row) => pgids.has(row.pgid) || owned.has(processKey(row)),
     );
     if (running.length > 0)
       problems.push(

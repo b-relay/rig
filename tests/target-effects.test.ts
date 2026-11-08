@@ -12,6 +12,7 @@ import {
   readdir,
   symlink,
 } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { destroyPreview } from "../src/adapters/preview-storage";
@@ -1548,6 +1549,83 @@ test("build output is recorded line by line as it arrives, with the time each li
     { timestamp: "t3", component: "setup", stream: "stdout", line: "two" },
   ]);
 });
+
+const stuckLeftover: Supervisor = {
+  async observe() {
+    return { state: "stopped" };
+  },
+  async ensureRunning() {
+    throw new Error("no Service runs here");
+  },
+  async stop() {
+    return { outcome: "unchanged" };
+  },
+  async shutdown() {},
+  async detach() {},
+  async disown() {
+    throw new Error("the group did not stop");
+  },
+};
+for (const { failure, because, streams, rejects } of [
+  {
+    failure: "PREPARATION_LEFTOVER",
+    because: "a process it left cannot be stopped",
+    streams: true,
+    rejects: false,
+  },
+  {
+    failure: "PREPARATION_LEFTOVER",
+    because:
+      "a process it left cannot be stopped, from a runner that hands over its output only at the end,",
+    streams: false,
+    rejects: false,
+  },
+  {
+    failure: "COMMAND_CANCELLED",
+    because: "its runner rejects",
+    streams: true,
+    rejects: true,
+  },
+])
+  test(`a build that fails ${failure} because ${because} has every line it printed in the Target log by the time it fails`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "rig-build-failed-output-"));
+    roots.push(root);
+    const adapter = createTargetEffects({
+      ...localActivation(),
+      root,
+      recordingTime: () => "now",
+      supervisors: new Map([["child", stuckLeftover]]),
+      run: async ({ onOutput }) => {
+        if (streams) onOutput?.("stdout", "one\ntwo");
+        if (rejects)
+          throw new RigError(
+            "COMMAND_CANCELLED",
+            "A provider command was cancelled before it finished.",
+            "Retry the operation.",
+          );
+        return { exitCode: 0, stdout: streams ? "" : "one\ntwo", stderr: "" };
+      },
+      installer: createArtifactInstaller({
+        run: runCommand,
+        bunExecutable: process.execPath,
+      }),
+      router: noRoutes(),
+      environment: {},
+    });
+    const record = target(root);
+    await expect(
+      adapter.build({ id: "shared", command: "build", timeout: 600 }, record),
+    ).rejects.toMatchObject({ code: failure });
+    // Read at once: a write still queued when the build failed would not be there yet.
+    const log = join(record.logRoot, "target.jsonl");
+    const lines = existsSync(log)
+      ? readFileSync(log, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line).line)
+      : [];
+    expect(lines).toEqual(["one", "two"]);
+  });
 
 test("a health check's answer never depends on writing its evidence: an unwritable Target log is said, and the next check writes it", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-unlogged-"));

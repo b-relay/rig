@@ -11,7 +11,7 @@ import type { TargetOutput } from "./target-output";
 
 /** Runs a Target's build or dependency installation: `command` through /bin/sh in `cwd` (the workspace when absent) with
  * `env`, within `timeoutSeconds`, its output recorded under `componentName` (setup when absent), including what a killed
- * command printed before its budget ran out. */
+ * command printed before its budget ran out; all of it is recorded before the command returns or fails. */
 export type TargetCommand = (
   command: string,
   target: TargetRecord,
@@ -43,6 +43,12 @@ export function createTargetCommand(options: {
         target.plan.providers.processSupervisor,
       ),
       key = preparationProcessKey(target);
+    // Every line the command printed is in the Target log before it returns or fails. A runner that does not stream
+    // hands over its whole output at the end instead.
+    const record = async (result?: CommandResult) => {
+      if (!(await live.finish()) && result)
+        await options.output.recordOutput(result, target, componentName);
+    };
     let result: CommandResult;
     try {
       result = await options.run({
@@ -57,21 +63,26 @@ export function createTargetCommand(options: {
       // The command's own failure is the one reported; a record kept because its group could not be stopped keeps what
       // still runs addressable for rig down.
       await owner?.disown?.(key).catch(() => {});
+      await record().catch(() => {});
       throw error;
     }
     // What the command left running in its group is stopped before the record of the group goes.
-    await owner?.disown?.(key).catch((error: unknown) => {
-      throw new RigError(
-        "PREPARATION_LEFTOVER",
-        `A process the ${componentName} command of ${target.name} left running could not be stopped.`,
-        `Run ${rigCommand("down", { target })} to stop it, then retry.`,
-        { component: componentName },
-        failureCauses(error),
-      );
-    });
-    // A runner that does not stream hands over its whole output at the end instead.
-    if (!(await live.finish()))
-      await options.output.recordOutput(result, target, componentName);
+    const leftover = await owner?.disown?.(key).then(
+      () => undefined,
+      (error: unknown) =>
+        new RigError(
+          "PREPARATION_LEFTOVER",
+          `A process the ${componentName} command of ${target.name} left running could not be stopped.`,
+          `Run ${rigCommand("down", { target })} to stop it, then retry.`,
+          { component: componentName },
+          failureCauses(error),
+        ),
+    );
+    if (leftover) {
+      await record(result).catch(() => {});
+      throw leftover;
+    }
+    await record(result);
     return result;
   };
 }

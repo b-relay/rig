@@ -684,10 +684,16 @@ test("a running Service judged by cached health or by nothing settles three micr
     const answered = new Promise<void>((resolve) => {
       answer = resolve;
     });
+    let started = 0;
+    let bothStarted!: () => void;
+    const bothWaiting = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
     const reports = observeTargets(
       [cachedAndPlain],
       {
         async process() {
+          if (++started === 2) bothStarted();
           await answered;
           return { state: "running", pid: 22 };
         },
@@ -708,9 +714,8 @@ test("a running Service judged by cached health or by nothing settles three micr
       deadline,
       () => ({ status: "healthy", failures: 0, retries: 3, restarts: 0 }),
     );
-    // Let both observations start and wait on their process.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Count from when both observations wait on their process, however long they took to start.
+    await bothWaiting;
     answer();
     for (let tick = 0; tick < ticks; tick++) await Promise.resolve();
     deadline.expire();

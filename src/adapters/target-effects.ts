@@ -1,146 +1,33 @@
-import {
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readlink,
-  stat,
-  symlink,
-  writeFile,
-  rm,
-} from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { z } from "zod";
-import { createHash } from "node:crypto";
-import type {
-  BuildUnit,
-  InstalledComponent,
-  ManagedComponent,
-  PlanJob,
-  TargetPlan,
-  PlanComponent,
-} from "../config/types";
-import { isHealthUrl } from "../config/schema";
-import { installedPath } from "../domain/installed-path";
-import { isGitCommit } from "../domain/git";
-import { componentDirectory } from "../config/working-dir";
-import {
-  gitIgnoreCheck,
-  loadEnvironmentFiles,
-  readEnvironmentFile,
-} from "./env-file";
-import {
-  assertRepresentableEnvironment,
-  composeEnvironment,
-} from "../domain/process-environment";
 import type { TargetRecord } from "../domain/runtime";
-import type {
-  Supervisor,
-  CommandRunner,
-  CommandResult,
-  HealthCheck,
-  TargetLogEntry,
-} from "../providers/contracts";
-import {
-  isSourceEntrypoint,
-  shimRunsFrom,
-} from "../providers/artifact-installer";
-import { assertContainedDirectory } from "../providers/contained-directory";
+import type { Supervisor, CommandRunner } from "../providers/contracts";
 import type { ArtifactInstaller } from "../providers/artifact-installer";
 import type { Router } from "../providers/caddy-router";
-import { liveUpstreams, parseOwnedSites } from "../providers/route-file";
-import { routeUpstream, upstreamPort } from "../domain/route-upstream";
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
-import { declaredPorts, plannedRoutes, plannedSites } from "../runtime/ports";
-import {
-  ownedListeners,
-  preparationProcessKey,
-  type TargetEffects,
-} from "../runtime/lifecycle";
-/** A failed health command's last non-empty output line, stderr first, cut to fit one log line, since it is shown in status,
- * Activity and errors. Every env-file value is redacted in the output as printed, before a line is picked, trimmed or cut,
- * and a line the runner kept only part of is left out; undefined when nothing whole is left. */
-function healthOutput(
-  result: CommandResult,
-  secrets: readonly string[],
-): string | undefined {
-  // A stream the runner cut starts partway through a line, maybe partway through a value; that line is left out.
-  const whole = (stream: "stdout" | "stderr") => {
-    const text = result[stream];
-    if (!result.truncated?.[stream]) return text;
-    const start = text.indexOf("\n");
-    return start === -1 ? "" : text.slice(start + 1);
-  };
-  const line =
-    lastOutputLine(redactValues(whole("stderr"), secrets)) ??
-    lastOutputLine(redactValues(whole("stdout"), secrets));
-  return line?.slice(0, 160);
-}
-/** The reference values the commands of one scope read, by variable name: a Service's command, health check and build, a
- * job's command and restore, a Tool's build, or without a Component the shared build. Only these, so one Service's
- * environment changes only with its own values. */
-function referenceValuesOf(
-  plan: TargetPlan,
-  component?: ManagedComponent | InstalledComponent | PlanJob,
-): Record<string, string> {
-  const values = plan.referenceValues ?? {};
-  const units = (plan.builds ?? []).filter((unit) =>
-    component === undefined
-      ? unit.component === undefined
-      : "kind" in component && unit.component === component.name,
-  );
-  const commands = [
-    ...units.map((unit) => unit.command),
-    ...(component && "command" in component ? [component.command] : []),
-    ...(component && "health" in component && component.health !== undefined
-      ? [component.health]
-      : []),
-    ...(component && "backup" in component && component.backup?.restore
-      ? [component.backup.restore]
-      : []),
-  ];
-  const names = commands.join("\n").match(/_RIG_[A-Za-z0-9_]+/g) ?? [];
-  return Object.fromEntries(
-    names.filter((name) => name in values).map((name) => [name, values[name]!]),
-  );
-}
-/** A probe transport failure named by its error code when it has one, else its message. */
-function failureReason(error: unknown): string {
-  if (error instanceof Error) {
-    const code = (error as { code?: unknown }).code;
-    return typeof code === "string" && code ? code : error.message;
-  }
-  return String(error);
-}
-import type { HealthObservation, ObservationEffects } from "../runtime/status";
-import {
-  RigError,
-  diagnosticErrorCode,
-  failureCauses,
-  failureReason as describedFailure,
-  lastOutputLine,
-} from "../domain/errors";
-import { keepRecent } from "../domain/recent-entries";
-import { redactValues } from "../domain/redaction";
+import { declaredPorts } from "../runtime/ports";
+import type { TargetEffects } from "../runtime/lifecycle";
+import type { ObservationEffects } from "../runtime/status";
+import { RigError } from "../domain/errors";
 import { rigCommand } from "../domain/rig-command";
+import { installedPath } from "../domain/installed-path";
 import {
   createArtifactOwnership,
   type OrphanedArtifact,
-  type RepositoryIdentity,
 } from "./artifact-ownership";
-import { rememberedDigests, type FileDigest } from "./file-digest";
+import { rememberedDigests } from "./file-digest";
 import { createEffectTransactions } from "./effect-transactions";
 import { createEnvironmentDigest } from "./environment-digest";
-import { appendTargetLogEntries } from "../providers/target-log";
-import { outputLines } from "../domain/output-records";
-import {
-  privateDirectory,
-  privateDirectoryWithin,
-  removeFileDurably,
-  replacePrivateFile,
-} from "../providers/private-files";
 import type { LogRetention } from "../domain/log-retention";
+import { createTargetOutput } from "./target-output";
+import { createInvocationEnvironment } from "./invocation-environment";
+import { createTargetCommand } from "./target-commands";
+import { createTargetHealth } from "./target-health";
+import { createTargetArtifacts } from "./target-artifacts";
+import { createToolPublication } from "./tool-publication";
+import { createTargetRoutes } from "./target-routes";
+import { createTargetPreparation } from "./target-preparation";
+import { exists } from "./path-exists";
+
 export interface TargetAdapterOptions {
   root: string;
   /** Acquires an ISO timestamp per recorded output entry, after buffered execution. */
@@ -168,11 +55,9 @@ export interface TargetAdapterOptions {
   projectRepository?: (projectId: string) => Promise<string | undefined>;
 }
 export { installedPath };
-/** Budget in seconds for dependency installation; rig.yaml has no setting for it. */
-const DEFAULT_INSTALL_TIMEOUT_SECONDS = 600;
-/** How many Target Components' health evidence is remembered: more than the Services a Mac runs at once. */
-const KEPT_HEALTH_EVIDENCE = 1024;
-/** Owns target-specific filesystem and process effects. Orchestration policy lives in lifecycle. */
+/** Owns target-specific filesystem and process effects, composed from one owner each: invocation environments, command
+ * runs and their output, health checks, workspace preparation and builds, Tool publication, artifacts and routes.
+ * Orchestration policy lives in lifecycle. */
 export function createTargetEffects(
   options: TargetAdapterOptions,
 ): TargetEffects & {
@@ -195,22 +80,6 @@ export function createTargetEffects(
     ownership,
     router: options.router,
   });
-  const receiptPath = (target: TargetRecord, component: InstalledComponent) =>
-    join(
-      options.root,
-      "installed",
-      createHash("sha256")
-        .update(`${target.id}:${component.name}`)
-        .digest("hex") + ".json",
-    );
-  const livePorts = async (target: TargetRecord) =>
-    new Set(
-      [
-        ...liveUpstreams(
-          (await options.router.checkpoint(target.id)).value ?? "",
-        ),
-      ].map(upstreamPort),
-    );
   const supervisor = (target: TargetRecord) => {
     const provider = options.supervisors.get(
       target.plan.providers.processSupervisor,
@@ -223,934 +92,88 @@ export function createTargetEffects(
       );
     return provider;
   };
-  const ignored = gitIgnoreCheck(options.run, options.environment);
-  const noted = new Set<string>();
-  /** One invocation's environment, composed fresh each time: the controlled baseline with a Target-owned TMPDIR, the scope's public env, its env files, then the plan's reference values.
-   * Overrides and permission warnings go to the Target log by name; file values go nowhere but the returned environment and
-   * `secrets`, the list of them to redact. `forRunningProcess` is for a check of a process already running: see
-   * `loadEnvironmentFiles`; every other invocation gets each value exactly or is refused. */
-  const invocationEnvironment = async (
-    target: TargetRecord,
-    component?: ManagedComponent | InstalledComponent | PlanJob,
-    /** Inputs of a Project-scope command, which no Component carries. */
-    projectInputs: NonNullable<BuildUnit["commandInputs"]> = [],
-    forRunningProcess = false,
-  ): Promise<{ env: Record<string, string>; secrets: string[] }> => {
-    const scope = component ?? target.plan;
-    const loaded = await loadEnvironmentFiles(
-      scope.envFiles ?? [],
-      target.plan.workspacePath,
-      ignored,
-      forRunningProcess,
-    );
-    const tmp = join(options.root, "tmp", target.id);
-    const composed = composeEnvironment({
-      baseline: { ...options.environment, TMPDIR: tmp },
-      publicEnv: scope.env ?? {},
-      files: loaded.files,
-      guarded: component?.commandInputs ?? projectInputs,
-      ...(component ? { component: component.name } : {}),
-    });
-    await privateDirectory(options.root, tmp);
-    const notes = [
-      ...loaded.warnings,
-      ...composed.overrides.map(
-        (override) =>
-          `Environment name ${override.key} comes from ${override.sources.at(-1)}, overriding ${override.sources.slice(0, -1).join(", ")}.`,
-      ),
-    ];
-    // Readiness polls compose too; a note is evidence once per Target, not once per poll.
-    const fresh = notes.filter((note) => !noted.has(`${target.id}:${note}`));
-    for (const note of fresh) noted.add(`${target.id}:${note}`);
-    if (fresh.length)
-      await recordLines(target, component?.name ?? "setup", "stderr", fresh);
-    // The values its commands read through _RIG_ variables come last.
-    const env = {
-      ...composed.env,
-      ...referenceValuesOf(target.plan, component),
-    };
-    if (!forRunningProcess)
-      assertRepresentableEnvironment(env, component?.name);
-    return { env, secrets: composed.secrets };
-  };
-  const environment = async (
-    ...args: Parameters<typeof invocationEnvironment>
-  ): Promise<Record<string, string>> =>
-    (await invocationEnvironment(...args)).env;
-  /** Runs a shell command in the Target workspace, or in `cwd` inside it, within a budget in seconds and records its output,
-   * including what a killed command printed before its budget ran out, under the Component name. */
-  /** The directory a Component's build or shell check runs in. A working_dir must be a directory inside the workspace,
-   * symlinks followed; anything else fails before a command runs, naming the setting, rather than as a spawn failure. */
-  const runDirectory = async (
-    target: TargetRecord,
-    component: PlanComponent | undefined,
-  ): Promise<string> => {
-    const directory = componentDirectory(target.plan, component);
-    if (component?.kind !== "managed" || component.workingDir === undefined)
-      return directory;
-    await assertContainedDirectory(directory, target.plan.workspacePath);
-    if (
-      !(await stat(directory).then(
-        (info) => info.isDirectory(),
-        () => false,
-      ))
-    )
-      throw new RigError(
-        "WORKING_DIR_MISSING",
-        `The working directory ${directory} of ${component.name} is not a directory.`,
-        `Create ${component.workingDir} in the repository, or correct services.${component.name}.working_dir in rig.yaml; it must exist before its build runs.`,
-        { directory, service: component.name },
-      );
-    return directory;
-  };
-  /** Runs a build or dependency installation of `target`. Its process group is recorded under the Target's preparation
-   * key before the command runs, so a daemon that dies meanwhile leaves it to the next one, and forgotten once the command
-   * ended and nothing it started still runs: a process it left in the background is stopped then, and when that fails the
-   * command fails PREPARATION_LEFTOVER with the record kept. */
-  const runTarget = async (
-    command: string,
-    target: TargetRecord,
-    env: Record<string, string>,
-    timeoutSeconds: number,
-    componentName = "setup",
-    cwd = target.plan.workspacePath,
-  ) => {
-    const live = liveRecorder(target, componentName);
-    // A plan whose supervisor this rigd lacks records nothing; none of its Services can start either (PROVIDER_MISSING).
-    const owner = options.supervisors.get(
-        target.plan.providers.processSupervisor,
-      ),
-      key = preparationProcessKey(target);
-    let result: CommandResult;
-    try {
-      result = await options.run({
-        command: ["/bin/sh", "-c", command],
-        cwd,
-        env,
-        timeoutMs: timeoutSeconds * 1000,
-        onOutput: live.receive,
-        ...(owner?.own ? { started: (pid) => owner.own!(key, pid) } : {}),
-      });
-    } catch (error) {
-      // The command's own failure is the one reported; a record kept because its group could not be stopped keeps what
-      // still runs addressable for rig down.
-      await owner?.disown?.(key).catch(() => {});
-      throw error;
-    }
-    // What the command left running in its group is stopped before the record of the group goes.
-    await owner?.disown?.(key).catch((error: unknown) => {
-      throw new RigError(
-        "PREPARATION_LEFTOVER",
-        `A process the ${componentName} command of ${target.name} left running could not be stopped.`,
-        `Run ${rigCommand("down", { target })} to stop it, then retry.`,
-        { component: componentName },
-        failureCauses(error),
-      );
-    });
-    // A runner that does not stream hands over its whole output at the end instead.
-    if (!(await live.finish()))
-      await recordOutput(result, target, componentName);
-    return result;
-  };
-  /** Records output lines as a running command produces them (see `outputLines`), each at the time it was seen;
-   * finish flushes a trailing partial line and says whether anything was streamed. */
-  const liveRecorder = (target: TargetRecord, componentName: string) => {
-    const lines = { stdout: outputLines(), stderr: outputLines() };
-    let streamed = false;
-    let writes: Promise<void> = Promise.resolve();
-    const record = (stream: "stdout" | "stderr", complete: string[]) => {
-      if (complete.length)
-        writes = writes.then(() =>
-          recordLines(target, componentName, stream, complete),
-        );
-    };
-    const receive = (stream: "stdout" | "stderr", chunk: string) => {
-      streamed = true;
-      record(stream, lines[stream].push(chunk));
-    };
-    const finish = async () => {
-      for (const stream of ["stdout", "stderr"] as const)
-        record(stream, lines[stream].end());
-      await writes;
-      return streamed;
-    };
-    return { receive, finish };
-  };
-  const recordOutput = async (
-    result: CommandResult,
-    target: TargetRecord,
-    componentName: string,
-  ) => {
-    for (const stream of ["stdout", "stderr"] as const) {
-      const lines = outputLines();
-      await recordLines(target, componentName, stream, [
-        ...lines.push(result[stream]),
-        ...lines.end(),
-      ]);
-    }
-  };
-  const recordLines = async (
-    target: TargetRecord,
-    componentName: string,
-    stream: TargetLogEntry["stream"],
-    lines: readonly string[],
-    makeDirectory: typeof privateDirectory = privateDirectory,
-  ) => {
-    if (!lines.length) return;
-    await makeDirectory(options.root, target.logRoot);
-    await appendTargetLogEntries(
-      options.root,
-      target.logRoot,
-      lines.map((line) => ({
-        timestamp: options.recordingTime(),
-        component: componentName,
-        stream,
-        line,
-      })),
-      await options.logRetention?.(),
-      makeDirectory,
-    );
-  };
-  /** Last recorded probe evidence per Target Component, so the Target log holds each change rather than every poll. Only
-   * the most recently checked are kept: a destroyed Preview or a removed Service is never checked again, so its entry goes
-   * in time. */
-  const lastHealth = new Map<string, string>();
-  /** A check's answer, whatever becomes of its evidence: evidence that cannot be written is said (`unrecorded`) and stays
-   * unrecorded, so the next check writes it. Evidence whose Target directory is gone is dropped, as is the memory of it: a
-   * check still in flight as its Preview is destroyed must not bring back what was deleted, and no one is left to tell. */
-  const health = async (
-    component: ManagedComponent,
-    target: TargetRecord,
-    signal: AbortSignal,
-  ): Promise<HealthObservation> =>
-    await evidenced(
-      component.health
-        ? await probe(component, target, signal)
-        : await connections(component, signal),
-      component,
-      target,
-    );
-  /** An ongoing check, as status and the health monitor run it: the start gate's check, except that a check of the Service's
-   * ports, and any check of a routed Service, passes only on listeners its own running process owns, so a program that took
-   * a port it left never answers for it. */
-  const ongoingHealth = async (
-    component: ManagedComponent,
-    target: TargetRecord,
-    signal: AbortSignal,
-  ): Promise<HealthObservation> => {
-    const routed = plannedRoutes(target.plan).some(
-      (route) => route.service === component.name,
-    );
-    if (component.health && !routed)
-      return await health(component, target, signal);
-    const reached = component.health
-      ? await probe(component, target, signal)
-      : await connections(component, signal);
-    const owned = reached.ready
-      ? await ownedListeners(
-          component,
-          target,
-          {
-            listeners: (pid, inspecting) =>
-              options.listeners.inspect(pid, inspecting),
-          },
-          {
-            observe: () =>
-              supervisor(target).observe(
-                `${target.id}:${component.name}`,
-                signal,
-              ),
-          },
-          signal,
-        ).catch((error: unknown): HealthCheck => ({
-          ready: false,
-          reason: describedFailure(error),
-        }))
-      : reached;
-    return await evidenced(owned, component, target);
-  };
-  const evidenced = async (
-    check: HealthCheck,
-    component: ManagedComponent,
-    target: TargetRecord,
-  ): Promise<HealthObservation> => {
-    const evidence = check.ready ? "ready" : check.reason;
-    const key = `${target.id}:${component.name}`;
-    if (lastHealth.get(key) !== evidence)
-      try {
-        await recordLines(
-          target,
-          component.name,
-          "health",
-          [evidence],
-          privateDirectoryWithin,
-        );
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return check;
-        return { ...check, unrecorded: describedFailure(error) };
-      }
-    keepRecent(lastHealth, key, evidence, KEPT_HEALTH_EVIDENCE);
-    return check;
-  };
-  /** Without a check of its own a Service is ready once every port it declares accepts a connection. */
-  const connections = async (
-    component: ManagedComponent,
-    signal: AbortSignal,
-  ): Promise<HealthCheck> => {
-    const ports = Object.entries(declaredPorts(component));
-    if (!ports.length) return { ready: false, reason: "no health check" };
-    for (const [name, port] of ports) {
-      const check = await options.connect(port, signal);
-      if (!check.ready)
-        return { ready: false, reason: `${name}: ${check.reason}` };
-    }
-    return { ready: true };
-  };
-  /** An HTTP answer below 400, a redirect included, means the process is serving; a shell probe passes on exit 0 within the
-   * healthcheck's timeout, or 2 s for a `ready` check a plan recorded before healthcheck. */
-  const probe = async (
-    component: ManagedComponent,
-    target: TargetRecord,
-    signal: AbortSignal,
-  ): Promise<HealthCheck> => {
-    const timeoutMs = (component.healthcheck?.timeout ?? 2) * 1000;
-    try {
-      if (isHealthUrl(component.health!)) {
-        // A healthcheck's timeout bounds each request, at start and while it runs; a `ready` URL a plan recorded before
-        // healthcheck is bounded by its start budget alone, as it was. The request has its own signal, aborted by the
-        // caller's or by its timer; both are let go when it ends, so a finished check holds no timer and no listener.
-        const request = new AbortController();
-        let timedOut = false;
-        const forward = () => request.abort(signal.reason);
-        signal.addEventListener("abort", forward, { once: true });
-        const timer = component.healthcheck
-          ? setTimeout(() => {
-              timedOut = true;
-              request.abort();
-            }, timeoutMs)
-          : undefined;
-        try {
-          if (signal.aborted) forward();
-          const response = await fetch(component.health!, {
-            signal: request.signal,
-            redirect: "manual",
-          });
-          await response.body?.cancel();
-          return response.status < 400
-            ? { ready: true }
-            : { ready: false, reason: `HTTP ${response.status}` };
-        } catch (error) {
-          if (!signal.aborted && timedOut)
-            return {
-              ready: false,
-              reason: `timed out after ${timeoutMs / 1000}s`,
-            };
-          throw error;
-        } finally {
-          clearTimeout(timer);
-          signal.removeEventListener("abort", forward);
-        }
-      }
-      const { env, secrets } = await invocationEnvironment(
-        target,
-        component,
-        [],
-        true,
-      );
-      const result = await options.run({
-        command: ["/bin/sh", "-c", component.health!],
-        cwd: await runDirectory(target, component),
-        env,
-        signal,
-        timeoutMs,
-      });
-      if (result.exitCode === 0) return { ready: true };
-      const detail = healthOutput(result, secrets);
-      return {
-        ready: false,
-        reason: `${result.timedOut ? `timed out after ${timeoutMs / 1000}s` : `exit code ${result.exitCode}`}${detail ? `: ${detail}` : ""}`,
-      };
-    } catch (error) {
-      if (signal.aborted) throw error;
-      return { ready: false, reason: failureReason(error) };
-    }
-  };
-  const installedComponents = (target: TargetRecord) =>
-    target.plan.components.filter(
-      (component): component is InstalledComponent =>
-        component.kind === "installed",
-    );
-  const superseded = (previous: TargetRecord, candidate: TargetRecord) => {
-    const retained = new Set(
-      installedComponents(candidate).map((component) =>
-        installedPath(options.root, candidate, component),
-      ),
-    );
-    return installedComponents(previous).filter(
-      (component) =>
-        !retained.has(installedPath(options.root, previous, component)),
-    );
-  };
-  /** The Tools only `previous` names that are its to retire. One another Target owns, or a file Rig did not install, was
-   * never published by it: a working Target records its plan before a start is refused for such a Tool, and dropping the Tool
-   * from rig.yaml leaves that file as it is. An executable it did publish is still held to every other check. */
-  const retirable = async (previous: TargetRecord, candidate: TargetRecord) => {
-    const own: InstalledComponent[] = [];
-    for (const component of superseded(previous, candidate))
-      try {
-        await ownership.inspect(artifactIdentity(previous, component));
-        own.push(component);
-      } catch (error) {
-        if (
-          !(error instanceof RigError) ||
-          !["ARTIFACT_CONFLICT", "ARTIFACT_UNOWNED"].includes(error.code)
-        )
-          throw error;
-      }
-    return own;
-  };
-  /** The identity of the repository `target` was deployed from: the root commits of its Commit (the Working copy's HEAD
-   * when it has none), read in the Project's own registered repository, sorted and joined by commas: the same in every full
-   * clone, whatever its remotes. Never read from Rig's mirror or a checkout, whose history Rig fetched piecemeal. A shallow
-   * Project repository is `shallow`: git reports where its history was cut as roots, which match nothing. Unknown when
-   * git cannot say: no registered repository, the Commit not in it, no git. Never fetches anything. */
-  const repositoryIdentity = async (
-    target: TargetRecord,
-  ): Promise<RepositoryIdentity> => {
-    try {
-      const repository = await options.projectRepository?.(target.projectId);
-      if (repository === undefined) return { kind: "unknown" };
-      if (target.commit !== undefined && !isGitCommit(target.commit))
-        return { kind: "unknown" };
-      const git = async (args: string[]) => {
-        const result = await options.run({
-          command: ["git", ...args],
-          cwd: repository,
-          env: options.environment,
-          timeoutMs: 30_000,
-        });
-        return result.exitCode === 0 ? result.stdout : undefined;
-      };
-      const shallow = (
-        await git(["rev-parse", "--is-shallow-repository"])
-      )?.trim();
-      if (shallow === "true") return { kind: "shallow" };
-      if (shallow !== "false") return { kind: "unknown" };
-      const roots = (
-        (await git(["rev-list", "--max-parents=0", target.commit ?? "HEAD"])) ??
-        ""
-      )
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => /^[0-9a-f]{40,64}$/.test(line))
-        .sort();
-      return roots.length
-        ? { kind: "known", roots: roots.join(",") }
-        : { kind: "unknown" };
-    } catch {
-      return { kind: "unknown" };
-    }
-  };
-  /** Who publishes `component` of `target`, as ownership records it. */
-  const artifactIdentity = (
-    target: TargetRecord,
-    component: InstalledComponent,
-  ) => ({
-    targetId: target.id,
-    componentName: component.name,
-    destination: installedPath(options.root, target, component),
-    project: target.plan.project,
-    target: target.name,
-    repository: () => repositoryIdentity(target),
+  const output = createTargetOutput({
+    root: options.root,
+    recordingTime: options.recordingTime,
+    ...(options.logRetention ? { logRetention: options.logRetention } : {}),
   });
-  const retireComponents = async (
-    target: TargetRecord,
-    components: readonly InstalledComponent[],
-  ) => {
-    for (const component of components) {
-      if (component.kind !== "installed") continue;
-      const identity = artifactIdentity(target, component),
-        destination = identity.destination,
-        receiptFile = receiptPath(target, component);
-      const owned = await ownership.inspect(identity);
-      // A released executable (its owner Target is gone) is not this Target's to retire: it stays, as a forget leaves it.
-      const retired = owned.released
-        ? [receiptFile]
-        : [destination, ...ownership.ownedPaths(destination), receiptFile];
-      // Only what it removes is journalled as changing, so a recovery never takes a released Tool for its own work.
-      await transactions.withArtifactChange(target.id, retired, async () => {
-        for (const path of retired) await removeFileDurably(path);
-      });
-    }
-  };
+  const environment = createInvocationEnvironment({
+    root: options.root,
+    environment: options.environment,
+    run: options.run,
+    output,
+  });
+  const command = createTargetCommand({
+    run: options.run,
+    supervisors: options.supervisors,
+    output,
+  });
+  const health = createTargetHealth({
+    run: options.run,
+    connect: options.connect,
+    listeners: options.listeners,
+    environment,
+    output,
+    supervisor,
+  });
+  const artifacts = createTargetArtifacts({
+    root: options.root,
+    run: options.run,
+    environment: options.environment,
+    installer: options.installer,
+    digestFile,
+    ownership,
+    transactions,
+    ...(options.projectRepository
+      ? { projectRepository: options.projectRepository }
+      : {}),
+  });
   const digest = createEnvironmentDigest(options.root);
-  /** The Component whose scope `unit` builds in: none for the shared unit (or a store's); BUILD_SCOPE for a unit that names
-   * a Component the plan lacks. */
-  const unitComponent = (unit: BuildUnit, target: TargetRecord) => {
-    const component = target.plan.components.find(
-      (candidate) => candidate.name === unit.component,
-    );
-    if (unit.component !== undefined && !component)
-      throw new RigError(
-        "BUILD_SCOPE",
-        `Build unit ${unit.id} names no Component of this plan.`,
-        "Deploy again so the plan and its build units are recorded together.",
-        { unit: unit.id },
-      );
-    return component?.kind === "persistent" ? undefined : component;
-  };
   return {
     supervisor,
-    environment,
+    environment: environment.environment,
     digestEnvironment: (target, env) => digest(env, target.plan.workspacePath),
-    async checkEnvironmentValues(target) {
-      const managed = target.plan.components.filter(
-        (component) => component.kind === "managed",
-      );
-      // A file several Services share is read once here; each start reads its own afresh.
-      const paths = new Set(
-        managed.flatMap((component) =>
-          (component.envFiles ?? []).map(({ path }) => path),
-        ),
-      );
-      for (const path of paths)
-        await readEnvironmentFile(path).catch((error: unknown) => {
-          if (diagnosticErrorCode(error) === "ENV_VALUE") throw error;
-        });
-      for (const component of managed)
-        assertRepresentableEnvironment(
-          {
-            ...component.env,
-            ...referenceValuesOf(target.plan, component),
-          },
-          component.name,
-        );
-    },
-    health,
+    checkEnvironmentValues: environment.checkEnvironmentValues,
+    health: health.health,
     pruneCheckpoints: (live) => transactions.pruneCheckpoints(live),
     checkpoint: async (target, previous) =>
       await transactions.checkpoint(
         target.id,
-        [
-          ...installedComponents(target).map((component) => ({
-            target,
-            component,
-          })),
-          ...(previous
-            ? (await retirable(previous, target)).map((component) => ({
-                target: previous,
-                component,
-              }))
-            : []),
-        ].map(({ target: owner, component }) => ({
-          ...artifactIdentity(owner, component),
-          receiptPath: receiptPath(owner, component),
-        })),
+        await artifacts.checkpointed(target, previous),
       ),
     commitEffects: (target) => transactions.commit(target.id),
     restoreEffects: (target) => transactions.restore(target.id),
-    retireArtifacts: (target) =>
-      retireComponents(target, installedComponents(target)),
-    retireSuperseded: async (previous, candidate) =>
-      await retireComponents(previous, await retirable(previous, candidate)),
-    async prepare(target, composed) {
-      await privateDirectory(options.root, target.logRoot);
-      for (const component of target.plan.preparedComponents) {
-        const directory =
-          component.uses === "sqlite"
-            ? dirname(component.path)
-            : component.uses === "convex"
-              ? component.stateDir
-              : component.dataDir;
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        if (component.uses === "convex")
-          await linkConvexState(target.plan.workspacePath, component.stateDir);
-        if (component.uses === "sqlite") {
-          const file = await open(component.path, "a", 0o600);
-          await file.close();
-        }
-        if (
-          component.uses === "postgres" &&
-          !(await exists(join(component.dataDir, "PG_VERSION")))
-        ) {
-          let result;
-          try {
-            result = await options.run({
-              command: [
-                "initdb",
-                "-E",
-                "UTF8",
-                "-A",
-                "trust",
-                "--no-locale",
-                "-D",
-                component.dataDir,
-              ],
-              env: options.environment,
-            });
-          } catch (error) {
-            if (!(error instanceof RigError) || error.code !== "COMMAND_START")
-              throw error;
-            throw new RigError(
-              "POSTGRES_INIT",
-              `initdb is not installed or not on rigd's PATH, so the Postgres storage for ${component.name} could not be initialized.`,
-              "Install PostgreSQL (for example brew install postgresql@17) so initdb, postgres and pg_isready are on the PATH rigd was installed from, then retry.",
-              { component: component.name },
-              failureCauses(error),
-            );
-          }
-          await recordOutput(result, target, component.name);
-          if (result.exitCode)
-            throw new RigError(
-              "POSTGRES_INIT",
-              `initdb exited with code ${result.exitCode}, so the Postgres storage for ${component.name} could not be initialized.`,
-              "Inspect the Target setup logs for initdb's output.",
-              { component: component.name, exitCode: result.exitCode },
-            );
-        }
-      }
-      if (target.kind === "working") return;
-      // The marker lives in the immutable workspace, so releasing the revision reclaims it too.
-      const marker = join(target.plan.workspacePath, PREPARED_MARKER);
-      if (await exists(marker)) return;
-      // Dependency installation happens once per immutable workspace. Application builds remain Component policy.
-      let command: string[] | undefined;
-      if (
-        (await exists(join(target.plan.workspacePath, "bun.lock"))) ||
-        (await exists(join(target.plan.workspacePath, "bun.lockb")))
-      )
-        command = ["bun", "install", "--frozen-lockfile"];
-      else if (
-        await exists(join(target.plan.workspacePath, "package-lock.json"))
-      )
-        command = ["npm", "ci"];
-      else if (await exists(join(target.plan.workspacePath, "pnpm-lock.yaml")))
-        command = ["pnpm", "install", "--frozen-lockfile"];
-      else if (await exists(join(target.plan.workspacePath, "yarn.lock")))
-        command = ["yarn", "install", "--frozen-lockfile"];
-      else if (await exists(join(target.plan.workspacePath, "package.json")))
-        command = ["bun", "install"];
-      if (command) {
-        const timeoutSeconds =
-          target.plan.installTimeout ?? DEFAULT_INSTALL_TIMEOUT_SECONDS;
-        const result = await runTarget(
-          command.join(" "),
-          target,
-          composed ? { ...composed } : await environment(target),
-          timeoutSeconds,
-        );
-        if (result.timedOut)
-          throw new RigError(
-            "DEPENDENCIES_TIMEOUT",
-            `Project dependency installation (${command.join(" ")}) did not finish within ${timeoutSeconds} s and was killed.`,
-            `Its output so far is in ${rigCommand("logs", { target, service: "setup" })}. The budget is a fixed ten minutes that rig.yaml does not change: make the installation finish sooner (a warm package cache, or fewer dependencies), then deploy again.`,
-            { command: command.join(" "), timeoutSeconds },
-          );
-        if (result.exitCode)
-          throw new RigError(
-            "DEPENDENCIES_FAILED",
-            "Project dependency installation failed.",
-            `Inspect its output (${rigCommand("logs", { target, service: "setup" })}), fix the cause, then deploy again.`,
-          );
-      }
-      await writeFile(marker, "prepared\n", { mode: 0o600 });
-    },
-    buildEnvironment: async (unit, target) =>
-      await environment(
-        target,
-        unitComponent(unit, target),
-        unit.commandInputs,
-      ),
-    buildDirectory: (unit, target) =>
-      runDirectory(
-        target,
-        target.plan.components.find(
-          (candidate) => candidate.name === unit.component,
-        ),
-      ),
-    async build(unit, target, composed) {
-      const component = unitComponent(unit, target);
-      const name = unit.component ?? "setup";
-      const result = await runTarget(
-        unit.command,
-        target,
-        composed
-          ? { ...composed }
-          : await environment(target, component, unit.commandInputs),
-        unit.timeout,
-        name,
-        await runDirectory(
-          target,
-          target.plan.components.find(
-            (candidate) => candidate.name === unit.component,
-          ),
-        ),
-      );
-      const label =
-        unit.component === undefined ? "shared" : `${unit.component}`;
-      if (result.timedOut)
-        throw new RigError(
-          "BUILD_TIMEOUT",
-          `The ${label} build did not finish within ${unit.timeout} s and was killed.`,
-          `Inspect the ${name} Target logs for its output so far; set build_timeout if it needs longer. Nothing was started or published.`,
-          { unit: unit.id, timeoutSeconds: unit.timeout },
-        );
-      if (result.exitCode)
-        throw new RigError(
-          "BUILD_FAILED",
-          `The ${label} build failed.`,
-          `Inspect the ${name} Target logs. Nothing was started or published.`,
-          { unit: unit.id, exitCode: result.exitCode },
-        );
-    },
-    async install(component, target) {
-      const identity = artifactIdentity(target, component),
-        destination = identity.destination,
-        source = resolve(target.plan.workspacePath, component.entrypoint);
-      await ownership.inspect(identity);
-      const env = await environment(target, component);
-      const key = installationPolicyKey(
-        target.plan.workspacePath,
-        component,
-        destination,
-      );
-      const receiptFile = receiptPath(target, component);
-      const receipt = await readInstallReceipt(receiptFile);
-      const published =
-        receipt?.key === key &&
-        (await options.installer.observe(destination)) === "installed" &&
-        (await digestFile(destination)) === receipt.installedRevision;
-      const unchanged = async () =>
-        published &&
-        (await installedSourceRevision(
-          source,
-          digestFile,
-          options.installer,
-        )) === receipt!.sourceRevision;
-      if (await unchanged()) {
-        // Rig's own executable published before its provenance was recorded gets it now, so a later forget can hand it on.
-        const owned = ownership.ownedPaths(destination).slice(1);
-        if (owned.length)
-          await transactions.withArtifactChange(target.id, owned, () =>
-            ownership.backfillProvenance(identity),
-          );
-        return { outcome: "unchanged" };
-      }
-      await transactions.withArtifactChange(
-        target.id,
-        [destination, ...ownership.ownedPaths(destination), receiptFile],
-        async () => {
-          await ownership.publish(identity, async () => {
-            await options.installer.install({
-              cwd: target.plan.workspacePath,
-              entrypoint: component.entrypoint,
-              destination,
-              env,
-            });
-          });
-          await writeInstallReceipt(options.root, receiptFile, {
-            key,
-            sourceRevision: (await installedSourceRevision(
-              source,
-              digestFile,
-              options.installer,
-            ))!,
-            installedRevision: (await digestFile(destination))!,
-          });
-        },
-      );
-      return { outcome: "installed" };
-    },
+    retireArtifacts: artifacts.retireArtifacts,
+    retireSuperseded: artifacts.retireSuperseded,
+    ...createTargetPreparation({
+      root: options.root,
+      run: options.run,
+      baseline: options.environment,
+      command,
+      environment,
+      output,
+    }),
+    install: createToolPublication({
+      root: options.root,
+      installer: options.installer,
+      digestFile,
+      ownership,
+      transactions,
+      artifacts,
+      environment,
+    }),
     listeners: (pid, signal) => options.listeners.inspect(pid, signal),
-    livePorts,
-    async route(target, change) {
-      const sites = plannedSites(target.plan);
-      if (!sites.length)
-        return transactions.withRouteChange(target.id, () =>
-          options.router.remove(target.id),
-        );
-      if (sites.some((site) => !site.routes.length))
-        throw new RigError(
-          "ROUTE_UPSTREAM",
-          "The route upstream is not a managed Component.",
-          "Correct the Project proxy configuration.",
-        );
-      // A port is live while the route reaches it now, which it does only from its Service's verified start until just
-      // before that Service stops; `withhold` takes ports out, `verified` adds them. Every path goes to its port's state,
-      // so a path moved to another Service is live exactly when that Service's port is.
-      const live = await livePorts(target);
-      if ("withhold" in change)
-        for (const port of change.withhold) live.delete(port);
-      if ("verified" in change)
-        for (const port of change.verified) live.add(port);
-      await transactions.withRouteChange(target.id, () =>
-        options.router.apply({
-          key: target.id,
-          sites: sites.map((site) => ({
-            hostname: site.hostname,
-            routes: site.routes.map((route) => ({
-              prefix: route.prefix,
-              upstream: live.has(route.port) ? routeUpstream(route.port) : null,
-            })),
-          })),
-        }),
-      );
-    },
-    async withhold(target, ports) {
-      const saved = (await options.router.checkpoint(target.id)).value;
-      const reaching = (upstream: string | null) =>
-        upstream !== null && (!ports || ports.has(upstreamPort(upstream)));
-      // Asked of the router even when the route file already withholds every such path: the file says what Rig meant to
-      // publish, and only the router confirms what the proxy serves (a publication a crash cut short is made now).
-      await transactions.withRouteChange(target.id, () =>
-        saved === null
-          ? options.router.remove(target.id)
-          : options.router.apply({
-              key: target.id,
-              sites: parseOwnedSites(saved).map((site) => ({
-                hostname: site.hostname,
-                routes: site.routes.map((path) =>
-                  reaching(path.upstream) ? { ...path, upstream: null } : path,
-                ),
-              })),
-            }),
-      );
-    },
-    async checkRoute(target) {
-      // Asked even for a route-free plan: the router reserves the hostnames the Target serves now, which a rollback restores.
-      const sites = plannedSites(target.plan);
-      if (!options.router.check) return;
-      await options.router.check({
-        key: target.id,
-        sites: sites.map((site) => ({
-          hostname: site.hostname,
-          routes: site.routes.map((route) => ({
-            prefix: route.prefix,
-            upstream: routeUpstream(route.port),
-          })),
-        })),
-      });
-    },
-    async releaseRoute(target) {
-      await options.router.release?.(target.id);
-    },
-    async removeRoute(target) {
-      await transactions.withRouteChange(target.id, () =>
-        options.router.remove(target.id),
-      );
-    },
-    async withdrawRoute(target) {
-      const saved = await options.router.checkpoint(target.id);
-      // A Target that publishes nothing asks nothing of the proxy.
-      if (saved.value === null) return undefined;
-      // Once removed, the route as it is is known without reading it again: absent.
-      const expected = { key: target.id, value: null };
-      const hostnames = parseOwnedSites(saved.value).map(
-        (site) => site.hostname,
-      );
-      try {
-        await transactions.withRouteChange(target.id, () =>
-          options.router.remove(target.id),
-        );
-      } catch (error) {
-        // ROUTE_CHANGED: the route file was swapped for another file meanwhile, which a compensation reading it now
-        // would write into. It is not compensated; its error says routes may be partly applied (ADR 0014, Threat model).
-        if (error instanceof RigError && error.code === "ROUTE_CHANGED")
-          throw error;
-        // A failure after the removal took effect (recording it in an active effect journal, say) must not leave it
-        // uncompensated: when the block is gone, or that cannot be read, it is published again before the failure is.
-        const inPlace = async () =>
-          (
-            await options.router
-              .checkpoint(target.id)
-              .catch(() => ({ value: undefined }))
-          ).value === saved.value;
-        if (await inPlace()) throw error;
-        try {
-          await options.router.restore(saved, expected);
-        } catch (recovery) {
-          // Refused because the removal never happened after all (ROUTE_CHANGED): the route is where it was.
-          if (await inPlace()) throw error;
-          throw new RigError(
-            "WITHDRAW_ROLLBACK",
-            `The route for ${hostnames.join(", ")} was withdrawn, a failure followed (${describedFailure(error)}), and it could not be published again.`,
-            `Its Target is stopped, so nothing was served through it; rig up or rig deploy of ${target.name} publishes its route again.`,
-            { hostnames, target: target.name },
-            failureCauses(error, recovery),
-          );
-        }
-        throw error;
-      }
-      // Nothing that can fail runs between the confirmed removal and the handle that puts it back.
-      return {
-        hostnames,
-        restore: () => options.router.restore(saved, expected),
-      };
-    },
-    pruneRoutes: (owners, confinement) =>
-      options.router.withdrawUnowned(owners, confinement),
+    ...createTargetRoutes({ router: options.router, transactions }),
     orphanedTools: (recorded) => ownership.orphans(recorded),
     observations: {
       process: (target, component, signal) =>
         supervisor(target).observe(`${target.id}:${component.name}`, signal),
       health: (target, component, signal) =>
-        ongoingHealth(component, target, signal),
-      artifact: async (target, component) => {
-        try {
-          if (
-            isSourceEntrypoint(component.entrypoint) &&
-            !(await exists(
-              resolve(target.plan.workspacePath, component.entrypoint),
-            ))
-          )
-            return "missing";
-          const destination = installedPath(options.root, target, component);
-          const owned = await ownership.inspect({
-            targetId: target.id,
-            componentName: component.name,
-            destination,
-            project: target.plan.project,
-            target: target.name,
-          });
-          if (owned.revision === undefined) return "missing";
-          if (!owned.owner) return "unknown";
-          const receipt = await readInstallReceipt(
-            receiptPath(target, component),
-          );
-          const key = installationPolicyKey(
-            target.plan.workspacePath,
-            component,
-            destination,
-          );
-          if (
-            !receipt ||
-            receipt.key !== key ||
-            receipt.installedRevision !== owned.revision ||
-            receipt.sourceRevision !==
-              (await installedSourceRevision(
-                resolve(target.plan.workspacePath, component.entrypoint),
-                digestFile,
-                options.installer,
-              ))
-          )
-            return "unknown";
-          return await options.installer.observe(destination);
-        } catch {
-          return "unknown";
-        }
-      },
+        health.ongoingHealth(component, target, signal),
+      artifact: (target, component) => artifacts.observe(target, component),
       persistent: (_target, component) => exists(component.path),
-      async toolRunsFrom(target, checkout) {
-        for (const component of installedComponents(target))
-          if (
-            await shimRunsFrom(
-              installedPath(options.root, target, component),
-              checkout,
-            )
-          )
-            return true;
-        return false;
-      },
+      toolRunsFrom: (target, checkout) =>
+        artifacts.toolRunsFrom(target, checkout),
       async listening(_target, component, signal) {
         const ports = [
           ...new Set([
@@ -1165,106 +188,4 @@ export function createTargetEffects(
       },
     },
   };
-}
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-}
-/** Written at a deployed workspace root once its dependencies are installed. */
-const PREPARED_MARKER = ".rig-prepared";
-const installReceiptSchema = z.object({
-  key: z.string().describe("Digest of recorded installation policy."),
-  sourceRevision: z.string().describe("Installed source identity."),
-  installedRevision: z.string().describe("Digest of the published artifact."),
-});
-type InstallReceipt = z.infer<typeof installReceiptSchema>;
-async function readInstallReceipt(
-  path: string,
-): Promise<InstallReceipt | undefined> {
-  const raw = await readFile(path, "utf8").catch((error) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (raw === undefined) return undefined;
-  try {
-    return installReceiptSchema.parse(JSON.parse(raw));
-  } catch {
-    throw new RigError(
-      "INSTALL_RECEIPT",
-      "An installed component receipt is corrupt.",
-      "Inspect the installation state before retrying.",
-      { path },
-    );
-  }
-}
-async function writeInstallReceipt(
-  root: string,
-  path: string,
-  receipt: InstallReceipt,
-): Promise<void> {
-  // On disk before the journal captures it as this change's own.
-  await replacePrivateFile(root, path, JSON.stringify(receipt), {
-    durable: true,
-  });
-}
-
-/** Keys a publication receipt on the public policy the Project declares: its public env and which env files it names, never their contents,
- * so a secret never reaches a receipt and a changed operator file does not republish a Tool. The baseline (PATH, HOME, ...) is
- * excluded too, so a daemon restarted from another shell does not republish every installed Component. */
-function installationPolicyKey(
-  workspace: string,
-  component: Pick<InstalledComponent, "entrypoint" | "env" | "envFiles">,
-  destination: string,
-): string {
-  return createHash("sha256")
-    .update(
-      JSON.stringify({
-        workspace,
-        entrypoint: component.entrypoint,
-        destination,
-        env: component.env,
-        envFiles: (component.envFiles ?? []).map((file) => file.path),
-      }),
-    )
-    .digest("hex");
-}
-/** The receipt's view of the source: the file's digest when it is copied, or the installer's shim revision when it is shimmed,
- * since a shim reads the file at run time and changes only with its interpreter. Undefined when the source is missing. */
-async function installedSourceRevision(
-  source: string,
-  digestFile: FileDigest,
-  installer: ArtifactInstaller,
-): Promise<string | undefined> {
-  const shim = installer.shimRevision(source);
-  if (shim === undefined) return await digestFile(source);
-  return (await exists(source)) ? shim : undefined;
-}
-/** Convex only knows `<cwd>/.convex/local/default`; a deployed checkout is pointed at the persistent state directory instead of growing its own. */
-async function linkConvexState(
-  workspacePath: string,
-  stateDir: string,
-): Promise<void> {
-  const expected = join(workspacePath, ".convex", "local", "default");
-  if (resolve(stateDir) === expected) return;
-  const current = await lstat(expected).catch((error) => {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  });
-  if (current?.isSymbolicLink()) {
-    if ((await readlink(expected)) === stateDir) return;
-    await rm(expected);
-  } else if (current)
-    throw new RigError(
-      "CONVEX_STATE_CONFLICT",
-      "The deployment checkout already contains Convex local state.",
-      "Remove .convex/local/default from the repository so Rig can keep Convex state in Target storage.",
-      { path: expected, stateDir },
-    );
-  await mkdir(dirname(expected), { recursive: true, mode: 0o700 });
-  await symlink(stateDir, expected);
 }

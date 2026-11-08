@@ -1,4 +1,13 @@
-import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import { basic, local } from "./support/dashboard-site";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";
@@ -17,6 +26,8 @@ let activity: () => unknown;
 let status: (project: string) => unknown;
 let asked: string[];
 const real = { ...daemon };
+/** Only while this file runs: test files share a process, and the others reach the real module. */
+let standingIn = false;
 const reply = async (value: () => unknown) => {
   const answer = value();
   if (answer instanceof Error) throw answer;
@@ -24,7 +35,8 @@ const reply = async (value: () => unknown) => {
 };
 mock.module("../web/server/daemon", () => ({
   ...real,
-  async daemon() {
+  async daemon(root?: string) {
+    if (!standingIn) return real.daemon(root);
     return {
       health: () => (asked.push("health"), reply(health)),
       command: (command: RuntimeCommand) => {
@@ -33,7 +45,8 @@ mock.module("../web/server/daemon", () => ({
       },
     };
   },
-  async read(command: RuntimeCommand) {
+  async read(command: RuntimeCommand, signal?: AbortSignal) {
+    if (!standingIn) return real.read(command as never, signal);
     if (command.action === "list")
       return {
         projects: [
@@ -79,6 +92,12 @@ const reports: Record<string, unknown> = {
   },
 };
 let clock = 1_000_000;
+beforeAll(() => {
+  standingIn = true;
+});
+afterAll(() => {
+  standingIn = false;
+});
 beforeEach(() => {
   forgetNavigation();
   asked = [];

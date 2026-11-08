@@ -51,7 +51,7 @@ const SLOT_CLASS = [
   "text-pink-700 dark:text-pink-300",
   "text-cyan-700 dark:text-cyan-300",
 ];
-/** One Target's log, streamed a second at a time through rigd's cursor while following. The
+/** One Target's log, streamed a second at a time through rigd's cursor while following and the tab is visible. The
  * component and stream filters narrow what rigd reads; the search box narrows what is shown. The
  * first page came with the server render. The Target and the view live in the URL, and the search in this tab's session
  * storage, so a reload keeps them; a view the first page does not fit reads its own, and shows nothing of the first page
@@ -107,9 +107,19 @@ export function LogViewer({
     const reading = new AbortController();
     const narrowed = JSON.parse(filter) as ReturnType<typeof logFilter> | null;
     const identity = `${project}\n${selector}\n${lines}\n${filter}`;
+    // While the tab is hidden the follow waits instead of reading; shown again, it reads on from its cursor at once.
+    let waiting = false;
+    const tick = () => {
+      if (document.visibilityState === "visible") void read(cursor.current);
+      else waiting = true;
+    };
+    const shown = () => {
+      if (!waiting || stopped || document.visibilityState !== "visible") return;
+      waiting = false;
+      void read(cursor.current);
+    };
     const next = () => {
-      if (follow && !stopped)
-        timer = setTimeout(() => void read(cursor.current), FOLLOW_MS);
+      if (follow && !stopped) timer = setTimeout(tick, FOLLOW_MS);
     };
     const read = async (after: string | undefined) => {
       try {
@@ -155,7 +165,9 @@ export function LogViewer({
       stopped = true;
       clearTimeout(timer);
       reading.abort();
+      document.removeEventListener("visibilitychange", shown);
     };
+    document.addEventListener("visibilitychange", shown);
     if (adopted.current !== identity) {
       const page =
         lines === FIRST_LOG_LINES && !narrowed ? served.current : undefined;

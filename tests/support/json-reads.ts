@@ -66,7 +66,14 @@ export async function uncheckedJsonReads(
   };
 }
 
-type MemberCall = CallExpression & { expression: PropertyAccessExpression };
+/** The member a call calls, through any parentheses around it, as in `(JSON.parse)(text)`. */
+function calledMember(
+  call: CallExpression,
+): PropertyAccessExpression | undefined {
+  let callee: Expression = call.expression;
+  while (isParenthesizedExpression(callee)) callee = callee.expression;
+  return isPropertyAccessExpression(callee) ? callee : undefined;
+}
 
 async function uncheckedIn(
   source: SourceFile,
@@ -74,24 +81,24 @@ async function uncheckedIn(
   checker: Checker,
 ): Promise<UncheckedRead[]> {
   // Calls of a member named parse or json; the checker says which are JSON reads.
-  const candidates: MemberCall[] = [];
+  const candidates: {
+    call: CallExpression;
+    member: PropertyAccessExpression;
+  }[] = [];
   const visit = (node: Node): void => {
-    if (
-      isCallExpression(node) &&
-      isPropertyAccessExpression(node.expression) &&
-      ["parse", "json"].includes(node.expression.name.text)
-    )
-      candidates.push(node as MemberCall);
+    const member = isCallExpression(node) ? calledMember(node) : undefined;
+    if (member && ["parse", "json"].includes(member.name.text))
+      candidates.push({ call: node as CallExpression, member });
     node.forEachChild(visit);
   };
   source.forEachChild(visit);
   if (!candidates.length) return [];
   const symbols = await checker.getSymbolAtLocation(
-    candidates.map((call) => call.expression.name),
+    candidates.map(({ member }) => member.name),
   );
   const unchecked: UncheckedRead[] = [];
-  for (const [index, call] of candidates.entries()) {
-    const read = await readKind(symbols[index]);
+  for (const [index, { call, member }] of candidates.entries()) {
+    const read = await readKind(checker, member, symbols[index]);
     if (!read) continue;
     const reached = await reachedBy(checker, call, read === ".json()");
     if (reached)
@@ -108,8 +115,30 @@ async function uncheckedIn(
   return unchecked;
 }
 
-/** Which JSON read a member is: the global JSON's parse, or the json of a body, a Blob or a stream. */
+/** Which JSON read a member is: the global JSON's parse, or the json of a body, a Blob or a stream. A member of a union, such
+ * as `json` of `Response | Blob`, has no owner of its own, so it is a read when the member of any type in the union is. */
 async function readKind(
+  checker: Checker,
+  member: PropertyAccessExpression,
+  symbol: TsSymbol | undefined,
+): Promise<UncheckedRead["read"] | undefined> {
+  const owned = await ownedRead(symbol);
+  if (owned || (symbol && (await symbol.getParent()))) return owned;
+  const receiver = await checker.getTypeAtLocation(member.expression);
+  if (!receiver) return undefined;
+  for (const type of receiver.isUnionType()
+    ? ((await receiver.getTypes()) ?? [])
+    : [receiver]) {
+    const apparent = (await checker.getApparentType(type)) ?? type;
+    const read = await ownedRead(
+      await checker.getPropertyOfType(apparent, member.name.text),
+    );
+    if (read) return read;
+  }
+  return undefined;
+}
+
+async function ownedRead(
   symbol: TsSymbol | undefined,
 ): Promise<UncheckedRead["read"] | undefined> {
   if (!symbol) return undefined;

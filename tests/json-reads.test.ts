@@ -167,6 +167,16 @@ test("an external JSON read that is cast, held or used before a check is refused
       "// JSON.parse(text) as Foo in a comment, and parses that are not JSON reads.",
       'export const others = [Date.parse("2026-01-01"), schema.parse({ a: 1 }), Response.json({ a: 1 })];',
     ].join("\n"),
+    // A member of a union, and a member called through parentheses.
+    "src/forms.ts": [
+      "export async function union(body: Response | Blob) { return (await body.json()).a; }",
+      "export function parse(text: string) { return (JSON.parse)(text).a; }",
+      "export async function bodyParens(body: Response) { return (await (body.json)()).a; }",
+      "export async function checkedUnion(body: Response | Blob): Promise<unknown> { const value: unknown = await body.json(); return value; }",
+      "export function checkedParse(text: string): unknown { return (JSON.parse)(text); }",
+      "export async function checkedParens(body: Response) { const value: unknown = await (body.json)(); return value; }",
+      "export async function notABody(source: Response | { json(): Promise<number> }) { return (await source.json()) as number; }",
+    ].join("\n"),
     "web/components/reads.tsx": [
       "export async function Reads(response: Response) {",
       '  return [(await response.json()) as { a: number }, JSON.parse("{}") as object];',
@@ -177,8 +187,16 @@ test("an external JSON read that is cast, held or used before a check is refused
     "web/demo/app.ts": 'export const read = JSON.parse("{}") as object;\n',
   });
   const { files, reads } = await uncheckedJsonReads(root, excluded);
-  expect(files).toEqual(["src/reads.ts", "web/components/reads.tsx"]);
+  expect(files).toEqual([
+    "src/forms.ts",
+    "src/reads.ts",
+    "web/components/reads.tsx",
+  ]);
   expect(reads.map(located)).toEqual([
+    "src/forms.ts:1 .json(): (await body.json())",
+    "src/forms.ts:2 JSON.parse: (JSON.parse)(text)",
+    "src/forms.ts:3 .json(): (await (body.json)())",
+    "src/forms.ts:7 .json(): (await source.json()) as number",
     "src/reads.ts:9 JSON.parse: JSON.parse(text) as Foo",
     "src/reads.ts:10 JSON.parse: JSON.parse(text)",
     "src/reads.ts:11 JSON.parse: JSON.parse(text)",

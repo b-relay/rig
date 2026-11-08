@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processExited, processIdentity } from "./support/rig-fixture";
@@ -15,13 +23,19 @@ type Report = {
   processes: { pid: number; identity?: string }[];
 };
 /** Runs the test file `source` from the repository, so the run is configured as every test run here is, with
- * `$FIXTURE_REPORTS` set to `work`, where its tests report what their fixtures made. */
-async function testRun(work: string, source: string) {
+ * `$FIXTURE_REPORTS` set to `work`, where its tests report what their fixtures made. `args` are given to `bun test`, and
+ * `environment` adds to what the run inherits. */
+async function testRun(
+  work: string,
+  source: string,
+  args: readonly string[] = [],
+  environment: Record<string, string> = {},
+) {
   const file = join(work, "child.test.ts");
   await writeFile(file, source);
-  const run = Bun.spawn([process.execPath, "test", file], {
+  const run = Bun.spawn([process.execPath, "test", ...args, file], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, FIXTURE_REPORTS: work },
+    env: { ...process.env, FIXTURE_REPORTS: work, ...environment },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -184,7 +198,7 @@ test("a fixture whose test timed out or threw before its cleanup has its process
       refused: expect.stringContaining("was refused"),
     });
     expect(output).toContain(
-      "A fixture was asked for once the tests were done, by a test Bun had abandoned, and was refused.",
+      "A fixture was asked for while the tests' fixtures were being swept, by a test Bun had abandoned, and was refused.",
     );
   } finally {
     await stopLeftBehind(reports);
@@ -209,6 +223,89 @@ test("a run whose tests pass still fails when a fixture they left cannot be conf
     expect(code).not.toBe(0);
   } finally {
     await stopLeftBehind(reports);
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+/** A test file whose one test makes a fixture and cleans it up. */
+const repeated = `import { test } from "bun:test";
+import { rigFixture } from ${fixturePath};
+
+test("makes a fixture and cleans it up", async () => {
+  const f = await rigFixture({ commands: { rig: ["/usr/bin/true"], rigd: ["/usr/bin/true"] } });
+  await f.cleanup();
+});
+`;
+
+test("a repeated run makes its fixtures again once the sweep after a repetition has answered", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  try {
+    const { code, output } = await testRun(work, repeated, ["--rerun-each=2"]);
+    expect(output).not.toContain("was refused");
+    expect(output).toContain(" 2 pass\n 0 fail\n");
+    expect(code).toBe(0);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+/** A test file whose fixtures cannot be made: the Project directory in each root fails with EIO, and in the second test
+ * the root cannot be removed either. The second reports the fixture's failure to `$FIXTURE_REPORTS`. */
+const unmade = `import { expect, mock, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import { join } from "node:path";
+
+const real = { ...fs };
+let failing: "mkdir" | "mkdir and rm" | undefined;
+const eio = () => Object.assign(new Error("injected i/o error"), { code: "EIO" });
+mock.module("node:fs/promises", () => ({
+  ...real,
+  async mkdir(path: string, ...rest: unknown[]) {
+    if (failing && path.endsWith("/project")) throw eio();
+    return (real.mkdir as (...args: unknown[]) => unknown)(path, ...rest);
+  },
+  async rm(path: string, ...rest: unknown[]) {
+    if (failing === "mkdir and rm" && /rig-battle-[^/]+$/.test(path)) throw eio();
+    return (real.rm as (...args: unknown[]) => unknown)(path, ...rest);
+  },
+}));
+const { rigFixture } = await import(${fixturePath});
+
+test("a root whose Project directory cannot be made is removed, and the fixture fails as it did", async () => {
+  failing = "mkdir";
+  await expect(rigFixture()).rejects.toThrow("injected i/o error");
+});
+
+test("a root that cannot then be removed is named in the failure", async () => {
+  failing = "mkdir and rm";
+  const failure = await rigFixture().then(
+    () => "made",
+    (error: Error) => error.message,
+  );
+  await real.writeFile(join(process.env.FIXTURE_REPORTS!, "unmade.txt"), failure);
+  expect(failure).toContain("injected i/o error");
+  expect(failure).toContain("could not be removed");
+});
+`;
+
+test("a fixture that cannot be made removes the root it took, or names it when that cannot be removed", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  try {
+    // Its own temporary directory, so every root the run took is seen.
+    const roots = join(work, "roots");
+    await mkdir(roots);
+    const { code, output } = await testRun(work, unmade, [], {
+      TMPDIR: roots,
+    });
+    expect(output).toContain(" 2 pass\n 0 fail\n");
+    expect(code).toBe(0);
+    // The one root left is the one the failure names.
+    const left = await readdir(roots);
+    expect(left).toHaveLength(1);
+    expect(await readFile(join(work, "unmade.txt"), "utf8")).toContain(
+      `its root ${join(roots, left[0]!)} could not be removed`,
+    );
+  } finally {
     await rm(work, { recursive: true, force: true });
   }
 }, 60_000);

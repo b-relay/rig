@@ -196,35 +196,42 @@ export async function processExited(
 const unfinished = new Set<() => Promise<void>>();
 /** Every fixture still being made, which registers its cleanup once it is. */
 const starting = new Set<Promise<unknown>>();
-/** Set once the tests are done: a body Bun abandoned may still run on, and a fixture it asks for then is refused. */
-let closed = false;
-/** Why each fixture asked for once the tests were done was refused. */
+/** Set while `stopAbandonedFixtures` runs: a body Bun abandoned may still run on, and a fixture it asks for then is
+ * refused. */
+let sweeping = false;
+/** Why each fixture asked for during this sweep was refused. */
 const refused: string[] = [];
 /** Cleans up each fixture a test left unfinished, as Bun leaves one when it times the test out or the test throws before its
  * cleanup, and waits for a cleanup already under way: run once every test is done, so no fixture is still in use. Until
  * none is left, it waits for the fixtures still being made and cleans up what they register. Fails naming each root it
- * had to keep, and each fixture it refused. */
+ * had to keep, and each fixture it refused. Once it has answered, fixtures can be made again, as a repeated run makes
+ * them. */
 export async function stopAbandonedFixtures() {
-  closed = true;
-  const failed: string[] = [];
-  while (starting.size > 0 || unfinished.size > 0) {
-    await Promise.allSettled(starting);
-    for (const result of await Promise.allSettled(
-      [...unfinished].map((cleanup) => cleanup()),
-    ))
-      if (result.status === "rejected") failed.push(String(result.reason));
+  sweeping = true;
+  try {
+    const failed: string[] = [];
+    while (starting.size > 0 || unfinished.size > 0) {
+      await Promise.allSettled(starting);
+      for (const result of await Promise.allSettled(
+        [...unfinished].map((cleanup) => cleanup()),
+      ))
+        if (result.status === "rejected") failed.push(String(result.reason));
+    }
+    failed.push(...refused.splice(0));
+    if (failed.length > 0)
+      throw new Error(
+        `A test left fixtures unfinished, and their cleanup failed or a fixture was refused:\n${failed.join("\n")}`,
+      );
+  } finally {
+    sweeping = false;
   }
-  if (failed.length > 0 || refused.length > 0)
-    throw new Error(
-      `A test left fixtures unfinished, and their cleanup failed or a fixture was refused:\n${[...failed, ...refused].join("\n")}`,
-    );
 }
-/** `createFixture`, while the tests run. Once they are done, a fixture is refused before anything is made, since nothing
- * would clean it up. */
+/** `createFixture`, except while the sweep runs: a fixture is then refused before anything is made, since nothing would
+ * clean it up. */
 export async function rigFixture(options: FixtureOptions = {}) {
-  if (closed) {
+  if (sweeping) {
     const reason =
-      "A fixture was asked for once the tests were done, by a test Bun had abandoned, and was refused.";
+      "A fixture was asked for while the tests' fixtures were being swept, by a test Bun had abandoned, and was refused.";
     refused.push(reason);
     throw new Error(reason);
   }
@@ -253,7 +260,20 @@ async function createFixture(options: FixtureOptions) {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
     root = join(base, ".rig"),
     repo = join(base, "project");
-  await mkdir(repo);
+  // Nothing runs from the root yet, and its cleanup is not yet registered: one that cannot be made is removed here.
+  const canonicalRepo = await mkdir(repo)
+    .then(() => realpath(repo))
+    .catch(async (error: unknown) => {
+      const removal = await rm(base, { recursive: true, force: true }).then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+      throw removal === undefined
+        ? error
+        : new Error(
+            `The fixture could not be made (${error}), and its root ${base} could not be removed: ${removal}`,
+          );
+    });
   const environment = {
     ...process.env,
     ...(options.PATH === undefined ? {} : { PATH: options.PATH }),
@@ -433,6 +453,6 @@ async function createFixture(options: FixtureOptions) {
     git,
     commit,
     cleanup,
-    canonicalRepo: await realpath(repo),
+    canonicalRepo,
   };
 }

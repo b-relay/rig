@@ -1,5 +1,5 @@
 import type { ProjectConfig } from "../config/types";
-import { PREVIEW_SELECTOR } from "../config/schema";
+import { PREVIEW_SELECTOR } from "../config/target-roles";
 import type { TargetReport } from "../domain/project-status";
 import { RigError } from "../domain/errors";
 import { rigCommand, selectedTarget } from "../domain/rig-command";

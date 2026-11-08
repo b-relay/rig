@@ -1,4 +1,4 @@
-import type { TargetRole } from "./schema";
+import type { TargetRole } from "./target-roles";
 
 /** A Service's `domain` as written: a hostname, or a hostname with the name of the port it reaches. */
 export type ServiceDomainSetting = string | { host: string; port?: string };

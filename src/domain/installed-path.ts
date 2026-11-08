@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { WORKING_TOOL_SUFFIX } from "../config/schema";
+import { WORKING_TOOL_SUFFIX } from "../config/target-roles";
 import type { InstalledComponent } from "../config/types";
 import type { TargetRecord } from "./runtime";
 /** Where `target` publishes the Tool `component` under the Rig root `root`: the stable Target owns the plain command, the

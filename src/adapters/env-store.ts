@@ -2,7 +2,7 @@ import { chmod, lstat, readFile, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { RigError } from "../domain/errors";
 import { replacePrivateFile } from "../providers/private-files";
-import type { TargetRole } from "../config/schema";
+import type { TargetRole } from "../config/target-roles";
 import {
   decodeEnvironmentFile,
   lossyEnvironmentText,

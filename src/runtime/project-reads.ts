@@ -5,7 +5,11 @@ import type {
 } from "../domain/project-status";
 import { deploymentHistory } from "../domain/deployments";
 import { ConfigError } from "../config/errors";
-import { PREVIEW_SELECTOR, TARGET_ROLES, targetOn } from "../config/schema";
+import {
+  PREVIEW_SELECTOR,
+  TARGET_ROLES,
+  targetOn,
+} from "../config/target-roles";
 import type {
   ActivityResult,
   BackupsResult,

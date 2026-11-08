@@ -1872,7 +1872,8 @@ shapes only; rules that span fields (a declared port behind each `proxy`
 value, dependency cycles, reference resolution, a Service with exactly one
 port behind `${port}`) are still reported by
 `rig config` and `rig doctor`. Contributors regenerate the files with
-`bun run schema` after changing `src/config/schema.ts`; a test fails until
+`bun run schema` after changing `src/config/project-fields.ts` or
+`src/config/host-schema.ts`; a test fails until
 they match.
 
 A small `rig.yaml` with two Services, a Tool, and a route. Its keys use Docker

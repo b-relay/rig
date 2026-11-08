@@ -2,18 +2,16 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { ConfigError } from "./errors";
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
 import { DEFAULT_RESTART_POLICY } from "./plan-defaults";
+import { parseProjectConfig } from "./schema";
 import {
   DEFAULT_JOB_TARGETS,
   durationSeconds,
-  parseProjectConfig,
-  patchedSettings,
-  proxyUpstream,
-  defaultProxy,
-  rolePatch,
   localhostCommand,
   localhostHealth,
-  validHostname,
-} from "./schema";
+} from "./project-fields";
+import { defaultProxy, proxyUpstream } from "./project-rules";
+import { patchedSettings, rolePatch } from "./target-patch";
+import { validHostname } from "./hostname";
 import {
   HEALTHCHECK_DEFAULTS,
   execCommand,

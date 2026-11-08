@@ -21,10 +21,10 @@ import type { PortOwner } from "./host-reservations";
 import {
   PREVIEW_SELECTOR,
   WORKING_TOOL_SUFFIX,
-  patchedSettings,
   targetOn,
   type TargetRole,
-} from "../config/schema";
+} from "../config/target-roles";
+import { patchedSettings } from "../config/target-patch";
 type TargetKind = TargetRecord["kind"];
 /** The reserved names no recorded Preview has in exactly this spelling, so a selector naming one is refused outright: they
  * were refused since Previews could be named, and state from before names were fixed is read with such a Preview renamed

@@ -1,14 +1,9 @@
 import type { JobReport, TargetReport } from "../domain/project-status";
 import type { ProjectConfig } from "../config/types";
 import { roleHostname, roleServiceDomains } from "../config/hostnames";
-import {
-  DEFAULT_JOB_TARGETS,
-  defaultProxy,
-  durationSeconds,
-  patchedSettings,
-  proxyUpstream,
-  rolePatch,
-} from "../config/schema";
+import { DEFAULT_JOB_TARGETS, durationSeconds } from "../config/project-fields";
+import { defaultProxy, proxyUpstream } from "../config/project-rules";
+import { patchedSettings, rolePatch } from "../config/target-patch";
 import { hostnameFields, type ComponentReport } from "./status";
 import { unrecordedRefusals } from "./target-refusals";
 

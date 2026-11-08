@@ -1,3 +1,4 @@
+import { onTestFinished } from "bun:test";
 import { runRigCli } from "../../src/cli/rig";
 import type { CliDependencies, UserOutput } from "../../src/cli/types";
 import type { RuntimeCommand } from "../../src/daemon/protocol";
@@ -39,7 +40,8 @@ export interface CliHarnessOptions extends Partial<
 }
 
 /** An injected `rig` CLI with no daemon, filesystem or terminal: an isolated root and cwd that are never touched, every
- * request and diagnostic collected in order, and stdout and stderr captured apart and together. */
+ * request and diagnostic collected in order, and stdout and stderr captured apart and together. Made inside a test: a
+ * call no scenario scripted fails that test once it ends, even when the code under test caught the rejection. */
 export function cliHarness(options: CliHarnessOptions = {}) {
   const {
     command,
@@ -50,6 +52,8 @@ export function cliHarness(options: CliHarnessOptions = {}) {
     ...capabilities
   } = options;
   const requests: RuntimeCommand[] = [];
+  /** The calls no scenario scripted, kept apart from the failures a scenario scripted. */
+  const unexpected: string[] = [];
   const events: DiagnosticEntry[] = [];
   let out = "";
   let err = "";
@@ -63,14 +67,15 @@ export function cliHarness(options: CliHarnessOptions = {}) {
       status(selection, signal) {
         requests.push({ ...selection, action: "status" });
         return answer(() => {
-          if (!status) throw new Error("Unexpected status read");
+          if (!status) throw surprise("Unexpected status read");
           return status(selection, signal);
         });
       },
       command(request, signal) {
         requests.push(request);
         return answer(() => {
-          if (!command) throw new Error("Unexpected daemon request");
+          if (!command)
+            throw surprise(`Unexpected daemon request: ${request.action}`);
           return command(request, signal);
         });
       },
@@ -95,9 +100,30 @@ export function cliHarness(options: CliHarnessOptions = {}) {
     },
     newOperationId: () => operationId,
   };
+  const surprise = (message: string) => {
+    unexpected.push(message);
+    return new Error(message);
+  };
+  /** Throws, once, when the code under test made a call no scenario scripted. */
+  const verify = () => {
+    const calls = unexpected.splice(0);
+    if (calls.length)
+      throw new Error(
+        `The CLI made calls no scenario scripted: ${calls.join("; ")}.`,
+      );
+  };
+  onTestFinished(verify);
   return {
     deps,
-    run: (args: readonly string[]) => runRigCli(args, deps),
+    /** Runs `rig args` and answers its exit code; fails when the run made a call no scenario scripted. */
+    async run(args: readonly string[]) {
+      const exit = await runRigCli(args, deps);
+      verify();
+      return exit;
+    },
+    /** Fails when the code under test made a call no scenario scripted, for a test that calls through `deps` and wants
+     * to know before it ends. */
+    verify,
     /** Every command sent and status read, in order; a status read is recorded with action `status`. */
     requests,
     /** Every diagnostic entry recorded, in order. */

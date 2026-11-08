@@ -1,5 +1,4 @@
 import { afterAll, afterEach, test as bunTest, expect } from "bun:test";
-import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -20,56 +19,54 @@ import { ownershipRecordPath } from "../src/adapters/artifact-ownership";
 import { acquireProcessLock } from "../src/adapters/process-lock";
 import { resolveRigRoot } from "../src/cli/entry-environment";
 import { installedPath } from "../src/domain/installed-path";
+import {
+  currentScope,
+  endScope,
+  runOwned,
+  testScope,
+  within,
+  type TestScope,
+} from "./support/test-processes";
 
 const TEMPLATE = join(import.meta.dir, "..", "scripts", "install");
 const TAG = "v0.1.0";
 const SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 const homes: string[] = [];
 const packs: string[] = [];
-/** The running test's body and the processes it runs. Bun fails a test at its timeout but leaves its body running, so the
- * teardown stops those processes, refuses it any more, and waits for it before removing its homes: nothing it started
- * runs on into the next test. */
-let body: Promise<void> | undefined;
-let ended = false;
-const children = new Set<Subprocess>();
+/** How long a test's teardown waits for its body once what it runs is killed; the hook's own limit is a little longer. */
+const TEARDOWN_MS = 10_000;
+/** The running test: its scope and body. A test that timed out has what it still runs killed, is refused any more, and is
+ * waited for before its homes go, so nothing it started runs on into the next test. */
+let running: { scope: TestScope; body: Promise<void> } | undefined;
 afterEach(async () => {
-  ended = true;
-  for (const child of children) child.kill();
-  await body?.catch(() => {});
-  body = undefined;
-  ended = false;
+  const ending = running;
+  running = undefined;
+  if (ending) await endScope(ending.scope, ending.body, TEARDOWN_MS);
   for (const home of homes.splice(0))
     await rm(home, { recursive: true, force: true });
-});
+}, TEARDOWN_MS + 5_000);
 afterAll(async () => {
   for (const pack of packs.splice(0))
     await rm(pack, { recursive: true, force: true });
 });
 function test(name: string, fn: () => Promise<void>, timeout?: number) {
-  bunTest(name, () => (body = fn()), timeout);
+  bunTest(
+    name,
+    () => {
+      const scope = testScope();
+      const body = within(scope, fn);
+      running = { scope, body };
+      return body;
+    },
+    timeout,
+  );
 }
 
-async function run(
-  args: string[],
-  env: Record<string, string> = {},
-  cwd?: string,
-) {
-  if (ended) throw new Error(`The test has ended, so ${args[0]} is not run.`);
-  const child = Bun.spawn(args, {
+const run = (args: string[], env: Record<string, string> = {}, cwd?: string) =>
+  runOwned(args, {
     env: { PATH: SYSTEM_PATH, ...env },
     ...(cwd ? { cwd } : {}),
-    stdout: "pipe",
-    stderr: "pipe",
   });
-  children.add(child);
-  void child.exited.finally(() => children.delete(child));
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { code, stdout, stderr };
-}
 const exists = (path: string) =>
   stat(path).then(
     () => true,
@@ -81,19 +78,33 @@ interface Contents {
   rigd?: boolean;
   dashboard?: boolean;
 }
-const packed = new Map<string, Promise<{ dir: string; sums: string }>>();
+const packed = new Map<
+  string,
+  {
+    owner: TestScope | undefined;
+    done: boolean;
+    packing: Promise<{ dir: string; sums: string }>;
+  }
+>();
 /** The release's archive per architecture, and the SHA256SUMS that names them: packed once per file for each `contents`,
  * since every release with those contents holds the same bytes, so a test pays for its installs rather than for packing. */
 function archives(contents: Contents) {
   const key = `${contents.rigd !== false} ${contents.dashboard !== false}`;
-  let packing = packed.get(key);
-  if (!packing) {
-    packing = pack(contents);
-    packed.set(key, packing);
-    // A test that ends while it packs leaves the next one to pack again.
-    packing.catch(() => packed.delete(key));
-  }
-  return packing;
+  const owner = currentScope();
+  const known = packed.get(key);
+  // A pack still under way for a test that has ended may never finish: this test packs its own.
+  if (known && (known.done || known.owner === owner)) return known.packing;
+  const entry = { owner, done: false, packing: pack(contents) };
+  packed.set(key, entry);
+  entry.packing.then(
+    () => {
+      entry.done = true;
+    },
+    () => {
+      if (packed.get(key) === entry) packed.delete(key);
+    },
+  );
+  return entry.packing;
 }
 async function pack(contents: Contents) {
   const at = await mkdtemp(join(tmpdir(), "rig-install-archives-"));

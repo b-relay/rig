@@ -1,6 +1,11 @@
 import { controlledDeadline } from "./controlled-observation-deadline";
 import { test, expect } from "bun:test";
-import { observeTargets } from "../src/runtime/status";
+import {
+  componentBase,
+  observeTargets,
+  settledComponent,
+  targetReport,
+} from "../src/runtime/status";
 import { timerObservationDeadline } from "../src/runtime/bounded-observations";
 import type { TargetRecord } from "../src/domain/runtime";
 const target = {
@@ -650,4 +655,253 @@ test("status reports each Service's named ports, its automatic restarts and the 
   });
   expect(report!.components[1]).not.toHaveProperty("restarts");
   expect(report!.components[1]).not.toHaveProperty("ports");
+});
+
+test("a running Service judged by cached health or by nothing settles three microtasks after its process answers, so a deadline after that keeps its report", async () => {
+  const cachedAndPlain = {
+    ...target,
+    plan: {
+      components: [
+        {
+          name: "cached",
+          kind: "managed",
+          port: 4444,
+          healthcheck: {
+            interval: 30,
+            timeout: 5,
+            retries: 3,
+            onFailure: "report",
+          },
+        },
+        { name: "plain", kind: "managed", port: 4445 },
+      ],
+    },
+  } as TargetRecord;
+  // Expires the deadline `ticks` microtasks after both processes answer.
+  const expiredAfter = async (ticks: number) => {
+    const deadline = controlledDeadline();
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => {
+      answer = resolve;
+    });
+    let started = 0;
+    let bothStarted!: () => void;
+    const bothWaiting = new Promise<void>((resolve) => {
+      bothStarted = resolve;
+    });
+    const reports = observeTargets(
+      [cachedAndPlain],
+      {
+        async process() {
+          if (++started === 2) bothStarted();
+          await answered;
+          return { state: "running", pid: 22 };
+        },
+        async health() {
+          throw new Error("a cached Service is never checked here");
+        },
+        async artifact() {
+          return "installed";
+        },
+        async listening() {
+          return [];
+        },
+        async persistent() {
+          return true;
+        },
+      },
+      100,
+      deadline,
+      () => ({ status: "healthy", failures: 0, retries: 3, restarts: 0 }),
+    );
+    // Count from when both observations wait on their process, however long they took to start.
+    await bothWaiting;
+    answer();
+    for (let tick = 0; tick < ticks; tick++) await Promise.resolve();
+    deadline.expire();
+    return (await reports)[0]!.components.map((c) => [c.name, c.state]);
+  };
+  expect(await expiredAfter(2)).toEqual([
+    ["cached", "unknown"],
+    ["plain", "unknown"],
+  ]);
+  expect(await expiredAfter(3)).toEqual([
+    ["cached", "healthy"],
+    ["plain", "running"],
+  ]);
+});
+
+test("each Target gets back its own Components' reports in plan order, whatever order their observations complete in", async () => {
+  const deadline = controlledDeadline();
+  const managed = (name: string, port: number) => ({
+    name,
+    kind: "managed",
+    port,
+  });
+  const recorded = (id: string, components: unknown[]) =>
+    ({
+      ...target,
+      id,
+      name: id,
+      kind: "preview",
+      plan: { components },
+    }) as unknown as TargetRecord;
+  const targets = [
+    recorded("empty", []),
+    recorded("three", [
+      managed("api", 4000),
+      { name: "cli", kind: "installed" },
+      { name: "db", kind: "persistent" },
+    ]),
+    recorded("one", [managed("web", 4100)]),
+    recorded("two", [managed("web", 4200), managed("worker", 4201)]),
+  ];
+  // Every process answers only once released, the last asked first; the Tool and the storage answer at once.
+  const pending: (() => void)[] = [];
+  const reports = observeTargets(
+    targets,
+    {
+      process(target, component) {
+        return new Promise((resolve) =>
+          pending.push(() =>
+            resolve({
+              state: "running",
+              pid: component.port! + (target.id === "two" ? 1 : 0),
+            }),
+          ),
+        );
+      },
+      async health() {
+        return { ready: true as const };
+      },
+      async artifact() {
+        return "missing";
+      },
+      async listening() {
+        return [];
+      },
+      async persistent() {
+        return false;
+      },
+    },
+    100,
+    deadline,
+  );
+  while (pending.length < 4) await Promise.resolve();
+  for (const release of pending.reverse()) {
+    release();
+    await Promise.resolve();
+  }
+  const observed = await reports;
+  expect(observed.map((report) => [report.name, report.state])).toEqual([
+    ["empty", "configured"],
+    ["three", "degraded"],
+    ["one", "running"],
+    ["two", "running"],
+  ]);
+  expect(
+    observed.map((report) =>
+      report.components.map((c) => [c.name, c.state, c.pid]),
+    ),
+  ).toEqual([
+    [],
+    [
+      ["api", "running", 4000],
+      ["cli", "missing", undefined],
+      ["db", "missing", undefined],
+    ],
+    [["web", "running", 4100]],
+    [
+      ["web", "running", 4201],
+      ["worker", "running", 4202],
+    ],
+  ]);
+  expect(deadline.pending).toBe(false);
+});
+
+test("componentBase carries a Service's ports, its recent automatic restarts and the hostnames reaching it, and only a Component's name and kind otherwise", () => {
+  const plan = {
+    domain: "demo.localhost",
+    proxy: { upstream: "web" },
+    components: [
+      {
+        name: "web",
+        kind: "managed",
+        port: 4445,
+        ports: { http: 4445, admin: 4446 },
+      },
+      { name: "cli", kind: "installed" },
+    ],
+  };
+  const recorded = {
+    ...target,
+    plan,
+    services: { web: { attempts: [1], unknownAttempts: [2] } },
+  } as unknown as TargetRecord;
+  expect(componentBase(recorded, plan.components[0] as never)).toEqual({
+    name: "web",
+    kind: "managed",
+    port: 4445,
+    ports: { http: 4445, admin: 4446 },
+    restarts: 2,
+    route: "demo.localhost",
+    hostnames: ["demo.localhost"],
+  });
+  expect(componentBase(recorded, plan.components[1] as never)).toEqual({
+    name: "cli",
+    kind: "installed",
+  });
+});
+
+test("settledComponent keeps a completed report and makes one that failed or expired unknown, saying which", () => {
+  const base = { name: "api", kind: "managed" as const, port: 4444 };
+  const done = { ...base, state: "running" as const, pid: 1 };
+  expect(settledComponent(base, { kind: "completed", value: done })).toBe(done);
+  expect(settledComponent(base, { kind: "expired" })).toEqual({
+    ...base,
+    state: "unknown",
+    reason: "Observation did not complete before the status deadline.",
+  });
+  expect(
+    settledComponent(base, { kind: "rejected", error: new Error("private") }),
+  ).toEqual({ ...base, state: "unknown", reason: "Observation failed." });
+});
+
+test("targetReport lists a Target's routes only under its domain, its Service domains, and its state from its Components", () => {
+  const routed = {
+    ...target,
+    deploymentIncomplete: true,
+    plan: {
+      ...target.plan,
+      proxy: { routes: [{ prefix: "/", service: "api", port: 4444 }] },
+      serviceDomains: [
+        { hostname: "api.demo.localhost", service: "api", port: 4444 },
+      ],
+    },
+  } as unknown as TargetRecord;
+  const healthy = [
+    { name: "api", kind: "managed" as const, state: "healthy" as const },
+  ];
+  expect(targetReport(routed, healthy)).toEqual({
+    id: "t",
+    name: "stable",
+    kind: "stable",
+    branch: "main",
+    commit: "abc",
+    deploymentIncomplete: true,
+    route: "demo.localhost",
+    hostnames: ["demo.localhost", "api.demo.localhost"],
+    routes: [{ prefix: "/", service: "api", port: 4444 }],
+    serviceDomains: [
+      { hostname: "api.demo.localhost", service: "api", port: 4444 },
+    ],
+    components: healthy,
+    state: "healthy",
+  });
+  const undomained = {
+    ...routed,
+    plan: { ...routed.plan, domain: undefined, serviceDomains: undefined },
+  } as unknown as TargetRecord;
+  expect(targetReport(undomained, [])).not.toHaveProperty("routes");
+  expect(targetReport(undomained, []).state).toBe("configured");
 });

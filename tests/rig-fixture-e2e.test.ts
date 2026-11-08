@@ -58,6 +58,19 @@ async function stopOwned(owned: { pid: number; identity: string } | undefined) {
   if (!(await processExited(owned)))
     throw new Error(`process ${owned.pid} is still running`);
 }
+/** Whether rigd's first pass has recorded the Host session in `state`, by the deadline. rigd answers before that pass
+ * ends, and the pass replaces the whole record, so a record broken before then can be replaced by a valid one. */
+async function sessionRecorded(state: string): Promise<boolean> {
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    const text = await readFile(state, "utf8").catch(() => "");
+    try {
+      if (JSON.parse(text).host?.seenAt) return true;
+    } catch {}
+    if (Date.now() >= deadline) return false;
+    await Bun.sleep(20);
+  }
+}
 
 test("a fixture whose record cannot be read still stops its rigd, keeps its root as it was, and fails saying why", async () => {
   const f = await rigFixture();
@@ -68,8 +81,10 @@ test("a fixture whose record cannot be read still stops its rigd, keeps its root
     daemon = await recordedDaemon(f.root);
     expect(installed.code).toBe(0);
     expect(daemon).toBeDefined();
-    // What a failed assertion can leave behind: a record neither rig down nor rigd uninstall can read.
+    // What a failed assertion can leave behind: a record neither rig down nor rigd uninstall can read, broken once rigd
+    // has written it last.
     const state = join(f.root, "runtime", "state.json");
+    expect(await sessionRecorded(state)).toBe(true);
     await writeFile(state, "{broken");
     const failure = await f.cleanup().then(
       () => undefined,

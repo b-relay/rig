@@ -72,16 +72,24 @@ export const platformInspect = inspectWith(["/bin/ps"], INSPECT_ANSWER_MS);
 /** A process as `ps` shows it: when it started, which with its pid is all that names it, since a process that execs keeps
  * both, and a later process of that pid has another; and what it runs. */
 type ProcessRow = { birth: string; command: string };
-/** One whole row of `ps -o pid=,lstart=,command=`, its lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`. */
+/** An lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`, by its parts. */
+const LSTART =
+  /^([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ([ \d]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4})$/;
+/** One whole row of `ps -o pid=,lstart=,command=`. */
 const PROCESS_ROW =
-  /^\s*(\d+)\s+(([A-Z][a-z]{2}) ([A-Z][a-z]{2}) ([ \d]\d) (\d{2}):(\d{2}):(\d{2}) (\d{4}))\s+(\S.*)$/;
+  /^\s*(\d+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+(\S.*)$/;
+/** One whole row of `ps -axo pid=,pgid=,lstart=,command=`. */
+const TABLE_ROW =
+  /^\s*(\d+)\s+(\d+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})\s+(\S.*)$/;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
-/** Whether an lstart's parts name an instant ps can print: in the UTC the fixture reads it in, on the weekday it says, from
- * 1970 on. */
-function realBirth(row: RegExpExecArray) {
-  const [weekday, month] = [row[3]!, row[4]!];
-  const [day, hour, minute, second, year] = row.slice(5, 10).map(Number) as [
+/** Whether an lstart names an instant ps can print: in the UTC the fixture reads it in, on the weekday it says, from 1970
+ * on. */
+function realBirth(lstart: string) {
+  const row = LSTART.exec(lstart);
+  if (!row) return false;
+  const [weekday, month] = [row[1]!, row[2]!];
+  const [day, hour, minute, second, year] = row.slice(3, 8).map(Number) as [
     number,
     number,
     number,
@@ -121,8 +129,8 @@ function readProcess(
   for (const line of listed.stdout.split("\n").filter((line) => line.trim())) {
     // A row missing its command, or with a birth no clock gives, is no answer about the process.
     const row = PROCESS_ROW.exec(line);
-    if (!row || !realBirth(row)) return "unknown";
-    rows.set(Number(row[1]), { birth: row[2]!, command: row[10]! });
+    if (!row || !realBirth(row[2]!)) return "unknown";
+    rows.set(Number(row[1]), { birth: row[2]!, command: row[3]! });
   }
   if (
     !rows.has(process.pid) ||
@@ -177,25 +185,44 @@ export function processIdentity(
 /** What the process `pid` runs, for a report: never what decides which process it is. */
 const commandOf = (pid: number, inspect: Inspect) =>
   inspect(["-p", String(pid), "-o", "command="]).stdout.trim();
-/** Every process with its group and birth, read at one instant, so a member and its birth are of the same process;
- * undefined when `ps` failed, which proves nothing about what runs. */
-function processTable(inspect: Inspect) {
-  let listed: ReturnType<Inspect>;
-  try {
-    listed = inspect(["-axo", "pid=,pgid=,lstart="]);
-  } catch {
-    return undefined;
+/** A process as the process table shows it: its pid, its group and its birth, read at one instant, so a member and its
+ * birth are of the same process. */
+type TableRow = { pid: number; pgid: number; birth: string };
+/** One read of every process: its rows, or `unknown` when ps failed, a row is not whole (a pid, a group, a birth
+ * `realBirth` accepts and a command), or it does not list the fixture's own process, which every read that worked lists.
+ * A read that counts can still have been cut short, leaving rows out. */
+function readTable(inspect: Inspect): TableRow[] | "unknown" {
+  const listed = inspect(["-axo", "pid=,pgid=,lstart=,command="]);
+  if (listed.exitCode !== 0) return "unknown";
+  const rows: TableRow[] = [];
+  for (const line of listed.stdout.split("\n").filter((line) => line.trim())) {
+    const row = TABLE_ROW.exec(line);
+    if (!row || !realBirth(row[3]!)) return "unknown";
+    rows.push({ pid: Number(row[1]), pgid: Number(row[2]), birth: row[3]! });
   }
-  const table = listed.stdout.split("\n").flatMap((line) => {
-    const row = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
-    return row
-      ? [{ pid: Number(row[1]), pgid: Number(row[2]), birth: row[3]! }]
-      : [];
-  });
-  // The fixture's own process is always in a table that was read.
-  return listed.exitCode === 0 && table.length > 0 ? table : undefined;
+  return rows.some((row) => row.pid === process.pid) ? rows : "unknown";
 }
-type ProcessTable = NonNullable<ReturnType<typeof processTable>>;
+/** Every process two reads that counted show, within `READS_PER_LOOK` reads: a row either read shows runs, and one is
+ * absent only when both leave it out, since one cut short can. Undefined when no two reads counted, or when `ps` gave no
+ * answer to trust, which is not read again: that proves nothing about what runs. */
+function processTable(inspect: Inspect): TableRow[] | undefined {
+  const counted: TableRow[][] = [];
+  for (let read = 0; read < READS_PER_LOOK && counted.length < 2; read++) {
+    let seen: TableRow[] | "unknown";
+    try {
+      seen = readTable(inspect);
+    } catch {
+      return undefined;
+    }
+    if (seen !== "unknown") counted.push(seen);
+  }
+  if (counted.length < 2) return undefined;
+  const rows = new Map<string, TableRow>();
+  for (const row of counted.flat())
+    rows.set(`${row.pid} ${row.pgid} ${row.birth}`, row);
+  return [...rows.values()];
+}
+type ProcessTable = TableRow[];
 /** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits:
  * undefined when it records none, or none runs at the pid it records. Throws when the reads of that pid prove neither. */
 export async function recordedDaemon(
@@ -591,7 +618,8 @@ async function createFixture(options: FixtureOptions) {
     const leased = await readLeases(root);
     for (const path of leased.unreadable)
       problems.push(`the lease ${path} could not be read`);
-    // The process table is read only when a lease names something to look for. One that cannot be read keeps the root.
+    // The process table is read only when a lease names something to look for. Reads that prove nothing signal nothing
+    // and keep the root.
     let unlisted = false;
     const scan = (): ProcessTable => {
       if (leased.leases.length === 0) return [];
@@ -599,7 +627,7 @@ async function createFixture(options: FixtureOptions) {
       if (table) return table;
       if (!unlisted)
         problems.push(
-          "the process table could not be read, so nothing shows that the processes the leases name have exited",
+          "the reads of the process table were inconclusive, so nothing shows that the processes the leases name have exited",
         );
       unlisted = true;
       return [];

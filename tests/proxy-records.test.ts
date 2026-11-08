@@ -169,6 +169,44 @@ test.each([
   },
 );
 
+test.each(["running", "stopped by a restart it never saw through"])(
+  "when no replacement for a missing adapted.json can be built, recovery of a Caddy %s is refused before any restart, and the next try recovers",
+  async (before) => {
+    const w = await world();
+    await w.caddy.router.apply(app());
+    const paths = proxyPaths(w.root);
+    await rm(join(paths.generations, "g001", "adapted.json"));
+    if (before !== "running") {
+      await writeFile(paths.restore, "{}\n");
+      w.control.state = "stopped";
+      w.control.reachable = false;
+    }
+    const serving = w.servedRoutes();
+    // Caddy refuses the replacement, so there is still nothing to start from.
+    w.failures.validate = "bad validation";
+    const next = w.reopen();
+    await expect(next.served()).rejects.toMatchObject({
+      code: "PROXY_RECOVERY",
+      message:
+        "Rig's Caddy could not be given a configuration to start from before its restart.",
+    });
+    // No restart that could only fail: Caddy is as it was, and the obligation an earlier restart left stays.
+    expect(w.control.restarts).toBe(0);
+    expect(w.control.state).toBe(before === "running" ? "running" : "stopped");
+    expect(w.servedRoutes()).toBe(serving);
+    expect(await w.current()).toBe("g001");
+    expect(await Bun.file(paths.restore).exists()).toBe(before !== "running");
+    // Once Caddy takes the replacement, the next try recovers.
+    delete w.failures.validate;
+    expect(await next.served()).toBeDefined();
+    expect(w.control.restarts).toBe(1);
+    expect(w.control.state).toBe("running");
+    expect(await w.current()).not.toBe("g001");
+    expect(await Bun.file(paths.restore).exists()).toBe(false);
+    expect(w.servedRoutes()).toContain("127.0.0.1:3001");
+  },
+);
+
 test("a refusal record of the wrong shape is refused by rig proxy and reported by doctor, never shown as the reason", async () => {
   const w = await world({ routes: { "own.example.test": 3005 } });
   await w.caddy.router.apply(app());

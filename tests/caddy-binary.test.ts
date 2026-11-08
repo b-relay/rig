@@ -96,3 +96,53 @@ test("with nothing that ever served, or only a copy since deleted, there is noth
   // The job's link was left on the copy that exists.
   expect(await w.linked()).not.toBe(a.file.split("/").at(-1));
 });
+
+// #617: the record is checked before its names are joined to the binary directory.
+test.each([
+  ["null", "null\n"],
+  ["a list", "[]\n"],
+  ["a number for lastGood", '{"lastGood":7}\n'],
+  ["a path out of the directory", '{"lastGood":"../../outside"}\n'],
+  ["a pending name that is no copy", '{"pending":"caddy"}\n'],
+  ["malformed JSON", '{"lastGood":\n'],
+])(
+  "a binary state record holding %s is refused as PROXY_STATE_CORRUPT by every reader",
+  async (_, content) => {
+    const w = await world();
+    const a = await w.install(await w.source("a"));
+    const path = join(w.paths.bin, "state.json");
+    await writeFile(path, content);
+    const refusal = {
+      code: "PROXY_STATE_CORRUPT",
+      message: "Rig cannot read which copy of Caddy last served.",
+      details: { path },
+      hint: expect.stringMatching(
+        new RegExp(
+          `^${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} (has an invalid value at|is not valid JSON).*Delete it, then run rigd install again: Rig installs proxy\\.caddy afresh\\.$`,
+        ),
+      ),
+    };
+    const b = await w.source("b");
+    for (const read of [
+      () => binaryPending(w.paths),
+      () => confirmBinary(w.paths),
+      () => revertBinary(w.paths),
+      () => w.install(b),
+    ])
+      await expect(read()).rejects.toMatchObject(refusal);
+    // Nothing was switched: the link still names A.
+    expect(await w.linked()).toBe(a.file.split("/").at(-1));
+  },
+);
+
+test("an absent binary state record is the first install, and a valid one reads as before", async () => {
+  const w = await world();
+  expect(await binaryPending(w.paths)).toBe(false);
+  expect(await revertBinary(w.paths)).toBe(false);
+  const a = await w.install(await w.source("a"));
+  await confirmBinary(w.paths);
+  expect(
+    JSON.parse(await readFile(join(w.paths.bin, "state.json"), "utf8")),
+  ).toEqual({ lastGood: a.file.split("/").at(-1) });
+  expect(await binaryPending(w.paths)).toBe(false);
+});

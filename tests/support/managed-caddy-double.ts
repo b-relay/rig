@@ -172,6 +172,8 @@ export async function managedCaddyWorld(
     beforeConfig: undefined as undefined | (() => Promise<void>),
     /** Runs each time the fake Caddy loads a configuration, with it, before the load is reported done. */
     onLoad: undefined as undefined | ((config: unknown) => Promise<void>),
+    /** Set to make `caddy adapt` print this instead of the configuration it adapts. */
+    adaptPrints: undefined as string | undefined,
     loaded: {} as unknown,
   };
   const run: CommandRunner = async ({ command }) => {
@@ -180,7 +182,8 @@ export async function managedCaddyWorld(
     if (verb === "adapt")
       return {
         exitCode: 0,
-        stdout: JSON.stringify(await fakeAdapt(command[3]!)),
+        stdout:
+          control.adaptPrints ?? JSON.stringify(await fakeAdapt(command[3]!)),
         stderr: "",
       };
     const failure = failures[verb as "validate"];

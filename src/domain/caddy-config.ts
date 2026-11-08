@@ -1,6 +1,13 @@
+import { z } from "zod";
+
 /** Reading Caddy's JSON configuration, as `caddy adapt` produces it and as GET /config/ on the admin socket returns it; the
  * two are equal for the same Caddyfile (checked on 2.10.2), which is how Rig knows what a running Caddy serves. */
 type Json = Record<string, unknown>;
+/** Caddy's JSON configuration as Rig takes it in: an object, whose apps, when present, are an object too. What they hold
+ * is Caddy's modules, kept whole and read through the guards below. */
+export const caddyConfigSchema = z.looseObject({
+  apps: z.record(z.string(), z.unknown()).optional(),
+});
 const record = (value: unknown): Json =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Json)

@@ -34,11 +34,17 @@ import {
   type PublishedDashboard,
 } from "../domain/managed-proxy";
 import {
+  caddyConfigSchema,
   issuancePolicies,
   issuerCas,
   protectedDifferences,
   withDownPages,
 } from "../domain/caddy-config";
+import {
+  generationMetadataSchema,
+  readProxyRecord,
+  type RecordedGeneration,
+} from "./proxy-records";
 import {
   proxySettingsSchema,
   type ProxySettings,
@@ -79,7 +85,8 @@ export interface CaddyJob {
 export interface CaddyAdmin {
   /** Whether the socket answers within a short deadline. */
   reachable(): Promise<boolean>;
-  /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. */
+  /** The config Caddy runs, as GET /config/ returns it; undefined when the socket does not answer. Rejects with a tagged
+   * error when Caddy answers with something other than a configuration. */
   config(): Promise<unknown>;
   /** Has Caddy run `config` (POST /load): resolves to undefined once Caddy has taken it, or to why it refused it; rejects
    * when Caddy did not answer (cancelled, timed out, unreachable), since Caddy may still hold the request and apply it.
@@ -267,16 +274,18 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       ? directory
       : undefined;
   }
+  /** What generation `directory` was built from; undefined for none, or one whose record is gone. A record that is not
+   * one is refused (PROXY_STATE_CORRUPT). */
   async function metadataOf(
     directory: string | undefined,
-  ): Promise<GenerationMetadata | undefined> {
+  ): Promise<RecordedGeneration | undefined> {
     if (!directory) return undefined;
-    const text = await readText(generationFiles(directory).metadata);
-    try {
-      return text ? (JSON.parse(text) as GenerationMetadata) : undefined;
-    } catch {
-      return undefined;
-    }
+    return readProxyRecord(
+      generationFiles(directory).metadata,
+      generationMetadataSchema,
+      `the record of Caddy generation ${basename(directory)}`,
+      "Delete it, then run rig proxy reload: Rig builds a new generation from Host config.",
+    );
   }
   /** The settings the current generation was accepted with, and whether their `proxy.routes` are known to be the owner's
    * alone; Host config as it is before the first generation. A generation that recorded none (only unreleased builds made
@@ -295,7 +304,7 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
       : { settings: await options.settings(), ownerRoutesOnly: true };
   }
   /** Whether generation `metadata` serves the dashboard's route exactly as rigd asks for it now. */
-  function servesDashboard(metadata: GenerationMetadata | undefined): boolean {
+  function servesDashboard(metadata: RecordedGeneration | undefined): boolean {
     return (
       metadata?.dashboard !== undefined &&
       Bun.deepEquals(metadata.dashboard, options.dashboard?.current() ?? null)
@@ -437,20 +446,28 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
             redactSecrets(result.stderr, secret ? [secret] : []),
           ) ?? "caddy adapt failed",
       };
+    let printed: unknown;
     try {
-      return { config: JSON.parse(result.stdout || "{}") };
+      printed = JSON.parse(result.stdout || "{}");
     } catch {
       return { reason: "caddy adapt printed no JSON" };
     }
+    const config = caddyConfigSchema.safeParse(printed);
+    return config.success
+      ? { config: config.data }
+      : {
+          reason: "caddy adapt printed JSON that is not a Caddy configuration",
+        };
   }
-  /** The adapted JSON a generation was validated as; undefined for one built before generations recorded it. */
+  /** The adapted JSON a generation was validated as; undefined for one built before generations recorded it. A file that
+   * is not a Caddy configuration is refused (PROXY_STATE_CORRUPT). */
   async function adaptedOf(directory: string): Promise<unknown> {
-    const text = await readText(generationFiles(directory).adapted);
-    try {
-      return text === undefined ? undefined : JSON.parse(text);
-    } catch {
-      return undefined;
-    }
+    return readProxyRecord(
+      generationFiles(directory).adapted,
+      caddyConfigSchema,
+      `the configuration Caddy generation ${basename(directory)} was validated as`,
+      "Delete it, then run rig proxy reload: Rig builds a new generation from Host config.",
+    );
   }
 
   /** Builds, validates and switches to a generation of `routes`, `settings` and the dashboard's route as rigd asks for it now,

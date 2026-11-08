@@ -1,4 +1,7 @@
 import { Database } from "bun:sqlite";
+import { z } from "zod";
+import { RigError } from "../domain/errors";
+import { describeInvalidDocument } from "../domain/invalid-document";
 import { preparePrivateStoreSync } from "../providers/private-files";
 import { decodeHistogram, encodeHistogram } from "../domain/usage-histogram";
 import {
@@ -120,7 +123,7 @@ export function openSqliteUsageHistory(path: string): UsageHistory {
               spans.push({ at: row.minute * 60, histograms: { cpu, memory } });
           }
         }
-        return { series: JSON.parse(label) as UsageSeries, spans };
+        return { series: storedSeries(path, label), spans };
       });
     },
     async prune(input) {
@@ -223,6 +226,46 @@ function selectedSeries(
           "SELECT id, label FROM series WHERE project_id = ? ORDER BY key",
         )
         .all(filter.projectId);
+}
+
+const projectRef = {
+  projectId: z.string().min(1),
+  project: z.string(),
+};
+const targetRef = {
+  ...projectRef,
+  targetId: z.string().min(1),
+  target: z.string(),
+  targetKind: z.enum(["working", "stable", "preview"]),
+};
+/** A series' `label` column: the UsageSeries it was written for. */
+const usageSeriesSchema: z.ZodType<UsageSeries> = z.discriminatedUnion(
+  "scope",
+  [
+    z.looseObject({ scope: z.literal("host") }),
+    z.looseObject({ scope: z.literal("rig") }),
+    z.looseObject({ scope: z.literal("project"), ...projectRef }),
+    z.looseObject({ scope: z.literal("target"), ...targetRef }),
+    z.looseObject({
+      scope: z.literal("component"),
+      ...targetRef,
+      component: z.string().min(1),
+      componentKind: z.enum(["service", "job"]),
+    }),
+  ],
+);
+/** The series a stored label names; one that does not is refused as MONITOR_STORAGE, never charted as another. */
+function storedSeries(path: string, label: string): UsageSeries {
+  try {
+    return usageSeriesSchema.parse(JSON.parse(label));
+  } catch (error) {
+    throw new RigError(
+      "MONITOR_STORAGE",
+      `rigd's CPU and memory history at ${path} names a series it cannot read.`,
+      `A series label ${describeInvalidDocument(error, "usage series")}. A damaged usage.sqlite can be deleted: rigd starts a new one, losing only Monitor's history.`,
+      { path },
+    );
+  }
 }
 
 /** Slot by slot, the new sample where there is one and the stored one otherwise. */

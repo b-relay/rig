@@ -10,9 +10,16 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stopLeftBehind, type Report } from "./support/left-behind";
 import {
+  SPOILED,
+  reborn,
+  spoiling,
+  type Fault,
+} from "./support/process-double";
+import {
+  awaitExit,
   platformInspect,
-  processExited,
   processIdentity,
   rigFixture,
   signalOwned,
@@ -24,11 +31,6 @@ const exists = (path: string) =>
     () => true,
     () => false,
   );
-/** What a test run left: each fixture's root and the processes it ran, by pid and birth. */
-type Report = {
-  base: string;
-  processes: { pid: number; identity?: string }[];
-};
 /** Runs the test file `source` from the repository, so the run is configured as every test run here is, with
  * `$FIXTURE_REPORTS` set to `work`, where its tests report what their fixtures made. `args` are given to `bun test`, and
  * `environment` adds to what the run inherits. A run still going `deadlineMs` after it started is killed, and answers
@@ -60,33 +62,6 @@ async function testRun(
   ]);
   clearTimeout(deadline);
   return { code, output: stdout + stderr, overran };
-}
-/** Stops what a run left behind while it is still the process reported, and removes each root once it has. `inspect` is
- * the `ps` it reads processes with. */
-async function stopLeftBehind(
-  reports: readonly Report[],
-  inspect: Inspect = platformInspect,
-) {
-  for (const report of reports) {
-    for (const owned of report.processes) {
-      if (
-        owned.identity === undefined ||
-        processIdentity(owned.pid, inspect) !== owned.identity
-      )
-        continue;
-      process.kill(owned.pid, "SIGTERM");
-      const known = { pid: owned.pid, identity: owned.identity };
-      if (!(await processExited(known, inspect)))
-        signalOwned(known, "SIGKILL", inspect);
-      // Sent or not, since a SIGKILL is skipped on any read that does not show the process: the root goes only once the
-      // wait sees it gone.
-      if (!(await processExited(known, inspect)))
-        throw new Error(
-          `process ${owned.pid} is still running; its root is kept at ${report.base}`,
-        );
-    }
-    await rm(report.base, { recursive: true, force: true });
-  }
 }
 const fixturePath = JSON.stringify(
   join(import.meta.dir, "support/rig-fixture.ts"),
@@ -464,9 +439,8 @@ async function stopHeld(
   ran: Promise<unknown> | undefined,
 ) {
   for (const owned of processes) {
-    if (processIdentity(owned.pid) !== owned.identity) continue;
-    process.kill(owned.pid, "SIGKILL");
-    if (!(await processExited(owned)))
+    if (signalOwned(owned, "SIGKILL", platformInspect) === "gone") continue;
+    if ((await awaitExit(owned)) !== "gone")
       throw new Error(`process ${owned.pid} is still running`);
   }
   await ran;
@@ -538,10 +512,11 @@ test("a command whose leader's birth differs when cleanup looks, as a reused pid
   try {
     // Once the leader is known, ps says another process now has its pid.
     let leader = 0;
-    const inspect: Inspect = (args) =>
-      leader !== 0 && args.join(" ") === `-p ${leader} -o lstart=`
-        ? { exitCode: 0, stdout: "Thu Jan  1 00:00:00 1970\n" }
-        : platformInspect(args);
+    const inspect = reborn(
+      platformInspect,
+      () => leader,
+      "Thu Jan  1 00:00:00 1970",
+    );
     const f = await markingFixture(work, inspect);
     base = f.base;
     held = await holdingOutput(
@@ -605,64 +580,50 @@ test("a group signal that fails is reported, and cleanup still stops the daemon 
   }
 }, 60_000);
 
-for (const [read, fault] of [
-  ["an empty", { exitCode: 1, stdout: "" }],
-  ["a partial", { exitCode: 0, stdout: "Thu Jan\n" }],
-] as const)
-  test(`a process left behind that ignores SIGTERM keeps its root when ${read} read of it comes as the SIGKILL is due`, async () => {
+for (const [fault, spoiled] of SPOILED)
+  test(`a command that has not answered, whose leader's read just before its group's SIGKILL is ${fault} ${spoiled === "once" ? "once, has the read taken again, and its group killed" : "every time, has nothing signalled, and the root is kept and named"}`, async () => {
     const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
-    const child = Bun.spawn([
-      "/bin/sh",
-      "-c",
-      "trap '' TERM; exec /bin/sleep 600",
-    ]);
-    let owned: { pid: number; identity: string } | undefined;
+    let held: Awaited<ReturnType<typeof holdingOutput>> | undefined;
+    let base: string | undefined;
     try {
-      // The trap is set once the shell has become the sleep, which keeps its pid and birth; the shell's own command line
-      // names the sleep too.
-      for (
-        let i = 0;
-        i < 500 &&
-        platformInspect([
-          "-p",
-          String(child.pid),
-          "-o",
-          "command=",
-        ]).stdout.trim() !== "/bin/sleep 600";
-        i++
-      )
-        await Bun.sleep(10);
-      owned = { pid: child.pid, identity: processIdentity(child.pid)! };
-      // One read of it fails once the wait after SIGTERM has run out, as it would during its last look or the SIGKILL's.
-      const due = Date.now() + 15_000;
-      let faulted = false;
-      const inspect: Inspect = (args) => {
-        if (
-          !faulted &&
-          Date.now() >= due &&
-          args.join(" ") === `-p ${child.pid} -o lstart=`
-        ) {
-          faulted = true;
-          return fault;
-        }
-        return platformInspect(args);
-      };
-      const failure = await stopLeftBehind(
-        [{ base: work, processes: [owned] }],
-        inspect,
-      ).then(
+      // Reads of the leader are spoiled once the test knows it, which is once the command has started.
+      let leader = 0;
+      const inspect = spoiling(
+        platformInspect,
+        () => leader,
+        (read): Fault | undefined =>
+          spoiled === "always" || read === 1 ? fault : undefined,
+      );
+      const f = await markingFixture(work, inspect);
+      base = f.base;
+      held = await holdingOutput(
+        f,
+        work,
+        "/bin/sleep 600 & echo $$ $! > $PIDS; wait",
+      );
+      leader = held.processes[0]!.pid;
+      const failure = await f.cleanup().then(
         () => undefined,
         (error: Error) => error.message,
       );
-      expect(faulted).toBe(true);
-      expect(failure).toBe(
-        `process ${child.pid} is still running; its root is kept at ${work}`,
-      );
-      expect(await exists(work)).toBe(true);
-      expect(processIdentity(child.pid)).toBe(owned.identity);
+      expect(failure).toContain(`its root is kept at ${f.base}:`);
+      expect(await exists(join(work, "uninstalled"))).toBe(true);
+      if (spoiled === "once") {
+        expect(failure).toContain(
+          "had not answered 5 s after cleanup began, so their process groups were killed",
+        );
+        for (const { pid, identity } of held.processes)
+          expect(processIdentity(pid)).not.toBe(identity);
+      } else {
+        expect(failure).toContain(
+          `its process group's leader could not be read (the reads of process ${leader} were inconclusive), so nothing was signalled`,
+        );
+        for (const { pid, identity } of held.processes)
+          expect(processIdentity(pid)).toBe(identity);
+      }
     } finally {
-      if (!owned) child.kill("SIGKILL");
-      await stopHeld(owned ? [owned] : [], child.exited);
+      await stopHeld(held?.processes ?? [], held?.ran);
+      if (base) await rm(base, { recursive: true, force: true });
       await rm(work, { recursive: true, force: true });
     }
   }, 60_000);

@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { destroyPreview } from "../src/adapters/preview-storage";
 import { createTargetEffects } from "../src/adapters/target-effects";
+import { createTargetCommand } from "../src/adapters/target-commands";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
@@ -1626,6 +1627,66 @@ for (const { failure, because, streams, rejects } of [
       : [];
     expect(lines).toEqual(["one", "two"]);
   });
+
+for (const recording of ["rejects", "never settles"] as const)
+  for (const { failure, message, streams, rejects } of [
+    {
+      failure: "PREPARATION_LEFTOVER",
+      message:
+        "A process the setup command of working left running could not be stopped.",
+      streams: true,
+      rejects: false,
+    },
+    {
+      failure: "PREPARATION_LEFTOVER",
+      message:
+        "A process the setup command of working left running could not be stopped.",
+      streams: false,
+      rejects: false,
+    },
+    {
+      failure: "COMMAND_CANCELLED",
+      message: "A provider command was cancelled before it finished.",
+      streams: true,
+      rejects: true,
+    },
+  ])
+    test(`a command that fails ${failure}${streams ? "" : " with output handed over at the end"} while recording its output ${recording} reports its own failure, within the recording deadline`, async () => {
+      const outcome = () =>
+        recording === "rejects"
+          ? Promise.reject(new Error("log write failed"))
+          : new Promise<never>(() => {});
+      const command = createTargetCommand({
+        run: async ({ onOutput }) => {
+          if (streams) onOutput?.("stdout", "one\ntwo");
+          if (rejects)
+            throw new RigError(
+              "COMMAND_CANCELLED",
+              "A provider command was cancelled before it finished.",
+              "Retry the operation.",
+            );
+          return { exitCode: 0, stdout: "one\ntwo", stderr: "" };
+        },
+        supervisors: new Map([["child", stuckLeftover]]),
+        output: {
+          liveRecorder: () => ({
+            receive() {},
+            finish: () => (streams ? outcome() : Promise.resolve(false)),
+          }),
+          recordOutput: outcome,
+        },
+        failureRecordingMs: 50,
+      });
+      const started = Date.now();
+      // Caught rather than through expect().rejects, which in Bun 1.4.2 blocks the thread on a promise that never
+      // settles, so the test's timeout could not end it.
+      const error = await command("build", target("/nowhere"), {}, 600).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(error).toMatchObject({ code: failure, message });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
 
 test("a health check's answer never depends on writing its evidence: an unwritable Target log is said, and the next check writes it", async () => {
   const root = await mkdtemp(join(tmpdir(), "rig-health-unlogged-"));

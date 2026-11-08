@@ -20,15 +20,21 @@ export type TargetCommand = (
   componentName?: string,
   cwd?: string,
 ) => Promise<CommandResult>;
+/** How long a failing command waits for its output to reach the Target log: a log that cannot be written never holds
+ * back the failure. */
+const FAILURE_RECORDING_MS = 5_000;
 /** Target commands run by `run`. The command's process group is recorded with the Target's supervisor in `supervisors`
  * under the Target's preparation key before the command runs, so a daemon that dies meanwhile leaves it to the next one,
  * and forgotten once the command ended and nothing it started still runs: a process it left in the background is stopped
- * then, and when that fails the command fails PREPARATION_LEFTOVER with the record kept. */
+ * then, and when that fails the command fails PREPARATION_LEFTOVER with the record kept. A failing command waits at most
+ * `failureRecordingMs` (FAILURE_RECORDING_MS when absent) for its output to be recorded before it reports its failure. */
 export function createTargetCommand(options: {
   run: CommandRunner;
   supervisors: ReadonlyMap<string, Supervisor>;
   output: Pick<TargetOutput, "liveRecorder" | "recordOutput">;
+  failureRecordingMs?: number;
 }): TargetCommand {
+  const recordingMs = options.failureRecordingMs ?? FAILURE_RECORDING_MS;
   return async (
     command,
     target,
@@ -49,6 +55,21 @@ export function createTargetCommand(options: {
       if (!(await live.finish()) && result)
         await options.output.recordOutput(result, target, componentName);
     };
+    // A failing command waits a while for that, then reports its own failure whatever became of the recording.
+    const failWith = async (
+      failure: unknown,
+      result?: CommandResult,
+    ): Promise<never> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        record(result).catch(() => {}),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, recordingMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      throw failure;
+    };
     let result: CommandResult;
     try {
       result = await options.run({
@@ -63,8 +84,7 @@ export function createTargetCommand(options: {
       // The command's own failure is the one reported; a record kept because its group could not be stopped keeps what
       // still runs addressable for rig down.
       await owner?.disown?.(key).catch(() => {});
-      await record().catch(() => {});
-      throw error;
+      return await failWith(error);
     }
     // What the command left running in its group is stopped before the record of the group goes.
     const leftover = await owner?.disown?.(key).then(
@@ -78,10 +98,7 @@ export function createTargetCommand(options: {
           failureCauses(error),
         ),
     );
-    if (leftover) {
-      await record(result).catch(() => {});
-      throw leftover;
-    }
+    if (leftover) return await failWith(leftover, result);
     await record(result);
     return result;
   };

@@ -66,19 +66,22 @@ scroll and form state. Because most ticks change nothing, Next's client cache
 instant its tab is tapped, and the refresh replaces it when `rigd` moves.
 `web/server/pulse.ts` reads the three inputs through one discovery of `rigd`.
 Each request is admitted on its own, but requests that ask while a read is in
-flight, from other tabs or from a page's own top bar and sidebar, share it, and
-nothing is kept once it answered, so the next request reads afresh. A page
+flight, from other tabs, from `/pulse` or from a page's own top bar and sidebar,
+share it (the read in flight is kept on the process, since Next loads the module
+once for the pages and again for the `/pulse` route), and nothing is kept once it
+answered, so the next request reads afresh. A page
 render reads them once (`pagePulse`), and its top bar, its sidebar and the page
 itself take the same readings: the queue on the Overview and on a Project's and a
 Target's pages, rigd's health, queue and Activity on Monitor, and Activity on
 `/activity` (one Operation, `?operation=`, is a read of its own). A command, a
 restore, a config apply, a DNS record delete or an env file write from the site
 leaves a read already in flight to the requests sharing it, and the next request reads afresh, so the page it refreshes
-shows what the command changed. Anything else, such as a `rig` command or a
-crash `rigd` records, does not: a page whose read joins one already in flight
-can miss a change made during that read, at most one read's duration, as the
-top bar can. The change moves the pulse stamp, so the live refresh's next poll
-redraws the page with it. A link
+shows what the command changed. A change made outside the dashboard, such as a
+`rig` command or a crash `rigd` records, can be missed by a page that joined a
+read already in flight. A poll asked meanwhile joins that same read, so it
+cannot see the change either; the next poll that sees the new stamp both
+redraws the page and, since that read has answered, makes the redraw read
+afresh, so the page catches up within one poll. A link
 prefetches its page only once it is pointed at, touched or focused
 (`web/components/link.tsx`), never merely for being on screen, so a redraw does
 not prefetch every link on the page again; a link followed without any of those

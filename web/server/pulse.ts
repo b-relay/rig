@@ -12,7 +12,12 @@ interface SharedRead {
   readonly abandon: AbortController;
   waiting: number;
 }
-let inFlight: SharedRead | undefined;
+/** Where the read in flight is kept. Next loads this module once for the pages and again for the `/pulse` route, so the
+ * slot lives on the process: a page render and a poll share one read, and a read that began before a change is never
+ * joined by a render the poll that saw the change asked for. */
+const slot = ((globalThis as { [key: symbol]: unknown })[
+  Symbol.for("rig.dashboard.pulse")
+] ??= {}) as { inFlight?: SharedRead };
 
 /** Reads rigd's health, queue and Activity in parallel, through one discovery of rigd. */
 function readFromRigd(abandon: AbortController): SharedRead {
@@ -44,7 +49,7 @@ function readFromRigd(abandon: AbortController): SharedRead {
   };
   // Nothing is kept once it answered: the next request reads afresh.
   void shared.readings.finally(() => {
-    if (inFlight === shared) inFlight = undefined;
+    if (slot.inFlight === shared) slot.inFlight = undefined;
   });
   return shared;
 }
@@ -72,9 +77,9 @@ export async function pulseReadings(
   if (!admitted.ok)
     return { health: admitted, queue: admitted, activity: admitted };
   if (signal?.aborted) return abandonedReadings();
-  if (!inFlight || inFlight.abandon.signal.aborted)
-    inFlight = readFromRigd(new AbortController());
-  const shared = inFlight;
+  if (!slot.inFlight || slot.inFlight.abandon.signal.aborted)
+    slot.inFlight = readFromRigd(new AbortController());
+  const shared = slot.inFlight;
   shared.waiting += 1;
   if (!signal) return await shared.readings;
   let leave = () => {};
@@ -96,7 +101,7 @@ export async function pulseReadings(
 /** A command from this site has ended: a request from now on reads rigd afresh rather than share a read begun before,
  * which may miss what the command changed. Requests already sharing that read keep it. */
 export function readPulseAfresh(): void {
-  inFlight = undefined;
+  slot.inFlight = undefined;
 }
 
 /** The pulse a browser polls: the three inputs reduced to one stamp. */

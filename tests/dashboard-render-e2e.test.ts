@@ -341,3 +341,101 @@ test("one render of each page asks rigd each thing at most once: the pages take 
     counting.stop(true);
   }
 }, 120_000);
+
+test("a redraw asked for by a poll that saw a CLI restart shows it, though a render's pulse read from before the restart is still out", async () => {
+  // Its own site and stand-in, as above. The stand-in answers what it holds when a read arrives, and can hold one Activity
+  // read: the render's, begun before the restart.
+  const records: object[] = [];
+  let holdNext = false;
+  let reached = () => {};
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const stand = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    idleTimeout: 0,
+    async fetch(request) {
+      if (new URL(request.url).pathname === "/health")
+        return Response.json({
+          instanceId: "test",
+          pid: process.pid,
+          running: true,
+          version: "test",
+        });
+      const command = (await request.json()) as { action: string };
+      if (command.action === "activity") {
+        const result = { operations: [...records], total: records.length };
+        if (holdNext) {
+          holdNext = false;
+          reached();
+          await held;
+        }
+        return Response.json({ result });
+      }
+      const result =
+        command.action === "list"
+          ? { projects: [] }
+          : command.action === "queue"
+            ? { waiting: 0, operations: [] }
+            : undefined;
+      return Response.json(
+        result ? { result } : { error: { code: "STAND_IN", message: "x" } },
+      );
+    },
+  });
+  const served = await serveSite(join(work, "outside-change"), stand.port!);
+  const headers = {
+    authorization: `Basic ${Buffer.from(`rig:${KEY}`).toString("base64")}`,
+  };
+  const render = (path: string) =>
+    fetch(`${served.base}${path}`, { headers }).then((page) => page.text());
+  const poll = () =>
+    fetch(`${served.base}/pulse`, { headers })
+      .then((answer) => answer.json())
+      .then((pulse) => (pulse as { stamp: string }).stamp);
+  const restarted = {
+    id: "op-cli",
+    project: "pantry",
+    target: "working",
+    action: "restart",
+    outcome: "restarted",
+    message: "Restarted from the command line",
+    occurredAt: "2026-11-08T10:00:00.000Z",
+  };
+  try {
+    // Warm: both entries' code is loaded, and the browser has seen the stamp from before.
+    await render("/activity");
+    const seen = await poll();
+    holdNext = true;
+    const reachedHeld = new Promise<void>((resolve) => (reached = resolve));
+    const first = render("/activity");
+    await reachedHeld;
+    records.push(restarted);
+    // The live refresh: poll, and redraw once the stamp moves. A poll that joins the held read answers only once it does.
+    let redraw: Promise<string> | undefined;
+    for (let tick = 0; tick < 3 && !redraw; tick++) {
+      const answer = poll();
+      const settled = await Promise.race([
+        answer,
+        Bun.sleep(1500).then(() => undefined),
+      ]);
+      if (settled === undefined) release();
+      if ((settled ?? (await answer)) !== seen) {
+        redraw = render("/activity");
+        // Long enough for the redraw to reach its pulse read before the held one answers.
+        await Bun.sleep(1000);
+      }
+    }
+    release();
+    await first;
+    expect(redraw).toBeDefined();
+    const shown = await redraw!;
+    expect(shown).toContain(restarted.message);
+    expect(shown).not.toContain("Nothing has happened yet.");
+  } finally {
+    release();
+    served.process.kill();
+    await served.process.exited;
+    stand.stop(true);
+  }
+}, 120_000);

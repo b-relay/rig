@@ -1,10 +1,8 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { Suspense, type ReactNode } from "react";
-import { daemon, read } from "@/server/daemon";
-import { attempt } from "@/lib/outcome";
+import { pagePulse } from "@/server/pulse";
 import { rigdAway } from "@/lib/pulse";
 import type { Theme } from "@/lib/theme";
-import type { DaemonHealth, QueueResult } from "@/lib/types";
 import { LiveRefresh } from "./live-refresh";
 import { Brand } from "./shell/brand";
 import { MobileMenu } from "./shell/mobile-menu";
@@ -50,10 +48,8 @@ export function TopBar({
   );
 }
 export async function DaemonStatus() {
-  const [health, queue] = await Promise.all([
-    attempt(daemon().then((client) => client.health())),
-    attempt(read({ action: "queue" })),
-  ]);
+  // The page's pulse: the same reads the sidebar keeps its Project statuses under, and any /pulse asking now shares.
+  const { health, queue } = (await pagePulse()).readings;
   if (!health.ok)
     return (
       <DaemonMark
@@ -64,11 +60,11 @@ export async function DaemonStatus() {
         {...(!rigdAway(health.failure.code) && { fault: health.failure.code })}
       />
     );
-  const running = queue.ok ? (queue.value as QueueResult).running : undefined;
+  const running = queue.ok ? queue.value.running : undefined;
   return (
     <DaemonMark
       state={running ? "busy" : "up"}
-      version={(health.value as DaemonHealth).version}
+      version={health.value.version}
       detail={
         running
           ? [running.action, running.project, running.target]

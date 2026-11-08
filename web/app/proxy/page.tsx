@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import Link from "@/components/link";
 import { ArrowRight, FileCode2, Globe, Network } from "lucide-react";
 import type { Failure as FailureShape } from "@/lib/outcome";
 import type { ProjectEntry } from "@/lib/overview";

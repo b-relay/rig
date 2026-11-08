@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { ArrowRight, Boxes } from "lucide-react";
 import { Empty, Facts, Mono, Panel } from "@/components/bits";
 import { ServiceCards } from "@/components/service-cards";

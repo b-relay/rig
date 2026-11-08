@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { Activity, CircleCheck, CircleX } from "lucide-react";
 import type { ActivityResult, DoctorReport } from "@/lib/types";
 import { ago } from "@/lib/present";

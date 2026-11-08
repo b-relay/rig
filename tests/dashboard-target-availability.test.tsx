@@ -612,6 +612,45 @@ test("from status to the page, every Target's view knows the replacement's serie
   expect(cardsIn(html, "feature")).toEqual(["current", "earlier"]);
 });
 
+test("a Project's Monitor on one Target converts no other Target's Component series", async () => {
+  const read: string[] = [];
+  const reads = (command: RuntimeCommand): unknown => {
+    const reply = monitorReads(command) as {
+      series?: Record<string, unknown>[];
+    };
+    if (command.action !== "monitor") return reply;
+    const other = {
+      series: {
+        scope: "component",
+        projectId: "p",
+        project: "demo",
+        targetId: "s-1",
+        target: "stable",
+        targetKind: "stable",
+        componentKind: "service",
+        component: "db",
+      },
+      summary: {},
+      get points() {
+        read.push("stable:db");
+        return [{ at: 1000 }];
+      },
+    };
+    return { ...reply, series: [...reply.series!, other] };
+  };
+  answer = reads;
+  const view = await projectMonitor("demo", "1h", "feature");
+  answer = undefined;
+  expect(read).toEqual([]);
+  expect(view.target).toBe("feature");
+  expect(
+    view.usage.ok &&
+      view.usage.value.series
+        .filter((each) => each.series.scope === "component")
+        .map((each) => each.series.component),
+  ).toEqual(["web", "api"]);
+});
+
 /** What a person can read on the page: its text, with no attribute such as a title, which a disabled control never shows. */
 const readable = (html: string) => html.replace(/<[^>]*>/g, " ");
 const says = (text: string, reason: string) => text.split(reason).length - 1;

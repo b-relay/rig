@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { CalendarClock, Pin, TriangleAlert } from "lucide-react";
 import { HEALTH_WORD } from "@/lib/health";
 import {

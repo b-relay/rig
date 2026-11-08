@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/link";
 import type { ReactNode } from "react";
 import type { ActivityResult } from "@/lib/types";
 import { ago } from "@/lib/present";

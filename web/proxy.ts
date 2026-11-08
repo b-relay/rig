@@ -9,6 +9,7 @@ import {
 } from "./server/guard";
 import { site, sitePolicy } from "./server/site";
 import { returnPath } from "./lib/return-path";
+import { PAGE_PATH_HEADER } from "./lib/page-reads";
 /** Runs for every request (there is no matcher): decides every page, action and route before Next renders anything. */
 export async function proxy(request: NextRequest) {
   return guard(request, await sitePolicy(), Date.now(), site().keyFile);
@@ -44,6 +45,8 @@ export function guard(
   ].join("; ");
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("content-security-policy", csp);
+  // The render learns which Projects the page reads from the path asked for, never from a browser's own header.
+  requestHeaders.set(PAGE_PATH_HEADER, request.nextUrl.pathname);
   if (publicPath(request.nextUrl.pathname)) {
     const answer = NextResponse.next({ request: { headers: requestHeaders } });
     answer.headers.set("content-security-policy", csp);

@@ -87,6 +87,77 @@ test("a Project's report keeps only the chosen Target's Components, and none for
   expect(scopes()).toHaveLength(3);
 });
 
+test("charting one Target never reads another Target's Component points, and charts exactly what the whole report holds of it", () => {
+  const read: string[] = [];
+  const series = (
+    scope: "target" | "component",
+    target: string,
+    component?: string,
+  ) => {
+    const points = [
+      { at: 1000, cpu: stats, memory: stats },
+      { at: 1015 },
+      { at: 1030, cpu: { ...stats, high: 20 }, memory: stats },
+    ];
+    return {
+      series: {
+        scope,
+        projectId: "p",
+        project: "pantry",
+        targetId: `id-${target}`,
+        target,
+        targetKind: "preview" as const,
+        ...(component && {
+          component,
+          componentKind: "service" as const,
+        }),
+      },
+      summary: { cpu: stats, memory: stats },
+      get points() {
+        read.push(`${scope}:${target}:${component ?? ""}`);
+        return points;
+      },
+    };
+  };
+  const big: MonitorResult = {
+    ...report,
+    series: [
+      ...report.series,
+      series("target", "stable"),
+      series("target", "feature"),
+      // A destroyed Preview's history, still in the range.
+      series("target", "gone"),
+      series("component", "stable", "web"),
+      series("component", "stable", "worker"),
+      series("component", "feature", "web"),
+      series("component", "gone", "web"),
+    ],
+  };
+  const whole = chartReport(big, "1h");
+  for (const target of ["stable", "gone", "all", "unknown"]) {
+    read.length = 0;
+    const charted = chartReport(big, "1h", target);
+    // The same series, in rigd's order, converted exactly as the whole report converts them.
+    expect(charted).toEqual({
+      ...whole,
+      series: whole.series.filter(
+        (each) =>
+          each.series.scope !== "component" || each.series.target === target,
+      ),
+    });
+    expect(
+      new Set(read.filter((each) => each.startsWith("component:"))),
+    ).toEqual(
+      new Set(
+        {
+          stable: ["component:stable:web", "component:stable:worker"],
+          gone: ["component:gone:web"],
+        }[target] ?? [],
+      ),
+    );
+  }
+});
+
 test("cards follow the inventory, with an empty card for what was never sampled and one for what it no longer names", () => {
   const sampled = chartReport(report, "1h").series;
   const cards = cardsOf(

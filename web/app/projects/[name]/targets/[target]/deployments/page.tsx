@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { FolderGit2 } from "lucide-react";
 import { deploymentRows } from "@/lib/deployments";
 import { projectHref } from "@/lib/target";

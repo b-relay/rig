@@ -11,12 +11,21 @@ import { read } from "./daemon";
 export const projectList = cache((): Promise<Outcome<ListResult>> =>
   attempt(read({ action: "list" })),
 );
+/** One Project's status read of this request, and when it began (`performance.now()`), so a status kept beyond the
+ * request can say how fresh it is. */
+export const projectStatusRead = cache(
+  (
+    project: string,
+  ): { began: number; outcome: Promise<Outcome<ProjectStatusReport>> } => ({
+    began: performance.now(),
+    outcome: attempt(read({ action: "status", project })),
+  }),
+);
 /** One Project's status, read once per request: the sidebar and the page share the observation
  * rather than each paying rigd's two-second budget. */
-export const projectStatus = cache(
-  (project: string): Promise<Outcome<ProjectStatusReport>> =>
-    attempt(read({ action: "status", project })),
-);
+export const projectStatus = (
+  project: string,
+): Promise<Outcome<ProjectStatusReport>> => projectStatusRead(project).outcome;
 /** What Rig's own Caddy serves and the operator's custom file, read once per request; PROXY_UNMANAGED
  * when the Host's Caddy serves Rig's routes instead. */
 export const proxyReport = cache(() => attempt(read({ action: "proxy" })));

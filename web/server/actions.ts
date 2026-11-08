@@ -23,6 +23,7 @@ import { editConfig, editEnv, read } from "./daemon";
 import { sitePolicy } from "./site";
 import { confirmedRestore } from "./restore";
 import { DNS_DELETE_ELSEWHERE, confirmedDnsDelete } from "./dns";
+import { forgetNavigation } from "./navigation";
 
 /** Server Actions: the only way the browser changes anything. Each one decides the request
  * again, exactly as the proxy did, so a page is never the only thing between a POST and rigd. */
@@ -58,7 +59,11 @@ export async function runCommand(input: unknown): Promise<Outcome<unknown>> {
     });
   if (command.data.action === "dns-delete")
     return refused(DNS_DELETE_ELSEWHERE);
-  return attempt(read(command.data));
+  try {
+    return await attempt(read(command.data));
+  } finally {
+    forgetNavigation();
+  }
 }
 /** Restores a backup, as `rig backup restore <job> <id> <target> --yes` does, only once what was typed names the job:
  * decided here, so no page script can skip the dialog. */
@@ -67,7 +72,11 @@ export async function runRestore(input: unknown): Promise<Outcome<unknown>> {
   if (denied) return refused(denied);
   const confirmed = confirmedRestore(input);
   if (!confirmed.ok) return refused(confirmed.failure);
-  return attempt(read(confirmed.command));
+  try {
+    return await attempt(read(confirmed.command));
+  } finally {
+    forgetNavigation();
+  }
 }
 /** Deletes a DNS record, as the Delete dialog asks, only with the record as the page read it and the name typed to
  * confirm; rigd compares that name with the record it reads just before deleting. */
@@ -84,7 +93,13 @@ export async function runConfigEdit(input: unknown): Promise<Outcome<unknown>> {
   if (denied) return refused(denied);
   const request = configEditorRequestSchema.safeParse(input);
   if (!request.success) return refused(invalid("a config edit"));
-  return attempt(editConfig(request.data));
+  // An applied rig.yaml can turn a Target on or off, which rigd records nothing about.
+  if (request.data.action !== "apply") return attempt(editConfig(request.data));
+  try {
+    return await attempt(editConfig(request.data));
+  } finally {
+    forgetNavigation();
+  }
 }
 /** Reads, reveals, or writes an operator env file (a secret). Where the signed-in browser asked from
  * is named here, from the request itself, never by the browser; rigd records it in Activity with the

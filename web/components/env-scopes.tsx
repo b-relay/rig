@@ -1,4 +1,4 @@
-import Link from "next/link";
+import Link from "@/components/link";
 import { scopeKey } from "@/lib/env";
 import type { EnvFileView, EnvScope } from "@/lib/types";
 import { cn } from "@/lib/utils";

@@ -67,8 +67,27 @@ test("a view survives the address and back, and a default adds nothing to it; ot
 // What the viewer reaches of a browser: the address, its reads, and the timer a follow waits on.
 const realFetch = globalThis.fetch;
 const realTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
 const previousWindow = (globalThis as { window?: unknown }).window;
+const previousDocument = (globalThis as { document?: unknown }).document;
+/** The tab, which a test hides and shows as a browser does: the state, then the event. */
+const tab = {
+  visibilityState: "visible",
+  listeners: new Set<() => void>(),
+  addEventListener(name: string, listener: () => void) {
+    if (name === "visibilitychange") tab.listeners.add(listener);
+  },
+  removeEventListener(name: string, listener: () => void) {
+    if (name === "visibilitychange") tab.listeners.delete(listener);
+  },
+  turn(state: "visible" | "hidden") {
+    tab.visibilityState = state;
+    for (const listener of [...tab.listeners]) listener();
+  },
+};
 let reads: Record<string, unknown>[];
+let readSignals: (AbortSignal | undefined)[];
+const HOLD = Symbol("hold");
 let answers: unknown[];
 let writes: string[];
 let followTimers: (() => void)[];
@@ -77,12 +96,16 @@ let storageRefused: boolean;
 const location = { pathname: "/projects/probe/logs", search: "", hash: "" };
 beforeEach(() => {
   reads = [];
+  readSignals = [];
   answers = [];
   writes = [];
   followTimers = [];
   storage = new Map();
   storageRefused = false;
   location.search = "";
+  tab.visibilityState = "visible";
+  tab.listeners.clear();
+  (globalThis as { document?: unknown }).document = tab;
   (globalThis as { window?: unknown }).window = {
     location,
     // As a private window's or a blocked site's is, its very accessor can throw.
@@ -103,23 +126,41 @@ beforeEach(() => {
       },
     },
   };
-  globalThis.fetch = (async (input: string) => {
+  globalThis.fetch = (async (input: string, init?: RequestInit) => {
     reads.push(
       JSON.parse(
         new URL(input, "http://rig.test").searchParams.get("q")!,
       ) as Record<string, unknown>,
     );
+    readSignals.push(init?.signal ?? undefined);
+    // A read answered with HOLD stays in flight until its signal abandons it.
+    if (answers[0] === HOLD) {
+      answers.shift();
+      return new Promise<Response>((_, reject) =>
+        init?.signal?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        ),
+      );
+    }
     return Response.json(answers.shift());
   }) as unknown as typeof fetch;
+  // A timer is its own handle, so clearing it takes it off the list before it comes due, as a browser does.
   globalThis.setTimeout = ((work: () => void) => {
-    followTimers.push(work);
-    return 0;
+    const timer = () => work();
+    followTimers.push(timer);
+    return timer;
   }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((timer: () => void) => {
+    const at = followTimers.indexOf(timer);
+    if (at !== -1) followTimers.splice(at, 1);
+  }) as unknown as typeof clearTimeout;
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
   globalThis.setTimeout = realTimeout;
+  globalThis.clearTimeout = realClearTimeout;
   (globalThis as { window?: unknown }).window = previousWindow;
+  (globalThis as { document?: unknown }).document = previousDocument;
   (SearchParamsContext as unknown as { _currentValue: unknown })._currentValue =
     null;
 });
@@ -380,4 +421,189 @@ test("a following view with a saved search keeps tailing, showing what matches a
   expect(text).toContain("needle 2");
   expect(text).not.toContain("other");
   expect(text).toContain("2 of 4 lines");
+});
+
+/** Every line the viewer shows, by its number, in order. */
+const numbered = (mounted: ReturnType<typeof viewer>) =>
+  elements(elements(mounted.tree).find((each) => each.props.role === "log"))
+    .map((each) => textOf(each.props.children))
+    .filter((text) => /^line \d+$/.test(text))
+    .map((text) => Number(text.slice(5)));
+const followRead = (after: string) => ({
+  project: "probe",
+  target: "working",
+  after,
+  lines: 1000,
+});
+
+test("a hidden tab's follow reads nothing; shown again it reads on from its cursor at once, every line once", async () => {
+  const mounted = viewer("", page(["line 1", "line 2"], "c2"));
+  answers = [{ ok: true, value: page(["line 3"], "c3") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads).toEqual([followRead("c2")]);
+  tab.turn("hidden");
+  // The timer set while visible comes due while hidden: it reads nothing and sets no other.
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads).toHaveLength(1);
+  expect(followTimers).toEqual([]);
+  // Lines written meanwhile come in one read from the cursor, then the follow goes on as before.
+  answers = [{ ok: true, value: page(["line 4", "line 5", "line 6"], "c6") }];
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads.at(-1)).toEqual(followRead("c3"));
+  expect(numbered(mounted)).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(followTimers).toHaveLength(1);
+  // Shown again while already following, it reads nothing more: the timer is the only next read.
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads).toHaveLength(2);
+  answers = [{ ok: true, value: page(["line 7"], "c7") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads.at(-1)).toEqual(followRead("c6"));
+  expect(numbered(mounted)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+});
+
+test("a tab hidden and shown before its follow came due reads only when the timer does", async () => {
+  const mounted = viewer("", page(["line 1"], "c1"));
+  tab.turn("hidden");
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads).toEqual([]);
+  answers = [{ ok: true, value: page(["line 2"], "c2") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads).toEqual([followRead("c1")]);
+  expect(numbered(mounted)).toEqual([1, 2]);
+});
+
+test("a cursor that expired while the tab was hidden starts the view over on its return", async () => {
+  const mounted = viewer("", page(["line 1"], "c1"));
+  tab.turn("hidden");
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads).toEqual([]);
+  answers = [
+    {
+      ok: false,
+      failure: {
+        code: "LOG_CURSOR",
+        message: "The log has rotated past this cursor.",
+        hint: "Read the newest lines again.",
+      },
+    },
+  ];
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads.at(-1)).toEqual(followRead("c1"));
+  expect(numbered(mounted)).toEqual([]);
+  answers = [{ ok: true, value: page(["line 40", "line 41"], "c41") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads.at(-1)).toEqual({
+    project: "probe",
+    target: "working",
+    lines: 200,
+  });
+  expect(numbered(mounted)).toEqual([40, 41]);
+});
+
+test("a paused view reads nothing when its tab is shown again, and Follow still resumes it", async () => {
+  const mounted = viewer("paused=1", page(["line 1"], "c1"));
+  tab.turn("hidden");
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads).toEqual([]);
+  expect(followTimers).toEqual([]);
+  mounted.act(
+    labelled(mounted.tree, "Follow new lines").props.onClick as () => void,
+  );
+  answers = [{ ok: true, value: page(["line 2"], "c2") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads).toEqual([followRead("c1")]);
+  expect(numbered(mounted)).toEqual([1, 2]);
+  mounted.act(
+    labelled(mounted.tree, "Pause following").props.onClick as () => void,
+  );
+  tab.turn("hidden");
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads).toHaveLength(1);
+});
+
+test("leaving the page stops its follow: a timer still due reads nothing, nor does showing the tab, and a read in flight is abandoned", async () => {
+  const waitingTimer = viewer("", page(["line 1"], "c1"));
+  expect(followTimers).toHaveLength(1);
+  waitingTimer.unmount();
+  expect(followTimers).toEqual([]);
+  await settle(waitingTimer);
+  expect(reads).toEqual([]);
+
+  const hidden = viewer("", page(["line 1"], "c1"));
+  tab.turn("hidden");
+  followTimers.pop()!();
+  hidden.unmount();
+  expect(tab.listeners.size).toBe(0);
+  tab.turn("visible");
+  await settle(hidden);
+  expect(reads).toEqual([]);
+
+  const reading = viewer("", page(["line 1"], "c1"));
+  answers = [HOLD];
+  followTimers.pop()!();
+  expect(reads).toHaveLength(1);
+  expect(readSignals[0]!.aborted).toBe(false);
+  reading.unmount();
+  expect(readSignals[0]!.aborted).toBe(true);
+  await settle(reading);
+  // The abandoned read sets no further timer, and says nothing went wrong.
+  expect(followTimers).toEqual([]);
+  expect(
+    elements(reading.tree).find((each) => each.props.failure),
+  ).toBeUndefined();
+});
+
+test("another Target's view takes the follow over: the first one's timer and tab listener are gone, and only the new one reads", async () => {
+  const both = [
+    ...TARGETS,
+    { name: "stable", kind: "stable" as const, components: COMPONENTS },
+  ];
+  const mounted = mountWithoutDom(LogViewer);
+  (SearchParamsContext as unknown as { _currentValue: unknown })._currentValue =
+    new URLSearchParams();
+  mounted.render({
+    project: "probe",
+    targets: both,
+    selected: undefined,
+    first: page(["line 1"], "c1"),
+  });
+  expect(followTimers).toHaveLength(1);
+  tab.turn("hidden");
+  const stable = (lines: string[], cursor: string) => ({
+    ok: true,
+    value: { ...page(lines, cursor), target: "stable" },
+  });
+  // The server sends the stable Target's first page with the new address, which the view adopts.
+  mounted.render({
+    project: "probe",
+    targets: both,
+    selected: "stable:stable",
+    first: stable(["line 7"], "s7").value,
+  });
+  await settle(mounted);
+  expect(reads).toEqual([]);
+  // The working Target's timer and listener went with its view: one of each is left, the stable Target's.
+  expect(followTimers).toHaveLength(1);
+  expect(tab.listeners.size).toBe(1);
+  followTimers.pop()!();
+  answers = [stable(["line 8"], "s8")];
+  tab.turn("visible");
+  await settle(mounted);
+  expect(reads).toEqual([
+    { project: "probe", target: "stable", after: "s7", lines: 1000 },
+  ]);
+  expect(numbered(mounted)).toEqual([7, 8]);
 });

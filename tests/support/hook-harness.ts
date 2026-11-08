@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
   const states: unknown[] = [];
   const effectDeps: (readonly unknown[] | undefined)[] = [];
+  const cleanups = new Map<number, () => void>();
   let queued: (() => void)[] = [];
   let cursor = 0;
   let effectCursor = 0;
@@ -38,7 +39,7 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
       };
       return [states[index], set];
     },
-    useEffect(effect: () => void, deps?: readonly unknown[]) {
+    useEffect(effect: () => void | (() => void), deps?: readonly unknown[]) {
       const index = effectCursor++;
       const before = effectDeps[index];
       if (
@@ -47,7 +48,13 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
         deps.some((value, at) => !Object.is(value, before[at]))
       ) {
         effectDeps[index] = deps;
-        queued.push(effect);
+        // As React does: the effect's last cleanup runs before it runs again.
+        queued.push(() => {
+          cleanups.get(index)?.();
+          const cleanup = effect();
+          if (typeof cleanup === "function") cleanups.set(index, cleanup);
+          else cleanups.delete(index);
+        });
       }
     },
     useContext(context: React.Context<unknown>) {
@@ -60,8 +67,23 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
       if (!(index in states)) states[index] = { current: initial };
       return states[index];
     },
-    useMemo: (make: () => unknown) => make(),
-    useCallback: (callback: unknown) => callback,
+    // As React does, a value is made again only when its deps change, so an effect that depends on it is not run again.
+    useMemo(make: () => unknown, deps?: readonly unknown[]) {
+      const index = cursor++;
+      const before = states[index] as
+        { value: unknown; deps?: readonly unknown[] } | undefined;
+      if (
+        !before ||
+        !deps ||
+        !before.deps ||
+        deps.some((value, at) => !Object.is(value, before.deps![at]))
+      )
+        states[index] = { value: make(), deps };
+      return (states[index] as { value: unknown }).value;
+    },
+    useCallback(callback: unknown, deps?: readonly unknown[]) {
+      return dispatcher.useMemo(() => callback, deps);
+    },
     use: (context: React.Context<unknown>) =>
       (context as unknown as { _currentValue: unknown })._currentValue,
     useId: () => "harness-id",
@@ -106,9 +128,15 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
     handler();
     return render();
   }
+  /** Takes the component away, as leaving its page does: every effect's last cleanup runs. */
+  function unmount() {
+    for (const cleanup of cleanups.values()) cleanup();
+    cleanups.clear();
+  }
   return {
     render,
     act,
+    unmount,
     refreshes,
     pushes,
     get tree() {

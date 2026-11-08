@@ -189,7 +189,12 @@ function ownLoopbackOrigin(origin: string, port: number): boolean {
 /** HTTP effect owner; lifecycle remains owned by the injected runtime handler. */
 export function startControlPlane(options: ControlPlaneOptions) {
   if (options.token.length === 0)
-    throw new Error("A local daemon token is required.");
+    throw new RigError(
+      "DAEMON_TOKEN",
+      "A local daemon token is required.",
+      "Run 'rigd install' to reissue the daemon credential.",
+      { port: options.port },
+    );
   const bodyDeadlineMs = options.bodyDeadlineMs ?? BODY_DEADLINE_MS;
   return Bun.serve({
     hostname: "127.0.0.1",

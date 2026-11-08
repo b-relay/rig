@@ -230,6 +230,8 @@ export function createConfigEditor(dependencies: ConfigEditorDependencies) {
           throw new ConfigError(
             "Unsupported config field path.",
             "invalid_edit",
+            {},
+            "Edit only a field the config editor's read lists, such as services.<name>.command.",
           );
       }
     const execute = async () => {

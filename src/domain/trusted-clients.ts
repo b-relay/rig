@@ -1,3 +1,5 @@
+import { RigError } from "./errors";
+
 /** One trusted-client entry: an IPv4 block (`bits` is 32 for a single address) or one exact IPv6 address. */
 export type TrustedClient =
   | { kind: "block"; base: number; bits: number }
@@ -15,7 +17,7 @@ export function ipv4(address: string): number | undefined {
   return value;
 }
 /** Pure: one trusted-client entry: an IPv4 address, an IPv4 block such as 100.64.0.0/10, or an IPv6 address. A malformed
- * entry throws rather than being skipped or widened, because a typo here decides who controls the Host. */
+ * entry is WEB_TRUSTED_CLIENTS_INVALID rather than being skipped or widened, because a typo here decides who controls the Host. */
 export function parseTrustedClient(entry: string): TrustedClient {
   const block = /^([\d.]+)\/(\d{1,2})$/.exec(entry);
   const base = ipv4(block ? block[1]! : entry);
@@ -24,8 +26,11 @@ export function parseTrustedClient(entry: string): TrustedClient {
   if (!block && base !== undefined) return { kind: "block", base, bits: 32 };
   if (!block && /^[0-9a-f:]+$/i.test(entry) && entry.includes(":"))
     return { kind: "exact", address: entry.toLowerCase() };
-  throw new TypeError(
+  throw new RigError(
+    "WEB_TRUSTED_CLIENTS_INVALID",
     `"${entry}" is not an IP address or an IPv4 block such as 100.64.0.0/10.`,
+    "Fix dashboard.trusted_clients in Host config (config.yaml under the Rig root), which rigd passes to the dashboard in RIG_WEB_TRUSTED_CLIENTS, then run rigd install.",
+    { entry },
   );
 }
 /** Pure: a comma-separated trusted-client list, as the dashboard reads it from RIG_WEB_TRUSTED_CLIENTS. */

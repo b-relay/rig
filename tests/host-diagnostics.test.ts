@@ -85,9 +85,14 @@ test("rig's diagnostic log takes config.yaml's diagnostics section exactly where
     await rm(path);
     expect(await readHostDiagnostics(root)).toBeUndefined();
     await mkdir(path);
-    expect(await readHostDiagnostics(root).catch(() => "refused")).toBe(
-      "refused",
-    );
+    expect(
+      await readHostDiagnostics(root).catch((error: unknown) => error),
+    ).toMatchObject({
+      code: "read_failed",
+      message: "Unable to read config document.",
+      context: { path },
+      hint: `Make ${path} a file you can read, then retry.`,
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

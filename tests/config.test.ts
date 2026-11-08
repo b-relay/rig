@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
@@ -280,6 +281,41 @@ test("Host config with bytes that are not UTF-8 stays readable, since refusing i
     Buffer.from("# caf\xe9\ndeploy:\n  production_branch: release\n", "latin1"),
   );
   expect((await readHostConfig(root)).deploy.production_branch).toBe("release");
+});
+
+test("a config Rig cannot reach or read says what to make readable, and a missing one how to create it", async () => {
+  const root = await fixture();
+  // rig.yaml that is a directory exists but cannot be read.
+  await mkdir(join(root, "rig.yaml"));
+  const unreadable = join(root, "rig.yaml");
+  for (const read of [readProjectConfig, readProjectConfigSource])
+    await expect(read(root)).rejects.toMatchObject({
+      code: "read_failed",
+      message: "Unable to read config document.",
+      context: { path: unreadable },
+      hint: `Make ${unreadable} a file you can read, then retry.`,
+    });
+  // A directory Rig may not search: whether rig.yaml is there cannot even be told.
+  const closed = join(root, "closed");
+  await mkdir(closed, { mode: 0o000 });
+  try {
+    await expect(readProjectConfig(closed)).rejects.toMatchObject({
+      code: "read_failed",
+      message: "Unable to inspect config document.",
+      context: { path: join(closed, "rig.yaml") },
+      hint: `Make ${join(closed, "rig.yaml")} and every directory above it readable by you, then retry.`,
+    });
+  } finally {
+    await chmod(closed, 0o700);
+  }
+  const empty = join(root, "empty");
+  await mkdir(empty);
+  await expect(readProjectConfigSource(empty)).rejects.toMatchObject({
+    code: "missing_config",
+    message: "No rig.yaml found.",
+    context: { repoPath: empty },
+    hint: "Run rig init from the Project repository.",
+  });
 });
 
 test("a registered directory that no longer exists is told apart from a directory without a config", async () => {
@@ -2447,6 +2483,7 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
     expect.objectContaining({
       code: "missing_port",
       context: { service: "db", port: "pg" },
+      hint: "Start the Target again (rig up, or rig deploy for the Stable Target or a Preview) so rigd assigns its ports.",
     }),
   );
   expect(() => preview()).toThrow(
@@ -2461,6 +2498,8 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
       code: "port_collision",
       message: "Port 5432 is used by more than one Service.",
       context: { services: ["web", "db"], port: 5432 },
+      // A Preview ignores pins, so the advice is about rigd's assignment, not rig.yaml.
+      hint: "rigd assigns a Preview's ports, so rig.yaml cannot fix this: run rig down preview <branch> --destroy, deploy the Preview again, and report it as a bug in Rig if it happens again.",
     }),
   );
 });
@@ -2480,7 +2519,14 @@ test("an auto port colliding with another Service's pin is refused for the Worki
       ...roots_,
       assignedPorts: { api: 3000 },
     }),
-  ).toThrow(expect.objectContaining({ code: "port_collision" }));
+  ).toThrow(
+    // Outside a Preview the pin is in force, so the fix is in rig.yaml. (Two equal pins never get here: the schema refuses them.)
+    expect.objectContaining({
+      code: "port_collision",
+      context: { services: ["web", "api"], port: 3000 },
+      hint: "Pin each port to its own number in rig.yaml, or set one of the two to auto.",
+    }),
+  );
 });
 
 test.each(["constructor", "__proto__", "toString", "rig.nope", "web.port"])(
@@ -2975,6 +3021,7 @@ test("Target resolution validates the actual substituted bind values of command 
       code: "invalid_binding",
       message: "Resolved command binds outside localhost.",
       context: { service: "server" },
+      hint: "Point services.server.command at 127.0.0.1 or localhost.",
     }),
   );
   expect(() =>

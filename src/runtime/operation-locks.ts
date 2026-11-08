@@ -1,4 +1,5 @@
 import type { TargetRecord } from "../domain/runtime";
+import { internalInvariant } from "../domain/errors";
 import { nameKey } from "../domain/names";
 
 /** What an Operation holds while it runs: a path from the Host down. `[]` is the whole Host,
@@ -139,14 +140,20 @@ export function createOperationLocks(): OperationLocks {
         if (end()) settle();
       },
       split(parts) {
-        if (ended) throw new Error(`Lease ${id} has already ended.`);
+        if (ended)
+          throw internalInvariant(`Lease ${id} has already ended.`, {
+            lease: id,
+          });
         for (const part of parts)
           if (
             !part.scopes.every((scope) =>
               scopes.some((own) => isWithin(scope, own)),
             )
           )
-            throw new Error(`Lease ${part.id} is not within ${id}.`);
+            throw internalInvariant(`Lease ${part.id} is not within ${id}.`, {
+              lease: id,
+              part: part.id,
+            });
         end();
         const leases = parts.map((part) => lease(part.id, part.scopes));
         settle();

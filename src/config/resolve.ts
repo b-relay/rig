@@ -246,6 +246,7 @@ export function resolveTargetPlan(
           "Resolved command binds outside localhost.",
           "invalid_binding",
           { service: name },
+          `Point services.${name}.command at 127.0.0.1 or localhost.`,
         );
       const check = healthcheckInForce(service.healthcheck)
         ? service.healthcheck
@@ -644,12 +645,17 @@ function resolvePorts(
           `Service '${name}' needs a valid assigned port for '${port}'.`,
           "missing_port",
           { service: name, port },
+          "Start the Target again (rig up, or rig deploy for the Stable Target or a Preview) so rigd assigns its ports.",
         );
       if (owners.has(value))
         throw new ConfigError(
           `Port ${value} is used by more than one Service.`,
           "port_collision",
           { services: [owners.get(value), name], port: value },
+          // A Preview ignores pins, so only rigd's assignment can collide there.
+          input.target === "preview"
+            ? "rigd assigns a Preview's ports, so rig.yaml cannot fix this: run rig down preview <branch> --destroy, deploy the Preview again, and report it as a bug in Rig if it happens again."
+            : "Pin each port to its own number in rig.yaml, or set one of the two to auto.",
         );
       owners.set(value, name);
       resolved[`services.${name}.ports.${port}`] = value;

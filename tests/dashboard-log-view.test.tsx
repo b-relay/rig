@@ -142,7 +142,9 @@ beforeEach(() => {
         ),
       );
     }
-    return Response.json(answers.shift());
+    // A Response is answered as it is, so a test can send what the site's route never would.
+    const answer = answers.shift();
+    return answer instanceof Response ? answer : Response.json(answer);
   }) as unknown as typeof fetch;
   // A timer is its own handle, so clearing it takes it off the list before it comes due, as a browser does.
   globalThis.setTimeout = ((work: () => void) => {
@@ -318,6 +320,48 @@ test("a cursor rigd says will never be valid again starts over, unlike a read th
   await settle(mounted);
   expect(reads.at(-1)).not.toHaveProperty("after");
   expect(textOf(mounted.tree)).toContain("fresh");
+});
+
+test("a reply the Logs page cannot read is WEB_PROTOCOL with its status and a hint, and keeps the lines and the cursor", async () => {
+  const mounted = viewer("", page(["line 1"], "c1"));
+  answers = [new Response("<html>Bad gateway</html>", { status: 502 })];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(
+    elements(mounted.tree).find((each) => each.props.failure)?.props.failure,
+  ).toEqual({
+    code: "WEB_PROTOCOL",
+    message: "The log read answered 502.",
+    hint: "Reload the page; if it persists, restart the dashboard.",
+  });
+  expect(textOf(mounted.tree)).toContain("line 1");
+  // JSON that is not an outcome is no more readable than a page that is not JSON.
+  answers = [{ entries: [] }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(
+    elements(mounted.tree).find((each) => each.props.failure)?.props.failure,
+  ).toMatchObject({
+    code: "WEB_PROTOCOL",
+    message: "The log read answered 200.",
+  });
+  answers = [{ ok: true, value: page(["line 2"], "c2") }];
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(reads.at(-1)).toMatchObject({ after: "c1" });
+  expect(textOf(mounted.tree)).toContain("line 2");
+});
+
+test("a read that never reached the site is still UNREACHABLE", async () => {
+  const mounted = viewer("", page(["line 1"], "c1"));
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as unknown as typeof fetch;
+  followTimers.pop()!();
+  await settle(mounted);
+  expect(
+    elements(mounted.tree).find((each) => each.props.failure)?.props.failure,
+  ).toMatchObject({ code: "UNREACHABLE", message: "Failed to fetch" });
 });
 
 test("a search stays out of the address and comes back on a reload of that page; clearing it keeps nothing", () => {

@@ -12,7 +12,12 @@ export function validateEditPath(path: readonly string[]): void {
       (key) => !key || ["__proto__", "prototype", "constructor"].includes(key),
     )
   )
-    throw new ConfigError("Unsafe or empty config edit path.", "invalid_edit");
+    throw new ConfigError(
+      "Unsafe or empty config edit path.",
+      "invalid_edit",
+      {},
+      "Name the field by its keys, such as services.web.command; a key cannot be empty, __proto__, prototype or constructor.",
+    );
 }
 
 /** Whether the node or anything inside it carries a comment. */

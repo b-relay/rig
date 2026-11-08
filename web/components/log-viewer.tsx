@@ -11,7 +11,12 @@ import {
   Search,
   WrapText,
 } from "lucide-react";
-import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
+import { RigError } from "../../src/domain/errors";
+import {
+  describeFailure,
+  type Failure as FailureShape,
+  type Outcome,
+} from "@/lib/outcome";
 import {
   componentSlot,
   FIRST_LOG_LINES,
@@ -157,7 +162,11 @@ export function LogViewer({
         }
       } catch (error) {
         if (stopped) return;
-        setFailure(transportFailure(error));
+        setFailure(
+          error instanceof RigError
+            ? describeFailure(error)
+            : transportFailure(error),
+        );
       }
       next();
     };
@@ -546,7 +555,12 @@ async function readLogs(
   const body = (await response.json().catch(() => undefined)) as
     Outcome<unknown> | undefined;
   if (!body || typeof body !== "object" || !("ok" in body))
-    throw new Error(`The log read answered ${response.status}.`);
+    throw new RigError(
+      "WEB_PROTOCOL",
+      `The log read answered ${response.status}.`,
+      "Reload the page; if it persists, restart the dashboard.",
+      { status: response.status },
+    );
   return body;
 }
 /** The time of day of an instant on the reader's clock, to the second. */

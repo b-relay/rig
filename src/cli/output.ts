@@ -1,8 +1,5 @@
-import {
-  healthSummary,
-  type JobReport,
-  type ProjectStatusReport,
-} from "../domain/project-status";
+import type { JobReport, ProjectStatusReport } from "../domain/project-status";
+import { healthSummary } from "../domain/health-summary";
 import { formatBytes } from "../domain/bytes";
 import { shellWord } from "../domain/target-selector";
 import { killingText } from "./stop-display";

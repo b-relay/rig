@@ -6,7 +6,11 @@ import type { ReactNode } from "react";
  * run its handlers and render it again with new props, as a refresh does, and read what it would show. Child components
  * are not rendered; their elements and props are what the test reads. State and effects persist between renders, as
  * they do for a mounted component; `router.refresh()` and `router.push()` are recorded. */
-export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
+export function mountWithoutDom<P>(
+  component: (props: P) => ReactNode,
+  /** Values the component reads from these contexts, such as Next's pathname; a test may change them between renders. */
+  contexts: ReadonlyMap<React.Context<unknown>, unknown> = new Map(),
+) {
   const states: unknown[] = [];
   const effectDeps: (readonly unknown[] | undefined)[] = [];
   const cleanups = new Map<number, () => void>();
@@ -58,6 +62,7 @@ export function mountWithoutDom<P>(component: (props: P) => ReactNode) {
       }
     },
     useContext(context: React.Context<unknown>) {
+      if (contexts.has(context)) return contexts.get(context);
       return context === (AppRouterContext as React.Context<unknown>)
         ? router
         : (context as unknown as { _currentValue: unknown })._currentValue;

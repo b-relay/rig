@@ -9,7 +9,8 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { RefreshCw, ServerOff, WifiOff } from "lucide-react";
-import { z } from "zod";
+// The compact Zod API: the full one would ship every page its schema and locale machinery for these three fields.
+import * as z from "zod/mini";
 import { redrawDue } from "@/lib/pulse";
 import { useOperationsInFlight } from "./operations";
 import { cn } from "@/lib/utils";

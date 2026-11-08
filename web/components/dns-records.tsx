@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Cloud, Lock, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import {
   DNS_RECORD_TYPES,
@@ -8,19 +8,21 @@ import {
   TTL_CHOICES,
   deleteCommand,
   deleteConfirmed,
-  draftRecord,
   editable,
   filterRecords,
   recordDraft,
   relativeName,
   saveCommand,
   ttlLabel,
+  type DraftCheck,
   type RecordDraft,
 } from "@/lib/dns";
+import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
+import { transportFailure } from "@/lib/reconcile";
 import type { DnsRecord, DnsRecordType, DnsZone } from "@/lib/types";
 import { CARD, Failure, Field, Mono } from "./bits";
 import { useRun } from "./operations";
-import { runDnsDelete } from "@/server/actions";
+import { checkDnsRecord, runDnsDelete } from "@/server/actions";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -264,12 +266,48 @@ export function RecordDialog({
     Partial<Record<keyof RecordDraft, string>>
   >({});
   const act = useRun();
+  // The server checks the draft against rigd's record rules, so the page carries none of them.
+  const [check, setCheck] = useState<{ busy: boolean; failure?: FailureShape }>(
+    { busy: false },
+  );
+  const busy = check.busy || act.busy;
+  // Counts edits and dismissals, so a check answered after either speaks for a draft no longer shown, and is dropped:
+  // a dismissed dialog never writes.
+  const turns = useRef(0);
+  useEffect(
+    () => () => {
+      turns.current += 1;
+    },
+    [],
+  );
   const set = <K extends keyof RecordDraft>(key: K, value: RecordDraft[K]) => {
+    turns.current += 1;
     setDraft((now) => ({ ...now, [key]: value }));
     setIssues(({ [key]: _gone, ...rest }) => rest);
   };
+  const dismiss = () => {
+    turns.current += 1;
+    onClose();
+  };
   const save = async () => {
-    const checked = draftRecord(zone, draft);
+    const checking = turns.current;
+    setCheck({ busy: true });
+    let outcome: Outcome<DraftCheck>;
+    try {
+      outcome = await checkDnsRecord({ zone, draft });
+    } catch (error) {
+      outcome = { ok: false, failure: transportFailure(error) };
+    }
+    if (turns.current !== checking) {
+      setCheck({ busy: false });
+      return;
+    }
+    if (!outcome.ok) {
+      setCheck({ busy: false, failure: outcome.failure });
+      return;
+    }
+    setCheck({ busy: false });
+    const checked = outcome.value;
     if (!checked.ok) {
       setIssues(checked.issues);
       return;
@@ -283,7 +321,7 @@ export function RecordDialog({
   const issue = (key: keyof RecordDraft) =>
     issues[key] ? [issues[key]!] : undefined;
   return (
-    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+    <Dialog open onOpenChange={(open) => (open ? undefined : dismiss())}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
@@ -433,13 +471,13 @@ export function RecordDialog({
               maxLength={500}
             />
           </Field>
-          <Failure failure={act.failure} />
+          <Failure failure={check.failure ?? act.failure} />
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={dismiss}>
               Cancel
             </Button>
-            <Button type="submit" disabled={act.busy}>
-              {act.busy ? "Saving…" : record ? "Save" : "Add record"}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving…" : record ? "Save" : "Add record"}
             </Button>
           </DialogFooter>
         </form>

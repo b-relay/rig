@@ -6,6 +6,7 @@ import "./globals.css";
 import { TopBar } from "@/components/top-bar";
 import { BottomTabs } from "@/components/nav";
 import { CONTENT_ID, SkipToContent } from "@/components/bits";
+import { Navigation } from "@/components/shell/navigation";
 import { Sidebar } from "@/components/shell/sidebar";
 import { parseTheme, THEME_COOKIE } from "@/lib/theme";
 import { sessionHeld } from "@/server/session";
@@ -74,19 +75,19 @@ export default async function RootLayout({
           </>
         ) : (
           <div className="lg:grid lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <aside className="sticky top-0 hidden h-dvh border-r border-sidebar-border bg-sidebar lg:block">
-              <Sidebar sandbox={sandbox} />
-            </aside>
-            <div className="flex min-w-0 flex-col">
-              <TopBar theme={theme} menu={<Sidebar sandbox={sandbox} />} />
-              <main
-                id={CONTENT_ID}
-                tabIndex={-1}
-                className="mx-auto flex w-full max-w-7xl scroll-mt-14 flex-col gap-6 px-4 pt-5 pb-8 outline-none sm:px-6 sm:pt-6 lg:px-8"
-              >
-                {children}
-              </main>
-            </div>
+            {/* One sidebar, beside the page or in the top bar's drawer, so a page renders and sends it once. */}
+            <Navigation sidebar={<Sidebar sandbox={sandbox} />}>
+              <div className="flex min-w-0 flex-col">
+                <TopBar theme={theme} />
+                <main
+                  id={CONTENT_ID}
+                  tabIndex={-1}
+                  className="mx-auto flex w-full max-w-7xl scroll-mt-14 flex-col gap-6 px-4 pt-5 pb-8 outline-none sm:px-6 sm:pt-6 lg:px-8"
+                >
+                  {children}
+                </main>
+              </div>
+            </Navigation>
           </div>
         )}
         {signingIn ? null : <BottomTabs />}

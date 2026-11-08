@@ -22,7 +22,8 @@ import {
 import { editConfig, editEnv, read } from "./daemon";
 import { sitePolicy } from "./site";
 import { confirmedRestore } from "./restore";
-import { DNS_DELETE_ELSEWHERE, confirmedDnsDelete } from "./dns";
+import type { DraftCheck } from "../lib/dns";
+import { DNS_DELETE_ELSEWHERE, checkedDraft, confirmedDnsDelete } from "./dns";
 import { forgetNavigation } from "./navigation";
 
 /** Server Actions: the only way the browser changes anything. Each one decides the request
@@ -86,6 +87,15 @@ export async function runDnsDelete(input: unknown): Promise<Outcome<unknown>> {
   const confirmed = confirmedDnsDelete(input);
   if (!confirmed.ok) return refused(confirmed.failure);
   return attempt(read(confirmed.command));
+}
+/** Checks the record dialog's draft against rigd's record rules, field by field, before the dialog sends its command. */
+export async function checkDnsRecord(
+  input: unknown,
+): Promise<Outcome<DraftCheck>> {
+  const denied = await admission();
+  if (denied) return refused(denied);
+  const checked = checkedDraft(input);
+  return checked ? succeeded(checked) : refused(invalid("a DNS record"));
 }
 /** Reads, previews, or applies structured edits to a Project's rig.yaml. */
 export async function runConfigEdit(input: unknown): Promise<Outcome<unknown>> {

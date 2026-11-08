@@ -4,7 +4,6 @@ import {
   deleteCommand,
   deleteConfirmed,
   dnsSetup,
-  draftRecord,
   filterRecords,
   fixCommand,
   fixDescription,
@@ -15,7 +14,11 @@ import {
   ttlLabel,
 } from "../web/lib/dns";
 import type { DnsRecord, HostnameCheck } from "../web/lib/types";
-import { DNS_DELETE_ELSEWHERE, confirmedDnsDelete } from "../web/server/dns";
+import {
+  DNS_DELETE_ELSEWHERE,
+  confirmedDnsDelete,
+  draftRecord,
+} from "../web/server/dns";
 
 const zone = "example.com";
 const app: DnsRecord = {

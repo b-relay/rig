@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProjectConfig } from "../src/config";
 import { bootOnly, type HostSession } from "../src/domain/host-session";
-import { healthSummary } from "../src/domain/project-status";
+import { healthSummary } from "../src/domain/health-summary";
 import type {
   ProcessObservation,
   Supervisor,

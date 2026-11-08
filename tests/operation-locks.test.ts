@@ -113,10 +113,29 @@ test("a Host lease splits into Target leases before anything queued behind it ru
   second!.release();
   first!.release();
   (await queued).release();
-  expect(() => host.split([])).toThrow();
-  expect(() =>
-    locks.tryAcquire("x", [working])!.split([{ id: "y", scopes: [stable] }]),
-  ).toThrow();
+  // Either misuse is a bug in Rig: tagged, naming the leases, and asking for a report.
+  const bug = "This is a bug in Rig; report it with this message.";
+  expect(() => host.split([])).toThrow(
+    expect.objectContaining({
+      _tag: "RigError",
+      code: "INTERNAL_INVARIANT",
+      message: "Lease reconcile has already ended.",
+      hint: bug,
+      details: { lease: "reconcile" },
+    }),
+  );
+  const x = locks.tryAcquire("x", [working])!;
+  expect(() => x.split([{ id: "y", scopes: [stable] }])).toThrow(
+    expect.objectContaining({
+      _tag: "RigError",
+      code: "INTERNAL_INVARIANT",
+      message: "Lease y is not within x.",
+      hint: bug,
+      details: { lease: "x", part: "y" },
+    }),
+  );
+  // The refused split leaves the lease held.
+  expect(locks.holders()).toEqual(["x"]);
 });
 
 test("idle waits for every holder and waiter", async () => {

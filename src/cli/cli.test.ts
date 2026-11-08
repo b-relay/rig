@@ -151,6 +151,42 @@ test("a failure during interactive preflight still carries the Operation id next
   });
 });
 
+test("a bug in Rig is reported with its hint, its Operation and the diagnostic path, in text and in JSON", async () => {
+  const cli = cliHarness({
+    command: () => {
+      throw new RigError(
+        "INTERNAL_INVARIANT",
+        "Operation op-bug was admitted twice.",
+        "This is a bug in Rig; report it with this message.",
+      );
+    },
+    status: () => {
+      throw new RigError(
+        "INTERNAL_INVARIANT",
+        "Lease op-bug has already ended.",
+        "This is a bug in Rig; report it with this message.",
+      );
+    },
+    record: recordedInLog,
+    operationId: "op-bug",
+  });
+  expect(await cli.run(["up", "stable"])).toBe(1);
+  expect(cli.text()).toBe(
+    "Operation op-bug was admitted twice.\nThis is a bug in Rig; report it with this message.\nOperation: op-bug (rig activity op-bug)\nDetails: /isolated/.rig/logs/rig/rig.jsonl\n",
+  );
+  cli.clear();
+  expect(await cli.run(["status", "--json"])).toBe(1);
+  expect(JSON.parse(cli.text())).toEqual({
+    error: {
+      code: "INTERNAL_INVARIANT",
+      message: "Lease op-bug has already ended.",
+      hint: "This is a bug in Rig; report it with this message.",
+      operationId: "op-bug",
+      diagnosticPath: "/isolated/.rig/logs/rig/rig.jsonl",
+    },
+  });
+});
+
 test("an empty Preview branch is a usage error, not the current Branch", async () => {
   const cli = cliHarness({
     command: () => ({}),

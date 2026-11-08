@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { RigError, failureReason } from "../../src/domain/errors";
 
 /** One demo Project a sandbox starts with; `name` is its directory under `web/demo` and its Project name. */
 export interface DemoProject {
@@ -56,10 +57,29 @@ export function seedSteps(
       : []),
   ];
 }
+/** Pure: a step that exited non-zero, as WEB_DEMO_SEED_FAILED naming the Project and the step, with what the step printed;
+ * `repository` is the Project's partly seeded directory, which a restart leaves alone until it is deleted. */
+export function seedFailure(
+  project: string,
+  step: SeedStep,
+  output: string,
+  repository: string,
+): RigError {
+  const command = (
+    step.kind === "rig" ? ["rig", ...step.args] : step.argv
+  ).join(" ");
+  const printed = output.trim();
+  return new RigError(
+    "WEB_DEMO_SEED_FAILED",
+    `\`${command}\` failed${printed ? `: ${printed}` : "."}`,
+    `Fix what the step printed, then delete ${repository} and restart the Preview to seed ${project} again.`,
+    { project, step: command },
+  );
+}
 export interface SeedDependencies {
   exists(path: string): Promise<boolean>;
-  /** Runs one step to completion; rejects when it fails. */
-  run(step: SeedStep): Promise<void>;
+  /** Runs one step of `project` to completion; rejects when it fails. */
+  run(step: SeedStep, project: string): Promise<void>;
 }
 /** Seeds every demo Project that has no repository under `projectsRoot` yet, so a restarted sandbox
  * keeps what the visitor did to it. Answers with one entry per Project whose seeding failed; a
@@ -80,12 +100,9 @@ export async function seedSandbox(
         join(demoRoot, project.name),
         repository,
       ))
-        await dependencies.run(step);
+        await dependencies.run(step, project.name);
     } catch (error) {
-      failures.push({
-        project: project.name,
-        cause: error instanceof Error ? error.message : String(error),
-      });
+      failures.push({ project: project.name, cause: failureReason(error) });
     }
   }
   return failures;

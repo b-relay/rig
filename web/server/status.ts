@@ -1,5 +1,6 @@
 import { cache } from "react";
-import { attempt, type Outcome } from "../lib/outcome";
+import { RigError } from "../../src/domain/errors";
+import { attempt, type Failure, type Outcome } from "../lib/outcome";
 import type {
   BackupsResult,
   ListResult,
@@ -7,6 +8,27 @@ import type {
 } from "../lib/types";
 import { read } from "./daemon";
 
+/** A read's refusal thrown as rigd gave it, so a page's `settled` read or its error boundary shows the code, message,
+ * hint, Operation and field problems. Each field problem's path goes back to segments, as rigd sends it, so reading
+ * the refusal again gives the same dotted path. */
+export function refusalError(failure: Failure): RigError {
+  return new RigError(
+    failure.code,
+    failure.message,
+    failure.hint ?? "Run 'rigd status' to inspect the daemon.",
+    {
+      ...(failure.operationId ? { operationId: failure.operationId } : {}),
+      ...(failure.issues
+        ? {
+            issues: failure.issues.map(({ path, message }) => ({
+              path: path.split("."),
+              message,
+            })),
+          }
+        : {}),
+    },
+  );
+}
 /** The Projects this Host has registered, read once per request however many parts of the page ask. */
 export const projectList = cache((): Promise<Outcome<ListResult>> =>
   attempt(read({ action: "list" })),

@@ -18,6 +18,7 @@ import type {
   ConfigRead,
   ConfigReport,
 } from "@/lib/types";
+import { internalInvariant } from "../../src/domain/errors";
 import type {
   ConfigIssue,
   Failure as FailureShape,
@@ -102,9 +103,13 @@ interface Draft {
   update(change: (tree: Tree) => Tree): void;
 }
 const DraftContext = createContext<Draft | undefined>(undefined);
-function useDraft(): Draft {
+/** The editor's draft, for a control rendered inside ConfigEditor. */
+export function useDraft(): Draft {
   const draft = useContext(DraftContext);
-  if (!draft) throw new Error("Config controls render inside the editor.");
+  if (!draft)
+    throw internalInvariant("Config controls render inside the editor.", {
+      context: "DraftContext",
+    });
   return draft;
 }
 /** An environment name; names starting with _RIG_ are reserved for Rig. */

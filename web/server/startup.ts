@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { connectDaemon } from "../../src/daemon/connection";
 import type { ListResult } from "../../src/daemon/protocol";
 import { sandboxDaemon } from "./sandbox";
-import { downCommands, seedSandbox } from "./seed";
+import { downCommands, seedFailure, seedSandbox } from "./seed";
 import type { SiteSettings } from "./site";
 import { sitePolicy } from "./site";
 
@@ -61,12 +61,18 @@ export async function startSite(settings: SiteSettings): Promise<void> {
           () => true,
           () => false,
         ),
-      run: async (step) => {
+      run: async (step, project) => {
         const done =
           step.kind === "rig"
             ? await rig(step.args)
             : await execute(step.argv, env);
-        if (done.exitCode !== 0) throw new Error(done.output.trim());
+        if (done.exitCode !== 0)
+          throw seedFailure(
+            project,
+            step,
+            done.output,
+            join(projectsRoot, project),
+          );
       },
     }).then((failures) => {
       for (const failure of failures)

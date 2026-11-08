@@ -29,7 +29,8 @@ const rigd = Bun.serve({
         ? "health"
         : ((await request.json()) as { action: string }).action;
     asked.push(name);
-    if (gate) await gate;
+    // The gate holds the pulse's reads; a command passes.
+    if (gate && ["health", "queue", "activity"].includes(name)) await gate;
     const reply = answer(name);
     if (reply !== undefined)
       return Response.json(name === "health" ? reply : { result: reply });
@@ -69,6 +70,8 @@ mock.module("../web/server/daemon", () => ({
 const { GET: pulseRoute } = await import("../web/app/pulse/route");
 const { GET: usageRoute } = await import("../web/app/usage/route");
 const { DaemonStatus } = await import("../web/components/top-bar");
+const { pulseReadings } = await import("../web/server/pulse");
+const { runCommand } = await import("../web/server/actions");
 beforeAll(() => {
   reading = true;
 });
@@ -239,6 +242,29 @@ test("a browser that goes is answered at once, cancelled, before the read it sha
   await staying;
   expect(stayed!.stamp).toBe("i-1:42|-:0:|0:");
   expect(asked).toHaveLength(3);
+});
+
+test("a command from the site that ends while a pulse read is in flight leaves that read to those sharing it: the next one reads rigd afresh", async () => {
+  answer = (name) =>
+    name === "up" ? { operationId: "op-1", outcome: "started" } : idle()(name);
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const begun = pulseReadings();
+  await whenAsked(3);
+  expect((await runCommand({ action: "up", project: "pantry" })).ok).toBe(true);
+  const after = pulseReadings();
+  await whenAsked(7);
+  open();
+  await Promise.all([begun, after]);
+  expect(asked.filter((name) => name === "queue")).toHaveLength(2);
+  // Without a command, a read asked meanwhile still shares the one in flight.
+  asked = [];
+  gate = new Promise((resolve) => (open = resolve));
+  const shared = [pulseReadings(), pulseReadings()];
+  await whenAsked(3);
+  open();
+  await Promise.all(shared);
+  expect(asked.sort()).toEqual(["activity", "health", "queue"]);
 });
 
 test("a request with no session is refused on its own, even while a signed-in one's read is in flight", async () => {

@@ -30,6 +30,74 @@ const run = async (argv: string[], cwd: string) => {
     throw new Error(`${argv.join(" ")} exited ${code}\n${out}\n${err}`);
 };
 
+/** Serves the built site against `root`, whose rigd record names the stand-in on `rigdPort`, and answers once it is up. */
+async function serveSite(
+  root: string,
+  rigdPort: number,
+): Promise<{ base: string; process: ReturnType<typeof Bun.spawn> }> {
+  await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
+  await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
+  await writeFile(
+    join(root, "daemon", "address.json"),
+    // The record names this test process, with its start time, so discovery verifies it and dials the stand-in.
+    JSON.stringify({
+      port: rigdPort,
+      pid: process.pid,
+      instanceId: "test",
+      startedAt: await processStartTime(process.pid),
+    }),
+  );
+  await writeFile(join(root, "auth", "control-plane.token"), "token\n", {
+    mode: 0o600,
+  });
+  await writeFile(join(root, "auth", "dashboard.key"), `${KEY}\n`, {
+    mode: 0o600,
+  });
+  const free = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(),
+  });
+  const port = free.port;
+  free.stop(true);
+  const served = Bun.spawn(
+    [
+      "bun",
+      "--bun",
+      "next",
+      "start",
+      "web",
+      "-H",
+      "127.0.0.1",
+      "-p",
+      String(port),
+    ],
+    {
+      cwd: checkout,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        RIG_ROOT: root,
+        RIG_WEB_KEY_FILE: join(root, "auth", "dashboard.key"),
+        NEXT_TELEMETRY_DISABLED: "1",
+      },
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    const ready = await fetch(`http://127.0.0.1:${port}/healthz`).then(
+      (answer) => answer.ok,
+      () => false,
+    );
+    if (ready) return { base: `http://127.0.0.1:${port}`, process: served };
+    await Bun.sleep(250);
+  }
+  served.kill();
+  throw new Error("next start did not answer /healthz within a minute");
+}
+
 beforeAll(async () => {
   work = await mkdtemp(join(tmpdir(), "rig-dashboard-render-"));
   checkout = join(work, "checkout");
@@ -60,67 +128,7 @@ beforeAll(async () => {
       return Response.json({ error: { code: "STAND_IN", message: "x" } });
     },
   });
-  await mkdir(join(root, "daemon"), { recursive: true, mode: 0o700 });
-  await mkdir(join(root, "auth"), { recursive: true, mode: 0o700 });
-  await writeFile(
-    join(root, "daemon", "address.json"),
-    // The record names this test process, with its start time, so discovery verifies it and dials the stand-in.
-    JSON.stringify({
-      port: rigd.port,
-      pid: process.pid,
-      instanceId: "test",
-      startedAt: await processStartTime(process.pid),
-    }),
-  );
-  await writeFile(join(root, "auth", "control-plane.token"), "token\n", {
-    mode: 0o600,
-  });
-  await writeFile(join(root, "auth", "dashboard.key"), `${KEY}\n`, {
-    mode: 0o600,
-  });
-  const free = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: () => new Response(),
-  });
-  const port = free.port;
-  free.stop(true);
-  base = `http://127.0.0.1:${port}`;
-  site = Bun.spawn(
-    [
-      "bun",
-      "--bun",
-      "next",
-      "start",
-      "web",
-      "-H",
-      "127.0.0.1",
-      "-p",
-      String(port),
-    ],
-    {
-      cwd: checkout,
-      env: {
-        ...process.env,
-        PORT: String(port),
-        RIG_ROOT: root,
-        RIG_WEB_KEY_FILE: join(root, "auth", "dashboard.key"),
-        NEXT_TELEMETRY_DISABLED: "1",
-      },
-      stdout: "ignore",
-      stderr: "ignore",
-    },
-  );
-  const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
-    const ready = await fetch(`${base}/healthz`).then(
-      (answer) => answer.ok,
-      () => false,
-    );
-    if (ready) return;
-    await Bun.sleep(250);
-  }
-  throw new Error("next start did not answer /healthz within a minute");
+  ({ base, process: site } = await serveSite(root, rigd.port!));
 }, 600_000);
 
 // Removing the work directory removes a clone of node_modules and a Next build, tens of thousands of files: seconds of
@@ -184,3 +192,120 @@ test("the browser's scripts hold none of rigd's schemas and no Zod error message
     expect(script, name).not.toContain("Too big: expected");
   }
 });
+
+/** One Project, its working Target running, and its last action: enough for each page to reach every read it makes. */
+const PANTRY = {
+  project: "pantry",
+  projectId: "p-1",
+  targets: [
+    {
+      id: "t-1",
+      name: "working",
+      kind: "working",
+      state: "healthy",
+      components: [
+        {
+          name: "web",
+          kind: "managed",
+          port: 4100,
+          ports: { http: 4100 },
+          pid: 4242,
+          state: "healthy",
+        },
+      ],
+    },
+  ],
+  warnings: [],
+};
+const OPERATIONS = {
+  operations: [
+    {
+      id: "op-1",
+      projectId: "p-1",
+      project: "pantry",
+      target: "working",
+      action: "up",
+      outcome: "started",
+      occurredAt: "2026-11-08T10:00:00.000Z",
+    },
+  ],
+  total: 1,
+};
+
+test("one render of each page asks rigd each thing at most once: the pages take rigd's health, queue and Activity from the page's pulse", async () => {
+  // Its own site and stand-in, since this file's tests run at once and every read here is counted.
+  let asked: string[] = [];
+  const counting = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      if (new URL(request.url).pathname === "/health") {
+        asked.push("health");
+        return Response.json({
+          instanceId: "test",
+          pid: process.pid,
+          running: true,
+          version: "test",
+        });
+      }
+      const command = (await request.json()) as { action: string };
+      asked.push(JSON.stringify(command));
+      const result =
+        command.action === "list"
+          ? {
+              projects: [
+                { id: "p-1", name: "pantry", repoPath: work, targetCount: 1 },
+              ],
+            }
+          : command.action === "status"
+            ? PANTRY
+            : command.action === "queue"
+              ? { waiting: 0, operations: [] }
+              : command.action === "activity"
+                ? OPERATIONS
+                : undefined;
+      return Response.json(
+        result ? { result } : { error: { code: "STAND_IN", message: "x" } },
+      );
+    },
+  });
+  const counted = await serveSite(join(work, "counted"), counting.port!);
+  const pulse = ["health", '{"action":"queue"}', '{"action":"activity"}'];
+  const work100 = '{"action":"activity","project":"pantry","lines":100}';
+  try {
+    for (const [path, pageReads] of [
+      ["/", [work100]],
+      ["/projects/pantry", [work100]],
+      ["/projects/pantry/targets/working", [work100]],
+      ["/monitor", ['{"action":"doctor"}']],
+      ["/activity", []],
+      [
+        "/activity?operation=op-1",
+        ['{"action":"activity","operation":"op-1"}'],
+      ],
+    ] as const) {
+      asked = [];
+      const page = await fetch(`${counted.base}${path}`, {
+        headers: {
+          authorization: `Basic ${Buffer.from(`rig:${KEY}`).toString("base64")}`,
+        },
+      });
+      const body = await page.text();
+      expect(page.status, path).toBe(200);
+      expect(body, path).not.toContain("This page did not render");
+      expect(body, path).toContain("pantry");
+      // The whole page has streamed, so every read it made has reached the stand-in.
+      expect(
+        asked.filter((each, at) => asked.indexOf(each) !== at),
+        path,
+      ).toEqual([]);
+      expect(asked, path).toEqual(
+        expect.arrayContaining([...pulse, ...pageReads]),
+      );
+    }
+  } finally {
+    counted.process.kill();
+    await counted.process.exited;
+    counting.stop(true);
+  }
+}, 120_000);

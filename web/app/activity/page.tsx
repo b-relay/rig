@@ -1,9 +1,10 @@
 import type { Metadata } from "next";
 import Link from "@/components/link";
 import { SearchX } from "lucide-react";
-import { attempt } from "@/lib/outcome";
+import { attempt, type Outcome } from "@/lib/outcome";
 import type { ActivityResult } from "@/lib/types";
 import { read } from "@/server/daemon";
+import { pagePulse } from "@/server/pulse";
 import {
   ActivityTimeline,
   OperationRecord,
@@ -18,12 +19,11 @@ export default async function ActivityPage({
   searchParams: Promise<{ operation?: string }>;
 }) {
   const { operation } = await searchParams;
-  const activity = await attempt(
-    read({ action: "activity", ...(operation ? { operation } : {}) }),
-  );
-  const operations = activity.ok
-    ? (activity.value as ActivityResult).operations
-    : [];
+  // Every Operation is the page's pulse reading, which the sidebar reads too; one Operation is a read of its own.
+  const activity: Outcome<ActivityResult> = operation
+    ? await attempt(read({ action: "activity", operation }))
+    : (await pagePulse()).readings.activity;
+  const operations = activity.ok ? activity.value.operations : [];
   return (
     <>
       <PageHeader

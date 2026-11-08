@@ -25,6 +25,7 @@ import { confirmedRestore } from "./restore";
 import type { DraftCheck } from "../lib/dns";
 import { DNS_DELETE_ELSEWHERE, checkedDraft, confirmedDnsDelete } from "./dns";
 import { forgetNavigation } from "./navigation";
+import { readPulseAfresh } from "./pulse";
 
 /** Server Actions: the only way the browser changes anything. Each one decides the request
  * again, exactly as the proxy did, so a page is never the only thing between a POST and rigd. */
@@ -64,6 +65,7 @@ export async function runCommand(input: unknown): Promise<Outcome<unknown>> {
     return await attempt(read(command.data));
   } finally {
     forgetNavigation();
+    readPulseAfresh();
   }
 }
 /** Restores a backup, as `rig backup restore <job> <id> <target> --yes` does, only once what was typed names the job:
@@ -77,6 +79,7 @@ export async function runRestore(input: unknown): Promise<Outcome<unknown>> {
     return await attempt(read(confirmed.command));
   } finally {
     forgetNavigation();
+    readPulseAfresh();
   }
 }
 /** Deletes a DNS record, as the Delete dialog asks, only with the record as the page read it and the name typed to
@@ -109,6 +112,7 @@ export async function runConfigEdit(input: unknown): Promise<Outcome<unknown>> {
     return await attempt(editConfig(request.data));
   } finally {
     forgetNavigation();
+    readPulseAfresh();
   }
 }
 /** Reads, reveals, or writes an operator env file (a secret). Where the signed-in browser asked from

@@ -93,13 +93,19 @@ export async function pulseReadings(
   }
 }
 
+/** A command from this site has ended: a request from now on reads rigd afresh rather than share a read begun before,
+ * which may miss what the command changed. Requests already sharing that read keep it. */
+export function readPulseAfresh(): void {
+  inFlight = undefined;
+}
+
 /** The pulse a browser polls: the three inputs reduced to one stamp. */
 export async function readPulse(signal?: AbortSignal): Promise<Pulse> {
   return pulseStamp(await pulseReadings(signal));
 }
 
-/** The pulse inputs as one page render reads them, once however many parts of the page ask: the top bar's rigd state, and
- * the stamp the sidebar keeps its Project statuses under. */
+/** The pulse inputs as one page render reads them, once however many parts of the page ask: the top bar's rigd state, the
+ * stamp the sidebar keeps its Project statuses under, and rigd's health, queue and Activity wherever the page shows them. */
 export const pagePulse = cache(
   async (): Promise<{ readings: PulseReadings; settledAt: number }> => {
     const readings = await pulseReadings();

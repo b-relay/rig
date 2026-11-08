@@ -67,7 +67,14 @@ instant its tab is tapped, and the refresh replaces it when `rigd` moves.
 `web/server/pulse.ts` reads the three inputs through one discovery of `rigd`.
 Each request is admitted on its own, but requests that ask while a read is in
 flight, from other tabs or from a page's own top bar and sidebar, share it, and
-nothing is kept once it answered, so the next request reads afresh. A link
+nothing is kept once it answered, so the next request reads afresh. A page
+render reads them once (`pagePulse`), and its top bar, its sidebar and the page
+itself take the same readings: the queue on the Overview and on a Project's and a
+Target's pages, rigd's health, queue and Activity on Monitor, and Activity on
+`/activity` (one Operation, `?operation=`, is a read of its own). A command,
+restore or config apply from the site leaves a read already in flight to the
+requests sharing it, and the next request reads afresh, so the page it refreshes
+shows what the command changed. A link
 prefetches its page only once it is pointed at, touched or focused
 (`web/components/link.tsx`), never merely for being on screen, so a redraw does
 not prefetch every link on the page again; a link followed without any of those

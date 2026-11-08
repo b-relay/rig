@@ -101,11 +101,18 @@ its status (`web/server/navigation.ts`) for up to 15 seconds, the live
 refresh's interval, and shows it again only while the page's pulse has the
 stamp it was read under, with the same count and ids of Activity records,
 every pulse input answered and no Operation running. So anything `rigd` records
-(an Operation, a crash, a change of health, a restart), whatever time it bears,
-reads every Project afresh at once, and only what it records nothing about,
-such as a hand edit of another Project's `rig.yaml`, can be up to 15 seconds
-old there. A failed read is never kept, and a command or config apply from the
-site drops everything kept.
+(an Operation, a crash, a change of health, a restart) reads every Project
+afresh at the next render, even a record dated before the newest, with one
+exception: once Activity holds its 1,000 records, a record dated before the
+newest 100 a read returns changes neither, and is not noticed until the kept
+status is 15 seconds old. Those 15 seconds bound how long a render may reuse a
+kept status, not how long a state stays on screen: while the pulse is
+unchanged, a visible tab redraws only at the live refresh's quiet fallback
+(two quiet minutes, so up to about 135 seconds with its 15-second ticks), as it
+did before. What `rigd` records nothing about, such as a hand edit of another
+Project's `rig.yaml`, is likewise read afresh only once the kept status is 15
+seconds old. A failed read is never kept, and a command or config apply from
+the site drops everything kept.
 The theme switch cycles system, light and dark and keeps the choice in a
 `rig_theme` cookie, so the server renders the right scheme on the first paint
 with no inline script; `dark:` utilities follow the same rule as the palette.

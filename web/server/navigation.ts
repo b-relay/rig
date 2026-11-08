@@ -19,8 +19,9 @@ let generation = 0;
 
 /** Pure: the stamp a pulse vouches for reads under, when it can: every reading answered and no Operation runs, so what
  * rigd records next changes the stamp. Beside the pulse stamp it names how many records Activity holds and the ids of
- * those it returned, so a record dated before the newest (after the clock went back) changes it too. `undefined`
- * otherwise, and nothing is kept or reused under it. */
+ * those it returned, so a record dated before the newest (after the clock went back) changes it too, except once
+ * Activity holds its 1,000 records and the record falls before the newest the read returns: then only
+ * `NAVIGATION_KEPT_MS` ends the reuse. `undefined` otherwise, and nothing is kept or reused under it. */
 export function vouchingStamp(readings: PulseReadings): string | undefined {
   if (!readings.health.ok || !readings.queue.ok || !readings.activity.ok)
     return undefined;

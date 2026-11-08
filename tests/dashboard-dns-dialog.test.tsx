@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
+// The test site's settings, before anything that can read them.
+import "./support/dashboard-site";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as actions from "../web/server/actions";
 import { checkedDraft } from "../web/server/dns";

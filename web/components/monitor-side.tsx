@@ -71,7 +71,7 @@ export function FactRows({ rows }: { rows: readonly Fact[] }) {
   );
 }
 
-/** Doctor's checks as a compact list, failed ones first with their reason and hint. On a phone only the failed checks
+/** Doctor's checks as a compact list, failed ones first with what each found, its hint and its reason. On a phone only the failed checks
  * are listed, with a line counting the rest, so a report where every check passed is just its title; the large layout
  * lists them all. */
 export function DoctorList({ report }: { report: DoctorReport }) {
@@ -123,10 +123,15 @@ export function DoctorList({ report }: { report: DoctorReport }) {
               />
             </span>
             {!check.ok ? (
-              <span className="text-xs">{check.reason ?? check.message}</span>
+              <span className="text-xs">{check.message}</span>
             ) : null}
             {!check.ok && check.hint ? (
               <span className="text-xs">{check.hint}</span>
+            ) : null}
+            {!check.ok && check.reason ? (
+              <span className="font-mono text-[11px] text-muted-foreground">
+                {check.reason}
+              </span>
             ) : null}
           </li>
         ))}
@@ -196,6 +201,12 @@ export function ActivityFeed({
                       <span className="text-muted-foreground">
                         {" "}
                         {operation.target}
+                      </span>
+                    ) : null}
+                    {operation.component ? (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        {operation.component.name}
                       </span>
                     ) : null}
                     {operation.outcome !== "succeeded" ? (

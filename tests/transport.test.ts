@@ -16,6 +16,16 @@ import {
 import type { DoctorReport } from "../src/runtime/doctor";
 import type { ProxyReport } from "../src/adapters/proxy-report";
 import type { DnsReport } from "../src/runtime/contracts";
+import type { StatusSelection } from "../src/domain/project-status";
+import { cliHarness } from "./support/cli-harness";
+
+/** The CLI harness's rigd, answered by `client` over the transport under test. */
+const through = (client: DaemonClient) => ({
+  command: (request: RuntimeCommand, signal?: AbortSignal) =>
+    client.command(request, signal),
+  status: (selection: StatusSelection, signal?: AbortSignal) =>
+    client.status(selection, signal),
+});
 
 /** Compile-time: the reports rigd builds are what rig accepts, so the schemas cannot drift from them unnoticed. The
  * schemas keep unknown fields, which `Declared` leaves out of the comparison. */
@@ -476,7 +486,6 @@ test("status validates nested evidence and Project identity while preserving opt
 });
 
 test("human Status sanitizes labels while JSON preserves evidence and valid empty remains empty", async () => {
-  const { runRigCli } = await import("../src/cli/rig");
   let result: unknown = {
     project: "demo",
     targets: [
@@ -504,50 +513,31 @@ test("human Status sanitizes labels while JSON preserves evidence and valid empt
     fetch: () => Response.json({ result }),
   });
   try {
-    let output = "";
     const client = new DaemonClient({ port: server.port!, token: "test" });
-    const deps = {
+    const cli = cliHarness({
       root: "/tmp/rig-85-transport/.rig",
       cwd: "/repo",
-      client,
-      output: {
-        write(value: string) {
-          output += value;
-        },
-        error(value: string) {
-          output += value;
-        },
-      },
-      diagnostics: {
-        async record() {
-          return {};
-        },
-      },
-      wait: async () => {},
-      newOperationId: () => "status-op",
-    };
-    expect(await runRigCli(["status", "--project", "demo"], deps)).toBe(0);
-    expect(output).toContain("branch name  unknown  feature branch");
-    expect(output).toContain("unknown reason");
-    expect(output).toContain("Warning: warning line");
-    expect(output).not.toContain("\u001b");
-    output = "";
-    expect(
-      await runRigCli(["status", "--project", "demo", "--json"], deps),
-    ).toBe(0);
-    expect(JSON.stringify(JSON.parse(output))).toBe(JSON.stringify(result));
+      ...through(client),
+      operationId: "status-op",
+    });
+    expect(await cli.run(["status", "--project", "demo"])).toBe(0);
+    expect(cli.text()).toContain("branch name  unknown  feature branch");
+    expect(cli.text()).toContain("unknown reason");
+    expect(cli.text()).toContain("Warning: warning line");
+    expect(cli.text()).not.toContain("\u001b");
+    cli.clear();
+    expect(await cli.run(["status", "--project", "demo", "--json"])).toBe(0);
+    expect(JSON.stringify(JSON.parse(cli.text()))).toBe(JSON.stringify(result));
     result = { project: "demo", targets: [] };
-    output = "";
-    expect(await runRigCli(["status", "--project", "demo"], deps)).toBe(0);
-    expect(output).toBe("demo\n\nNo Targets configured.\n\nNo failures\n");
+    cli.clear();
+    expect(await cli.run(["status", "--project", "demo"])).toBe(0);
+    expect(cli.text()).toBe("demo\n\nNo Targets configured.\n\nNo failures\n");
     result = { project: "demo", targets: [{}] };
-    output = "";
-    expect(
-      await runRigCli(["status", "--project", "demo", "--json"], deps),
-    ).toBe(1);
-    expect(output).toContain("DAEMON_PROTOCOL");
-    expect(output).not.toContain("No Targets configured");
-    expect(output).not.toContain("No failures");
+    cli.clear();
+    expect(await cli.run(["status", "--project", "demo", "--json"])).toBe(1);
+    expect(cli.text()).toContain("DAEMON_PROTOCOL");
+    expect(cli.text()).not.toContain("No Targets configured");
+    expect(cli.text()).not.toContain("No failures");
   } finally {
     await server.stop(true);
   }
@@ -636,7 +626,6 @@ test("a command rigd does not accept is reported as version skew naming both ver
 });
 
 test("malformed list, logs and activity replies fail as protocol errors through the CLI, valid empty collections still render, and a malformed follow page ends the follow", async () => {
-  const { runRigCli } = await import("../src/cli/rig");
   let replies: unknown[] = [];
   const bodies: Record<string, unknown>[] = [];
   const server = Bun.serve({
@@ -651,31 +640,17 @@ test("malformed list, logs and activity replies fail as protocol errors through 
   });
   try {
     const client = new DaemonClient({ port: server.port!, token: "test" });
-    let output = "";
+    const cli = cliHarness({
+      root: "/tmp/rig-115-transport/.rig",
+      cwd: "/repo",
+      ...through(client),
+      operationId: "read-op",
+    });
     const run = (args: string[], ...results: unknown[]) => {
       replies = results;
-      output = "";
+      cli.clear();
       bodies.length = 0;
-      return runRigCli(args, {
-        root: "/tmp/rig-115-transport/.rig",
-        cwd: "/repo",
-        client,
-        output: {
-          write(value: string) {
-            output += value;
-          },
-          error(value: string) {
-            output += value;
-          },
-        },
-        diagnostics: {
-          async record() {
-            return {};
-          },
-        },
-        wait: async () => {},
-        newOperationId: () => "read-op",
-      });
+      return cli.run(args);
     };
     const logs = ["logs", "working", "--project", "demo"];
     const malformed: [string[], unknown, string][] = [
@@ -709,15 +684,15 @@ test("malformed list, logs and activity replies fail as protocol errors through 
     ];
     for (const [args, reply, empty] of malformed) {
       expect(await run(args, reply)).toBe(1);
-      expect(output).toContain("rigd returned an invalid response.");
-      expect(output).not.toContain(empty);
+      expect(cli.text()).toContain("rigd returned an invalid response.");
+      expect(cli.text()).not.toContain(empty);
     }
     expect(
       await run(["list"], {
         projects: [],
       }),
     ).toBe(0);
-    expect(output).toBe("No Projects registered.\n");
+    expect(cli.text()).toBe("No Projects registered.\n");
     expect(
       await run(logs, {
         project: "demo",
@@ -726,9 +701,9 @@ test("malformed list, logs and activity replies fail as protocol errors through 
         cursor: "c1",
       }),
     ).toBe(0);
-    expect(output).toBe("demo working\n\nNo logs yet.\n");
+    expect(cli.text()).toBe("demo working\n\nNo logs yet.\n");
     expect(await run(["activity"], { operations: [] })).toBe(0);
-    expect(output).toBe("No activity yet.\n");
+    expect(cli.text()).toBe("No activity yet.\n");
     const entry = {
       timestamp: "2026-09-14T10:00:00Z",
       component: "web",
@@ -748,9 +723,9 @@ test("malformed list, logs and activity replies fail as protocol errors through 
         { project: "demo", target: "working", entries: [entry], cursor: "c3" },
       ),
     ).toBe(1);
-    expect(output).toContain("10:00:00Z  web  > first page");
-    expect(output).toContain("rigd returned an invalid response.");
-    expect(output.match(/first page/g)).toHaveLength(1);
+    expect(cli.text()).toContain("10:00:00Z  web  > first page");
+    expect(cli.text()).toContain("rigd returned an invalid response.");
+    expect(cli.text().match(/first page/g)).toHaveLength(1);
     expect(bodies).toHaveLength(2);
     expect(bodies.map((body) => body.action)).toEqual(["logs", "logs"]);
     expect(bodies[1]).toMatchObject({ after: "c1" });
@@ -785,32 +760,14 @@ test("a read aborted by its signal fails as CANCELLED at once, without waiting f
 
 /** Runs `args` through the real CLI against `client`, answering its exit status, what it printed and what it recorded. */
 async function runRead(client: DaemonClient, args: string[]) {
-  const { runRigCli } = await import("../src/cli/rig");
-  let stdout = "",
-    stderr = "";
-  const recorded: { event: string; code?: string }[] = [];
-  const exit = await runRigCli(args, {
+  const cli = cliHarness({
     root: "/tmp/rig-620-transport/.rig",
     cwd: "/repo",
-    client,
-    output: {
-      write(value: string) {
-        stdout += value;
-      },
-      error(value: string) {
-        stderr += value;
-      },
-    },
-    diagnostics: {
-      async record(entry) {
-        recorded.push(entry);
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "read-op",
+    ...through(client),
+    operationId: "read-op",
   });
-  return { exit, stdout, stderr, recorded };
+  const exit = await cli.run(args);
+  return { exit, stdout: cli.out(), stderr: cli.err(), recorded: cli.events };
 }
 /** A rigd that sends its headers and the start of its document at once, and the rest once `finish` resolves. */
 function stallingBody(finish: Promise<void>) {
@@ -1008,7 +965,6 @@ test("a browser origin is accepted only for the daemon's own loopback address, w
 });
 
 test("doctor, config, proxy and DNS replies that are not their report fail as DAEMON_PROTOCOL in text and JSON, valid empty reports still print, and Doctor's exit follows its validated ok", async () => {
-  const { runRigCli } = await import("../src/cli/rig");
   let reply: unknown;
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -1070,29 +1026,14 @@ test("doctor, config, proxy and DNS replies that are not their report fail as DA
     const client = new DaemonClient({ port: server.port!, token: "test" });
     const run = async (args: string[], result: unknown) => {
       reply = result;
-      let stdout = "";
-      let stderr = "";
-      const exit = await runRigCli(args, {
+      const cli = cliHarness({
         root: "/tmp/rig-594-transport/.rig",
         cwd: "/repo",
-        client,
-        output: {
-          write(value: string) {
-            stdout += value;
-          },
-          error(value: string) {
-            stderr += value;
-          },
-        },
-        diagnostics: {
-          async record() {
-            return {};
-          },
-        },
-        wait: async () => {},
-        newOperationId: () => "read-op",
+        ...through(client),
+        operationId: "read-op",
       });
-      return { exit, stdout, stderr };
+      const exit = await cli.run(args);
+      return { exit, stdout: cli.out(), stderr: cli.err() };
     };
     const protocol = {
       error: {

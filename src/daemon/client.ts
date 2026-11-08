@@ -185,12 +185,15 @@ export class DaemonClient {
   ) {
     this.readDeadlineMs = options.readDeadlineMs ?? DEFAULT_READ_DEADLINE_MS;
   }
-  async health(): Promise<DaemonHealth> {
+  /** The signal abandons the probe as CANCELLED, as for `command`. */
+  async health(signal?: AbortSignal): Promise<DaemonHealth> {
     const health = healthSchema.safeParse(
-      await this.request("/health", undefined, {
-        ms: 1500,
-        subject: "health probe",
-      }),
+      await this.request(
+        "/health",
+        undefined,
+        { ms: 1500, subject: "health probe" },
+        signal,
+      ),
     );
     if (!health.success) throw protocolFailure();
     return health.data;

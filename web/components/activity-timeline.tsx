@@ -74,6 +74,11 @@ export function ActivityTimeline({
                           {operation.target}
                         </span>
                       ) : null}
+                      {operation.component ? (
+                        <span className="text-muted-foreground">
+                          {componentWord(operation.component)}
+                        </span>
+                      ) : null}
                       <span className="text-xs text-muted-foreground">
                         · {operation.outcome}
                       </span>
@@ -100,6 +105,9 @@ export function ActivityTimeline({
     </div>
   );
 }
+/** The Service or Job a record is about, as Activity recorded it. */
+const componentWord = (component: NonNullable<Operation["component"]>) =>
+  `${component.kind} ${component.name}`;
 function timeOfDay(iso: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime())
@@ -138,6 +146,12 @@ export function OperationRecord({ operation }: { operation: Operation }) {
           <>
             <dt className="text-muted-foreground">Target</dt>
             <dd>{operation.target}</dd>
+          </>
+        ) : null}
+        {operation.component ? (
+          <>
+            <dt className="text-muted-foreground">Component</dt>
+            <dd>{componentWord(operation.component)}</dd>
           </>
         ) : null}
         <dt className="text-muted-foreground">Outcome</dt>

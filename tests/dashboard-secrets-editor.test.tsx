@@ -14,9 +14,11 @@ import type { EnvFileView } from "../web/lib/types";
  * process-wide, so every other use goes through to it. */
 const real = { ...actions };
 let revealing: string | undefined;
+let saving = false;
 mock.module("../web/server/actions", () => ({
   ...real,
   async runEnvEdit(input: unknown) {
+    if (saving) return { ok: true, value: {} };
     if (revealing === undefined) return real.runEnvEdit(input);
     return { ok: true, value: { value: revealing, revision: "R0" } };
   },
@@ -216,4 +218,101 @@ test("a revealed value with line breaks does not open in the one-line field, and
   expect(labelled(plain.mounted.tree, "New value for A").props.value).toBe(
     "one line",
   );
+});
+
+test.each([
+  ["1BAD", "does not start with a digit"],
+  ["_RIG_X", "does not start with a digit or _RIG_"],
+  ["BAD-NAME", "letters, digits and underscores"],
+  ["A", "A is already in this file"],
+])(
+  "a new name %s that cannot be added says why in text, since a disabled button takes no hover or focus",
+  (name, why) => {
+    const page = editor(file("R0"));
+    const add = () =>
+      elements(page.mounted.tree).find(
+        (each) => each.props.type === "submit" && textOf(each).includes("Add"),
+      )!;
+    page.type("New variable name", name);
+    expect(page.text()).toContain(why);
+    expect(add().props.disabled).toBe(true);
+    expect(
+      labelled(page.mounted.tree, "New variable name").props["aria-invalid"],
+    ).toBe(true);
+    // A valid name, or none yet, has nothing to explain.
+    page.type("New variable name", "GOOD_NAME");
+    expect(page.text()).not.toContain(why);
+    expect(add().props.disabled).toBe(false);
+    page.type("New variable name", "");
+    expect(page.text()).not.toContain(why);
+  },
+);
+
+test("each save has restart controls of its own: a refresh keeps them, and a restart before a later save never answers for it", async () => {
+  saving = true;
+  try {
+    const mounted = mountWithoutDom(SecretsEditor);
+    const readers = [
+      { name: "stable", kind: "stable" as const, state: "running" as const },
+    ];
+    const shown = (next: EnvFileView) =>
+      mounted.render({ project: "demo", file: next, readers });
+    shown(file("R0"));
+    const byText = (text: string) =>
+      elements(mounted.tree).find(
+        (each) => textOf(each) === text && each.props.onClick,
+      )!;
+    const save = async (name: string, revision: string) => {
+      mounted.act(() =>
+        (
+          labelled(mounted.tree, "New variable name").props.onChange as (
+            event: unknown,
+          ) => void
+        )({ target: { value: name } }),
+      );
+      const form = elements(mounted.tree).find(
+        (each) =>
+          each.type === "form" &&
+          elements(each.props.children).some(
+            (child) => child.props["aria-label"] === "New variable name",
+          ),
+      )!;
+      mounted.act(() =>
+        (form.props.onSubmit as (event: unknown) => void)({
+          preventDefault() {},
+        }),
+      );
+      mounted.act(byText("Review and save").props.onClick as () => void);
+      mounted.act(byText("Save").props.onClick as () => void);
+      // The reply comes through a few promises; no timer is involved.
+      for (
+        let tick = 0;
+        !textOf(mounted.tree).includes(`${name} was written`);
+        tick++
+      ) {
+        if (tick === 100) throw new Error(`${name} was not saved.`);
+        await Promise.resolve();
+        mounted.render();
+      }
+      shown(file(revision, ["A", "B", name]));
+    };
+    const controls = () =>
+      elements(mounted.tree).find(
+        (each) => "readers" in each.props,
+      ) as unknown as {
+        key: string | null;
+      };
+    await save("FIRST", "R1");
+    const first = controls().key;
+    expect(first).not.toBeNull();
+    // An automatic refresh leaves the same controls mounted, so a restart they did stays said.
+    shown(file("R1", ["A", "B", "FIRST"]));
+    expect(controls().key).toBe(first);
+    await save("SECOND", "R2");
+    expect(textOf(mounted.tree)).toContain("SECOND was written");
+    // A new key mounts new controls: enabled again, with nothing to say of the restart before this write.
+    expect(controls().key).not.toBe(first);
+  } finally {
+    saving = false;
+  }
 });

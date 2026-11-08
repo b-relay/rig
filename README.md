@@ -180,7 +180,14 @@ Every test in the files `bunfig.toml` lists under `concurrentTestGlob` runs
 concurrently with the file's other tests, so each must own its whole world: a
 temporary `RIG_ROOT`, its own `rigd`, and ephemeral ports. The test scripts
 start the `bun` that runs them (`$npm_execpath`), never whichever `bun` comes
-first on the script `PATH`. After adding or reshaping slow files, refresh the
+first on the script `PATH`. A test that times out, or throws before its
+`rigFixture` cleanup, leaves that fixture to `tests/support/fixture-sweep.ts`,
+which `bunfig.toml` preloads: once the tests are done, it stops what the
+fixture left running and removes its root, and fails the run when it cannot
+confirm that. From then until a test starts again, a new fixture, or a command
+of a fixture being cleaned up, is refused. That cleanup is not guaranteed under
+`--bail`, which skips it, nor in a nested `bun test` its parent kills. After
+adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 

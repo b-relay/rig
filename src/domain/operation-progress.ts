@@ -66,7 +66,12 @@ export interface QueueReport {
   waiting: number;
   operations: OperationView[];
   operation?: OperationPosition;
+  /** Why rigd refuses new work now; absent while it accepts it. */
+  draining?: DrainReason;
 }
+/** Why rigd refuses new work: an uninstall was prepared and nothing has stopped rigd yet, which Cancel uninstall undoes; or
+ * rigd is stopping. */
+export type DrainReason = "uninstall-prepared" | "stopping";
 
 const ACTION_PHASE: Record<string, OperationPhase> = {
   up: "starting",

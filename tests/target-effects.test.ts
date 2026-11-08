@@ -30,6 +30,7 @@ import type { TargetRecord } from "../src/domain/runtime";
 import type { InstalledComponent } from "../src/config/types";
 import { RigError, userCorrectable } from "../src/domain/errors";
 import { noRoutes } from "./support/router-doubles";
+import { cliHarness } from "./support/cli-harness";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -535,57 +536,41 @@ test("setup recording acquires time for each retained line and reads unchanged s
       line: "error",
     },
   ]);
-  const { runRigCli } = await import("../src/cli/rig");
   const controller = new AbortController();
-  let output = "",
-    polls = 0,
+  let polls = 0,
     waits = 0;
   const cursors: (string | undefined)[] = [];
   const files = createRuntimeFiles();
-  expect(
-    await runRigCli(["logs", "working", "--follow"], {
-      root,
-      cwd: root,
-      signal: controller.signal,
-      async wait() {
-        if (++waits === 2) controller.abort();
+  const cli = cliHarness({
+    root,
+    cwd: root,
+    signal: controller.signal,
+    async wait() {
+      if (++waits === 2) controller.abort();
+    },
+    async command(request) {
+      expect(request.action).toBe("logs");
+      polls++;
+      cursors.push(request.after);
+      return {
+        project: "demo",
+        target: "working",
+        ...(await files.logs(record, request.after, 100)),
+      };
+    },
+    output: {
+      error(value) {
+        throw new Error(value);
       },
-      client: {
-        async status() {
-          throw new Error("Unexpected status");
-        },
-        async command(request) {
-          expect(request.action).toBe("logs");
-          polls++;
-          cursors.push(request.after);
-          return {
-            project: "demo",
-            target: "working",
-            ...(await files.logs(record, request.after, 100)),
-          };
-        },
-      },
-      output: {
-        write(value) {
-          output += value;
-        },
-        error(value) {
-          throw new Error(value);
-        },
-      },
-      diagnostics: {
-        async record() {
-          return {};
-        },
-      },
-      newOperationId: () => "recorded-follow",
-    }),
-  ).toBe(0);
+    },
+    operationId: "recorded-follow",
+  });
+  expect(await cli.run(["logs", "working", "--follow"])).toBe(0);
   expect(polls).toBe(2);
   expect(cursors[0]).toBeUndefined();
   expect(typeof cursors[1]).toBe("string");
-  expect(output.match(/> one/g)).toHaveLength(1);
-  expect(output).toContain("! error");
+  expect(cli.out().match(/> one/g)).toHaveLength(1);
+  expect(cli.out()).toContain("! error");
   expect(record.desired).toBe("running");
   expect(acquired).toBe(4);
   expect(await readdir(record.logRoot)).toEqual(["target.jsonl"]);

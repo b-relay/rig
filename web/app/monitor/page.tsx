@@ -91,6 +91,17 @@ export default async function MonitorPage({
                         ? `idle · ${queued.waiting} waiting`
                         : "unknown",
                   },
+                  ...(queued?.draining
+                    ? [
+                        {
+                          label: "New work",
+                          value:
+                            queued.draining === "uninstall-prepared"
+                              ? "refused: prepared for uninstall"
+                              : "refused: rigd is stopping",
+                        },
+                      ]
+                    : []),
                 ],
                 running,
               }
@@ -100,6 +111,8 @@ export default async function MonitorPage({
           doctor.ok ? { ok: true, value: doctor.value as DoctorReport } : doctor
         }
         {...(!activity.ok && { activityFailure: activity.failure })}
+        {...(queued?.draining && { draining: queued.draining })}
+        queueRead={queued !== undefined}
       />
     </>
   );

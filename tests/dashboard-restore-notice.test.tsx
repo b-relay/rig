@@ -1,4 +1,5 @@
 import { afterAll, expect, mock, test } from "bun:test";
+import "./support/dashboard-site";
 import * as actions from "../web/server/actions";
 import type { JobReport } from "../web/lib/types";
 import { restoreNotice, type BackupView } from "../web/lib/backups";

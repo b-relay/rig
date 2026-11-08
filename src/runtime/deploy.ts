@@ -1,4 +1,4 @@
-import { activationJournal, intendStopped } from "./supervision";
+import { activationJournal, intendStopped } from "./service-runs";
 import type { ManagedComponent } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
 import { rigCommand, type RecordedTarget } from "../domain/rig-command";
@@ -20,6 +20,9 @@ import type { RuntimeDependencies } from "./contracts";
 import { persistTarget } from "./targets";
 import { assertServiceEnvironments, uncertainAttempt } from "./lifecycle";
 import { prepareTarget } from "./preparation";
+import { servedPhrase, type ServedReceipt } from "./served";
+import { recordDeployment } from "../domain/deployments";
+import { recordActivity } from "../domain/activity";
 /** Unresolved recovery must be rejected before accepting any deployment outcome. */
 export function assertDeploymentRecovered(
   previous: (Pick<TargetRecord, "recovery"> & RecordedTarget) | undefined,
@@ -41,6 +44,8 @@ export interface DeploymentIntent {
   /** The Project repository, whose Commits a deploy compares for each Service's watched files; without it every Service
    * whose files the comparison would decide restarts. */
   repository?: string;
+  /** Where the candidate's start keeps what it served (ADR 0020), read whatever the deploy's outcome. */
+  receipt?: ServedReceipt;
 }
 /** A deployment that was activated, and what it did with each Service. */
 export interface ActivatedDeployment {
@@ -133,24 +138,40 @@ async function activate(
     }
     transitioned = true;
     if (previous) {
-      // In reverse dependency order; restarts spread to dependents, so no kept Service depends on one that stops.
-      await deps.lifecycle.down(withoutServices(previous, kept.keys()));
+      // In reverse dependency order; restarts spread to dependents, so no kept Service depends on one that stops. The guard
+      // stays until the Operation releases the Target, through the start and any rollback.
+      const startFollows = intent.activation === "start";
+      if (startFollows) deps.routeGuard?.watch(previous);
+      await deps.lifecycle.down(
+        withoutServices(previous, kept.keys()),
+        undefined,
+        startFollows ? previous.plan : undefined,
+      );
       await deps.lifecycle.retireSuperseded(previous, candidate);
     }
     if (intent.activation === "start") {
+      // Only the candidate's journal reports what it served: the rollback's start below has its own.
       await deps.lifecycle.up(
         candidate,
         checkpoint,
-        activationJournal(candidate, "explicit", deps),
+        activationJournal(candidate, "explicit", deps, {
+          ...(intent.receipt ? { receipt: intent.receipt } : {}),
+        }),
       );
       candidate.desired = "running";
     }
-    const committing = {
-      ...candidate,
-      recovery: { ...candidate.recovery!, stage: "committing" as const },
+    // The write that decides the commit runs in the guard's section (ADR 0020): a failure of the start the guard latched
+    // before it rolls back, and a Service seen stopped after it leaves a decided commit to restart policy.
+    const decide = async () => {
+      const committing = {
+        ...candidate,
+        recovery: { ...candidate.recovery!, stage: "committing" as const },
+      };
+      delete committing.deploymentIncomplete;
+      await persistTarget(committing, deps.store);
+      return committing;
     };
-    delete committing.deploymentIncomplete;
-    await persistTarget(committing, deps.store);
+    const committing = await (deps.routeGuard?.decide(decide) ?? decide());
     commitDecided = true;
     await checkpoint.commit();
     const completed: TargetRecord = { ...committing };
@@ -529,6 +550,8 @@ export async function stopForRecovery(
   // Both plans' processes stop here under one set of process keys, and the route may name either plan's ports: all of it
   // is withheld before either plan stops anything.
   await deps.lifecycle.withhold(target);
+  // A candidate that served is served no more from here, whatever its record could not say.
+  const unserved = { candidate: target, at: deps.now() };
   const stops = [await deps.lifecycle.down(target)];
   const outcome = () =>
     stops.some((stop) => stop.outcome === "stopped") ? "stopped" : "unchanged";
@@ -540,6 +563,7 @@ export async function stopForRecovery(
       completed,
       { ...target, plan: target.recovery.plan },
       deps,
+      unserved,
     );
     return { target: completed, outcome: outcome() };
   }
@@ -564,17 +588,23 @@ export async function stopForRecovery(
   }
   stops.push(await deps.lifecycle.down(previous));
   await deps.lifecycle.restoreEffects(target);
-  await settleRecovery(previous, target, deps);
+  await settleRecovery(previous, target, deps, unserved);
   return { target: previous, outcome: outcome() };
 }
 /** Saves `settled`, the Target a recovery leaves, and holds the checkout of `dropped`, the plan it no longer records, in
- * the same write: a deployed Target's own revision that is not `settled`'s is never left on disk with nothing naming it. */
+ * the same write: a deployed Target's own revision that is not `settled`'s is never left on disk with nothing naming it.
+ * A candidate that served (ADR 0020) is recorded in the same write as well, in the deploy history and Activity, when no
+ * deploy recorded it: no Operation is left to, after a crash. Its paths were all withheld at `unserved.at`. */
 async function settleRecovery(
   settled: TargetRecord,
   dropped: TargetRecord,
-  deps: Pick<RuntimeDependencies, "store">,
+  deps: Pick<RuntimeDependencies, "store" | "now" | "id">,
+  unserved: { candidate: TargetRecord; at: string },
 ): Promise<void> {
   const workspace = ownedRevision(dropped);
+  const { candidate, at } = unserved;
+  const recovery = candidate.recovery!;
+  const id = recovery.operationId ?? deps.id();
   await deps.store.update((state) => {
     const index = state.targets.findIndex((t) => t.id === settled.id);
     if (index === -1) state.targets.push(settled);
@@ -585,5 +615,48 @@ async function settleRecovery(
         project: settled.projectId,
         workspace,
       });
+    const served = recovery.served;
+    if (!served || state.deployments?.some((entry) => entry.id === id)) return;
+    // The commit was decided: the deploy is complete, and what ended its service was this down.
+    const deployed = recovery.stage === "committing";
+    const phrase = servedPhrase(
+      candidate.commit,
+      deployed ? (served.from ? { from: served.from } : {}) : served,
+      deployed ? undefined : at,
+    );
+    const project = state.projects.find((p) => p.id === candidate.projectId);
+    const now = deps.now();
+    recordDeployment(state, {
+      id,
+      projectId: candidate.projectId,
+      project: project?.name ?? candidate.projectId,
+      target: candidate.name,
+      targetId: candidate.id,
+      kind: candidate.kind === "preview" ? "preview" : "stable",
+      ...(candidate.branch ? { branch: candidate.branch } : {}),
+      ...(candidate.commit ? { commit: candidate.commit } : {}),
+      // A first deployment recovers to its own plan: it replaced nothing.
+      ...(recovery.commit &&
+      recovery.plan.workspacePath !== candidate.plan.workspacePath
+        ? { previousCommit: recovery.commit }
+        : {}),
+      outcome: deployed ? "deployed" : "failed",
+      ...(served.from ? { servedAt: served.from } : {}),
+      // When the deploy began was never recorded; it served from `from` at the latest.
+      startedAt: served.from ?? now,
+      finishedAt: now,
+    });
+    recordActivity(state, {
+      id,
+      projectId: candidate.projectId,
+      ...(project ? { project: project.name } : {}),
+      target: candidate.name,
+      action: "deploy",
+      outcome: deployed ? "deployed" : "failed",
+      occurredAt: now,
+      message: deployed
+        ? `${phrase}; rigd stopped before the deploy finished, and rig down finished its commit`
+        : `${phrase}; rigd stopped before the deploy finished, and rig down stopped it`,
+    });
   });
 }

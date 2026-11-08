@@ -9,20 +9,27 @@ import type {
   InstalledComponent,
   ManagedComponent,
   PersistentComponent,
+  PlanComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
-import {
-  currentRun,
-  runningNote,
-  stoppedStanding,
-  supervisionScope,
-} from "./supervision";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
-import type { ServiceHealth } from "../domain/project-status";
-import { healthStartPending, type HealthResults } from "./health-monitor";
-import { healthRestartDueAt } from "../domain/health-policy";
-import { rigCommand } from "../domain/rig-command";
+import type { HealthResults } from "./health-monitor";
 import { plannedSites, serviceHostnames } from "./ports";
+import {
+  monitoredHealth,
+  notRunningServiceReport,
+  runningServiceReport,
+  type ComponentBase,
+  type HealthStanding,
+} from "./service-report";
+export { runningCommit } from "./service-report";
+/** One Component to observe, with the Target it belongs to and that Target's place in the request. */
+interface ObservationEntry {
+  targetIndex: number;
+  target: TargetRecord;
+  component: PlanComponent;
+  base: ComponentBase;
+}
 /** A Service's hostnames for a report: `route` is the first, the one shown where only one fits, and `hostnames` all of
  * them. Nothing when no hostname's '/' reaches it. */
 export function hostnameFields(
@@ -97,20 +104,12 @@ export async function observeTargetsAndBuilds(
   reports: TargetReport[];
   builds: ObservationResult<ProcessObservation>[];
 }> {
-  const entries = targets.flatMap((target) =>
-    target.plan.components.map((component) => ({
+  const entries = targets.flatMap((target, targetIndex) =>
+    target.plan.components.map((component): ObservationEntry => ({
+      targetIndex,
       target,
       component,
-      base: {
-        name: component.name,
-        kind: component.kind,
-        ...(component.kind === "managed" ? { port: component.port } : {}),
-        ...(component.kind === "managed" && component.ports
-          ? { ports: component.ports }
-          : {}),
-        ...automaticRestarts(target, component.name),
-        ...hostnameFields(serviceHostnames(target.plan, component.name)),
-      },
+      base: componentBase(target, component),
     })),
   );
   const observed = await boundedObservations<
@@ -118,85 +117,8 @@ export async function observeTargetsAndBuilds(
   >(
     [
       ...entries.map(
-        ({ target, component, base }) =>
-          async (signal: AbortSignal): Promise<ComponentReport> => {
-            if (component.kind === "installed")
-              return {
-                ...base,
-                state: await effects.artifact(target, component, signal),
-              };
-            if (component.kind === "persistent")
-              return {
-                ...base,
-                state: (await effects.persistent(target, component, signal))
-                  ? "ready"
-                  : "missing",
-              };
-            const observed = await effects.process(target, component, signal);
-            if (observed.state === "stopped") {
-              const waiting = healthRestartWaiting(target, component);
-              if (waiting)
-                return {
-                  ...base,
-                  port: component.port,
-                  ...waiting,
-                  ...(observed.reason
-                    ? { reason: `${observed.reason} ${waiting.reason}` }
-                    : {}),
-                };
-              const standing = stoppedStanding(
-                target,
-                component,
-                observed,
-                supervisionScope(target),
-              );
-              const reason = [observed.reason, standing.reason]
-                .filter(Boolean)
-                .join(" ");
-              return {
-                ...base,
-                ...standing,
-                port: component.port,
-                ...(reason ? { reason } : {}),
-              };
-            }
-            if (observed.state !== "running")
-              return {
-                ...base,
-                state: observed.state,
-                port: component.port,
-                ...(observed.reason ? { reason: observed.reason } : {}),
-              };
-            // A running component can still have something to say, such as output it cannot record or an unknown exit it was
-            // started again after.
-            const said = [
-              observed.reason,
-              runningNote(target, component, observed),
-            ]
-              .filter(Boolean)
-              .join(" ");
-            const cached =
-              component.healthcheck && health
-                ? monitoredHealth(target, component, health)
-                : undefined;
-            const reason = [said, cached?.reason].filter(Boolean).join(" ");
-            const commit = runningCommit(target, component.name, observed);
-            return {
-              ...base,
-              port: component.port,
-              pid: observed.pid,
-              ...(commit ? { commit } : {}),
-              state: cached
-                ? cached.state
-                : component.health || component.healthcheck
-                  ? (await effects.health(target, component, signal)).ready
-                    ? "healthy"
-                    : "unhealthy"
-                  : "running",
-              ...(cached ? { health: cached.health } : {}),
-              ...(reason ? { reason } : {}),
-            };
-          },
+        (entry) => (signal: AbortSignal) =>
+          observeComponent(entry, effects, health, signal),
       ),
       ...(leftoverBuild
         ? targets.map(
@@ -208,56 +130,125 @@ export async function observeTargetsAndBuilds(
     deadline,
   );
   // In the order they were asked: every Component's, then every Target's build.
-  const results = observed.slice(
-    0,
-    entries.length,
-  ) as ObservationResult<ComponentReport>[];
+  const components = entries.map(({ targetIndex, base }, job) => ({
+    targetIndex,
+    report: settledComponent(
+      base,
+      observed[job] as ObservationResult<ComponentReport>,
+    ),
+  }));
   const builds = observed.slice(
     entries.length,
   ) as ObservationResult<ProcessObservation>[];
-  let offset = 0;
-  const reports = targets.map((target): TargetReport => {
-    const components: ComponentReport[] = target.plan.components.map(() => {
-      const base = entries[offset]!.base;
-      const result = results[offset++]!;
-      if (result.kind === "completed") return result.value;
-      return {
-        ...base,
-        state: "unknown",
-        reason:
-          result.kind === "expired"
-            ? OBSERVATION_EXPIRED
-            : "Observation failed.",
-      };
-    });
+  return {
+    reports: targets.map((target, index) =>
+      targetReport(
+        target,
+        components
+          .filter((component) => component.targetIndex === index)
+          .map((component) => component.report),
+      ),
+    ),
+    builds,
+  };
+}
+/** Pure: what a Component's report says before it is observed: its name and kind, a Service's ports, its recent automatic
+ * restarts, and the hostnames that reach it. */
+export function componentBase(
+  target: TargetRecord,
+  component: PlanComponent,
+): ComponentBase {
+  return {
+    name: component.name,
+    kind: component.kind,
+    ...(component.kind === "managed" ? { port: component.port } : {}),
+    ...(component.kind === "managed" && component.ports
+      ? { ports: component.ports }
+      : {}),
+    ...automaticRestarts(target, component.name),
+    ...hostnameFields(serviceHostnames(target.plan, component.name)),
+  };
+}
+/** Observes one Component: a Tool's artifact, storage's presence, or a Service's process and, while it runs, its health. */
+async function observeComponent(
+  { target, component, base }: ObservationEntry,
+  effects: ObservationEffects,
+  health: HealthResults | undefined,
+  signal: AbortSignal,
+): Promise<ComponentReport> {
+  if (component.kind === "installed")
     return {
-      id: target.id,
-      name: target.name,
-      kind: target.kind,
-      branch: target.branch,
-      commit: target.commit,
-      ...deploymentFlags(target),
-      route: target.plan.domain,
-      ...targetHostnames(target),
-      ...(target.plan.domain && target.plan.proxy?.routes?.length
-        ? {
-            routes: target.plan.proxy.routes.map(
-              ({ prefix, service, port }) => ({ prefix, service, port }),
-            ),
-          }
-        : {}),
-      ...(target.plan.serviceDomains?.length
-        ? {
-            serviceDomains: target.plan.serviceDomains.map(
-              ({ hostname, service, port }) => ({ hostname, service, port }),
-            ),
-          }
-        : {}),
-      components,
-      state: aggregate(components),
+      ...base,
+      state: await effects.artifact(target, component, signal),
     };
-  });
-  return { reports, builds };
+  if (component.kind === "persistent")
+    return {
+      ...base,
+      state: (await effects.persistent(target, component, signal))
+        ? "ready"
+        : "missing",
+    };
+  const observed = await effects.process(target, component, signal);
+  if (observed.state !== "running")
+    return notRunningServiceReport(target, component, base, observed);
+  // The monitor's cached checks first; without them the Service is checked now, if it has a check at all.
+  const standing: HealthStanding =
+    monitoredHealth(target, component, health) ??
+    (component.health || component.healthcheck
+      ? {
+          state: (await effects.health(target, component, signal)).ready
+            ? "healthy"
+            : "unhealthy",
+        }
+      : { state: "running" });
+  return runningServiceReport(target, component, base, observed, standing);
+}
+/** Pure: a Component's report once its observation settled; one that failed or outlived the deadline is unknown. */
+export function settledComponent(
+  base: ComponentBase,
+  result: ObservationResult<ComponentReport>,
+): ComponentReport {
+  if (result.kind === "completed") return result.value;
+  return {
+    ...base,
+    state: "unknown",
+    reason:
+      result.kind === "expired" ? OBSERVATION_EXPIRED : "Observation failed.",
+  };
+}
+/** Pure: a recorded Target's report from its Components' reports, in its plan's order. */
+export function targetReport(
+  target: TargetRecord,
+  components: ComponentReport[],
+): TargetReport {
+  return {
+    id: target.id,
+    name: target.name,
+    kind: target.kind,
+    branch: target.branch,
+    commit: target.commit,
+    ...deploymentFlags(target),
+    route: target.plan.domain,
+    ...targetHostnames(target),
+    ...(target.plan.domain && target.plan.proxy?.routes?.length
+      ? {
+          routes: target.plan.proxy.routes.map(({ prefix, service, port }) => ({
+            prefix,
+            service,
+            port,
+          })),
+        }
+      : {}),
+    ...(target.plan.serviceDomains?.length
+      ? {
+          serviceDomains: target.plan.serviceDomains.map(
+            ({ hostname, service, port }) => ({ hostname, service, port }),
+          ),
+        }
+      : {}),
+    components,
+    state: aggregate(components),
+  };
 }
 /** Every hostname a recorded Target serves, its domain first; nothing when it serves none. */
 function targetHostnames(
@@ -265,19 +256,6 @@ function targetHostnames(
 ): Pick<TargetReport, "hostnames"> {
   const hostnames = plannedSites(target.plan).map((site) => site.hostname);
   return hostnames.length ? { hostnames } : {};
-}
-/** Pure: the Commit the running process of `service` was started from, while it is the process its run names; a Service a
- * deploy kept runs from an earlier Commit than its Target's (ADR 0016). */
-export function runningCommit(
-  target: Pick<TargetRecord, "services" | "plan">,
-  service: string,
-  observed: Pick<ProcessObservation, "incarnation">,
-): string | undefined {
-  const run = currentRun(target, service);
-  return run?.incarnation !== undefined &&
-    observed.incarnation === run.incarnation
-    ? run.source?.commit
-    : undefined;
 }
 /** Pure: the automatic restart attempts still inside the Service's restart budget windows, after a known and after an
  * unknown exit together; nothing when there are none or rigd never ran the Service. Attempts age out of the windows, so the
@@ -290,80 +268,6 @@ export function automaticRestarts(
   const restarts =
     (run?.attempts.length ?? 0) + (run?.unknownAttempts?.length ?? 0);
   return restarts ? { restarts } : {};
-}
-/** A Service its health restart stopped and could not start again: unhealthy, and waiting for the next health restart on
- * the back-off. Undefined for any other stopped Service. */
-function healthRestartWaiting(
-  target: TargetRecord,
-  component: ManagedComponent,
-):
-  | (Pick<ComponentReport, "state" | "reason"> & { health: ServiceHealth })
-  | undefined {
-  const run = currentRun(target, component.name);
-  if (
-    target.desired !== "running" ||
-    component.healthcheck?.onFailure !== "restart" ||
-    !healthStartPending(run)
-  )
-    return undefined;
-  const stretch = run.healthStretch;
-  return {
-    state: "unhealthy",
-    health: {
-      status: "unhealthy",
-      failures: 0,
-      retries: component.healthcheck.retries,
-      restarts: stretch.restarts.length,
-      restartFailed: true,
-      nextRestartAt: new Date(healthRestartDueAt(stretch)).toISOString(),
-    },
-    reason: `Its health restart ${stretch.restarts.length} did not leave it running (its start failed the start check, or the restart was cut short), so it is stopped. Rig starts it again at its next health restart (${new Date(healthRestartDueAt(stretch)).toISOString()}), whatever its restart policy; run ${rigCommand("restart", { target })} to start it now, or ${rigCommand("down", { target })} to stop trying.`,
-  };
-}
-/** How a running Service with a healthcheck stands by its cached checks: running until one answered, then healthy or
- * unhealthy, with why and what Rig does about it. */
-function monitoredHealth(
-  target: Pick<TargetRecord, "id" | "name">,
-  component: ManagedComponent,
-  results: HealthResults,
-): Pick<ComponentReport, "state" | "reason"> & { health: ServiceHealth } {
-  const policy = component.healthcheck!;
-  const health: ServiceHealth = results(target, component.name) ?? {
-    status: "starting",
-    failures: 0,
-    retries: policy.retries,
-    restarts: 0,
-  };
-  const checks = (count: number) =>
-    `${count} health ${count === 1 ? "check" : "checks"}`;
-  const output = health.output ? ` (${health.output})` : "";
-  if (health.status === "starting")
-    return {
-      state: "running",
-      health,
-      reason: "Its healthcheck has not answered since it started.",
-    };
-  if (health.status === "healthy")
-    return {
-      state: "healthy",
-      health,
-      ...(health.failures
-        ? {
-            reason: `${checks(health.failures)} in a row failed${output}; it is unhealthy after ${health.retries}.`,
-          }
-        : {}),
-    };
-  const failed = health.failures
-    ? `${checks(health.failures)} in a row failed${output}`
-    : `It became unhealthy${output}, and no check has passed since`;
-  return {
-    state: "unhealthy",
-    health,
-    reason:
-      policy.onFailure === "restart"
-        ? `${failed}. Rig restarts it${health.restarts ? ` (${health.restarts} health ${health.restarts === 1 ? "restart" : "restarts"} so far)` : ""}.`
-        : `${failed}. Its healthcheck's on_failure is report, so Rig reports it and does not restart it.`,
-  };
 }
 /** The reason a component report carries when the shared status deadline expired before its observation finished. */
 export const OBSERVATION_EXPIRED =

@@ -4,6 +4,7 @@ import {
   createTargetLifecycle,
   type TargetEffects,
 } from "../src/runtime/lifecycle";
+import type { ManagedComponent } from "../src/config/types";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { Supervisor } from "../src/providers/contracts";
 import { stopDetached } from "../src/domain/stop-budget";
@@ -500,10 +501,110 @@ test("a down whose route cannot be withheld stops nothing: the proxy may still r
   f.routeFailure.withhold = new Error("caddy is down");
   await expect(f.lifecycle.down(routed())).rejects.toMatchObject({
     code: "ROUTE_WITHHOLD",
-    message: expect.stringContaining("so nothing was stopped"),
+    message: expect.stringContaining("so no Service with a path was stopped"),
   });
   expect(f.stops).toEqual([]);
   expect([...f.running].sort()).toEqual(["t1:api", "t1:web"]);
+});
+
+/** `routed()` with `worker` and `search` after its routed Services: `worker` depends on `dependsOn`, `search` on nothing. */
+function withTail(dependsOn: string[] = []): TargetRecord {
+  const record = routed();
+  const service = (name: string, needs: string[]): ManagedComponent => ({
+    name,
+    kind: "managed",
+    command: "serve",
+    readyTimeout: 1,
+    env: {},
+    dependsOn: needs,
+  });
+  record.plan.components.push(
+    service("worker", dependsOn),
+    service("search", []),
+  );
+  return record;
+}
+const allOf = (record: TargetRecord) => record.plan;
+
+test("a stop a start follows stops the tail with every path live, then withholds before the first Service outside it", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  const record = withTail();
+  await f.lifecycle.down(record, undefined, allOf(record));
+  expect(f.stops).toEqual(["t1:search", "t1:worker", "t1:web", "t1:api"]);
+  expect(f.withheld).toEqual([{ ports: [4000, 4001], afterStops: 2 }]);
+});
+
+test("a Service that depends on a routed one is not in the tail, so the stop withholds before it", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  const record = withTail(["web"]);
+  await f.lifecycle.down(record, undefined, allOf(record));
+  expect(f.withheld).toEqual([{ ports: [4000, 4001], afterStops: 1 }]);
+});
+
+test("a kept routed Service still counts: a worker that depends on it is outside the tail, though its definition left the list", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  const record = withTail(["web"]);
+  const whole = record.plan;
+  // A deploy keeping web stops the plan without it.
+  const stopping: TargetRecord = {
+    ...record,
+    plan: {
+      ...whole,
+      components: whole.components.filter((c) => c.name !== "web"),
+    },
+  };
+  await f.lifecycle.down(stopping, undefined, whole);
+  expect(f.withheld).toEqual([{ ports: [4000], afterStops: 1 }]);
+  expect([...f.running]).toEqual(["t1:web"]);
+});
+
+test("a stop of only tail Services withholds nothing", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  const record = withTail();
+  const whole = record.plan;
+  const stopping: TargetRecord = {
+    ...record,
+    plan: {
+      ...whole,
+      components: whole.components.filter(
+        (c) => c.name !== "web" && c.name !== "api",
+      ),
+    },
+  };
+  await f.lifecycle.down(stopping, undefined, whole);
+  expect(f.withheld).toEqual([]);
+  expect(f.stops).toEqual(["t1:search", "t1:worker"]);
+});
+
+test("a tail Service that fails to stop is collected and the rest still stop, withheld first", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  f.stopFailures.add("t1:search");
+  const record = withTail();
+  await expect(
+    f.lifecycle.down(record, undefined, allOf(record)),
+  ).rejects.toMatchObject({ code: "STOP_INCOMPLETE" });
+  expect(f.stops).toEqual(["t1:search", "t1:worker", "t1:web", "t1:api"]);
+  expect(f.withheld).toEqual([{ ports: [4000, 4001], afterStops: 2 }]);
+});
+
+test("a withhold that fails after the tail stopped stops nothing a path reaches, and says so", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  f.routeFailure.withhold = new Error("caddy is down");
+  const record = withTail();
+  await expect(
+    f.lifecycle.down(record, undefined, allOf(record)),
+  ).rejects.toMatchObject({
+    code: "ROUTE_WITHHOLD",
+    message: expect.stringContaining("so no Service with a path was stopped"),
+  });
+  expect(f.stops).toEqual(["t1:search", "t1:worker"]);
+  expect([...f.running].sort()).toEqual(["t1:api", "t1:web"]);
+});
+
+test("without a start to follow, the tail stops no differently: everything is withheld before the first stop", async () => {
+  const f = stopFixture(["t1:web", "t1:api", "t1:worker", "t1:search"]);
+  await f.lifecycle.down(withTail());
+  expect(f.withheld).toEqual([{ ports: [4000, 4001], afterStops: 0 }]);
 });
 
 test("stopping one Service withholds its paths first, and a stop whose paths cannot be withheld is not made", async () => {
@@ -684,7 +785,7 @@ test("port contention after selection fails startup and preserves an already run
   }
 }, 15000);
 
-test("up prepares the workspace, publishes Tools in plan order, and starts only what is not running", async () => {
+test("up prepares the workspace, starts only what is not running, then publishes Tools before anything is routed", async () => {
   const record = structuredClone(target);
   record.plan.components = [
     {
@@ -763,7 +864,8 @@ test("up prepares the workspace, publishes Tools in plan order, and starts only 
     startGraceMs: 0,
   });
   expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
-  expect(events).toEqual(["prepare", "install:tool", "start:api"]);
+  // A Tool listed first still waits for the Services: whatever fails of it fails before publication (ADR 0020).
+  expect(events).toEqual(["prepare", "start:api", "install:tool"]);
   events.length = 0;
   expect(await lifecycle.up(record)).toEqual({ outcome: "started" });
   expect(events).toEqual(["prepare", "install:tool"]);

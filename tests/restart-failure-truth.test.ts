@@ -13,7 +13,7 @@ import type {
 } from "../src/providers/contracts";
 import { liveUpstreams, ownedBlock } from "../src/providers/route-file";
 import type { RuntimeDependencies } from "../src/runtime/contracts";
-import { checkIdentity } from "../src/runtime/health-monitor";
+import { checkIdentity } from "../src/domain/health-policy";
 import { preparationProcessKey } from "../src/runtime/lifecycle";
 import { rollbackCommand } from "../web/lib/deployments";
 import { runtimeWorld } from "./support/runtime-world";

@@ -84,6 +84,7 @@ test("wildcards follow DNS: the closest existing parent's wildcard answers, an e
     // An ACME challenge left under rig makes rig.example.com exist with no data, so *.example.com does not answer for it.
     record("_acme-challenge.rig.example.com", "TXT", "token-proof"),
     record("mail.example.com", "TXT", "v=spf1 -all"),
+    record("alias.example.com", "CNAME", "rig.example.com"),
   ];
   expect(check(records, "api.melody.example.com")).toMatchObject({
     verdict: "elsewhere",
@@ -97,6 +98,11 @@ test("wildcards follow DNS: the closest existing parent's wildcard answers, an e
   expect(check(records, "rig.example.com").reason).toContain(
     "exists only as the parent of other records",
   );
+  expect(check(records, "alias.example.com")).toMatchObject({
+    verdict: "missing",
+    reason:
+      "Its CNAME leads to rig.example.com, which exists only as the parent of other records, so no wildcard answers for it and it has no address.",
+  });
   expect(check(records, "mail.example.com")).toMatchObject({
     verdict: "missing",
     reason: "It has records, but no A record.",

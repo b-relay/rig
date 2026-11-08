@@ -93,8 +93,9 @@ export interface ServiceSource {
    * when it could not be computed, and such a run is never kept. */
   environment?: string;
   /** Digest of the environments its checkout was prepared in, as recorded when it was prepared (`preparedBuild`): the
-   * dependency installation's, the shared build's and the Service's own build's. A restart never changes it, since it
-   * rebuilds nothing. Absent when they were not all recorded, and the run is then never kept. */
+   * dependency installation's, the shared build's and the Service's own build's. A deployed Target's starts reuse its
+   * Deployment's builds, so they carry the same value; an explicit start or restart of the working Target builds current
+   * source again (ADR 0004), so it may change. Absent when they were not all recorded, and the run is then never kept. */
   build?: string;
 }
 /** What Rig intends for one Service of one Deployment and what it knows about that Service's latest process. */
@@ -181,7 +182,17 @@ export interface TargetRecord {
     stage: "pending" | "blocked" | "committing";
     /** Operation that opened the transition; live only inside the daemon that ran it. */
     operationId?: string;
+    /** What the candidate served (ADR 0020): written before a publication gives a path to a Service its start started, so
+     * `rig down` after a crash still says that it may have served. */
+    served?: Served;
   };
+}
+/** When a deploy's candidate served (ADR 0020). Present: a publication may have given it a path. */
+export interface Served {
+  /** When the router confirmed that publication (ISO 8601). */
+  from?: string;
+  /** When a confirmed route change removed the last path reaching a Service its start started (ISO 8601); the first stands. */
+  until?: string;
 }
 
 export interface OperationRecord {
@@ -226,11 +237,15 @@ export interface DeploymentRecord {
   kept?: string[];
   startedAt: string;
   finishedAt: string;
+  /** When the new Commit began to answer requests: when the router confirmed a path to a Service the deploy started (ADR
+   * 0020). Absent when it never did. A failed deploy may have one: it served, then was rolled back. */
+  servedAt?: string;
   /** The failure's error code; never a value from the environment. */
   message?: string;
 }
-/** How a job run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a restart or a
- * deploy), gone with nothing recording how (the Mac restarted, or its exit record was lost), or never started. */
+/** How a job run ended: exit 0, another exit or a signal, stopped at its timeout, stopped by Rig (rig down, a Preview
+ * destroy or its Target turned off; a deploy or restart never stops a run), gone with nothing recording how (the Mac
+ * restarted, or its exit record was lost), or never started. */
 export type JobOutcome =
   "succeeded" | "failed" | "timed-out" | "stopped" | "unknown" | "start-failed";
 /** One run of a scheduled job. */
@@ -408,4 +423,21 @@ export interface StateStore {
   revision?(): Promise<string | undefined>;
   /** One daemon owns writes. Updates are serialized and committed atomically. */
   update(change: (state: RuntimeState) => void | Promise<void>): Promise<void>;
+  /** The state as `read` gives it, for a reader that changes nothing in it: one copy every such reader shares while nothing
+   * is written, frozen so that none can change it. Absent when the store keeps none. */
+  snapshot?(): Promise<RuntimeState>;
+}
+/** The state for a reader that changes nothing in it: the store's shared snapshot, or else a read of its own. */
+export function readOnlyState(
+  store: Pick<StateStore, "read" | "snapshot">,
+): Promise<RuntimeState> {
+  return store.snapshot ? store.snapshot() : store.read();
+}
+/** The record of `service` for the Deployment the Target now runs; a record left by another Deployment describes nothing. */
+export function currentRun(
+  target: Pick<TargetRecord, "services" | "plan">,
+  service: string,
+): ServiceRun | undefined {
+  const run = target.services?.[service];
+  return run?.deployment === target.plan.workspacePath ? run : undefined;
 }

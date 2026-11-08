@@ -1,5 +1,5 @@
-import { lstat } from "node:fs/promises";
-import { basename, join, relative, sep } from "node:path";
+import { lstat, stat } from "node:fs/promises";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { ConfigError } from "../config/errors";
 import {
   discoverProject,
@@ -81,6 +81,11 @@ export function createProjectDocuments(
       return { ...found, gitRequired: location.gitRequired, searched };
     },
     read: readProjectConfig,
+    directoryMissing: (path) =>
+      stat(resolve(path)).then(
+        () => false,
+        (error: NodeJS.ErrnoException) => error.code === "ENOENT",
+      ),
     resolve: (input) => resolveTargetPlan(input, host),
     host: () => readHostConfig(root),
     async initializationInfo(path) {

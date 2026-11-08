@@ -1,6 +1,6 @@
 import type { RuntimeState, StateStore, TargetRecord } from "../domain/runtime";
 
-/** Where the runtime reports lifecycle transitions to the health monitor (its epoch rule, in health-monitor.ts). */
+/** Where the runtime reports lifecycle transitions to the health monitor (the epochs of health-cache.ts). */
 export interface HealthTransitions {
   /** One Service's transition, or with no Service the whole Target's. Synchronous. */
   invalidate(targetId: string, service?: string): void;
@@ -46,6 +46,7 @@ export function reportingTransitions(
   return {
     read: () => store.read(),
     revision: async () => await store.revision?.(),
+    ...(store.snapshot ? { snapshot: () => store.snapshot!() } : {}),
     update: (change) =>
       store.update(async (state) => {
         const before = snapshot(state);

@@ -6,3 +6,5 @@ concurrentTestGlob = [
   "**/tests/release-matrix.test.ts",
   "**/tests/compiled-binaries.test.ts",
 ]
+# A fixture whose test timed out or threw before its cleanup is stopped once the run's tests are done.
+preload = ["./tests/support/fixture-sweep.ts"]

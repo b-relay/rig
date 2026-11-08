@@ -1,5 +1,12 @@
 import { RigError } from "../domain/errors";
-import { ownedRouteBlocks, routeOwnerToken } from "../domain/proxy-publication";
+import {
+  markedRouteBlock,
+  markedRouteBlocks,
+  ownedRouteBlocks,
+  replaceMarkedRouteBlocks,
+  routeMarkers,
+  routeOwnerToken,
+} from "../domain/proxy-publication";
 import { bareHostname } from "../domain/managed-proxy";
 import { checkCaddyValue } from "../domain/caddy-value";
 
@@ -42,7 +49,7 @@ export interface Router {
    * stops the previous Deployment that its route cannot be published. A route with no sites (a route-free plan) checks
    * nothing; a router that reserves still reserves what the Target serves now. */
   check?(route: RouteRequest): Promise<void>;
-  /** Lets go of the hostnames `check` reserved for `key`, once the deployment that asked is decided. */
+  /** Lets go of the hostnames `check` reserved for `key`, once the deploy or restart that asked is decided. */
   release?(key: string): Promise<void>;
   /** Withdraws, as one change published like any other, every owned block whose key `owners` does not hold: a route whose
    * Target no longer exists, which would otherwise hold its hostnames from every new owner. `owners` is asked inside the
@@ -197,8 +204,10 @@ export function renderOwnedBlock(
   route: RouteRequest,
   siteConfig: readonly string[],
 ): string {
-  const { begin, end } = routeMarkers(route.key);
-  return `${begin}\n${route.sites.map((site) => siteBlock(site, siteConfig)).join("")}${end}\n`;
+  return markedRouteBlock(
+    routeOwnerToken(route.key),
+    route.sites.map((site) => siteBlock(site, siteConfig)).join(""),
+  );
 }
 /** One Caddy site: its paths, then the Host's extra directives (an external router's `extra_config`; Rig's own Caddy has
  * none). Its header is the only line of a Rig block that starts at column 0 and ends with `{`, which is how
@@ -287,18 +296,14 @@ export function rerenderOwnedBlocks(
   text: string,
   siteConfig: readonly string[],
 ): string {
-  return text.replace(
-    /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(\r?\n)?/g,
-    (whole, token: string, body: string) => {
-      const sites = parseOwnedSites(body);
-      if (!sites.length) return whole;
-      const lines = [`# rig begin ${token}`];
-      for (const site of sites)
-        lines.push(siteBlock(site, siteConfig).replace(/\n$/, ""));
-      lines.push(`# rig end ${token}`);
-      return lines.join("\n") + "\n";
-    },
-  );
+  return replaceMarkedRouteBlocks(text, (block) => {
+    const sites = parseOwnedSites(block.body);
+    if (!sites.length) return block.text;
+    return markedRouteBlock(
+      block.token,
+      sites.map((site) => siteBlock(site, siteConfig)).join(""),
+    );
+  });
 }
 /** The route file as Rig's own Caddy publishes it: rendered entirely from the sites parsed out of its owned blocks, with no
  * directive of any config. Nothing of the existing text is kept as text: whatever lies outside the markers (an external
@@ -308,26 +313,16 @@ export function canonicalRouteFile(text: string): {
   text: string;
   dropped: boolean;
 } {
-  const blocks = [
-    ...text.matchAll(
-      /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(?:\r?\n)?/g,
-    ),
-  ].flatMap((match) => {
-    const sites = parseOwnedSites(match[2]!).flatMap((site) => {
+  const blocks = markedRouteBlocks(text).flatMap((block) => {
+    const sites = parseOwnedSites(block.body).flatMap((site) => {
       if (!site.routes.some((path) => path.prefix === "/")) return [];
       try {
-        return [siteBlock(site, []).replace(/\n$/, "")];
+        return [siteBlock(site, [])];
       } catch {
         return [];
       }
     });
-    return sites.length
-      ? [
-          [`# rig begin ${match[1]}`, ...sites, `# rig end ${match[1]}`].join(
-            "\n",
-          ) + "\n",
-        ]
-      : [];
+    return sites.length ? [markedRouteBlock(block.token, sites.join(""))] : [];
   });
   const canonical = blocks.join("");
   return { text: canonical, dropped: canonical !== text };
@@ -366,22 +361,20 @@ export function assertSingleOwners(
       );
     owners.set(id, { owner, address, ...(token ? { token } : {}) });
   };
-  for (const match of text.matchAll(
-    /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g,
-  ))
-    for (const site of parseOwnedSites(match[2]!))
+  for (const block of markedRouteBlocks(text))
+    for (const site of parseOwnedSites(block.body))
       claim(
         site.hostname,
-        `the Target route ${match[1]!.slice(0, 12)}`,
-        match[1]!,
+        `the Target route ${block.token.slice(0, 12)}`,
+        block.token,
       );
   for (const address of outside?.sites ?? []) claim(address, outside!.owner);
 }
 /** Every hostname the owned blocks of a route file serve. */
 export function routeFileHostnames(text: string): string[] {
-  return [
-    ...text.matchAll(/# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1/g),
-  ].flatMap((match) => parseOwnedSites(match[2]!).map((site) => site.hostname));
+  return markedRouteBlocks(text).flatMap((block) =>
+    parseOwnedSites(block.body).map((site) => site.hostname),
+  );
 }
 /** Caddy serves one site per host and port; a bare address defaults to 443 (80 under http://), so `example.com` and
  * `example.com:443` are one site and `example.com:8443` is another. */
@@ -402,10 +395,6 @@ function hostnamePresent(text: string, hostname: string): boolean {
       .filter(Boolean)
       .some((address) => siteAddress(address) === canonical);
   });
-}
-function routeMarkers(key: string): { begin: string; end: string } {
-  const token = routeOwnerToken(key);
-  return { begin: `# rig begin ${token}`, end: `# rig end ${token}` };
 }
 /** The refusal of a write whose route file no longer resolves to the file the change read (`resolved`): something swapped
  * it for a link mid-operation. A best-effort guard against mistakes, not a boundary (ADR 0014, Threat model), so it claims
@@ -429,19 +418,16 @@ export function withoutUnownedBlocks(
 ): { text: string; hostnames: string[] } {
   const owned = new Set([...owners].map(routeOwnerToken));
   const hostnames: string[] = [];
-  const kept = text.replace(
-    /# rig begin ([0-9a-f]{64})\r?\n([\s\S]*?)# rig end \1(?:\r?\n)?/g,
-    (whole, token: string, body: string) => {
-      if (owned.has(token)) return whole;
-      hostnames.push(...parseOwnedSites(body).map((site) => site.hostname));
-      return "";
-    },
-  );
+  const kept = replaceMarkedRouteBlocks(text, (block) => {
+    if (owned.has(block.token)) return block.text;
+    hostnames.push(...parseOwnedSites(block.body).map((site) => site.hostname));
+    return "";
+  });
   return { text: kept, hostnames };
 }
 /** Reads the complete owned block, including its newline, or rejects incomplete markers. */
 export function ownedBlock(text: string, key: string): string | null {
-  const { begin, end } = routeMarkers(key);
+  const { begin, end } = routeMarkers(routeOwnerToken(key));
   const start = text.indexOf(begin),
     finish = text.indexOf(end);
   if (start >= 0 !== finish >= 0 || (start >= 0 && finish < start))

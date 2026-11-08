@@ -1,8 +1,11 @@
 import { recordedForms } from "../config/plan-defaults";
 import type { ManagedComponent, TargetPlan } from "../config/types";
-import type { ServiceRun, TargetRecord } from "../domain/runtime";
+import {
+  currentRun,
+  type ServiceRun,
+  type TargetRecord,
+} from "../domain/runtime";
 import { preparedBuild, serviceDefinition } from "../domain/service-definition";
-import { currentRun } from "./supervision";
 
 /* Which Services a deploy keeps running (ADR 0016). A Service is kept when it is in both plans, its definition is
  * unchanged, none of the files it watches changed since the Commit its process started from, it runs the process Rig

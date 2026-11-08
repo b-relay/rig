@@ -1,10 +1,20 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
 import { readExitRecord } from "../src/providers/exit-record";
 import { executionBaseline } from "../src/daemon/environment";
+import {
+  survivingApplication,
+  type CaptureObservation,
+} from "../src/providers/capture-observation";
+import {
+  createProcessInspection,
+  platformInspection,
+} from "../src/providers/process-inspection";
+import * as release110 from "./support/capture-observation-1.1.0";
 const roots: string[] = [];
 /** Where rigd writes a request: in the capture directory of the Rig root `root`, the only place the wrapper takes one from. */
 async function requestIn(root: string): Promise<string> {
@@ -218,7 +228,7 @@ import {runCommand} from ${JSON.stringify(resolve("src/providers/command-runner.
 import {existsSync} from "node:fs";
 const real = createProcessIdentityReader(runCommand); let calls = 0;
 process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (pid) => {
-  if (++calls !== 2) return real(pid);
+  if (++calls !== 1) return real(pid);
   while (!existsSync(${JSON.stringify(pidFile)})) await Bun.sleep(20);
   throw new Error("ps failed transiently");
 } });`;
@@ -243,3 +253,229 @@ process.exitCode = await runCapturedProcess(process.argv[1], { inspect: async (p
   expect(observation.observation.state).toBe("stopped");
   expect(observation.observation.reason).toContain("stopped");
 }, 12000);
+
+/** How a supervisor of `reader`'s release judges the application of the wrapper whose request is `requestPath`. */
+async function judged(
+  reader: Pick<typeof release110, "survivingApplication">,
+  requestPath: string,
+) {
+  const inspection = createProcessInspection(
+    await platformInspection(runCommand),
+  );
+  return await reader.survivingApplication({
+    requestPath,
+    key: "adopted",
+    inspect: inspection.identity,
+    groupExists: inspection.groupExists,
+  });
+}
+
+test("a supervisor of rigd 1.1.0 adopts this release's wrapper: it sees the application running, then gone once it exits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-1.1.0-reader-"));
+  roots.push(root);
+  const requestPath = await requestIn(root);
+  await writeFile(
+    requestPath,
+    JSON.stringify({
+      key: "adopted",
+      componentName: "web",
+      command: [
+        "/bin/sh",
+        "-c",
+        "while [ ! -e stop ]; do sleep 0.05; done; exit 0",
+      ],
+      cwd: root,
+      env: {},
+      logRoot: root,
+      incarnation: "start-1",
+    }),
+  );
+  const wrapper = Bun.spawn(
+    [process.execPath, resolve("src/rigd.ts"), "capture", requestPath],
+    {
+      env: { ...process.env, RIG_ROOT: root },
+      stdout: "ignore",
+      stderr: "ignore",
+    },
+  );
+  try {
+    let running: { pid?: number } | undefined;
+    for (let i = 0; i < 1000 && !running?.pid; i++) {
+      running = await readFile(`${requestPath}.observation.json`, "utf8")
+        .then((raw) => JSON.parse(raw).observation)
+        .catch(() => undefined);
+      if (!running?.pid) await Bun.sleep(10);
+    }
+    expect(await judged(release110, requestPath)).toMatchObject({
+      state: "unknown",
+      reason: expect.stringContaining(`pid ${running!.pid}`),
+    });
+    await writeFile(join(root, "stop"), "");
+    expect(await wrapper.exited).toBe(0);
+    expect(await judged(release110, requestPath)).toBeUndefined();
+  } finally {
+    wrapper.kill("SIGKILL");
+  }
+}, 30000);
+
+test("a supervisor of this release adopts a rigd 1.1.0 wrapper's observation: the application running, then gone", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-1.1.0-writer-"));
+  roots.push(root);
+  const requestPath = await requestIn(root);
+  const application = Bun.spawn(["/bin/sleep", "600"]);
+  try {
+    const inspection = createProcessInspection(
+      await platformInspection(runCommand),
+    );
+    const identity = (await inspection.identity(application.pid))!;
+    const written: release110.CaptureObservation = {
+      wrapperPid: process.pid,
+      wrapperIdentity: (await inspection.identity(process.pid))!,
+      observedAt: Date.now(),
+      applicationIdentity: identity,
+      observation: { state: "running", pid: application.pid },
+    };
+    await release110.writeCaptureObservation(root, requestPath, written);
+    // This release's type names the same document.
+    const read: CaptureObservation = written;
+    expect(read.observation.pid).toBe(application.pid);
+    expect(await judged({ survivingApplication }, requestPath)).toMatchObject({
+      state: "unknown",
+      reason: expect.stringContaining(`pid ${application.pid}`),
+    });
+    application.kill("SIGKILL");
+    await application.exited;
+    expect(await judged({ survivingApplication }, requestPath)).toBeUndefined();
+  } finally {
+    application.kill("SIGKILL");
+  }
+}, 30000);
+
+/** A wrapper whose first `failures` reads of its own identity find nothing; it prints its exit code and how many times it
+ * read its own identity. */
+function wrapperFailingIdentity(failures: number, requestPath: string) {
+  const script = `import {runCapturedProcess} from ${JSON.stringify(resolve("src/providers/captured-process.ts"))};
+import {createProcessInspection, platformInspection} from ${JSON.stringify(resolve("src/providers/process-inspection.ts"))};
+import {runCommand} from ${JSON.stringify(resolve("src/providers/command-runner.ts"))};
+const real = createProcessInspection(await platformInspection(runCommand));
+let ownReads = 0;
+const code = await runCapturedProcess(process.argv[1], { processInspection: { ...real, identity: async (pid) => {
+  if (pid === process.pid && ++ownReads <= ${failures}) return undefined;
+  return await real.identity(pid);
+} } });
+process.stdout.write(JSON.stringify({ code, ownReads }));
+process.exit(0);`;
+  const wrapper = Bun.spawn([process.execPath, "-e", script, requestPath], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  return {
+    wrapper,
+    ended: async () =>
+      JSON.parse(await new Response(wrapper.stdout).text()) as {
+        code: number;
+        ownReads: number;
+      },
+  };
+}
+/** The wrapper's observation once it names a running application. */
+async function runningObservation(requestPath: string) {
+  for (let i = 0; i < 1000; i++) {
+    const saved = await readFile(`${requestPath}.observation.json`, "utf8")
+      .then((raw) => JSON.parse(raw))
+      .catch(() => undefined);
+    if (saved?.observation?.state === "running") return saved;
+    await Bun.sleep(10);
+  }
+  throw new Error("the wrapper never observed its application running");
+}
+const untilStopFile = [
+  "/bin/sh",
+  "-c",
+  "while [ ! -e stop ]; do sleep 0.05; done; exit 0",
+];
+
+test("a wrapper whose first read of its own identity fails reads it again, so rigd 1.1.0 adopts it, sees it exit, and can start it again", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-identity-retry-"));
+  roots.push(root);
+  const requestPath = await requestIn(root);
+  const request = (incarnation: string) =>
+    writeFile(
+      requestPath,
+      JSON.stringify({
+        key: "adopted",
+        componentName: "web",
+        command: untilStopFile,
+        cwd: root,
+        env: {},
+        logRoot: root,
+        incarnation,
+      }),
+    );
+  await request("start-1");
+  const first = wrapperFailingIdentity(1, requestPath);
+  try {
+    const saved = await runningObservation(requestPath);
+    expect(saved.wrapperIdentity).toHaveLength(64);
+    expect(await judged(release110, requestPath)).toMatchObject({
+      state: "unknown",
+      reason: expect.stringContaining(`pid ${saved.observation.pid}`),
+    });
+    await writeFile(join(root, "stop"), "");
+    expect(await first.ended()).toEqual({ code: 0, ownReads: 2 });
+    // Gone, so a 1.1.0 supervisor starts the component again.
+    expect(await judged(release110, requestPath)).toBeUndefined();
+  } finally {
+    first.wrapper.kill("SIGKILL");
+  }
+  await rm(join(root, "stop"));
+  await request("start-2");
+  const again = wrapperFailingIdentity(0, requestPath);
+  try {
+    const saved = await runningObservation(requestPath);
+    expect(saved.observation.incarnation).toBe("start-2");
+    expect(await judged(release110, requestPath)).toMatchObject({
+      state: "unknown",
+      reason: expect.stringContaining(`pid ${saved.observation.pid}`),
+    });
+    await writeFile(join(root, "stop"), "");
+    expect(await again.ended()).toEqual({ code: 0, ownReads: 1 });
+    expect(await judged(release110, requestPath)).toBeUndefined();
+  } finally {
+    again.wrapper.kill("SIGKILL");
+  }
+}, 30000);
+
+test("a wrapper that cannot read its own identity at all fails its start, as 1.1.0's did, and starts no application", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rig-capture-identity-missing-"));
+  roots.push(root);
+  const requestPath = await requestIn(root);
+  await writeFile(
+    requestPath,
+    JSON.stringify({
+      key: "adopted",
+      componentName: "web",
+      command: ["/bin/sh", "-c", "echo $$ > started; exec /bin/sleep 600"],
+      cwd: root,
+      env: {},
+      logRoot: root,
+      incarnation: "start-1",
+    }),
+  );
+  const { wrapper, ended } = wrapperFailingIdentity(1000, requestPath);
+  try {
+    expect(await ended()).toEqual({ code: 1, ownReads: 5 });
+  } finally {
+    wrapper.kill("SIGKILL");
+  }
+  expect(
+    JSON.parse(await readFile(`${requestPath}.status.json`, "utf8")),
+  ).toEqual({
+    state: "failed",
+    message:
+      "The managed component could not start (PROCESS_INSPECT: Capture wrapper identity unavailable.).",
+  });
+  expect(existsSync(join(root, "started"))).toBe(false);
+  expect(existsSync(`${requestPath}.observation.json`)).toBe(false);
+  expect(await judged(release110, requestPath)).toBeUndefined();
+}, 30000);

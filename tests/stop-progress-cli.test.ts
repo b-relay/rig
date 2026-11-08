@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { runRigCli } from "../src/cli/rig";
 import {
   formatClock,
   formatDuration,
@@ -10,9 +9,8 @@ import {
 import { renderStatus } from "../src/cli/output";
 import { liveDisplay, plainDisplay } from "../src/cli/progress-display";
 import { waitStatus } from "../src/cli/wait-notice";
-import type { CliDependencies } from "../src/cli/types";
 import type { ServiceStop } from "../src/daemon/protocol";
-import type { RuntimeCommand } from "../src/daemon/protocol";
+import { cliHarness } from "./support/cli-harness";
 
 // Local times throughout, so the expected text does not depend on the time zone the tests run in.
 const T0 = new Date(2026, 8, 27, 4, 6, 7).getTime();
@@ -201,9 +199,6 @@ test("rig status shows a stopping Service with its kill deadline, and the Target
  * 6m 18s. `wait` moves the clock, so minutes pass instantly. */
 function scripted(options: { live: boolean; interruptAt?: number }) {
   let clock = T0;
-  let errors = "";
-  let text = "";
-  const requests: RuntimeCommand[] = [];
   let finish: ((value: unknown) => void) | undefined;
   const cancel = new AbortController();
   const detach = new AbortController();
@@ -215,9 +210,7 @@ function scripted(options: { live: boolean; interruptAt?: number }) {
     operationId: "down-1",
     stops: stopsAt(ms),
   });
-  const dependencies: CliDependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
+  const cli = cliHarness({
     signal: cancel.signal,
     detach: detach.signal,
     now: () => new Date(clock),
@@ -231,49 +224,30 @@ function scripted(options: { live: boolean; interruptAt?: number }) {
         cancel.abort();
       await new Promise((resolve) => setTimeout(resolve, 0));
     },
-    client: {
-      async status() {
-        throw new Error("unexpected status");
-      },
-      command(request, signal) {
-        requests.push(request);
-        if (request.action === "queue") {
-          const ms = clock - T0;
-          if (ms >= 500 + 378_000) finish?.(result(ms));
-          return Promise.resolve({
-            operation: {
-              state: "running",
-              phase: "stopping",
-              project: "fletcher",
-              target: "working",
-              stops: stopsAt(ms),
-            },
-          });
-        }
-        signal?.addEventListener("abort", () => {});
-        return new Promise((resolve) => (finish = resolve));
-      },
+    command(request, signal) {
+      if (request.action === "queue") {
+        const ms = clock - T0;
+        if (ms >= 500 + 378_000) finish?.(result(ms));
+        return Promise.resolve({
+          operation: {
+            state: "running",
+            phase: "stopping",
+            project: "fletcher",
+            target: "working",
+            stops: stopsAt(ms),
+          },
+        });
+      }
+      signal?.addEventListener("abort", () => {});
+      return new Promise((resolve) => (finish = resolve));
     },
-    output: {
-      write(value) {
-        text += value;
-      },
-      error(value) {
-        errors += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    newOperationId: () => "down-1",
-  };
+    operationId: "down-1",
+  });
   return {
-    run: (args: string[]) => runRigCli(args, dependencies),
-    requests,
-    errors: () => errors,
-    text: () => text,
+    run: cli.run,
+    requests: cli.requests,
+    errors: cli.err,
+    text: cli.out,
   };
 }
 

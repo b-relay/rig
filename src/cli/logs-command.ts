@@ -1,11 +1,9 @@
 import { Option, type Command } from "commander";
-import { logComponentName, type RuntimeCommand } from "../daemon/protocol";
+import type { RuntimeCommand } from "../daemon/protocol";
 import { RigError } from "../domain/errors";
 import type { ExecuteCommand } from "./commands";
-import { logTimeWindow } from "./log-window";
 import { terminalText } from "./terminal-text";
 import { shellWord } from "../domain/target-selector";
-import { LONG_LINE_CHARS } from "./output";
 
 interface LogsOptions {
   project?: string;
@@ -19,6 +17,9 @@ interface LogsOptions {
   json?: boolean;
   full?: boolean;
 }
+/** The longest log line rig prints whole unless asked for --full. Rig records up to 64K characters per line, which would
+ * flood a terminal or an agent's context. */
+export const LONG_LINE_CHARS = 2000;
 /** How many entries rig logs reads unless --lines says otherwise. */
 const LINES = 50;
 /** The most --service names one request carries, as the control plane allows. */
@@ -137,7 +138,7 @@ export function addLogsCommand(
             "Request at most 10000 recent log entries.",
             "Reduce --lines.",
           );
-        const logFilter = logsFilter(options, now());
+        const logFilter = await logsFilter(options, now());
         await execute(
           {
             ...targetRequest(target, branch, options, typedFlags(options)),
@@ -169,11 +170,16 @@ function typedFlags(options: LogsOptions): string[] {
     ...(options.json ? ["--json"] : []),
   ];
 }
-/** The filter the flags ask for, or undefined when none narrows the read, so an unfiltered request is unchanged. */
-function logsFilter(
+/** The filter the flags ask for, or undefined when none narrows the read, so an unfiltered request is unchanged. The
+ * protocol's schemas and the time parser load once rig logs runs, since its help needs neither. */
+async function logsFilter(
   options: LogsOptions,
   now: Date,
-): RuntimeCommand["logFilter"] {
+): Promise<RuntimeCommand["logFilter"]> {
+  const [{ logComponentName }, { logTimeWindow }] = await Promise.all([
+    import("../daemon/protocol"),
+    import("./log-window"),
+  ]);
   const services = [...new Set(options.service ?? [])];
   if (services.length > MAX_SERVICES)
     throw new RigError(

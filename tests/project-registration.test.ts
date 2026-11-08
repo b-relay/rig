@@ -492,3 +492,14 @@ test("discovery never reads a config above the repository, so an invalid one the
     ),
   ).toMatchObject({ repoPath: plain, name: "plain" });
 });
+test("a registered directory is missing only when it is gone, as a config read reports it, whatever its config holds", async () => {
+  const f = await fixture();
+  const gone = join(f.root, "gone");
+  expect(await f.deps.documents.directoryMissing(f.repo)).toBe(false);
+  await writeFile(join(f.repo, "rig.yaml"), "name: [unclosed\n");
+  expect(await f.deps.documents.directoryMissing(f.repo)).toBe(false);
+  expect(await f.deps.documents.directoryMissing(gone)).toBe(true);
+  await expect(f.deps.documents.read(gone)).rejects.toMatchObject({
+    code: "missing_directory",
+  });
+});

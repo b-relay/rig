@@ -20,21 +20,26 @@ export type ObservationResult<T> =
 
 /** Provider work shares one budget. First settlement wins; cancellation requests
  * cooperation but never waits for it. Jobs must not mutate caller-owned results.
+ * Aborting `cancelled` ends the budget now: every job not yet settled expires.
  */
 export async function boundedObservations<T>(
   jobs: readonly ((signal: AbortSignal) => Promise<T>)[],
   budgetMs: number,
   deadline: ObservationDeadline,
+  cancelled?: AbortSignal,
 ): Promise<ObservationResult<T>[]> {
   if (!jobs.length) return [];
   const controller = new AbortController();
   const unfinished = new Set<() => void>();
   let expired = false;
-  const cancel = deadline.schedule(budgetMs, () => {
+  const expireAll = () => {
     expired = true;
     for (const expire of unfinished) expire();
     controller.abort();
-  });
+  };
+  const cancel = deadline.schedule(budgetMs, expireAll);
+  if (cancelled?.aborted) expireAll();
+  cancelled?.addEventListener("abort", expireAll, { once: true });
   try {
     return await Promise.all(
       jobs.map(
@@ -67,6 +72,7 @@ export async function boundedObservations<T>(
     );
   } finally {
     cancel();
+    cancelled?.removeEventListener("abort", expireAll);
     unfinished.clear();
     controller.abort();
   }

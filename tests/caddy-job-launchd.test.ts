@@ -238,3 +238,87 @@ test("a login job that does not let its label go is not replaced: the install fa
     await rm(home, { recursive: true, force: true });
   }
 });
+
+/** Both launchd jobs, restarting a Caddy that launchd reports as `pids` in turn (the last repeats) and whose admin socket
+ * answers as `admin` says. `steps` records each launchctl call and stop request in order. */
+function restarting(
+  pids: readonly number[],
+  admin: { reachable(): Promise<boolean>; stop(): Promise<boolean> },
+) {
+  return ["login", "system"].map((mode) => {
+    const steps: string[] = [];
+    let printed = 0;
+    const launchctl: LaunchctlCommand = async (args) => {
+      steps.push(args[0]!);
+      const pid = pids[Math.min(printed++, pids.length - 1)];
+      return {
+        code: 0,
+        stdout: `\tstate = running\n\tpid = ${pid}\n`,
+        stderr: "",
+      };
+    };
+    const client = {
+      ...answering,
+      reachable: admin.reachable,
+      stop: async () => {
+        steps.push("stop");
+        return admin.stop();
+      },
+    };
+    const options = {
+      root,
+      paths,
+      userHome: "/tmp/rig-launchd-home",
+      admin: client,
+      launchctl,
+      deadlineMs: 300,
+    };
+    const job =
+      mode === "login"
+        ? createLaunchAgentCaddyJob({ ...options, uid: 502 })
+        : createSystemCaddyJob({ ...options, userName: "clay" });
+    return { job, steps };
+  });
+}
+
+test("a launchd restart holds once launchd runs another Caddy process and it answers, in both modes", async () => {
+  for (const { job, steps } of restarting([4242, 4243], {
+    reachable: async () => true,
+    stop: async () => true,
+  })) {
+    await job.restart();
+    // The process before is observed before Caddy is asked to exit.
+    expect(steps).toEqual(["print", "stop", "print"]);
+  }
+});
+
+test("a launchd restart fails at its deadline while the same process runs or a new one does not answer, in both modes", async () => {
+  const cases = [
+    { pids: [4242], reachable: true, stopped: true },
+    { pids: [4242, 4243], reachable: false, stopped: true },
+    // The admin socket did not take the stop: the restart still waits for a new process, and fails the same way.
+    { pids: [4242], reachable: true, stopped: false },
+  ];
+  for (const { pids, reachable, stopped } of cases)
+    for (const { job } of restarting(pids, {
+      reachable: async () => reachable,
+      stop: async () => stopped,
+    }))
+      await expect(job.restart()).rejects.toMatchObject({
+        code: "PROXY_START",
+        message: expect.stringContaining("did not answer"),
+        details: { socket: paths.socket, log: paths.jobLog },
+      });
+});
+
+test("a launchd restart whose stop request throws fails with that error before waiting, in both modes", async () => {
+  for (const { job, steps } of restarting([4242, 4243], {
+    reachable: async () => true,
+    stop: async () => {
+      throw new Error("socket refused");
+    },
+  })) {
+    await expect(job.restart()).rejects.toThrow("socket refused");
+    expect(steps).toEqual(["print", "stop"]);
+  }
+});

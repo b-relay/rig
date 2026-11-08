@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
-import type { RuntimeCommand } from "../src/daemon/protocol";
-import { runRigCli } from "../src/cli/rig";
 import { renderResult } from "../src/cli/output";
+import { cliHarness, recordedInLog } from "./support/cli-harness";
 import type { CliInteraction } from "../src/cli/interaction";
-import { chooseZone, planSet } from "../src/cli/dns-command";
+import { chooseZone, planSet } from "../src/cli/dns-plan";
 
 const MAC = "100.64.0.7";
 const REPORT = {
@@ -99,51 +98,22 @@ const REPORT = {
 function harness(
   options: { interaction?: CliInteraction; report?: unknown } = {},
 ) {
-  const requests: RuntimeCommand[] = [];
-  let out = "";
-  let err = "";
-  const deps = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status() {
-        return { project: "demo", targets: [] };
-      },
-      async command(request: RuntimeCommand) {
-        requests.push(request);
-        return request.action === "dns"
-          ? (options.report ?? REPORT)
-          : {
-              outcome: "updated",
-              summary:
-                "updated A app.example.com -> 100.64.0.7 (was 203.0.113.5)",
-            };
-      },
-    },
-    output: {
-      write(value: string) {
-        out += value;
-      },
-      error(value: string) {
-        err += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-1",
+  const cli = cliHarness({
+    command: (request) =>
+      request.action === "dns"
+        ? (options.report ?? REPORT)
+        : {
+            outcome: "updated",
+            summary:
+              "updated A app.example.com -> 100.64.0.7 (was 203.0.113.5)",
+          },
+    status: () => ({ project: "demo", targets: [] }),
+    record: recordedInLog,
     ...(options.interaction ? { interaction: options.interaction } : {}),
-  };
+  });
   return {
-    deps,
-    run: (args: string[]) => runRigCli(args, deps as never),
-    writes: () => requests.filter((request) => request.action !== "dns"),
-    requests,
-    out: () => out,
-    err: () => err,
+    ...cli,
+    writes: () => cli.requests.filter((request) => request.action !== "dns"),
   };
 }
 const asked = (answer: boolean) => {

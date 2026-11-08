@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
+import { processExists } from "../src/daemon/process-identity";
 
 const env = { PATH: process.env.PATH! };
 
@@ -56,27 +57,51 @@ test("a command whose executable cannot start names the executable and the cause
   });
 });
 
-test("output reaches onOutput as it is produced, before the command ends", async () => {
+test("output reaches onOutput as it is produced, while the command still runs", async () => {
+  // Prints to both streams, then waits, alive, until the test tells it to finish.
+  const script = `
+process.on("SIGUSR1", () => process.stdout.write("second\\n", () => process.exit(0)));
+process.stdout.write("first\\n");
+process.stderr.write("warned\\n");
+setInterval(() => {}, 60_000);`;
+  let pid = 0;
   const seen: string[] = [];
-  const result = await runCommand({
-    command: [
-      "/bin/sh",
-      "-c",
-      "echo first; echo warned >&2; sleep 0.2; echo second",
-    ],
+  const both = {
+    stdout: Promise.withResolvers<void>(),
+    stderr: Promise.withResolvers<void>(),
+  };
+  const running = runCommand({
+    command: [process.execPath, "-e", script],
     env,
-    onOutput: (stream, chunk) => seen.push(`${stream}:${chunk}`),
+    // Bounds the test should output be held back until the command ends: it never ends unless told to.
+    timeoutMs: 4000,
+    started: async (group) => void (pid = group),
+    onOutput: (stream, chunk) => {
+      seen.push(
+        `${stream}:${chunk}${processExists(pid) ? "" : " after the command ended"}`,
+      );
+      both[stream].resolve();
+    },
   });
-  expect(result).toEqual({
+  try {
+    expect(
+      await Promise.race([
+        Promise.all([both.stdout.promise, both.stderr.promise]).then(
+          () => "output",
+        ),
+        running.then(() => "ended"),
+      ]),
+    ).toBe("output");
+    expect(seen.sort()).toEqual(["stderr:warned\n", "stdout:first\n"]);
+  } finally {
+    if (pid && processExists(pid)) process.kill(pid, "SIGUSR1");
+  }
+  expect(await running).toEqual({
     exitCode: 0,
     stdout: "first\nsecond\n",
     stderr: "warned\n",
   });
-  expect(seen.sort()).toEqual([
-    "stderr:warned\n",
-    "stdout:first\n",
-    "stdout:second\n",
-  ]);
+  expect(seen).toContain("stdout:second\n");
 });
 
 test("with started, the command runs only once its group was recorded, and never when the record fails", async () => {

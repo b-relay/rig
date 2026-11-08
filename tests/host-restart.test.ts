@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runtimeWorld } from "./support/runtime-world";
 import type { FileStateStore } from "../src/runtime/state-store";
-import { UNKNOWN_EXIT_RESTART_BACKOFF_MS } from "../src/runtime/supervision";
+import { UNKNOWN_EXIT_RESTART_BACKOFF_MS } from "../src/domain/restart-policy";
 import { stopDetached } from "../src/domain/stop-budget";
 import type { RuntimeState } from "../src/domain/runtime";
 import type { HostSession } from "../src/domain/host-session";

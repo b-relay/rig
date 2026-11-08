@@ -1,18 +1,16 @@
 import { Command, InvalidArgumentError, Option } from "commander";
 import { resolve } from "node:path";
-import {
-  backupSelector,
-  logComponentName,
-  previewName,
-  projectName,
-  type RuntimeCommand,
-} from "../daemon/protocol";
+import type { RuntimeCommand } from "../daemon/protocol";
+import { MAX_NAME_LENGTH, NAME_PATTERN } from "../domain/names";
 import { RigError } from "../domain/errors";
 import { reported } from "./failure";
-import { PREVIEW_SELECTOR } from "../config/schema";
 import { terminalText } from "./terminal-text";
 import { rigCommand, type RigCommandPath } from "../domain/rig-command";
-import { generatedPreviewName } from "../domain/target-selector";
+// From the domain rather than the config schema, which help need not load.
+import {
+  generatedPreviewName,
+  PREVIEW_SELECTOR,
+} from "../domain/target-selector";
 import { RIG_BUILD } from "../domain/version";
 import type { LocalCommands, UserOutput } from "./types";
 import { addMonitorCommand, type MonitorWindowInput } from "./monitor-command";
@@ -346,7 +344,8 @@ export function terminalCommand(name: string, output: UserOutput): Command {
 }
 function projectScope(options: ScopeOptions): { project?: string } {
   if (options.project === undefined) return {};
-  if (!projectName.safeParse(options.project).success)
+  // The protocol's projectName rule, checked without its schemas, which help need not load.
+  if (options.project.length < 1 || options.project.length > MAX_NAME_LENGTH)
     throw new RigError(
       "USAGE",
       `The --project name is ${
@@ -363,7 +362,8 @@ function previewScope(options: Pick<ScopeOptions, "deployment">): {
   deployment?: string;
 } {
   if (options.deployment === undefined) return {};
-  if (!previewName.safeParse(options.deployment).success)
+  // The protocol's previewName rule, likewise.
+  if (!NAME_PATTERN.test(options.deployment))
     throw new RigError(
       "USAGE",
       options.deployment.length
@@ -541,12 +541,7 @@ function addRunCommand(
         branch: string | undefined,
         options: ScopeOptions,
       ) => {
-        if (!logComponentName.safeParse(job).success)
-          throw new RigError(
-            "USAGE",
-            `'${terminalText(job)}' is not a job name.`,
-            "Pass a name from jobs in rig.yaml, such as rig run nightly-import.",
-          );
+        await assertJobName(job, "rig run nightly-import");
         // A job is scheduled in the stable Target by default, so that is the Target rig run means unless another is named.
         const request = targetRequest(
           "run",
@@ -615,7 +610,8 @@ function addBackupCommands(
         const [job, target, branch] = targetFirst
           ? [undefined, first, second]
           : [first, second, third];
-        if (job !== undefined) assertJobName(job, "rig backup list nightly-db");
+        if (job !== undefined)
+          await assertJobName(job, "rig backup list nightly-db");
         // Without a Target every Target's backups are listed.
         const request =
           target === undefined && !branch && !options.deployment
@@ -669,7 +665,8 @@ function addBackupCommands(
         branch: string | undefined,
         options: ScopeOptions & { yes?: boolean },
       ) => {
-        assertJobName(job, "rig backup restore nightly-db latest");
+        await assertJobName(job, "rig backup restore nightly-db latest");
+        const { backupSelector } = await import("../daemon/protocol");
         if (!backupSelector.safeParse(id).success)
           throw new RigError(
             "USAGE",
@@ -697,8 +694,10 @@ function addBackupCommands(
       },
     );
 }
-/** Refuses what cannot be a job name before a request exists. */
-function assertJobName(job: string, example: string): void {
+/** Refuses what cannot be a job name before a request exists. The protocol's schemas load once an action runs, since help
+ * needs none of them. */
+async function assertJobName(job: string, example: string): Promise<void> {
+  const { logComponentName } = await import("../daemon/protocol");
   if (!logComponentName.safeParse(job).success)
     throw new RigError(
       "USAGE",

@@ -59,7 +59,7 @@ export async function privateDirectoryWithin(
  * followed. `mode` is set exactly, whatever the umask. `durable` flushes the file before the rename, and after it every
  * directory from the root down to the file, so the whole path to it (directories made just now included) survives a crash;
  * a directory that cannot be flushed fails FILE_NOT_DURABLE, with the new contents already in place (`published: true`). `confirm` runs
- * once the new file is written, just before the rename; what it throws abandons the replacement. Any other failure leaves
+ * once the new file is written, just before the rename, given that file's path; what it throws abandons the replacement. Any other failure leaves
  * `path` as it was and removes the temporary file. */
 export async function replacePrivateFile(
   root: string,
@@ -68,7 +68,7 @@ export async function replacePrivateFile(
   options: {
     readonly mode?: number;
     readonly durable?: boolean;
-    readonly confirm?: () => Promise<void>;
+    readonly confirm?: (written: string) => Promise<void>;
   } = {},
 ): Promise<void> {
   const directory = dirname(path);
@@ -82,7 +82,7 @@ export async function replacePrivateFile(
     } finally {
       await file.close();
     }
-    await options.confirm?.();
+    await options.confirm?.(temporary);
     await rename(temporary, path);
   } finally {
     await rm(temporary, { force: true });

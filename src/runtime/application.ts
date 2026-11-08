@@ -13,6 +13,8 @@ import type {
   StatusSelection,
 } from "../domain/project-status";
 import { stopRecordedTarget } from "./stop";
+import { createRouteGuard, type RouteGuard } from "./route-guard";
+import { servedPhrase, type ServedReceipt } from "./served";
 import { doctor, hostDoctor } from "./doctor";
 import {
   assertRecordedStopped,
@@ -39,6 +41,7 @@ import type {
   RuntimeState,
   TargetRecord,
 } from "../domain/runtime";
+import { readOnlyState } from "../domain/runtime";
 import {
   RigError,
   asRigError,
@@ -54,15 +57,17 @@ import { resolve as resolvePath } from "node:path";
 import { routeOwnerToken } from "../domain/proxy-publication";
 import { trackedWorkReport } from "./work-report";
 import {
-  activationJournal,
-  intendRunning,
-  intendStopped,
   superviseTarget,
   withholdRecoveryPaths,
   withholdStoppedServices,
-  supervisionScope,
   type RestartMarks,
 } from "./supervision";
+import { supervisionScope } from "../domain/restart-policy";
+import {
+  activationJournal,
+  intendRunning,
+  intendStopped,
+} from "./service-runs";
 import {
   findHostRestart,
   recordFailedAfterHostRestart,
@@ -80,7 +85,6 @@ import {
   registerProject,
   selectProject,
   assertIdentity,
-  registeredDirectoryMissing,
 } from "./projects";
 import {
   assertNewPreviewName,
@@ -316,7 +320,7 @@ const UNLOCKED: Admission = {
  * Read-only requests never wait. See docs/adr/0007-per-target-operation-queue.md. */
 export function createRuntime(input: RuntimeDependencies): RigRuntime {
   // Every write the runtime makes reports its lifecycle transitions to the health monitor as it is applied, while the
-  // Operation making it still holds its Target (the epoch rule in health-monitor.ts).
+  // Operation making it still holds its Target (the epochs of health-cache.ts).
   const deps: RuntimeDependencies = input.healthTransitions
     ? {
         ...input,
@@ -368,12 +372,13 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     if (left > 0) killRequests.set(targetId, left);
     else killRequests.delete(targetId);
   };
-  const lifecycleOf = (entry: StopTracking) =>
+  const lifecycleOf = (entry: StopTracking, guard?: RouteGuard) =>
     withStops(deps.lifecycle, {
       kill: (target) =>
         killSignal(entry, target.id, (id) => killRequests.has(id)),
       detach: detaching.signal,
       observer: stopObserver(entry, deps.now),
+      ...(guard ? { guard } : {}),
     });
   /** working Targets and Previews whose Services this daemon could not all record as stopped by the Host restart it found,
    * by Target id, with that restart as the first pass identified it; each pass, and each Operation admitted on the Target,
@@ -612,15 +617,22 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     try {
       for (let attempt = 1; ; attempt++) {
         const held = admission(operationId, attempt >= MAX_SELECTIONS);
+        const routeGuard = createRouteGuard(deps, {
+          operationId,
+          action: command.action,
+        });
         try {
           return await run(command, operationId, held, {
             ...deps,
             ports: reservations.ports(operationId),
-            lifecycle: lifecycleOf(entry),
+            lifecycle: lifecycleOf(entry, routeGuard),
+            routeGuard,
           });
         } catch (error) {
           if (!isReselect(error)) throw error;
         } finally {
+          // Joined for the last time before the Target is released: from here supervision watches it again.
+          await routeGuard.release();
           held.release();
           reservations.release(operationId);
         }
@@ -660,6 +672,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
       | undefined;
     /** The Services a deploy kept running (ADR 0016), for its history. */
     let deployKept: readonly string[] = [];
+    /** What the deploy's candidate served (ADR 0020), for its history and Activity whatever the outcome. */
+    const deployReceipt: ServedReceipt = {};
     try {
       if (command.action === "cancel-uninstall") {
         // A shutdown cannot be called off: only a preparation can.
@@ -813,17 +827,23 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         });
       }
       if (command.action === "list") {
-        const state = await deps.store.read();
-        // An inventory listing reads the record only; Target liveness is status's job and is not observed here.
+        const state = await readOnlyState(deps.store);
+        const targetCounts = new Map<string, number>();
+        for (const target of state.targets)
+          targetCounts.set(
+            target.projectId,
+            (targetCounts.get(target.projectId) ?? 0) + 1,
+          );
+        // An inventory listing reads the record only; Target liveness is status's job and is not observed here, and each
+        // Project's config is not read either.
         return {
           projects: await Promise.all(
             state.projects.map(async (p) => ({
               id: p.id,
               name: p.name,
               repoPath: p.repoPath,
-              targetCount: state.targets.filter((t) => t.projectId === p.id)
-                .length,
-              ...((await directoryMissing(p.repoPath, deps))
+              targetCount: targetCounts.get(p.id) ?? 0,
+              ...((await deps.documents.directoryMissing(p.repoPath))
                 ? { missing: true }
                 : {}),
             })),
@@ -1309,7 +1329,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             (await deps.documents.host()).deploy.production_branch,
         });
         const commit = command.commit
-          ? await deps.sources.resolve(project.repoPath, command.commit)
+          ? await deps.sources.resolve(
+              project.repoPath,
+              command.commit,
+              project.id,
+            )
           : preflight.commit;
         deploySource = { ...deploySource, commit };
         assertDeploymentRecovered(target);
@@ -1358,6 +1382,7 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
                 operationId,
                 ...(command.force ? { force: true } : {}),
                 repository,
+                receipt: deployReceipt,
               },
               deps,
             ),
@@ -1378,7 +1403,18 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
                 ...retained.causes,
               })
               .catch(() => {});
-          throw error;
+          // A candidate that served says so, and for how long, whatever undid it: Activity as the error.
+          const served = deployReceipt.served;
+          if (!served) throw error;
+          activityNote = servedPhrase(candidate.commit, served);
+          const failure = asRigError(error);
+          throw new RigError(
+            failure.code,
+            `${failure.message} The ${activityNote}.`,
+            failure.hint,
+            failure.details,
+            failure.causes,
+          );
         }
         const warnings = [
           ...preflight.warnings,
@@ -1524,7 +1560,8 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             target.updatedAt = deps.now();
             await persistTarget(target, deps.store);
             admission.phase("stopping", target);
-            await stopKeepingKills(target);
+            deps.routeGuard?.watch(target);
+            await stopKeepingKills(target, true);
             admission.phase("starting", target);
             if (target.kind === "working")
               target = await adoptWorkingCopyPlan(target, restarting, deps);
@@ -1669,6 +1706,9 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
             ...(outcome === "deployed" && deployKept.length
               ? { kept: [...deployKept] }
               : {}),
+            ...(deployReceipt.served?.from
+              ? { servedAt: deployReceipt.served.from }
+              : {}),
             startedAt:
               deploySource?.startedAt ??
               operations.get(operationId)?.view.startedAt ??
@@ -1714,7 +1754,10 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
     /** Stops `stopped` as `rig down` and `rig restart` do, and saves which Services it had to SIGKILL on the saved record as
      * soon as the stop is over, whether it succeeded or failed part-way, so status says so while they stay stopped: after
      * a down, or a restart that fails before it starts them again. The next start clears it. */
-    async function stopKeepingKills(stopped: TargetRecord) {
+    async function stopKeepingKills(
+      stopped: TargetRecord,
+      startFollows = false,
+    ) {
       const view = operations.get(operationId)!.view;
       // Marked on the Operation's own record as well, since what it saves later (a replan, the final record) starts from it.
       const keep = () =>
@@ -1727,7 +1770,11 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
               })
               .catch(() => {});
       try {
-        const result = await stopRecordedTarget(stopped, deps.lifecycle);
+        const result = await stopRecordedTarget(
+          stopped,
+          deps.lifecycle,
+          startFollows,
+        );
         await keep();
         return result;
       } catch (error) {
@@ -2609,10 +2656,21 @@ export function createRuntime(input: RuntimeDependencies): RigRuntime {
         }
         if (mark && target.kind === "stable" && !startedBefore?.has(targetId)) {
           entry.view.phase = "starting";
-          const started = await startAfterHostRestart(target, mark, {
-            ...deps,
-            lifecycle,
+          // The start publishes before the end of its plan has started, so its paths are watched as an Operation's are,
+          // until the Target's lease ends.
+          const routeGuard = createRouteGuard(deps, {
+            operationId: lease.id,
+            action: "up",
           });
+          let started: Awaited<ReturnType<typeof startAfterHostRestart>>;
+          try {
+            started = await startAfterHostRestart(target, mark, {
+              ...deps,
+              lifecycle: lifecycleOf(entry, routeGuard),
+            });
+          } finally {
+            await routeGuard.release();
+          }
           if (started.outcome === "settled") settled?.add(targetId);
           if (started.outcome === "unrecorded")
             unrecorded.set(targetId, { error: started.error, mark });
@@ -3181,7 +3239,7 @@ async function releaseHeldCheckouts(
   target: TargetRecord,
   deps: RuntimeDependencies,
 ): Promise<RigError[]> {
-  const held = ((await deps.store.read()).heldCheckouts ?? []).filter(
+  const held = ((await readOnlyState(deps.store)).heldCheckouts ?? []).filter(
     (checkout) => checkout.target === target.id,
   );
   const failures: RigError[] = [];
@@ -3329,18 +3387,6 @@ function activityScopeError(error: unknown): unknown {
   );
 }
 
-/** A registered directory that is gone entirely, as opposed to one whose config is unreadable. */
-async function directoryMissing(
-  repoPath: string,
-  deps: Pick<RuntimeDependencies, "documents">,
-): Promise<boolean> {
-  try {
-    await deps.documents.read(repoPath);
-    return false;
-  } catch (error) {
-    return registeredDirectoryMissing(error);
-  }
-}
 /** The scaffold flags an init carried that an existing config keeps out. */
 function unappliedInitFlags(command: RuntimeCommand): string[] {
   const flags: [keyof RuntimeCommand, string][] = [

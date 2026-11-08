@@ -12,13 +12,14 @@ import {
 } from "../src/providers/process-inspection";
 import { createProcessTiming } from "../src/providers/process-timing";
 import type { FileStateStore } from "../src/runtime/state-store";
+import type { ReadinessTiming } from "../src/runtime/lifecycle";
 import {
-  intendRunning,
   restartBudget,
   UNKNOWN_EXIT_RESTART_BACKOFF_MS,
   UNKNOWN_EXIT_RESTART_LIMIT,
   UNKNOWN_EXIT_RESTART_WINDOW_MS,
-} from "../src/runtime/supervision";
+} from "../src/domain/restart-policy";
+import { intendRunning } from "../src/runtime/service-runs";
 import type { TargetRecord } from "../src/domain/runtime";
 import type {
   ManagedProcess,
@@ -53,6 +54,7 @@ async function fixture(
     }
   > = SERVICES,
   real?: (root: string) => Supervisor,
+  readiness?: ReadinessTiming & { startGraceMs: number },
 ) {
   const config = parseProjectConfig({
     name: "demo",
@@ -118,6 +120,7 @@ async function fixture(
     startsAt: "2026-09-17T00:00:00.000Z",
     // A readiness deadline is long enough for a real health command to answer.
     readinessDeadlineMs: 250,
+    ...(readiness ? { timing: readiness } : {}),
     activation: {
       ...localActivation(
         Object.values(services).map((service) => service.ports.http),
@@ -395,12 +398,40 @@ test("an exit whose record cannot be saved is not retried until it can be", asyn
   expect(f.starts).toHaveLength(2);
 });
 
+/** Readiness polls fire at once, and a start check's deadline passes as soon as one check has failed: the poll that would
+ * follow it is the deadline instead. A start that is not ready at once is judged unready without any real time passing, so
+ * however loaded the machine, such a test neither waits out real deadlines nor spawns its check back to back meanwhile. */
+function deadlineAfterOneFailedCheck(): ReadinessTiming & {
+  startGraceMs: number;
+} {
+  let deadline: (() => void) | undefined;
+  return {
+    schedule(delayMs, fire) {
+      if (delayMs >= 1000) {
+        deadline = fire;
+        return () => {
+          if (deadline === fire) deadline = undefined;
+        };
+      }
+      const next = deadline ?? fire;
+      deadline = undefined;
+      const timer = setTimeout(next, 0);
+      return () => clearTimeout(timer);
+    },
+    startGraceMs: 0,
+  };
+}
+
 test("an automatic start that never becomes ready is stopped by Rig and spends budget like any other, so it ends exhausted, not retried forever", async () => {
   const unready = join(tmpdir(), `rig-restart-policy-unready-${process.pid}`);
   roots.push(unready);
-  const f = await fixture({
-    api: { ...SERVICES.api, healthcheck: { test: `test ! -e '${unready}'` } },
-  });
+  const f = await fixture(
+    {
+      api: { ...SERVICES.api, healthcheck: { test: `test ! -e '${unready}'` } },
+    },
+    undefined,
+    deadlineAfterOneFailedCheck(),
+  );
   await f.command("up");
   await f.exit("api", { exitCode: 1 });
   await writeFile(unready, "");

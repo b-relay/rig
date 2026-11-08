@@ -1,4 +1,4 @@
-import { readHostConfig, type HostConfig } from "../config";
+import type { HostConfig } from "../config";
 import {
   createFileDiagnosticLog,
   type FileDiagnosticOptions,
@@ -9,7 +9,7 @@ import type { DiagnosticLog } from "./types";
  * here, so the snake_case keys are mapped in one place. */
 export function configuredDiagnosticLog(
   options: Pick<FileDiagnosticOptions, "root" | "source" | "now">,
-  host: HostConfig,
+  host: Pick<HostConfig, "diagnostics">,
 ): DiagnosticLog {
   return createFileDiagnosticLog({
     ...options,
@@ -18,17 +18,24 @@ export function configuredDiagnosticLog(
   });
 }
 
-/** Acquire Host policy lazily so help and parser-only requests never depend on valid config. */
+/** Acquire Host policy lazily, so help and parser-only requests neither depend on valid config nor load its reader. Only
+ * the `diagnostics` section is read, so a command loads no Project schema or config editor to log; config.yaml that
+ * cannot be read as Host config leaves the default retention and level. */
 export function createHostDiagnosticLog(
   options: Pick<FileDiagnosticOptions, "root" | "source" | "now">,
 ): DiagnosticLog {
   let selected: Promise<DiagnosticLog> | undefined;
   return {
     async record(entry) {
-      selected ??= readHostConfig(options.root).then(
-        (host) => configuredDiagnosticLog(options, host),
-        () => createFileDiagnosticLog(options),
-      );
+      selected ??= import("../config/host-diagnostics")
+        .then(({ readHostDiagnostics }) => readHostDiagnostics(options.root))
+        .then(
+          (diagnostics) =>
+            diagnostics
+              ? configuredDiagnosticLog(options, { diagnostics })
+              : createFileDiagnosticLog(options),
+          () => createFileDiagnosticLog(options),
+        );
       return await (await selected).record(entry);
     },
   };

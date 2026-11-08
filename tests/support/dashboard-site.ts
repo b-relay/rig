@@ -19,28 +19,30 @@ export const SITE = {
 process.once("exit", () => rmSync(root, { recursive: true, force: true }));
 mkdirSync(join(root, "auth"), { recursive: true, mode: 0o700 });
 writeFileSync(SITE.keyFile, `${SITE.key}\n`, { mode: 0o600 });
-const names = [
-  "PORT",
-  "RIG_ROOT",
-  "RIG_WEB_KEY_FILE",
-  "RIG_WEB_HOST",
-  "RIG_WEB_TRUSTED_CLIENTS",
-] as const;
-const previous = Object.fromEntries(
-  names.map((name) => [name, process.env[name]]),
-);
-Object.assign(process.env, {
+/** Every variable the site reads its settings from, as this site has it: undefined is unset, whatever the test process
+ * inherited. */
+const environment: Record<string, string | undefined> = {
   PORT: String(SITE.port),
   RIG_ROOT: root,
   RIG_WEB_KEY_FILE: SITE.keyFile,
   RIG_WEB_HOST: SITE.host,
   RIG_WEB_TRUSTED_CLIENTS: SITE.trusted,
-});
-// Read now, while the environment names this site, then put the environment back for every other test.
+  RIG_WEB_DASHBOARD_HOST: undefined,
+  RIG_WEB_SANDBOX_ROOT: undefined,
+  RIG_WEB_REPOSITORY: undefined,
+};
+const set = (values: Record<string, string | undefined>) => {
+  for (const [name, value] of Object.entries(values))
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+};
+const previous = Object.fromEntries(
+  Object.keys(environment).map((name) => [name, process.env[name]]),
+);
+// Read now, while the environment names this site alone, then put the environment back for every other test.
+set(environment);
 site();
-for (const name of names)
-  if (previous[name] === undefined) delete process.env[name];
-  else process.env[name] = previous[name];
+set(previous);
 
 /** A Cookie header holding a session this site signed, valid for an hour. */
 export const session = (): string =>

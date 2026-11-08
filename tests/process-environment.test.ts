@@ -7,8 +7,9 @@ const leaf = { name: "DB", source: "env.DB", value: "app" };
 
 test("later sources win, overrides name every source of a file-supplied name without its value, and every file value is a secret", () => {
   const composed = composeEnvironment({
-    baseline: { PATH: "/bin", DB: "baseline" },
-    publicEnv: { DB: "app", ONLY_PUBLIC: "1" },
+    // No file supplies HOME, so only public env stands between it and the baseline.
+    baseline: { PATH: "/bin", HOME: "/daemon", DB: "baseline" },
+    publicEnv: { HOME: "/app", DB: "app", ONLY_PUBLIC: "1" },
     files: [
       { path: "/a.env", values: { TOKEN: "one", DB: "app" } },
       { path: "/b.env", values: { TOKEN: "two", ONLY_FILE: "x" } },
@@ -17,6 +18,7 @@ test("later sources win, overrides name every source of a file-supplied name wit
   });
   expect(composed.env).toEqual({
     PATH: "/bin",
+    HOME: "/app",
     DB: "app",
     ONLY_PUBLIC: "1",
     TOKEN: "two",

@@ -100,8 +100,9 @@ export interface ChildSupervisorOptions {
   /** Aborted by the owner as rigd begins to shut down, before it drains: a stop this supervisor makes on its own (what a
    * failed start spawned) stops waiting then, as `detach` makes it, and the process finishes stopping on its own. */
   readonly shutdown?: AbortSignal;
-  /** Called when a process this supervisor spawned has exited, so an owner polling `observe` looks at once. */
-  readonly onExit?: () => void;
+  /** Called when what `observe` says of a process this supervisor spawned has changed: it exited, or its output stopped
+   * or started again being recorded. An owner that waits for this instead of polling `observe` misses nothing. */
+  readonly onChange?: () => void;
 }
 /** Daemon-owned groups have identity-checked leases; stop never trusts an unverified recovered PID.
  * A process is started once and never respawned here. Whoever holds the application's child handle records its exit:
@@ -566,9 +567,16 @@ export function createChildSupervisor(
           resolve(recordExit(wrapperExitRoot, code, signal)),
         ),
       );
-    child.once("exit", () => options.onExit?.());
+    child.once("exit", () => options.onChange?.());
     if (!options.captureCommand)
-      captureOutput(root, owned, request, now, options.logRetention);
+      captureOutput(
+        root,
+        owned,
+        request,
+        now,
+        options.logRetention,
+        options.onChange,
+      );
     await new Promise<void>((resolve, reject) => {
       child.once("spawn", resolve);
       child.once("error", (error) =>
@@ -685,6 +693,8 @@ export function captureOutput(
   request: ManagedProcess,
   now: () => Date,
   retention: (() => Promise<LogRetention>) | undefined,
+  /** Called when output stops or starts again being recorded. */
+  changed?: () => void,
 ): void {
   const pipes = (["stdout", "stderr"] as const).map(
     (stream) => [stream, owned.child![stream]!] as const,
@@ -694,6 +704,7 @@ export function captureOutput(
     pause: () => pipes.forEach(([, pipe]) => pipe.pause()),
     resume: () => pipes.forEach(([, pipe]) => pipe.resume()),
     write: async (entries) => {
+      const before = owned.outputFailure;
       try {
         await appendTargetLogEntries(
           root,
@@ -705,6 +716,7 @@ export function captureOutput(
       } catch (error) {
         owned.outputFailure = `Target output is not being recorded in ${request.logRoot}: ${failureReason(error)}`;
       }
+      if (owned.outputFailure !== before) changed?.();
     },
   });
   for (const [stream, pipe] of pipes) {

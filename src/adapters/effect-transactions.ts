@@ -4,12 +4,8 @@ import { constants } from "node:fs";
 import { copyFile, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
-import {
-  RigError,
-  describeInvalidDocument,
-  failureCauses,
-  failureReason,
-} from "../domain/errors";
+import { RigError, failureCauses, failureReason } from "../domain/errors";
+import { describeInvalidDocument } from "../domain/invalid-document";
 import type { Router, RouteCheckpoint } from "../providers/caddy-router";
 import { liveUpstreams, withheldExcept } from "../providers/route-file";
 import type {
@@ -115,22 +111,51 @@ type Journal = z.infer<typeof journalSchema>;
 /** Just enough of any journal, of any version, to know which Target it holds paths for and which paths. */
 const unfinishedSchema = z
   .object({
-    targetId: z.string(),
-    project: z.string().optional(),
-    target: z.string().optional(),
-    phase: z.unknown(),
-    files: z.array(
-      z
-        .object({
-          path: z.string(),
-          // What the path held when the checkpoint was taken, when this rigd can read it.
-          before: z.string().nullable().optional().catch(undefined),
-        })
-        .loose(),
-    ),
+    targetId: z
+      .string()
+      .describe("The id of the Target the checkpoint holds paths for."),
+    project: z
+      .string()
+      .optional()
+      .describe("Its Project's name, when the journal records it."),
+    target: z
+      .string()
+      .optional()
+      .describe("Its name, when the journal records it."),
+    phase: z
+      .unknown()
+      .describe(
+        "The journal's phase, of whatever version; a committed journal holds no paths.",
+      ),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().describe("A path the checkpoint protects."),
+            before: z
+              .string()
+              .nullable()
+              .optional()
+              .catch(undefined)
+              .describe(
+                "What the path held when the checkpoint was taken, when this rigd can read it.",
+              ),
+          })
+          .loose(),
+      )
+      .describe("The paths the checkpoint protects."),
   })
   .loose();
-const versionSchema = z.object({ version: z.number().optional() }).loose();
+const versionSchema = z
+  .object({
+    version: z
+      .number()
+      .optional()
+      .describe(
+        "The journal's format version, read before the rest so a newer journal is refused rather than misread.",
+      ),
+  })
+  .loose();
 const CHECKPOINTS = "effect-checkpoints";
 /** A pending journal whose recorded state still equals its captured state has nothing to undo. */
 function recordedChange(journal: Journal): boolean {
@@ -388,7 +413,13 @@ export function createEffectTransactions(options: {
   const claimedTarget = async (path: string): Promise<string | undefined> => {
     try {
       const claim = z
-        .object({ targetId: z.string() })
+        .object({
+          targetId: z
+            .string()
+            .describe(
+              "The id of the Target the claim prepares a checkpoint for.",
+            ),
+        })
         .loose()
         .parse(JSON.parse(await readFile(path, "utf8")));
       return claim.targetId;

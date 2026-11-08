@@ -23,6 +23,8 @@ export interface SourceStore {
   /** Remove the workspace's checkout, including untracked install output, and drop its worktree
    * registration from the Project mirror. A workspace deleted by hand is only pruned. */
   release(request: ReleaseRequest): Promise<void>;
+  /** Whether the Project's mirror already holds `commit`, a full Commit id; false for any other ref. */
+  holds(project: string, commit: string): Promise<boolean>;
 }
 /** Rig owns all Git objects and worktree administration; developer repositories are inputs only. Git runs through `run`. */
 export function createGitSourceStore(options: {
@@ -47,6 +49,23 @@ export function createGitSourceStore(options: {
       );
     return result.stdout.trim();
   }
+  /** The mirror takes objects only by clone and fetch, which bring a Commit with everything its checkout needs. */
+  async function holds(project: string, commit: string): Promise<boolean> {
+    if (!isGitCommit(commit)) return false;
+    const mirror = mirrorPath(project);
+    if (!(await exists(mirror))) return false;
+    const found = await run({
+      command: [
+        "git",
+        "--git-dir",
+        mirror,
+        "cat-file",
+        "-e",
+        `${commit}^{commit}`,
+      ],
+    });
+    return found.exitCode === 0;
+  }
   async function prepare(
     request: SourceRequest,
   ): Promise<{ workspacePath: string; commit: string }> {
@@ -67,10 +86,20 @@ export function createGitSourceStore(options: {
         "The requested Git reference is invalid.",
         "Use a Branch name or Commit identifier.",
       );
-    const commit = await git(
-      ["rev-parse", "--verify", "--end-of-options", `${request.ref}^{commit}`],
-      request.repository,
-    );
+    // A Commit the mirror already holds, as a redeploy or a rollback names it, is neither resolved nor fetched again: the
+    // developer repository may since have dropped it.
+    let held = await holds(request.project, request.ref);
+    const commit = held
+      ? request.ref
+      : await git(
+          [
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            `${request.ref}^{commit}`,
+          ],
+          request.repository,
+        );
     if (!isGitCommit(commit))
       throw new RigError(
         "GIT_COMMIT",
@@ -95,17 +124,19 @@ export function createGitSourceStore(options: {
       } finally {
         await rm(temporary, { recursive: true, force: true });
       }
+      held = await holds(request.project, commit);
     }
-    // Fetch the exact resolved Commit. The independent mirror has no alternates or hardlinked objects.
-    await git([
-      "--git-dir",
-      mirror,
-      "fetch",
-      "--no-tags",
-      "--",
-      request.repository,
-      commit,
-    ]);
+    // Fetch the exact resolved Commit when the mirror lacks it. The independent mirror has no alternates or hardlinked objects.
+    if (!held)
+      await git([
+        "--git-dir",
+        mirror,
+        "fetch",
+        "--no-tags",
+        "--",
+        request.repository,
+        commit,
+      ]);
     await mkdir(dirname(request.destination), { recursive: true, mode: 0o700 });
     if (await exists(request.destination))
       throw new RigError(
@@ -168,6 +199,7 @@ export function createGitSourceStore(options: {
   return {
     prepare: (request) => serialized(request.project, () => prepare(request)),
     release: (request) => serialized(request.project, () => release(request)),
+    holds,
   };
 }
 async function exists(path: string): Promise<boolean> {

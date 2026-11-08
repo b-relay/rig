@@ -6,7 +6,7 @@ import type {
   Supervisor,
 } from "../src/providers/contracts";
 import { createRuntime } from "../src/runtime/application";
-import { RESTART_LIMIT } from "../src/runtime/supervision";
+import { RESTART_LIMIT } from "../src/domain/restart-policy";
 import { runtimeWorld } from "./support/runtime-world";
 
 const roots: string[] = [];

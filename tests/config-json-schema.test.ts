@@ -1,11 +1,26 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   configJsonSchemas,
   renderJsonSchema,
   resolveTargetPlan,
 } from "../src/config/index.js";
+import { configEditorRequestSchema } from "../src/daemon/config-editor.js";
+import { envEditorRequestSchema } from "../src/daemon/env-editor.js";
+import { addressSchema, ownerSchema } from "../src/daemon/files.js";
+import { installationSchema } from "../src/daemon/installation.js";
+import {
+  commandSchema,
+  queueResultSchema,
+  readResultSchemas,
+  serviceStopSchema,
+} from "../src/daemon/protocol.js";
+import { projectStatusSchema } from "../src/domain/project-status.js";
+import { processLeaseSchema } from "../src/providers/process-lease.js";
+import { runtimeStateSchema } from "../src/runtime/state-schema.js";
+import { cursorSchema } from "../src/adapters/target-log-reader.js";
 
 const REPO = join(import.meta.dir, "..");
 const schemas = configJsonSchemas();
@@ -198,4 +213,75 @@ test("each field that takes references lists the references valid there", () => 
   expect(upstream.description).toContain("a Service name such as web");
   expect(upstream.description).toContain("${services.web.ports.http}");
   expect(upstream.pattern).toBeString();
+});
+
+/** The property paths of `root` whose field carries no description, through nested objects, arrays, maps, unions and
+ * references: what a reader of the emitted schema would find undocumented. */
+function undescribed(root: Json): string[] {
+  const resolve = (node: Json): Json => {
+    let resolved = node;
+    for (
+      const seen = new Set<string>();
+      resolved.$ref && !seen.has(resolved.$ref);
+    ) {
+      seen.add(resolved.$ref);
+      const target = (resolved.$ref as string)
+        .replace(/^#\//, "")
+        .split("/")
+        .reduce((at: Json | undefined, key) => at?.[key], root);
+      resolved = {
+        ...target,
+        description: resolved.description ?? target?.description,
+      };
+    }
+    return resolved;
+  };
+  const found: string[] = [];
+  const visited = new Set<Json>();
+  const walk = (node: Json | undefined, path: string) => {
+    if (!node || typeof node !== "object" || visited.has(node)) return;
+    visited.add(node);
+    const schema = resolve(node);
+    for (const [name, field] of Object.entries<Json>(schema.properties ?? {})) {
+      if (!resolve(field).description?.trim()) found.push(`${path}.${name}`);
+      walk(field, `${path}.${name}`);
+    }
+    walk(schema.items, `${path}[]`);
+    if (typeof schema.additionalProperties === "object")
+      walk(schema.additionalProperties, `${path}{}`);
+    for (const key of ["anyOf", "oneOf", "allOf", "prefixItems"])
+      for (const option of schema[key] ?? []) walk(option, path);
+  };
+  walk(root, "$");
+  return found;
+}
+
+test.each(
+  Object.entries({
+    ...schemas,
+    commandSchema,
+    ...Object.fromEntries(
+      Object.entries(readResultSchemas).map(([read, schema]) => [
+        `the ${read} result`,
+        schema,
+      ]),
+    ),
+    projectStatusSchema,
+    queueResultSchema,
+    serviceStopSchema,
+    configEditorRequestSchema,
+    envEditorRequestSchema,
+    runtimeStateSchema,
+    ownerSchema,
+    addressSchema,
+    installationSchema,
+    processLeaseSchema,
+    cursorSchema,
+  }),
+)("every field of %s documents what it holds", (_, schema) => {
+  const document =
+    schema instanceof z.ZodType
+      ? z.toJSONSchema(schema, { unrepresentable: "any" })
+      : schema;
+  expect(undescribed(document as Json)).toEqual([]);
 });

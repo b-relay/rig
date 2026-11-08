@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted; its `rig config upgrade` amendment is superseded by [0009](0009-one-project-config-format.md)
 ---
 
 # User-authored Rig config is YAML only
@@ -9,3 +9,5 @@ For [#114](https://github.com/b-relay/rig/issues/114), Project config is `rig.ya
 Machine-owned runtime records may remain JSON.
 
 Amended by [ADR 0008](0008-versioned-project-config-formats.md): `rig config upgrade` migrates a `rig.yaml` between Rig's own formats. Rig still reads no other file format.
+
+That amendment is superseded by [ADR 0009](0009-one-project-config-format.md): Rig reads one `rig.yaml` format again, refuses a `format` key, and has no migration command; `rig config` only reads the validated config.

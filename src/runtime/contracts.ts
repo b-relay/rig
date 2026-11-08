@@ -26,7 +26,8 @@ export interface DnsReport {
   }[];
   /** Every record of the zones reported, by name and then type. */
   readonly records: readonly DnsRecord[];
-  /** The hostnames those zones own: each is in the longest zone Rig manages that holds its name. */
+  /** The hostnames Rig's Caddy serves, each in the longest zone Rig manages that holds its name: those of the selected zone,
+   * or, without one, every hostname, one in no managed zone included. */
   readonly hostnames: readonly HostnameCheck[];
 }
 export type DnsWriteAction = "dns-create" | "dns-update" | "dns-delete";
@@ -82,6 +83,7 @@ import type { LogFilter } from "../domain/log-filter";
 import type { TargetLifecycle } from "./lifecycle";
 import type { ObservationEffects } from "./status";
 import type { ObservationDeadline } from "./bounded-observations";
+import type { RouteGuard } from "./route-guard";
 import type { UsageMonitor } from "./usage-report";
 import type { PortReservations } from "./host-reservations";
 import type { HostSessionProbe } from "../domain/host-session";
@@ -104,6 +106,9 @@ export interface ProjectDocuments {
     searched: DiscoverySearch;
   }>;
   read(path: string): Promise<ConfigDocument<ProjectConfig>>;
+  /** Whether the registered directory `path` is gone entirely, as `read` reports it (`missing_directory`), without reading
+   * its config: one that exists, however unreadable its config, is not missing. */
+  directoryMissing(path: string): Promise<boolean>;
   initializationInfo(path: string): Promise<{
     name: string;
     /** The branch init would record: an existing config's, origin/HEAD, or the host default. */
@@ -143,7 +148,9 @@ export interface DeploymentSources {
   /** Remove a prepared workspace, its install output, and its worktree registration; a workspace
    * already deleted is only pruned. Callers pass only workspaces no inventory record references. */
   release(request: { project: string; workspacePath: string }): Promise<void>;
-  resolve(repository: string, ref: string): Promise<string>;
+  /** The full Commit id `ref` names in `repository`, or `ref` itself when it is a full Commit id the Project's own source
+   * mirror already holds, so a Deployment of it can be made again after the repository dropped it. */
+  resolve(repository: string, ref: string, project: string): Promise<string>;
   preflight(input: {
     repoPath: string;
     branch: string;
@@ -340,6 +347,9 @@ export interface RuntimeDependencies {
    * carries on under each Target's own lease and a later pass reads its outcome, so one slow restart
    * or stop never holds up the next pass. Absent, a pass waits for all of it. */
   supervisionPassBudget?: { ms: number; deadline: ObservationDeadline };
+  /** The running Operation's route guard (ADR 0020), which `lifecycle` already runs its route changes under. Present while
+   * an Operation runs; absent, nothing watches a Target's live paths while it stops and starts. */
+  routeGuard?: RouteGuard;
   /** Reads the Host's boot and login session, which the daemon's first pass compares with the one it last recorded to
    * tell a Host restart from a plain daemon restart. Absent, no Host restart is ever detected. */
   hostSession?: HostSessionProbe;

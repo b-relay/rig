@@ -1,4 +1,5 @@
 import { DEFAULT_STOP_TIMEOUT_SECONDS } from "../domain/stop-budget";
+import { shellQuote, withinSingleQuotes } from "../domain/shell-quote";
 import type { PlanComponent, RestartPolicy, TargetPlan } from "./types";
 
 /** When Rig starts a Service again after a known exit, when its config sets no `restart`. */
@@ -38,9 +39,8 @@ export function writtenCommand(
       const value = values[single ?? bare ?? double ?? ""];
       if (value === undefined) return match;
       if (double !== undefined) return value.replace(/[\\"$`]/g, "\\$&");
-      const closed = value.replaceAll("'", "'\\''");
-      if (single !== undefined) return closed;
-      return SHELL_SAFE.test(value) ? value : `'${closed}'`;
+      if (single !== undefined) return withinSingleQuotes(value);
+      return SHELL_SAFE.test(value) ? value : shellQuote(value);
     },
   );
 }

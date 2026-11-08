@@ -15,11 +15,17 @@ const observationSchema = z.object({
   wrapperIdentity: z
     .string()
     .length(64)
-    .describe("Capture wrapper process birth identity."),
+    .optional()
+    .describe(
+      "Capture wrapper process birth identity; written for rigd 1.1.0, which requires it, and read by nothing now.",
+    ),
   observedAt: z
     .number()
     .finite()
-    .describe("Unix milliseconds when the child was observed."),
+    .optional()
+    .describe(
+      "Unix milliseconds when the observation was written; written for rigd 1.1.0, which requires it, and read by nothing now.",
+    ),
   applicationIdentity: z
     .string()
     .length(64)

@@ -9,6 +9,7 @@ import type {
   StateStore,
   TargetRecord,
 } from "../domain/runtime";
+import { readOnlyState } from "../domain/runtime";
 import type { RuntimeDependencies, WorkReport } from "./contracts";
 import {
   findJobRecord,
@@ -64,7 +65,7 @@ export interface JobSettleRequest {
   timedOut?: true;
 }
 export interface JobSchedulerDependencies {
-  store: Pick<StateStore, "read" | "update">;
+  store: Pick<StateStore, "read" | "update" | "snapshot">;
   /** Observes a run's process without holding its Target, only to decide whether the runtime needs to act. */
   lifecycle: Pick<TargetLifecycle, "observeJob">;
   clock: JobClock;
@@ -279,7 +280,7 @@ export function createJobScheduler(
     },
     async pass() {
       if (stopped) return;
-      const state = await deps.store.read();
+      const state = await readOnlyState(deps.store);
       if (stopped) return;
       const now = deps.clock.now();
       const elapsed = deps.clock.elapsed();

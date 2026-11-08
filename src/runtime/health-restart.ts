@@ -3,22 +3,21 @@ import { recordActivity } from "../domain/activity";
 import { clockOr } from "../domain/clock";
 import { diagnosticErrorCode } from "../domain/errors";
 import { isStopDetached } from "../domain/stop-budget";
-import { boundedOutput, healthRestartDueAt } from "../domain/health-policy";
+import {
+  boundedOutput,
+  checkIdentity,
+  healthRestartDueAt,
+  healthStartPending,
+} from "../domain/health-policy";
 import type { OperationPhase } from "../domain/operation-progress";
-import type { TargetRecord } from "../domain/runtime";
+import { currentRun, type TargetRecord } from "../domain/runtime";
 import { rigCommand } from "../domain/rig-command";
 import type { RuntimeDependencies } from "./contracts";
-import {
-  checkIdentity,
-  healthStartPending,
-  type HealthRestartRequest,
-  type HealthRestartResult,
+import type {
+  HealthRestartRequest,
+  HealthRestartResult,
 } from "./health-monitor";
-import {
-  activationJournal,
-  currentRun,
-  recordHealthStretch,
-} from "./supervision";
+import { activationJournal, recordHealthStretch } from "./service-runs";
 import { boundedObservations } from "./bounded-observations";
 
 type Deps = Pick<

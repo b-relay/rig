@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
+import "./support/dashboard-site";
 import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";

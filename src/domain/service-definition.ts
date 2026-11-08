@@ -59,7 +59,8 @@ export function serviceDefinition(
 
 /** Pure: the digest of the environments `target`'s checkout was prepared in for `service`, from its recorded preparation:
  * the dependency installation's, the shared build's and the Service's own build's, each as it was when it ran. Every start
- * from that checkout carries the same value, since a start rebuilds nothing; a deploy compares the new checkout's. Undefined
+ * of a deployed Target reuses its Deployment's builds and carries the same value, while an explicit start or restart of the
+ * working Target builds current source again (ADR 0004); a deploy compares the new checkout's. Undefined
  * when the preparation is another workspace's or did not record them all. A plan without reference values (one with its
  * values written, see `recordedForms`) hands its commands no `_RIG_` variable, so its digests are those taken without them. */
 export function preparedBuild(

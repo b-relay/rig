@@ -44,20 +44,36 @@ semantic versioning.
 
 ## Usage
 
+A Project is a Git repository with a `rig.yaml`. `rig init` writes one with a
+Service from flags (this one serves the directory with `python3`; any command
+that serves HTTP on `${port}` will do) and registers it; `rig up` runs the
+working copy:
+
 ```sh
-rig init
+git init -b main hello && cd hello
+rig init --service web --command 'python3 -m http.server ${port} --bind 127.0.0.1'
 rig up
 rig status
 rig logs
-rig monitor
 rig down
-
-rig deploy
-rig deploy preview feature/login
-rig run nightly-import
-rig doctor
-rig dns list
 ```
+
+A deploy runs a Commit of a Branch, and `rig init` leaves the stable Target
+off. Turn it on and commit, then deploy the Production branch (`main`) to
+`stable`, and another local Branch to a Preview:
+
+```sh
+sed -i '' 's/stable: false/stable: true/' rig.yaml
+git add rig.yaml && git commit -m "Run hello with Rig"
+rig deploy
+git branch feature/login
+rig deploy preview feature/login
+```
+
+`rig monitor` watches CPU and memory, and `rig doctor` checks the Host and the
+Project. `rig run nightly-import` runs a job declared in `rig.yaml`, once a
+deploy has the Commit that declares it (below), and `rig dns list` needs Rig's
+own Caddy and a DNS token.
 
 Commands discover the Project from the current workspace. Use `--project <name>`
 to select a registered Project elsewhere, and `--help` on any command for options.
@@ -164,7 +180,14 @@ Every test in the files `bunfig.toml` lists under `concurrentTestGlob` runs
 concurrently with the file's other tests, so each must own its whole world: a
 temporary `RIG_ROOT`, its own `rigd`, and ephemeral ports. The test scripts
 start the `bun` that runs them (`$npm_execpath`), never whichever `bun` comes
-first on the script `PATH`. After adding or reshaping slow files, refresh the
+first on the script `PATH`. A test that times out, or throws before its
+`rigFixture` cleanup, leaves that fixture to `tests/support/fixture-sweep.ts`,
+which `bunfig.toml` preloads: once the tests are done, it stops what the
+fixture left running and removes its root, and fails the run when it cannot
+confirm that. From then until a test starts again, a new fixture, or a command
+of a fixture being cleaned up, is refused. That cleanup is not guaranteed under
+`--bail`, which skips it, nor in a nested `bun test` its parent kills. After
+adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 
@@ -184,13 +207,28 @@ macOS. Another job packages the release with `scripts/package-release.sh`, runs
 Mac then tries the same files.
 
 The build produces `rig` and `rigd`. Keep tests and development
-isolated from the installed Host with `RIG_ROOT`:
+isolated from the installed Host with `RIG_ROOT`. With only Bun, Git and
+`bun install`, this runs a source `rigd`, the source CLI and the source
+dashboard against one throwaway root:
 
 ```sh
 export RIG_ROOT="$(mktemp -d /tmp/rig-dev.XXXXXX)"
-bun run src/index.ts --help
-bun run src/rigd.ts --help
+bun run src/rigd.ts install   # a plain process under $RIG_ROOT, never launchd
+bun run src/rigd.ts status
+bun run src/index.ts list     # the source rig, talking to that rigd
+RIG_WEB_KEY_FILE="$RIG_ROOT/auth/dashboard.key" PORT=4173 bun run web:dev
 ```
+
+A source `rigd` serves no dashboard: it starts only a release's, from
+`<RIG_ROOT>/dashboard/<release>`. So `web:dev` is the dashboard, with hot
+reload, and `RIG_ROOT` points it at the same `rigd` (a Preview's
+`RIG_WEB_SANDBOX_ROOT` would win over it). Open `http://127.0.0.1:4173/` and
+sign in with any user name and the key in that file as the password; the site
+writes the key on first start. To end, stop `web:dev` and any Target you
+started (`bun run src/index.ts down <target>`), then run
+`bun run src/rigd.ts uninstall`, which refuses while a Target runs, and delete
+the directory. [Running it](docs/website.md#running-it) has the dashboard's
+other modes.
 
 ### Releasing
 
@@ -276,6 +314,51 @@ They need permission to bind localhost and a local Caddy executable.
 | `src/cli` and `src/diagnostics`    | Command grammar, human/structured output, and diagnostic evidence.            |
 | `src/git`                          | Branch preflight and repository registration.                                 |
 | `web`                              | The rig.b-relay.com landing page, dashboard, and localhost relay to `rigd`.   |
+
+### Tracing a behaviour
+
+Where to start reading for four kinds of bug, in the order the work flows, and
+which tests to extend:
+
+- **A deploy leaves a Service stopped.** `src/runtime/application.ts`
+  (`createRuntime`) selects the Target and Branch and decides a no-op or
+  `--force`; `src/runtime/deploy.ts` (`deployCandidate`) builds, replaces and
+  rolls back; `src/runtime/keep-decision.ts` decides which Services are kept
+  ([ADR 0016](docs/adr/0016-keep-unchanged-services.md)); and
+  `src/runtime/lifecycle.ts` (`createTargetLifecycle`) starts them and waits
+  for readiness. Tests: `runtime-application`, `deployment-effects`,
+  `keep-decision`, `keep-services`, `runtime-lifecycle`.
+- **A Monitor value is wrong.** Presentation: `web/app/monitor/page.tsx` reads
+  the report and `web/lib/usage.ts` (`chartReport`) shapes it. History:
+  `src/runtime/usage-report.ts` (`usageReport`) over
+  `src/adapters/sqlite-usage-history.ts`. Sampling:
+  `src/runtime/usage-sampler.ts` (`createUsageSampler`) samples and totals the
+  process readers that `src/daemon/composition.ts` picks, native or `ps`
+  (`src/providers/native-process-usage.ts`, `ps-process-usage.ts`). The
+  Service health monitor (`src/runtime/health-monitor.ts`) is unrelated.
+  Tests: `dashboard-monitor`, `monitor-runtime`, `monitor-cli`,
+  `usage-sampler`, `usage-history`, `process-usage-readers`.
+- **A job runs at the wrong time.** `src/domain/cron.ts` calculates the
+  instants; `src/runtime/job-scheduler.ts` (`createJobScheduler`) finds due
+  times and dispatches them; `src/runtime/application.ts`
+  (`runScheduledJob`) admits a run under the Target's lease and checks
+  lateness; `src/runtime/jobs.ts` records runs; `src/runtime/job-status.ts`
+  (`jobReports`) gives the next run status shows
+  ([ADR 0013](docs/adr/0013-scheduled-jobs.md)). Tests: `cron`,
+  `job-scheduler`, `jobs-runtime`.
+- **A proxy route is not published.** `src/daemon/composition.ts`
+  (`composeDaemon`) picks Rig's own Caddy (`src/providers/managed-caddy.ts`)
+  when Host config has a `proxy` section, else the retiring external router
+  (`src/providers/caddy-router.ts`). A Target's hostnames come from
+  `src/runtime/ports.ts` (`plannedSites`); `src/adapters/target-effects.ts`
+  publishes and withholds them through the `Router` in
+  `src/providers/route-file.ts`, which owns the route file's blocks; and
+  `managed-caddy.ts` switches and publishes generations
+  ([ADR 0014](docs/adr/0014-rig-owned-caddy.md),
+  [ADR 0020](docs/adr/0020-deploy-route-publishing.md)). Tests:
+  `planned-sites`, `managed-caddy`, `activation-gates`, `verified-routes`,
+  `deployment-effects`, and `providers-caddy` and `proxy-publication` for the
+  external router.
 
 ## Documentation
 

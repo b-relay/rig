@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { wallOnlyClock } from "../src/domain/clock";
 import type { ManagedComponent } from "../src/config/types";
 import type { RuntimeState } from "../src/domain/runtime";
+import { checkIdentity } from "../src/domain/health-policy";
 import {
-  checkIdentity,
   createHealthMonitor,
   type HealthMonitor,
   type HealthRestartRequest,

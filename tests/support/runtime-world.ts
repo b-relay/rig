@@ -121,6 +121,9 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
           config: options.config,
         };
       },
+      async directoryMissing() {
+        return false;
+      },
       async discover(path: string) {
         return {
           repoPath: path,

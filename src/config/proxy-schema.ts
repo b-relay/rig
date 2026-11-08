@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { validHostname } from "./hostname";
 import { CADDY_PATTERNS } from "../domain/caddy-value";
+import { keyedMap } from "./keyed-map";
 
 const text = z.string().min(1);
 const port = z.number().int().min(1).max(65535);
@@ -102,34 +103,34 @@ export const proxySettingsSchema = z
       })
       .prefault({})
       .describe("Certificates."),
-    routes: z
-      .record(
-        z
-          .string()
-          .refine(
-            (hostname) =>
-              validHostname(hostname) && hostname === hostname.toLowerCase(),
-            "must be a lowercase hostname such as grafana.example.com; schemes, ports, paths and wildcards are not allowed",
-          ),
-        z
-          .union([
-            port,
-            z
-              .string()
-              .regex(
-                /^(?:127\.0\.0\.1|localhost):\d{1,5}$/,
-                "must be a port, or 127.0.0.1:<port> or localhost:<port>",
-              )
-              .refine(
-                (address) =>
-                  port.safeParse(Number(address.split(":")[1])).success,
-                "must name a port from 1 to 65535",
-              ),
-          ])
-          .describe(
-            "Where requests go: a port on 127.0.0.1, such as 3000, or 127.0.0.1:<port> or localhost:<port>.",
-          ),
-      )
+    routes: keyedMap(
+      z
+        .string()
+        .refine(
+          (hostname) =>
+            validHostname(hostname) && hostname === hostname.toLowerCase(),
+          "must be a lowercase hostname such as grafana.example.com; schemes, ports, paths and wildcards are not allowed",
+        ),
+      z
+        .union([
+          port,
+          z
+            .string()
+            .regex(
+              /^(?:127\.0\.0\.1|localhost):\d{1,5}$/,
+              "must be a port, or 127.0.0.1:<port> or localhost:<port>",
+            )
+            .refine(
+              (address) =>
+                port.safeParse(Number(address.split(":")[1])).success,
+              "must name a port from 1 to 65535",
+            ),
+        ])
+        .describe(
+          "Where requests go: a port on 127.0.0.1, such as 3000, or 127.0.0.1:<port> or localhost:<port>.",
+        ),
+      "a hostname",
+    )
       .default({})
       .describe(
         "Your own hostnames, outside any Rig Project, each sent to a service on this Mac, such as grafana.example.com: 3000. Rig serves each with a certificate like its own and nothing but a reverse proxy to the upstream. A hostname a Target serves is refused, and a Target asking for one of these is refused as ROUTE_CONFLICT. Applied by rig proxy reload and when rigd starts; until then, and if Rig refuses it, Caddy keeps the routes it last accepted.",

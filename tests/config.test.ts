@@ -2906,6 +2906,72 @@ test.each([
   },
 );
 
+// #837: every other map an author names the keys of, beside an entry that is valid, with the key a value that would be too.
+const SERVICE =
+  "services:\n  web:\n    command: x\n    ports: { http: 3000 }\n";
+test.each([
+  [
+    "services.web.ports",
+    "a port name",
+    "services:\n  web:\n    command: x\n    ports: { http: 3000, KEY: 3001 }\n",
+    "admin",
+  ],
+  ["services", "a Service name", `${SERVICE}  KEY:\n    command: y\n`, "api"],
+  ["tools", "a Tool name", `${SERVICE}tools:\n  KEY: { bin: x }\n`, "cli"],
+  [
+    "jobs",
+    "a job name",
+    `${SERVICE}jobs:\n  KEY: { command: x, schedule: '0 3 * * *' }\n`,
+    "nightly",
+  ],
+  ["proxy", "a path prefix", `${SERVICE}proxy: { /: web, KEY: web }\n`, "/api"],
+  [
+    "targets.working.services",
+    "a Service name",
+    `${SERVICE}targets:\n  working:\n    services:\n      KEY: { command: y }\n`,
+    "web",
+  ],
+  [
+    "targets.working.services.web.ports",
+    "a port name",
+    `${SERVICE}targets:\n  working:\n    services:\n      web: { ports: { http: 3000, KEY: 3001 } }\n`,
+    "admin",
+  ],
+  [
+    "targets.working.tools",
+    "a Tool name",
+    `${SERVICE}tools:\n  cli: { bin: x }\ntargets:\n  working:\n    tools:\n      KEY: { bin: y }\n`,
+    "cli",
+  ],
+  [
+    "targets.working.proxy",
+    "a path prefix",
+    `${SERVICE}targets:\n  working:\n    proxy: { /: web, KEY: web }\n`,
+    "/api",
+  ],
+])(
+  "a __proto__ key in %s is refused by name, not dropped",
+  (field, kind, yaml, valid) => {
+    const document = (key: string) =>
+      parse(`name: app\n${yaml.replace("KEY", key)}`);
+    expect(failureOf(document("__proto__"))).toMatchObject({
+      _tag: "ConfigError",
+      code: "invalid_config",
+      hint: `Fix ${field}: __proto__ is not ${kind}.`,
+    });
+    expect(issuePaths(document("__proto__"))).toEqual([field]);
+    // The same entry under a name the map accepts parses as written.
+    const config: unknown = parseProjectConfig(document(valid));
+    const map = field
+      .split(".")
+      .reduce<unknown>(
+        (node, key) => (node as Record<string, unknown>)[key],
+        config,
+      );
+    expect(Object.keys(map as object)).toContain(valid);
+  },
+);
+
 test.each([
   ["relative/work", "/data", "workspacePath"],
   ["/work", "relative/data", "dataRoot"],

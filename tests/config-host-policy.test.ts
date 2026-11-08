@@ -117,6 +117,18 @@ test("proxy.routes sends each lowercase hostname to a loopback port; anything el
     expect(() => parseHostConfig({ proxy: { caddy: "/c", routes } })).toThrow();
 });
 
+// #837: the record parser would drop the key without a word.
+test("a __proto__ key in proxy.routes is refused by name, not dropped", () => {
+  const routes = JSON.parse('{"grafana.example.com":3000,"__proto__":3000}');
+  expect(() => parseHostConfig({ proxy: { caddy: "/c", routes } })).toThrow(
+    expect.objectContaining({
+      _tag: "ConfigError",
+      code: "invalid_config",
+      hint: "Fix proxy.routes: __proto__ is not a hostname.",
+    }),
+  );
+});
+
 test("Target log retention takes a size of at least 1 MiB and 0 to 20 kept generations", () => {
   expect(
     parseHostConfig({ logs: { max_bytes: 1048576, generations: 0 } }).logs,

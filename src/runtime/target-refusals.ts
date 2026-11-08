@@ -135,3 +135,11 @@ export function unrecordedRefusals(
     restore: missing,
   };
 }
+/** A deploy names the stable Target or a Preview; the working Target runs the checkout and is never deployed. */
+export function deployTargetError(project: string): RigError {
+  return new RigError(
+    "DEPLOY_TARGET",
+    "Deploy needs the stable Target or a Preview.",
+    `Use ${rigCommand("up", { project, target: { kind: "working", name: "working" } })} for the working Target.`,
+  );
+}

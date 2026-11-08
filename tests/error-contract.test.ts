@@ -90,7 +90,7 @@ const SENTINELS: readonly (Pick<ContractBreach, "file"> &
     why: "Thrown by activation before anything is loaded; its callers catch it and build the generation again.",
   },
   {
-    file: "src/runtime/application.ts",
+    file: "src/runtime/operation-coordinator.ts",
     count: 3,
     error: "Reselect",
     why: "The Operation selects again: isReselect catches it, and after the last try admission gives OPERATION_CONTENDED.",

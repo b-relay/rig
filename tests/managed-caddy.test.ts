@@ -1027,6 +1027,8 @@ test("close cancels the Caddy command under way, refuses every change after it, 
   for (let i = 0; i < 200 && reloads() === before; i++) await Bun.sleep(10);
   await w.caddy.close();
   expect(cancelled).toBe(true);
+  // Both have already failed: close waits out the queue, and the queue handles each change it holds. So neither `rejects`
+  // below runs the event loop, where Bun would report the other's failure as unhandled.
   await expect(held).rejects.toBeDefined();
   await expect(queued).rejects.toMatchObject({ code: "PROXY_CLOSED" });
   await expect(w.caddy.republish()).rejects.toMatchObject({

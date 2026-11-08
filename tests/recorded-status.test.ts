@@ -284,3 +284,111 @@ test("status of a Target an Operation is stopping whose deploy no daemon runs an
     "stable has an unresolved deployment transition; run rig down stable to stop both recorded plans.",
   ]);
 });
+
+/** The status of a stopped, routed Target whose answers about what the daemon does now come from `live` as it stands when
+ * asked. Inspecting the proxy runs `settle`, as when an Operation ends while status waits for that. */
+async function statusAcrossProxyInspection(
+  fields: Partial<TargetRecord>,
+  live: { inProgress: boolean; busy: boolean; stopping: boolean },
+  settle: () => void,
+) {
+  const target = {
+    id: "t1",
+    projectId: "p",
+    name: "stable",
+    kind: "stable",
+    branch: "main",
+    desired: "stopped",
+    createdAt: "",
+    updatedAt: "",
+    logRoot: "/logs",
+    plan: {
+      domain: "app.example.test",
+      components: [{ name: "web", kind: "managed", port: 4100 }],
+    },
+    ...fields,
+  } as unknown as TargetRecord;
+  let inspected = false;
+  const report = await projectStatus(
+    { id: "p", name: "app", repoPath: "/repo" },
+    [target],
+    {},
+    {
+      observations: {
+        async process() {
+          return { state: "stopped" };
+        },
+        async health() {
+          return { ready: true };
+        },
+        async artifact() {
+          return "installed";
+        },
+        async persistent() {
+          return true;
+        },
+        async listening() {
+          return [];
+        },
+      },
+      observationBudgetMs: 2000,
+      observationDeadline: timerObservationDeadline,
+      documents: {
+        async read() {
+          throw new Error("no rig.yaml here");
+        },
+      },
+      inProgress: () => live.inProgress,
+      projectBusy: () => live.busy,
+      stopping: () => live.stopping,
+      serviceStops: () => [],
+      async inspectProxy() {
+        inspected = true;
+        settle();
+        return {
+          proxyFile: "/rig/proxy/Caddyfile",
+          routes: 1,
+          blocks: [],
+          hostCaddyfile: "/etc/caddy/Caddyfile",
+          state: "imported",
+        };
+      },
+    },
+  );
+  expect(inspected).toBe(true);
+  return report;
+}
+
+test("a deploy that ends while status inspects the proxy is reported as one moment saw it: in progress, and refused nothing", async () => {
+  const live = { inProgress: true, busy: true, stopping: false };
+  const report = await statusAcrossProxyInspection(
+    {
+      recovery: {
+        stage: "pending",
+        desired: "running",
+        operationId: "op-live",
+      } as TargetRecord["recovery"],
+    },
+    live,
+    () => {
+      live.inProgress = false;
+      live.busy = false;
+    },
+  );
+  expect(report.warnings).toContain(
+    "stable: deploy in progress (operation op-live).",
+  );
+  expect(report.targets[0]!.state).toBe("stopped");
+  // A command waits its turn behind a live deploy, so it is refused nothing yet.
+  expect(report.targets[0]!.refusals).toBeUndefined();
+});
+
+test("a stop that ends while status inspects the proxy is reported as one moment saw it: stopping, and refusing a registration change", async () => {
+  const live = { inProgress: false, busy: true, stopping: true };
+  const report = await statusAcrossProxyInspection({}, live, () => {
+    live.busy = false;
+    live.stopping = false;
+  });
+  expect(report.targets[0]!.state).toBe("stopping");
+  expect(report.refusals?.rename).toMatchObject({ code: "PROJECT_ACTIVE" });
+});

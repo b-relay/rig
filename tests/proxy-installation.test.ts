@@ -32,9 +32,14 @@ import { createCaddyAdmin } from "../src/providers/caddy-admin";
 import { runCommand } from "../src/providers/command-runner";
 
 const cleanups: (() => Promise<unknown>)[] = [];
+// Every cleanup runs, and one that fails fails its test: a fixture's cleanup fails when what its root ran may still run.
 afterEach(async () => {
+  const failures: unknown[] = [];
   for (const cleanup of cleanups.splice(0).reverse())
-    await cleanup().catch(() => {});
+    await cleanup().catch((error: unknown) => failures.push(error));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length)
+    throw new AggregateError(failures, `${failures.length} cleanups failed.`);
 });
 const caddy = ["/usr/local/bin/caddy", "/opt/homebrew/bin/caddy"].find(
   existsSync,

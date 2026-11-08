@@ -104,7 +104,11 @@ export async function projectStatus(
   };
   // A job's runs are recorded, not observed: status reads them, and counts the next run from now.
   const now = deps.now ? Date.parse(deps.now()) : Date.now();
+  // What the daemon is doing now (a live deploy, a stop, an Operation on the Project) is read here, once and before the
+  // next await, so one report's states, warnings and refusals say what one moment saw, even should an Operation end
+  // while the proxy is inspected.
   const recorded = selected.map((target, index) => {
+    const live = transitionInProgress(target, deps.inProgress);
     const evidence: RecordedEvidence = {
       // An off Target shows what it recorded, not what the config would add to it.
       ...(config &&
@@ -124,19 +128,18 @@ export async function projectStatus(
       ...(deps.stopping?.(target.id)
         ? { stops: deps.serviceStops?.(target.id) ?? [] }
         : {}),
-      recovery: target.recovery
-        ? transitionInProgress(target, deps.inProgress)
-          ? "live"
-          : "abandoned"
-        : undefined,
+      recovery: target.recovery ? (live ? "live" : "abandoned") : undefined,
       build: builds[index],
     };
     return {
       target,
       evidence,
+      live,
       report: recordedReport(observed[index]!, evidence),
     };
   });
+  const registration = !command.target && !command.deployment;
+  const busy = registration && (deps.projectBusy?.() ?? false);
   // A Target nothing has recorded is listed only while rig.yaml turns it on. A recorded one is listed either way, so a
   // Target the config turned off while it ran can still be seen, stopped and destroyed.
   const unrecorded =
@@ -157,28 +160,14 @@ export async function projectStatus(
   const published = (report: TargetReport) =>
     publication.unpublished ? unpublishedReport(report) : report;
   const reports = [
-    ...recorded.map(({ target, report }) =>
-      withRefusals(
-        published(report),
-        targetRefusals(
-          target,
-          config,
-          transitionInProgress(target, deps.inProgress),
-        ),
-      ),
+    ...recorded.map(({ target, live, report }) =>
+      withRefusals(published(report), targetRefusals(target, config, live)),
     ),
     ...unrecorded.map(published),
   ];
-  const refusals =
-    !command.target && !command.deployment
-      ? registrationRefusals(
-          project,
-          targets,
-          deps.jobRecords,
-          reports,
-          deps.projectBusy?.() ?? false,
-        )
-      : undefined;
+  const refusals = registration
+    ? registrationRefusals(project, targets, deps.jobRecords, reports, busy)
+    : undefined;
   return {
     project: project.name,
     projectId: project.id,

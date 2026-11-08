@@ -1,6 +1,7 @@
 import { join, relative } from "node:path";
 import {
   API,
+  SignatureKind,
   SymbolFlags,
   type Checker,
   type Program,
@@ -101,9 +102,15 @@ interface Contract {
   readonly undefined: Type;
   /** The instance types of RigError and ConfigError, where this project holds them. */
   readonly tagged: readonly Type[];
-  /** `typeof ConfigError`, which every alias or re-export of it shares. */
-  readonly configError?: Type;
-  readonly descends: Map<number, boolean>;
+  /** ConfigError's instance type, and its own constructor, which every alias, re-export or subclass that inherits it
+   * constructs through. */
+  readonly configError?: {
+    readonly type: Type;
+    readonly path: string;
+    readonly index: number;
+  };
+  /** Whether a type descends from another, by `${ancestor.id}:${type.id}`. */
+  readonly descends: Map<string, boolean>;
   readonly untagged: Map<number, Promise<string | undefined>>;
 }
 
@@ -115,7 +122,7 @@ async function contractTypes(
   const error = await checker.resolveName("Error", SymbolFlags.Interface);
   if (!error) throw new Error("TypeScript resolved no global Error type.");
   const tagged: Type[] = [];
-  let configError: Type | undefined;
+  let configError: Contract["configError"];
   for (const { file, name } of TAGGED_CLASSES) {
     const source = await program.getSourceFile(join(root, file));
     const declaration = source?.statements.find(
@@ -126,9 +133,22 @@ async function contractTypes(
       declaration?.name &&
       (await checker.getSymbolAtLocation(declaration.name));
     if (!symbol) continue;
-    tagged.push(await checker.getDeclaredTypeOfSymbol(symbol));
-    if (name === "ConfigError")
-      configError = await checker.getTypeOfSymbol(symbol);
+    const type = await checker.getDeclaredTypeOfSymbol(symbol);
+    tagged.push(type);
+    const constructor =
+      name === "ConfigError" &&
+      (
+        await checker.getSignaturesOfType(
+          (await checker.getTypeOfSymbol(symbol))!,
+          SignatureKind.Construct,
+        )
+      )[0]?.declaration;
+    if (constructor)
+      configError = {
+        type,
+        path: constructor.path,
+        index: constructor.index,
+      };
   }
   return {
     checker,
@@ -178,18 +198,12 @@ async function breachesIn(
     });
   if (calls.length) {
     const results = await checker.getTypeAtLocation(calls);
-    const callees = await checker.getTypeAtLocation(
-      calls.map((call) => call.expression),
-    );
     for (const [index, call] of calls.entries()) {
       const result = results[index];
       const error = result && (await untaggedError(contract, result));
       if (error) add(call, "untagged-error", error, textOf(source, call));
-      // `new ConfigError(...)` under any name, and `super(...)` in a class that extends it.
       if (
-        contract.configError &&
-        callees[index]?.id === contract.configError.id &&
-        (isNewExpression(call) || isSuperExpression(call.expression)) &&
+        (await constructsConfigError(contract, call, result)) &&
         !(await hasOwnHint(contract, call))
       )
         add(call, "config-error-hint", "ConfigError", textOf(source, call));
@@ -228,26 +242,29 @@ function untaggedError(
     // Assignability first: it rules out almost every type in one question.
     if (
       !(await contract.checker.isTypeAssignableTo(type, contract.error)) ||
-      !(await descendsFromError(contract, type, new Set()))
+      !(await descendsFrom(contract, type, contract.error))
     )
       return undefined;
+    // Tagged by heritage too, as `asRigError`'s `instanceof` is: a lookalike `_tag` is not enough.
     for (const tagged of contract.tagged)
-      if (await contract.checker.isTypeAssignableTo(type, tagged))
-        return undefined;
+      if (await descendsFrom(contract, type, tagged)) return undefined;
     return (await type.getSymbol())?.name ?? "Error";
   });
 }
 
-/** `seen` holds the types this walk has entered, so a type that refers back to itself ends it. */
-async function descendsFromError(
+/** Whether `type` descends from `ancestor` by its class or interface heritage, or is it. `seen` holds the types this walk
+ * has entered, so a type that refers back to itself ends it. */
+async function descendsFrom(
   contract: Contract,
   type: Type,
-  seen: Set<number>,
+  ancestor: Type,
+  seen = new Set<number>(),
 ): Promise<boolean> {
-  if (type.id === contract.error.id) return true;
+  if (type.id === ancestor.id) return true;
   if (seen.has(type.id)) return false;
   seen.add(type.id);
-  const known = contract.descends.get(type.id);
+  const key = `${ancestor.id}:${type.id}`;
+  const known = contract.descends.get(key);
   if (known !== undefined) return known;
   const related = type.isIntersectionType()
     ? await type.getTypes()
@@ -256,9 +273,30 @@ async function descendsFromError(
       : ((await type.getBaseTypes()) ?? []);
   let descends = false;
   for (const next of related)
-    if (await descendsFromError(contract, next, seen)) descends = true;
-  contract.descends.set(type.id, descends);
+    if (await descendsFrom(contract, next, ancestor, seen)) descends = true;
+  contract.descends.set(key, descends);
   return descends;
+}
+
+/** Whether `call` runs ConfigError's own constructor: `new` of ConfigError under any name or of a subclass that inherits
+ * its constructor, or `super(...)` in a subclass that declares one. */
+async function constructsConfigError(
+  contract: Contract,
+  call: NewExpression | CallExpression,
+  result: Type | undefined,
+): Promise<boolean> {
+  const own = contract.configError;
+  if (!own) return false;
+  // Only a ConfigError is worth resolving a signature for.
+  if (
+    isNewExpression(call)
+      ? !result || !(await descendsFrom(contract, result, own.type))
+      : !isSuperExpression(call.expression)
+  )
+    return false;
+  const declaration = (await contract.checker.getResolvedSignature(call))
+    ?.declaration;
+  return declaration?.path === own.path && declaration.index === own.index;
 }
 
 function once<T>(

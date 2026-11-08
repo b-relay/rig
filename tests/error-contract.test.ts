@@ -34,77 +34,94 @@ const excluded = (file: string) =>
   EXCLUDED.some(({ matches }) => matches(file));
 
 /** Errors of another class that never leave the code that makes them, each with what catches or reads it. An entry names
- * its file and the error's class, or its literal message or expression text, so another breach beside it is still
- * refused. */
+ * its file and the error's class, or its literal message or expression text, and `count` is how many breaches it matches
+ * there: one more, even beside it, is refused. */
 const SENTINELS: readonly (Pick<ContractBreach, "file"> &
-  Partial<Pick<ContractBreach, "error" | "text">> & { why: string })[] = [
+  Partial<Pick<ContractBreach, "error" | "text">> & {
+    count: number;
+    why: string;
+  })[] = [
   {
     file: "src/providers/caddy-binary.ts",
+    count: 1,
     text: "not a file",
     why: "The catch around it throws PROXY_BINARY, naming proxy.caddy.",
   },
   {
     file: "src/daemon/composition.ts",
+    count: 1,
     text: "the configuration it serves is an older rigd's, which does not say which of proxy.routes is a dashboard's; it is replaced once rig proxy reload publishes Host config",
     why: "takeOverDashboard catches it and puts the reason in the dashboard notice; it is a clause of that sentence.",
   },
   {
     file: "src/daemon/composition.ts",
+    count: 1,
     text: "new Error(String(error))",
     why: "An unreadable Host config, which proxyReport takes as a value and reports; never thrown.",
   },
   {
     file: "src/runtime/doctor.ts",
+    count: 1,
     text: "new Error(String(error))",
     why: "An unreadable config document, which doctor takes as a value and reports; never thrown.",
   },
   {
     file: "src/diagnostics/file-log.ts",
+    count: 1,
     text: "Diagnostic writer is busy.",
     why: "createFileDiagnosticLog catches every sink failure and returns its result instead; #424 gives that result structured evidence.",
   },
   {
     file: "src/diagnostics/file-log.ts",
+    count: 1,
     text: "Diagnostic log is not a file.",
     why: "As above: caught by createFileDiagnosticLog, #424.",
   },
   {
     file: "src/diagnostics/file-log.ts",
+    count: 1,
     text: "Diagnostic archive identity conflict.",
     why: "As above: caught by createFileDiagnosticLog, #424.",
   },
   {
     file: "src/providers/managed-caddy.ts",
+    count: 2,
     error: "DashboardRouteChanged",
     why: "Thrown by activation before anything is loaded; its callers catch it and build the generation again.",
   },
   {
     file: "src/runtime/application.ts",
+    count: 3,
     error: "Reselect",
     why: "The Operation selects again: isReselect catches it, and after the last try admission gives OPERATION_CONTENDED.",
   },
   {
     file: "src/runtime/application.ts",
+    count: 3,
     text: "admission.moved()",
     why: "Typed Error, but gives Reselect or OPERATION_CONTENDED; #827 types it.",
   },
   {
     file: "src/runtime/route-guard.ts",
+    count: 1,
     text: "start.follow.exited(service, exits.get(service)!)",
     why: "Typed Error, but its one implementation gives exitedAfterReady's RigError; #827 types it.",
   },
   {
     file: "src/adapters/proxy-verify.ts",
+    count: 1,
     text: "checkServerIdentity(hostname, certificate)",
     why: "Node's answer for a certificate, only compared with undefined; never thrown.",
   },
   {
     file: "src/cli/commands.ts",
+    count: 2,
     error: "InvalidArgumentError",
     why: "Commander catches it from an option's parser and reports it as a usage error.",
   },
   {
     file: "src/cli/dns-command.ts",
+    count: 3,
     error: "InvalidArgumentError",
     why: "As above: Commander's usage error.",
   },
@@ -139,13 +156,17 @@ test("production code makes only tagged errors and gives every ConfigError its o
   ).toEqual([]);
 }, 60_000);
 
-test("every allowed sentinel is still made where it is named, so the list does not outlive its code", async () => {
+test("every allowed sentinel is made exactly as often as its entry says, so the list neither grows unseen nor outlives its code", async () => {
   const { breaches } = await repositoryBreaches();
-  for (const sentinel of SENTINELS)
+  for (const sentinel of SENTINELS) {
+    const matched = breaches.filter((breach) => allowedBy(sentinel, breach));
+    // A wrong count shows where each match is.
     expect({
       sentinel,
-      found: breaches.some((breach) => allowedBy(sentinel, breach)),
-    }).toEqual({ sentinel, found: true });
+      count: matched.length,
+      at: matched.map(located),
+    }).toMatchObject({ sentinel, count: sentinel.count });
+  }
 }, 60_000);
 
 test("every tracked source file under src/ and web/ is read, or excluded with its reason", async () => {
@@ -242,6 +263,9 @@ test("an error of another class is refused at its line however it is named, made
       "export const maybe = (): RigError | undefined => undefined;",
       "lookalike();",
       "maybe();",
+      "// Shaped like a ConfigError, but asRigError's instanceof refuses it.",
+      'export class Fake extends Error { readonly _tag = "ConfigError"; readonly code = "invalid_config"; readonly context = {}; readonly hint = "Fix it."; }',
+      'export const faked = new Fake("lookalike tag");',
     ].join("\n"),
     "src/reexported.ts": [
       'export { Plain as Exported } from "./added";',
@@ -276,6 +300,8 @@ test("an error of another class is refused at its line however it is named, made
     "src/added.ts:14 untagged-error Error: held",
     'src/added.ts:16 untagged-error Error: Object.assign(new E("assigned"), { code: "X" })',
     "src/added.ts:16 untagged-error Error: assigned",
+    "src/added.ts:25 untagged-error-class Fake: Fake",
+    "src/added.ts:26 untagged-error Fake: lookalike tag",
     "src/reexported.ts:3 untagged-error Error: re-exported",
     "web/components/added.tsx:2 untagged-error Error: in the dashboard",
   ]);
@@ -299,6 +325,14 @@ test("a ConfigError whose hint is missing or may be undefined is refused under a
       '    super("narrowed", "invalid_config");',
       "  }",
       "}",
+      "// These inherit ConfigError's constructor, directly and through a parent.",
+      "export class Inherited extends ConfigError {}",
+      "export class Grandchild extends Inherited {}",
+      "export const inherited = [",
+      '  new Inherited("inherited", "invalid_config"),',
+      '  new Grandchild("grandchild", "invalid_config", {}, undefined),',
+      '  new Grandchild("inherited and hinted", "invalid_config", {}, "Fix it."),',
+      "];",
     ].join("\n"),
   });
   expect(
@@ -309,5 +343,7 @@ test("a ConfigError whose hint is missing or may be undefined is refused under a
     "src/hints.ts:6 config-error-hint ConfigError: optional",
     "src/hints.ts:7 config-error-hint ConfigError: aliased",
     "src/hints.ts:13 config-error-hint ConfigError: narrowed",
+    "src/hints.ts:20 config-error-hint ConfigError: inherited",
+    "src/hints.ts:21 config-error-hint ConfigError: grandchild",
   ]);
 }, 60_000);

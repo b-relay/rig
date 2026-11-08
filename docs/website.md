@@ -59,6 +59,14 @@ the server re-reads `rigd` and streams new rows while the browser keeps its
 scroll and form state. Because most ticks change nothing, Next's client cache
 (`staleTimes.dynamic`) can hand back a section seen in the last five minutes the
 instant its tab is tapped, and the refresh replaces it when `rigd` moves.
+`web/server/pulse.ts` reads the three inputs through one discovery of `rigd`.
+Each request is admitted on its own, but requests that ask while a read is in
+flight, from other tabs or from a page's own top bar and sidebar, share it, and
+nothing is kept once it answered, so the next request reads afresh. A link
+prefetches its page only once it is pointed at, touched or focused
+(`web/components/link.tsx`), never merely for being on screen, so a redraw does
+not prefetch every link on the page again; a link followed without any of those
+waits for its page's first answer instead of showing its loading state at once.
 
 When `/pulse` does not answer at all, the corner says `offline` and nothing
 else changes; the page is left as it was and the next tick tries again. A
@@ -85,6 +93,15 @@ health and Targets, each with a state dot, streamed in as `rigd` answers. Below 
 stays open it is a drawer the top bar opens, and a phone keeps the sections as
 tabs along the bottom. Status reads are shared per request
 (`web/server/status.ts`), so the sidebar and the page pay for one observation.
+The sidebar also keeps each Project's status (`web/server/navigation.ts`) for up
+to 15 seconds, the live refresh's interval, and shows it again only while the
+page's pulse has the stamp it was read under, every pulse input answered and no
+Operation runs. So anything `rigd` records (an Operation, a crash, a change of
+health, a restart) reads every Project afresh at once, and only what it records
+nothing about, such as a hand edit of another Project's `rig.yaml`, can be up to
+15 seconds old there. A failed read is never kept, and a command or config
+apply from the site drops everything kept. The page itself always reads the
+Projects it shows.
 The theme switch cycles system, light and dark and keeps the choice in a
 `rig_theme` cookie, so the server renders the right scheme on the first paint
 with no inline script; `dark:` utilities follow the same rule as the palette.
@@ -147,7 +164,7 @@ with no inline script; `dark:` utilities follow the same rule as the palette.
   its hostname serves with the Service and port each reaches; the deployment it
   runs), Deployments, Logs, Environment and Jobs, each for that Target alone.
 - **Logs** (`web/components/log-viewer.tsx`): a Target's lines followed a second
-  at a time through `rigd`'s cursor, read with a plain GET (`/log-lines`) because Next runs Server Actions one at a time and a deploy started from the page would hold the follow. Component chips and the stream picker
+  at a time through `rigd`'s cursor, read with a plain GET (`/log-lines`) because Next runs Server Actions one at a time and a deploy started from the page would hold the follow. While the tab is hidden the follow reads nothing; shown again, it reads on from its cursor at once, so no line is lost or shown twice, and a cursor `rigd` no longer accepts starts the view over as it does at any time. Component chips and the stream picker
   narrow `rigd`'s own read (`logFilter`); the search box narrows and marks what
   is shown. Scrolling up holds the view until Latest; lines can wrap, be
   cleared, or be downloaded as `rig logs` prints them. The view lives in the
@@ -468,16 +485,16 @@ runs its commands as you.
 
 ## Layout
 
-| Path                  | Responsibility                                                                                                                                                                                                                                                                                                                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/monitor`, `/activity`, `/proxy`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon; `/usage` and `/log-lines` the polled reads.                                                                |
-| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                                                                       |
-| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts`, `work.ts` and `env.ts` (per-request reads), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server).                                                                              |
-| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `operations.tsx` owns in-flight actions and reconciliation.                                                                                                                  |
-| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                                                                                |
-| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-work.ts`, `target-detail.ts`, `logs.ts`, `usage.ts`, `chart-layout.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`. |
-| `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                                                                     |
-| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                                                                                                                               |
+| Path                  | Responsibility                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `web/app`             | Routes. `/` is the overview; `/projects/[name]/(sections)/*` the Project sections and `/projects/[name]/targets/[target]/*` a Target's; `/monitor`, `/activity`, `/proxy`, `/projects/new`, `/sign-in`; `/healthz` for readiness; `/project-icon` a Project's favicon; `/usage` and `/log-lines` the polled reads.                                                                      |
+| `web/proxy.ts`        | Admits each request, sends strangers to `/sign-in`, and sets the nonce CSP.                                                                                                                                                                                                                                                                                                             |
+| `web/server`          | `site.ts` (settings from env), `daemon.ts` (reads, config and env edits against rigd), `actions.ts` (Server Actions), `status.ts`, `deployments.ts`, `work.ts` and `env.ts` (per-request reads), `pulse.ts` (the shared pulse read), `navigation.ts` (the sidebar's kept statuses), `guard.ts`, `startup.ts`, `sandbox.ts`, `seed.ts`, `favicon.ts` (Project icons read on the server). |
+| `web/components`      | Server and client components; `shell/` the sidebar and menu; `project-matrix.tsx` the overview's matrices and `project-icon.tsx` the Project icons; `bits.tsx` the shared card, dot and tile pieces; `link.tsx` the site's link, which prefetches on intent; `operations.tsx` owns in-flight actions and reconciliation.                                                                |
+| `web/components/ui`   | shadcn/ui primitives (fetched from the registry, edited in place).                                                                                                                                                                                                                                                                                                                      |
+| `web/lib`             | Pure helpers: `reconcile.ts`, `present.ts`, `health.ts`, `matrix.ts`, `activity.ts`, `target.ts`, `overview.ts`, `target-verbs.ts`, `target-work.ts`, `target-detail.ts`, `logs.ts`, `usage.ts`, `chart-layout.ts`, `deployments.ts`, `env.ts`, `jobs.ts`, `proxy.ts`, `dns.ts`, `theme.ts`, `config-form.ts`, `outcome.ts`, and the control-plane `types.ts` reused from `src/`.       |
+| `web/app/globals.css` | Tailwind entry: the slate-teal palette (light and dark) with the good, warn and bad state tones, and the shadcn tokens mapped onto them. Inter, Space Grotesk and JetBrains Mono load in `layout.tsx` with `next/font/local`.                                                                                                                                                           |
+| `web/demo`            | Demo Projects every Preview sandbox is seeded with.                                                                                                                                                                                                                                                                                                                                     |
 
 Radix primitives set inline styles, so the Content-Security-Policy allows
 `style-src 'unsafe-inline'`; scripts need the per-request nonce.

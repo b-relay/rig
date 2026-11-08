@@ -1,5 +1,9 @@
 import type { ManagedComponent } from "../config/types";
-import { diagnosticErrorCode, failureReason } from "../domain/errors";
+import {
+  diagnosticErrorCode,
+  failureReason,
+  type RigError,
+} from "../domain/errors";
 import type { TargetRecord } from "../domain/runtime";
 import type { ProcessObservation } from "../providers/contracts";
 import { boundedObservations } from "./bounded-observations";
@@ -109,7 +113,7 @@ export interface RouteGuard {
 export interface StartFollowing {
   withdrawn(): Promise<void>;
   /** The failure of the start for `service`, which a look saw stopped as `seen`. */
-  exited(service: string, seen: ProcessObservation): Error;
+  exited(service: string, seen: ProcessObservation): RigError;
 }
 /** A start the guard follows (`RouteGuard.start`). */
 export interface GuardedStart {
@@ -146,7 +150,7 @@ export function createRouteGuard(
     readonly started: Set<string>;
     readonly follow: StartFollowing;
     readonly fail: (error: Error) => void;
-    failed?: Error;
+    failed?: RigError;
     decided?: true;
   }[] = [];
   /** The last start, the only one a stopped Service can still fail. */

@@ -1,20 +1,8 @@
-import { z } from "zod";
 import { commandSchema } from "../../../src/daemon/protocol";
-import { USAGE_RANGES } from "../../../src/domain/usage-summary";
 import { attempt, refused } from "@/lib/outcome";
 import { chartReport, monitorsTarget, presetWindow } from "@/lib/usage";
 import { read } from "@/server/daemon";
-
-/** What a Monitor page polls: the whole Host, or one Project with the Target whose Components it charts (`all` for
- * none), over a preset. */
-const usageQuery = z.union([
-  z.strictObject({ host: z.literal(true), range: z.enum(USAGE_RANGES) }),
-  z.strictObject({
-    project: z.string(),
-    target: z.string().min(1).max(63),
-    range: z.enum(USAGE_RANGES),
-  }),
-]);
+import { usageQuerySchema } from "@/server/usage-query";
 
 /** The Monitor pages' poll: one Project's or the whole Host's CPU and memory, cut to what the charts draw. A plain GET,
  * as the log viewer's follow is, so it never waits behind a Server Action; it sits behind the same admission as every
@@ -29,7 +17,7 @@ export async function GET(request: Request): Promise<Response> {
   } catch {
     input = undefined;
   }
-  const query = usageQuery.safeParse(input);
+  const query = usageQuerySchema.safeParse(input);
   const command = query.success
     ? commandSchema.safeParse({
         action: "monitor",

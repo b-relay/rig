@@ -21,6 +21,8 @@ import { projectStatusSchema } from "../src/domain/project-status.js";
 import { processLeaseSchema } from "../src/providers/process-lease.js";
 import { runtimeStateSchema } from "../src/runtime/state-schema.js";
 import { cursorSchema } from "../src/adapters/target-log-reader.js";
+import { restoreRequestSchema } from "../web/server/restore.js";
+import { usageQuerySchema } from "../web/server/usage-query.js";
 
 const REPO = join(import.meta.dir, "..");
 const schemas = configJsonSchemas();
@@ -277,6 +279,9 @@ test.each(
     installationSchema,
     processLeaseSchema,
     cursorSchema,
+    // The dashboard's own requests. The live refresh's pulse is described in comments: it is parsed in the browser.
+    usageQuerySchema,
+    restoreRequestSchema,
   }),
 )("every field of %s documents what it holds", (_, schema) => {
   const document =

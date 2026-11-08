@@ -2,16 +2,19 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  platformInspect,
+  processExited,
+  signalOwned,
+} from "./support/rig-fixture";
 
 const roots: string[] = [];
-const children: number[] = [];
+/** What the runs' tests started, by pid and birth, stopped only while each is still that process. */
+const children: { pid: number; identity: string }[] = [];
 afterEach(async () => {
-  for (const pid of children.splice(0))
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      /* Already gone. */
-    }
+  for (const child of children.splice(0))
+    if (signalOwned(child, "SIGKILL", platformInspect))
+      await processExited(child);
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -83,9 +86,10 @@ test("a test whose thread is blocked past the stall limit is named with its chil
     {
       "blocked.test.ts": `import { test } from "bun:test";
 import { writeFileSync } from "node:fs";
+import { processIdentity } from ${JSON.stringify(join(import.meta.dir, "support", "rig-fixture.ts"))};
 test("blocks its thread", () => {
   const sleep = Bun.spawn(["/bin/sleep", "30"]);
-  writeFileSync(import.meta.dir + "/sleep.pid", String(sleep.pid));
+  writeFileSync(import.meta.dir + "/sleep.json", JSON.stringify({ pid: sleep.pid, identity: processIdentity(sleep.pid) }));
   ${BLOCK}
 }, 500);
 `,
@@ -94,8 +98,13 @@ test("blocks its thread", () => {
     2_000,
     ["--parallel=2"],
   );
-  const sleep = Number(await readFile(join(run.work, "sleep.pid"), "utf8"));
-  children.push(sleep);
+  // Its birth, read while it surely ran, so teardown never signals a later process with its pid.
+  const child = JSON.parse(
+    await readFile(join(run.work, "sleep.json"), "utf8"),
+  ) as { pid: number; identity: string };
+  children.push(child);
+  expect(child.identity).toBeString();
+  const sleep = child.pid;
   expectStall(
     run,
     `in a test of ${join(run.work, "blocked.test.ts")} (1 began, 0 ended)`,

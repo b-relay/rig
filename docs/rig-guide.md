@@ -221,6 +221,15 @@ new connections, then lets the commands already running finish and answer
 their callers, and only then closes what is still open, such as a log follow.
 A command sent after the stop began, or one still waiting behind another
 operation on its Target, is refused as `DAEMON_DRAINING` or fails to connect.
+The dashboard's Prepare uninstall refuses new work the same way, for as long as
+nothing stops `rigd`. The `queue` read's `draining` says which applies
+(`uninstall-prepared` or `stopping`), and Monitor shows it, with Cancel uninstall
+for a prepared one; a shutdown cannot be cancelled. A preparation lives only in
+the running `rigd`, so with no dashboard (`dashboard: false`) restarting it clears
+one without finishing the uninstall: `kill <pid>`, with the pid the refusal's hint
+names; wait for that process to exit, since `kill` returns at once and a `rigd
+install` while the old daemon still answers changes nothing; then `rigd install`.
+Services keep running throughout, as for any restart.
 A stop signal never waits out a Service's `stop_timeout`, which may be an hour:
 a command waiting for a Service to exit (the stop of a start that never
 confirmed it started included) stops waiting and fails `STOP_DETACHED`,
@@ -3300,7 +3309,8 @@ would orphan its data; `forget` refuses with `PROJECT_TARGETS` naming the
 Previews. Stopped working and stable records go with the registration, and a
 warning names the live workspace and data root that remain on disk for the
 operator to delete, and any checkout kept because a source-file Tool that stays
-installed runs from it.
+installed runs from it. The warnings are also the message of its `rig activity`
+record, which is how the dashboard shows them on the page a forget lands on.
 
 Before the records go, `forget` withdraws every route its Targets publish,
 confirmed by Caddy, so a hostname a forgotten Project served can be deployed

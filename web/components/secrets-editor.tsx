@@ -40,7 +40,7 @@ import { transportFailure } from "@/lib/reconcile";
 import { targetSelector } from "@/lib/target";
 import type { EnvFileView, TargetReport } from "@/lib/types";
 import { runEnvEdit } from "@/server/actions";
-import { Failure, Mono, Notice } from "./bits";
+import { Failure, Mono, Notice, Warning } from "./bits";
 import { useRun } from "./operations";
 import {
   AlertDialog,
@@ -95,7 +95,12 @@ export function SecretsEditor({
   const [failure, setFailure] = useState<FailureShape>();
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const [saved, setSaved] = useState<{ keys: string[]; warning?: string }>();
+  // Each save counts up, so its restart controls start fresh: a restart answers only the save it followed.
+  const [saved, setSaved] = useState<{
+    keys: string[];
+    warning?: string;
+    generation: number;
+  }>();
   // Staged values are masked like stored ones until shown; the edit field hides what is typed unless asked.
   const [visible, setVisible] = useState<Record<string, true>>({});
   const [editVisible, setEditVisible] = useState(false);
@@ -195,15 +200,23 @@ export function SecretsEditor({
       return;
     }
     const warning = (outcome.value as { warning?: unknown }).warning;
-    setSaved({
+    setSaved((before) => ({
       keys: changes.map((change) => change.key),
       ...(typeof warning === "string" ? { warning } : {}),
-    });
+      generation: (before?.generation ?? 0) + 1,
+    }));
     setVisible({});
     setDraft(EMPTY_DRAFT);
     router.refresh();
   };
-  const newKeyValid = ENV_KEY.test(adding.key) && !keys.includes(adding.key);
+  const newKeyProblem = !adding.key
+    ? undefined
+    : !ENV_KEY.test(adding.key)
+      ? "A name has letters, digits and underscores, and does not start with a digit or _RIG_."
+      : keys.includes(adding.key)
+        ? `${adding.key} is already in this file; edit it above.`
+        : undefined;
+  const newKeyValid = adding.key !== "" && newKeyProblem === undefined;
   return (
     <section className="flex min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-xs">
       <header className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
@@ -250,7 +263,11 @@ export function SecretsEditor({
               <p className="text-warn">{saved.warning}</p>
             ) : null}
             {file.scope.job ? null : (
-              <RestartReaders project={project} readers={readers} />
+              <RestartReaders
+                key={saved.generation}
+                project={project}
+                readers={readers}
+              />
             )}
           </Notice>
         </div>
@@ -513,6 +530,7 @@ export function SecretsEditor({
             }
             placeholder="NAME"
             aria-label="New variable name"
+            aria-invalid={newKeyProblem !== undefined}
             autoComplete="off"
             spellCheck={false}
             className="h-8 w-48 font-mono text-xs"
@@ -554,14 +572,14 @@ export function SecretsEditor({
             variant="outline"
             className="h-8"
             disabled={!newKeyValid}
-            title={
-              adding.key && !ENV_KEY.test(adding.key)
-                ? "Letters, digits and underscores, not starting with a digit or _RIG_"
-                : undefined
-            }
           >
             <Plus /> Add
           </Button>
+          {newKeyProblem ? (
+            <div role="status" className="basis-full">
+              <Warning>{newKeyProblem}</Warning>
+            </div>
+          ) : null}
         </form>
       )}
       {changes.length ? (

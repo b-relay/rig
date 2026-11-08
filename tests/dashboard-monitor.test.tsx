@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import "./support/dashboard-site";
 import type { MonitorResult } from "../src/daemon/protocol";
 import { readFileSync } from "node:fs";
 import {
@@ -9,7 +10,9 @@ import {
 } from "../web/lib/chart-layout";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Tag } from "../web/components/usage-chart";
+import { RigdControls } from "../web/components/rigd-controls";
 import { advancesOf } from "./support/font-advances";
+import { elements, mountWithoutDom, textOf } from "./support/hook-harness";
 import {
   cardActivity,
   cardsOf,
@@ -604,4 +607,39 @@ test("a Monitor card lists and marks only its own Activity: a Target's with all 
       "stable",
     ),
   ).toEqual([]);
+});
+
+test("Monitor offers what rigd's admission allows now, whichever browser prepared it", () => {
+  const render = (props: Parameters<typeof RigdControls>[0]) => {
+    const mounted = mountWithoutDom(RigdControls);
+    mounted.render(props);
+    return mounted.tree;
+  };
+  const controls = (props: Parameters<typeof RigdControls>[0]) =>
+    textOf(render(props));
+  const titled = (props: Parameters<typeof RigdControls>[0]) =>
+    elements(render(props)).flatMap((each) =>
+      each.props.tone === "warn" ? [each.props.title] : [],
+    );
+  const prepared = controls({ draining: "uninstall-prepared" });
+  expect(titled({ draining: "uninstall-prepared" })).toEqual([
+    "Prepared for uninstall",
+  ]);
+  expect(titled({ draining: "stopping" })).toEqual(["rigd is stopping"]);
+  expect(titled({})).toEqual([]);
+  expect(prepared).toContain("rigd is refusing new work");
+  expect(prepared).toContain("Cancel uninstall");
+  expect(prepared).not.toContain("Prepare uninstall");
+  const open = controls({});
+  expect(open).toContain("Prepare uninstall");
+  expect(open).not.toContain("Cancel uninstall");
+  expect(open).not.toContain("refusing new work");
+  // A real shutdown offers nothing, and reads differently from a prepared rigd.
+  const stopping = controls({ draining: "stopping" });
+  expect(stopping).not.toContain("Cancel uninstall");
+  expect(stopping).not.toContain("Prepare uninstall");
+  // A failed queue read says nothing of it: both are offered, and rigd decides.
+  const unknown = controls({ known: false });
+  expect(unknown).toContain("Prepare uninstall");
+  expect(unknown).toContain("Cancel uninstall");
 });

@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import { TopBar } from "@/components/top-bar";
 import { BottomTabs } from "@/components/nav";
+import { CONTENT_ID, SkipToContent } from "@/components/bits";
 import { Sidebar } from "@/components/shell/sidebar";
 import { parseTheme, THEME_COOKIE } from "@/lib/theme";
 import { sessionHeld } from "@/server/session";
@@ -63,6 +64,7 @@ export default async function RootLayout({
       className={`${inter.variable} ${spaceGrotesk.variable} ${jetbrains.variable}`}
     >
       <body className="min-h-dvh pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0">
+        {signingIn ? null : <SkipToContent />}
         {signingIn ? (
           <>
             <TopBar bare theme={theme} />
@@ -77,7 +79,11 @@ export default async function RootLayout({
             </aside>
             <div className="flex min-w-0 flex-col">
               <TopBar theme={theme} menu={<Sidebar sandbox={sandbox} />} />
-              <main className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 pt-5 pb-8 sm:px-6 sm:pt-6 lg:px-8">
+              <main
+                id={CONTENT_ID}
+                tabIndex={-1}
+                className="mx-auto flex w-full max-w-7xl scroll-mt-14 flex-col gap-6 px-4 pt-5 pb-8 outline-none sm:px-6 sm:pt-6 lg:px-8"
+              >
                 {children}
               </main>
             </div>

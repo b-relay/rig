@@ -19,7 +19,7 @@ export async function CompletedOperation({
     completedNotice(activity.value.operations, operation, project);
   if (!notice) return null;
   return (
-    <Notice tone="good">
+    <Notice tone={notice.warnings ? "warn" : "good"}>
       <p>
         {notice.text}{" "}
         <a
@@ -29,6 +29,7 @@ export async function CompletedOperation({
           operation
         </a>
       </p>
+      {notice.warnings ? <p>{notice.warnings}</p> : null}
     </Notice>
   );
 }

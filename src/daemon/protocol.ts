@@ -621,6 +621,12 @@ export const monitorResultSchema = z
       .describe(
         "How often rigd samples, in seconds: 1 with the native reader, 5 with the ps fallback.",
       ),
+    targets: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "A Project's read: the Targets it has now, sampled or not; absent for the whole Host.",
+      ),
     series: z
       .array(
         z.object({
@@ -772,6 +778,12 @@ const operationViewSchema = z
 /** The part of the `queue` read a waiting command renders: where its own Operation stands. */
 export const queueResultSchema = z
   .object({
+    draining: z
+      .enum(["uninstall-prepared", "stopping"])
+      .optional()
+      .describe(
+        "Why rigd refuses new work now: an uninstall was prepared and nothing has stopped rigd yet, or rigd is stopping. Absent while it accepts work.",
+      ),
     operation: z
       .discriminatedUnion("state", [
         z

@@ -14,8 +14,14 @@ import {
 import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
 import {
   componentSlot,
+  FIRST_LOG_LINES,
+  keepLogSearch,
+  keptLogSearch,
+  LOG_LINE_CHOICES,
   logFilter,
   logText,
+  logViewOf,
+  logViewParams,
   matchesSearch,
   type LogEntry,
   type LogQuery,
@@ -37,7 +43,6 @@ import { cn } from "@/lib/utils";
 
 const KEPT_LINES = 5000;
 const FOLLOW_MS = 1000;
-const FIRST_LINES = 200;
 const SLOT_CLASS = [
   "text-sky-700 dark:text-sky-300",
   "text-violet-700 dark:text-violet-300",
@@ -48,7 +53,9 @@ const SLOT_CLASS = [
 ];
 /** One Target's log, streamed a second at a time through rigd's cursor while following. The
  * component and stream filters narrow what rigd reads; the search box narrows what is shown. The
- * first page came with the server render; the Target choice lives in the URL so a refresh keeps it. */
+ * first page came with the server render. The Target and the view live in the URL, and the search in this tab's session
+ * storage, so a reload keeps them; a view the first page does not fit reads its own, and shows nothing of the first page
+ * meanwhile. No line is shown until the browser has looked for its search, so a saved one never flashes what it hides. */
 export function LogViewer({
   project,
   targets,
@@ -66,17 +73,23 @@ export function LogViewer({
 }) {
   const router = useRouter();
   const params = useSearchParams();
-  const [lines, setLines] = useState(FIRST_LINES);
-  const [follow, setFollow] = useState(true);
-  const [query, setQuery] = useState<LogQuery>({ services: [] });
+  const target =
+    targets.find((each) => targetKey(each) === selected) ?? targets[0];
+  const [opened] = useState(() => logViewOf(params, target?.components ?? []));
+  const [lines, setLines] = useState(opened.lines);
+  const [follow, setFollow] = useState(opened.follow);
+  const [query, setQuery] = useState<LogQuery>(opened.query);
   const [search, setSearch] = useState("");
-  const [wrap, setWrap] = useState(true);
-  const [entries, setEntries] = useState<LogEntry[]>(first?.entries ?? []);
+  const [searchLookedFor, setSearchLookedFor] = useState(false);
+  const [wrap, setWrap] = useState(opened.wrap);
+  const [entries, setEntries] = useState<LogEntry[]>(
+    opened.lines === FIRST_LOG_LINES && !logFilter(opened.query)
+      ? (first?.entries ?? [])
+      : [],
+  );
   const [failure, setFailure] = useState<FailureShape>();
   const [pinned, setPinned] = useState(true);
   const pane = useRef<HTMLDivElement>(null);
-  const target =
-    targets.find((each) => targetKey(each) === selected) ?? targets[0];
   const key = target ? targetKey(target) : undefined;
   const selector = target ? JSON.stringify(targetSelector(target)) : undefined;
   const filter = JSON.stringify(logFilter(query) ?? null);
@@ -145,7 +158,7 @@ export function LogViewer({
     };
     if (adopted.current !== identity) {
       const page =
-        lines === FIRST_LINES && !narrowed ? served.current : undefined;
+        lines === FIRST_LOG_LINES && !narrowed ? served.current : undefined;
       if (page) {
         adopted.current = identity;
         setEntries(page.entries);
@@ -162,9 +175,31 @@ export function LogViewer({
     next();
     return stop;
   }, [project, selector, lines, follow, filter]);
+  // Storage belongs to the browser, so the server's render cannot know the search; this first effect brings it back, and
+  // keptLogSearch answers even where storage is refused, so the lines always follow.
+  useEffect(() => {
+    const kept = keptLogSearch(window.location.pathname);
+    if (kept) setSearch(kept);
+    setSearchLookedFor(true);
+  }, []);
+  // Written straight to the address: nothing on the server depends on it, and a router navigation would read the page again.
+  useEffect(() => {
+    const { pathname, search: before, hash } = window.location;
+    const now = new URLSearchParams(before);
+    const next = logViewParams({ lines, follow, query, wrap }, now);
+    if (next.toString() !== now.toString())
+      window.history.replaceState(
+        null,
+        "",
+        `${pathname}${next.size ? `?${next}` : ""}${hash}`,
+      );
+  }, [lines, follow, query, wrap]);
   const shown = useMemo(
-    () => entries.filter((entry) => matchesSearch(entry, search)),
-    [entries, search],
+    () =>
+      searchLookedFor
+        ? entries.filter((entry) => matchesSearch(entry, search))
+        : [],
+    [entries, search, searchLookedFor],
   );
   // Scrolls the log pane only, and only while the reader is at its end; scrolling up holds the view.
   useEffect(() => {
@@ -187,10 +222,14 @@ export function LogViewer({
           <Select
             value={key}
             onValueChange={(next) => {
-              const search = new URLSearchParams(params);
-              search.set("target", next);
-              setQuery({ services: [] });
-              router.replace(`?${search}`);
+              const cleared = { services: [] };
+              const address = logViewParams(
+                { lines, follow, query: cleared, wrap },
+                params,
+              );
+              address.set("target", next);
+              setQuery(cleared);
+              router.replace(`?${address}`);
             }}
           >
             <SelectTrigger
@@ -219,7 +258,10 @@ export function LogViewer({
           />
           <Input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              keepLogSearch(window.location.pathname, event.target.value);
+            }}
             placeholder="Search the lines shown…"
             aria-label="Search the log"
             className="h-8 pl-8 text-sm md:text-sm"
@@ -253,7 +295,7 @@ export function LogViewer({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {[100, 200, 1000, 5000].map((count) => (
+            {LOG_LINE_CHOICES.map((count) => (
               <SelectItem key={count} value={String(count)}>
                 last {count}
               </SelectItem>
@@ -346,7 +388,7 @@ export function LogViewer({
             <span className="text-muted-foreground">
               This Project has no recorded Targets.
             </span>
-          ) : shown.length === 0 ? (
+          ) : searchLookedFor && shown.length === 0 ? (
             <span className="text-muted-foreground">
               {entries.length
                 ? "No line matches the search."
@@ -418,9 +460,11 @@ export function LogViewer({
         />
         {follow ? "Following" : "Paused"}
         <span className="ml-auto tabular-nums">
-          {search
-            ? `${shown.length} of ${entries.length} lines`
-            : `${entries.length} lines`}
+          {!searchLookedFor
+            ? null
+            : search
+              ? `${shown.length} of ${entries.length} lines`
+              : `${entries.length} lines`}
         </span>
       </div>
     </div>

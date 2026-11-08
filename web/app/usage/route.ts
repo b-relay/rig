@@ -2,7 +2,7 @@ import { z } from "zod";
 import { commandSchema } from "../../../src/daemon/protocol";
 import { USAGE_RANGES } from "../../../src/domain/usage-summary";
 import { attempt, refused } from "@/lib/outcome";
-import { chartReport, presetWindow } from "@/lib/usage";
+import { chartReport, monitorsTarget, presetWindow } from "@/lib/usage";
 import { read } from "@/server/daemon";
 
 /** What a Monitor page polls: the whole Host, or one Project with the Target whose Components it charts (`all` for
@@ -11,7 +11,7 @@ const usageQuery = z.union([
   z.strictObject({ host: z.literal(true), range: z.enum(USAGE_RANGES) }),
   z.strictObject({
     project: z.string(),
-    target: z.string(),
+    target: z.string().min(1).max(63),
     range: z.enum(USAGE_RANGES),
   }),
 ]);
@@ -52,6 +52,23 @@ export async function GET(request: Request): Promise<Response> {
   const outcome = await attempt(
     read({ ...command.data, action: "monitor" }, request.signal),
   );
+  if (
+    outcome.ok &&
+    "target" in query.data &&
+    !monitorsTarget(
+      query.data.target,
+      outcome.value.targets ?? [],
+      outcome.value.series,
+    )
+  )
+    return Response.json(
+      refused({
+        code: "TARGET_MISSING",
+        message: `${query.data.project} has no Target ${query.data.target}, now or in this range.`,
+        hint: "Reload the page, which shows a Target the Project has.",
+      }),
+      { headers },
+    );
   return Response.json(
     outcome.ok
       ? {

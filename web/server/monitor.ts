@@ -7,6 +7,7 @@ import {
   chartReport,
   componentsOf,
   currentOf,
+  monitorsTarget,
   percent,
   presetWindow,
   type ChartReport,
@@ -63,8 +64,13 @@ export const projectMonitor = cache(
     const current = status.ok ? status.value.targets : [];
     const targets = chipTargets(whole, current, hrefOf);
     const target =
-      wanted === "all" || targets.some((each) => each.name === wanted)
-        ? wanted!
+      wanted !== undefined &&
+      monitorsTarget(
+        wanted,
+        current.map((each) => each.name),
+        whole?.series ?? [],
+      )
+        ? wanted
         : (targets.find((each) => each.name === "stable" && each.detail)
             ?.name ??
           targets[0]?.name ??

@@ -10,6 +10,7 @@ import { Confirm } from "../web/components/confirm";
 import { ProjectMonitor } from "../web/components/project-monitor";
 import { projectMonitor } from "../web/server/monitor";
 import { JobCards } from "../web/components/job-cards";
+import { CompletedOperation } from "../web/components/completed-operation";
 import { DeploymentList } from "../web/components/deployment-list";
 import { when } from "../web/lib/present";
 import SettingsPage from "../web/app/projects/[name]/(sections)/settings/page";
@@ -480,6 +481,30 @@ test("the page an action lands on says only what Activity recorded of that Opera
     completedNotice([{ ...destroyed, action: "up" }], "op-d", "demo"),
   ).toBeUndefined();
   expect(completedNotice([destroyed], "nope", "demo")).toBeUndefined();
+});
+
+test("the page a forget lands on says every warning Activity recorded of it, and a forget with none stays plain", async () => {
+  const leftOnDisk =
+    "Its workspace at /rig/workspaces/demo was kept on disk. Its backups stay under /rig/backups/demo.";
+  const forgotten = record({
+    id: "op-f",
+    action: "forget",
+    outcome: "forgotten",
+    target: undefined,
+    message: leftOnDisk,
+  } as never);
+  answer = () => ({ operations: [forgotten] });
+  const shown = await CompletedOperation({ operation: "op-f" });
+  expect(textOf(shown)).toContain("was forgotten");
+  expect(textOf(shown)).toContain(leftOnDisk);
+  expect((shown as { props: { tone?: string } }).props.tone).toBe("warn");
+  const plain = { ...forgotten };
+  delete plain.message;
+  answer = () => ({ operations: [plain] });
+  const quiet = await CompletedOperation({ operation: "op-f" });
+  expect(textOf(quiet)).toContain("was forgotten");
+  expect((quiet as { props: { tone?: string } }).props.tone).toBe("good");
+  answer = undefined;
 });
 
 /** A recreated Preview on Monitor: the earlier one sampled last, so only the ids status reports can tell them apart. */

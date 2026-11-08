@@ -32,6 +32,7 @@ import { open } from "node:fs/promises";
 import { DEFAULT_LOG_RETENTION } from "../src/domain/log-retention";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { LogFilter } from "../src/domain/log-filter";
+import { cliHarness } from "./support/cli-harness";
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -246,41 +247,22 @@ test("public follow reports reader truncation failure and preserves retained byt
     files = createRuntimeFiles();
   const path = join(target.logRoot, "target.jsonl");
   await writeFile(path, entry("preserved"));
-  const { runRigCli } = await import("../src/cli/rig");
-  let errors = "",
-    polls = 0;
-  expect(
-    await runRigCli(["logs", "stable", "--follow"], {
-      root: target.logRoot,
-      cwd: target.logRoot,
-      wait: async () => {
-        await writeFile(path, "{}\n");
-      },
-      client: {
-        async status() {
-          throw new Error("Unexpected status");
-        },
-        async command(request) {
-          polls++;
-          return files.logs(target, request.after, 100);
-        },
-      },
-      output: {
-        write() {},
-        error(value) {
-          errors += value;
-        },
-      },
-      diagnostics: {
-        async record() {
-          return {};
-        },
-      },
-      newOperationId: () => "reader-failure",
-    }),
-  ).toBe(1);
+  let polls = 0;
+  const cli = cliHarness({
+    root: target.logRoot,
+    cwd: target.logRoot,
+    wait: async () => {
+      await writeFile(path, "{}\n");
+    },
+    command(request) {
+      polls++;
+      return files.logs(target, request.after, 100);
+    },
+    operationId: "reader-failure",
+  });
+  expect(await cli.run(["logs", "stable", "--follow"])).toBe(1);
   expect(polls).toBe(2);
-  expect(errors).toContain("cursor is invalid or its files changed");
+  expect(cli.err()).toContain("cursor is invalid or its files changed");
   expect(await readFile(path, "utf8")).toBe("{}\n");
 });
 
@@ -693,15 +675,12 @@ async function rigLogs(
   args: readonly string[],
   options: { now?: Date; wait?: (poll: number) => Promise<void> } = {},
 ) {
-  const { runRigCli } = await import("../src/cli/rig");
   const { commandSchema } = await import("../src/daemon/protocol");
   const files = createRuntimeFiles();
   const controller = new AbortController();
   const requests: unknown[] = [];
-  let out = "",
-    err = "",
-    polls = 0;
-  const code = await runRigCli(["logs", ...args], {
+  let polls = 0;
+  const cli = cliHarness({
     root: target.logRoot,
     cwd: target.logRoot,
     signal: controller.signal,
@@ -712,42 +691,25 @@ async function rigLogs(
       else controller.abort();
       if (polls > 1) controller.abort();
     },
-    client: {
-      async status() {
-        throw new Error("Unexpected status");
-      },
-      async command(raw) {
-        const request = commandSchema.parse(raw);
-        requests.push(request);
-        return {
-          project: "app",
-          target: request.target ?? target.name,
-          ...(await files.logs(
-            target,
-            request.after,
-            request.lines ?? 100,
-            request.logFilter,
-          )),
-          ...(request.logFilter ? { filtered: true } : {}),
-        };
-      },
+    async command(raw) {
+      const request = commandSchema.parse(raw);
+      requests.push(request);
+      return {
+        project: "app",
+        target: request.target ?? target.name,
+        ...(await files.logs(
+          target,
+          request.after,
+          request.lines ?? 100,
+          request.logFilter,
+        )),
+        ...(request.logFilter ? { filtered: true } : {}),
+      };
     },
-    output: {
-      write(value) {
-        out += value;
-      },
-      error(value) {
-        err += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    newOperationId: () => "logs",
+    operationId: "logs",
   });
-  return { code, out, err, requests };
+  const code = await cli.run(["logs", ...args]);
+  return { code, out: cli.out(), err: cli.err(), requests };
 }
 test("rig logs working --service scheduler --since 1h prints only that Service's last hour, reaching into the rotated generation", async () => {
   const target = await fixture(),

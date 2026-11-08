@@ -738,7 +738,7 @@ test("a change to a name in an unreadable child zone fails with why, and is neve
     expect(h.writes()).toEqual([]);
   }
   // It fails with the zone's own code, not one of its own.
-  expect(() => chooseZone(report as never, NAME, undefined)).toThrow(
+  expect(() => chooseZone(report, NAME, undefined)).toThrow(
     expect.objectContaining({ code: "DNS_AUTH" }),
   );
   // With its zone named, the parent's own record is still the owner's to change.

@@ -1,32 +1,33 @@
 import { expect, test } from "bun:test";
 import { prepareInteractiveRequest } from "../src/cli/interaction";
-import { runRigCli } from "../src/cli/rig";
+import { cliHarness } from "./support/cli-harness";
 import { shellArgs } from "./support/shell-args";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 
 test("without a terminal, a stable deploy off the Production Branch prints that Branch quoted, so the copied command deploys exactly it", async () => {
-  const refusal = (productionBranch: string) =>
-    prepareInteractiveRequest(
+  const refusal = (productionBranch: string) => {
+    const cli = cliHarness({
+      command: () => ({
+        project: "demo",
+        repoPath: "/repo",
+        productionBranch,
+        currentBranch: "work",
+        selected: "stable",
+      }),
+    });
+    return prepareInteractiveRequest(
       {
         action: "deploy",
         repoPath: "/repo",
         target: "stable",
       } as RuntimeCommand,
       {
+        ...cli.deps,
         signal: new AbortController().signal,
         interaction: undefined,
-        output: { error() {} } as never,
-        client: {
-          command: async () => ({
-            project: "demo",
-            repoPath: "/repo",
-            productionBranch,
-            currentBranch: "work",
-            selected: "stable",
-          }),
-        } as never,
       },
     );
+  };
   for (const [branch, printed] of [
     ["main", "rig deploy stable main."],
     ["feat/(draft)", "rig deploy stable 'feat/(draft)'."],
@@ -40,39 +41,21 @@ test("without a terminal, a stable deploy off the Production Branch prints that 
 
 test("the Production retry keeps every flag the deploy was given, so the copied command deploys the same way", async () => {
   const run = async (args: string[]) => {
-    const requests: RuntimeCommand[] = [];
-    let err = "";
-    const code = await runRigCli(args, {
-      root: "/isolated/.rig",
-      cwd: "/workspace",
-      client: {
-        async status() {
-          return { project: "shop", targets: [] };
-        },
-        async command(request: RuntimeCommand) {
-          requests.push(request);
-          return request.action === "deployment-context"
-            ? {
-                project: "shop",
-                repoPath: "/repo",
-                productionBranch: "main",
-                currentBranch: "feature/login",
-                selected: "stable",
-              }
-            : { outcome: "deployed" };
-        },
-      },
-      output: {
-        write() {},
-        error(text: string) {
-          err += text;
-        },
-      },
-      diagnostics: { record: async () => ({}) },
-      wait: async () => {},
-      newOperationId: () => "op-1",
+    const cli = cliHarness({
+      status: () => ({ project: "shop", targets: [] }),
+      command: (request) =>
+        request.action === "deployment-context"
+          ? {
+              project: "shop",
+              repoPath: "/repo",
+              productionBranch: "main",
+              currentBranch: "feature/login",
+              selected: "stable",
+            }
+          : { outcome: "deployed" },
     });
-    return { code, requests, err };
+    const code = await cli.run(args);
+    return { code, requests: cli.requests, err: cli.err() };
   };
   const refused = await run([
     "deploy",

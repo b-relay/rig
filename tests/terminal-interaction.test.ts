@@ -1,8 +1,7 @@
 import { test, expect } from "bun:test";
 import { PassThrough, Writable } from "node:stream";
 import { createTerminalInteraction } from "../src/adapters/terminal-interaction";
-import { runRigCli } from "../src/cli/rig";
-import type { ProjectStatusReport } from "../src/domain/project-status";
+import { cliHarness } from "./support/cli-harness";
 
 function fixture() {
   const input = new PassThrough(),
@@ -101,54 +100,31 @@ test("Ctrl-C at a prompt reports through the shared interrupt, so it is the same
 test("Ctrl-C at a deploy confirmation exits 0 without an error message or a failure record", async () => {
   const f = terminalFixture();
   const controller = new AbortController();
-  const events: string[] = [];
-  let text = "";
-  const exit = await runRigCli(["deploy", "stable"], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
+  const cli = cliHarness({
     signal: controller.signal,
     interaction: createTerminalInteraction(f.input, f.output, {
       signal: controller.signal,
       interrupt: () => controller.abort(),
     }),
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status");
-      },
-      async command(request) {
-        if (request.action !== "deployment-context")
-          throw new Error(`Unexpected ${request.action}`);
-        setTimeout(() => f.input.write("\x03"), 10);
-        return {
-          project: "demo",
-          repoPath: "/repo",
-          productionBranch: "main",
-          currentBranch: "feature/wip",
-          targets: { working: "working", stable: "stable" },
-          selected: "stable",
-        };
-      },
+    command(request) {
+      if (request.action !== "deployment-context")
+        throw new Error(`Unexpected ${request.action}`);
+      setTimeout(() => f.input.write("\x03"), 10);
+      return {
+        project: "demo",
+        repoPath: "/repo",
+        productionBranch: "main",
+        currentBranch: "feature/wip",
+        targets: { working: "working", stable: "stable" },
+        selected: "stable",
+      };
     },
-    output: {
-      write(value) {
-        text += value;
-      },
-      error(value) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record(entry) {
-        events.push(entry.event);
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "unused",
+    operationId: "unused",
   });
+  const exit = await cli.run(["deploy", "stable"]);
   expect(exit).toBe(0);
   expect(f.text()).toContain("Deploy Production branch 'main'");
-  expect(text).not.toContain("cancelled");
-  expect(events).toEqual([]);
+  expect(cli.text()).not.toContain("cancelled");
+  expect(cli.events).toEqual([]);
   f.input.destroy();
 });

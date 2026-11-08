@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { destroyPreview } from "../src/adapters/preview-storage";
 import { createTargetEffects } from "../src/adapters/target-effects";
 import { createTargetCommand } from "../src/adapters/target-commands";
+import { createTargetPreparation } from "../src/adapters/target-preparation";
 import { createArtifactInstaller } from "../src/providers/artifact-installer";
 import { runCommand } from "../src/providers/command-runner";
 import { createChildSupervisor } from "../src/providers/child-supervisor";
@@ -1685,6 +1686,75 @@ for (const recording of ["rejects", "never settles"] as const)
         (error: unknown) => error,
       );
       expect(error).toMatchObject({ code: failure, message });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+
+for (const recording of ["rejects", "never settles"] as const)
+  for (const { step, failure, timedOut } of [
+    { step: "build", failure: "BUILD_FAILED", timedOut: false },
+    { step: "build", failure: "BUILD_TIMEOUT", timedOut: true },
+    { step: "install", failure: "DEPENDENCIES_FAILED", timedOut: false },
+    { step: "install", failure: "DEPENDENCIES_TIMEOUT", timedOut: true },
+  ] as const)
+    test(`${step === "build" ? "a build" : "a dependency installation"} that fails ${failure} while recording its output ${recording} reports ${failure}, within the recording deadline`, async () => {
+      const root = await mkdtemp(join(tmpdir(), "rig-failed-recording-"));
+      roots.push(root);
+      const outcome = () =>
+        recording === "rejects"
+          ? Promise.reject(new Error("log write failed"))
+          : new Promise<never>(() => {});
+      const output = {
+        liveRecorder: () => ({
+          receive() {},
+          finish: () => Promise.resolve(false),
+        }),
+        recordOutput: outcome,
+      };
+      const preparation = createTargetPreparation({
+        root,
+        run: runCommand,
+        baseline: {},
+        command: createTargetCommand({
+          run: async () => ({
+            exitCode: 1,
+            stdout: "failed\n",
+            stderr: "",
+            ...(timedOut ? { timedOut: true as const } : {}),
+          }),
+          supervisors: new Map(),
+          output,
+          failureRecordingMs: 50,
+        }),
+        environment: { environment: async () => ({}) },
+        output,
+      });
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      await writeFile(join(workspace, "package.json"), "{}\n");
+      const record: TargetRecord = {
+        ...target(root),
+        kind: "stable",
+        name: "stable",
+        plan: {
+          ...target(root).plan,
+          target: "stable",
+          workspacePath: workspace,
+        },
+      };
+      const started = Date.now();
+      // Caught rather than through expect().rejects, which blocks on a promise that never settles (#822).
+      const error = await (
+        step === "build"
+          ? preparation.build(
+              { id: "shared", command: "build", timeout: 600 },
+              record,
+            )
+          : preparation.prepare(record)
+      ).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      expect(error).toMatchObject({ code: failure });
       expect(Date.now() - started).toBeLessThan(2_000);
     });
 

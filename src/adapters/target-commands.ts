@@ -11,8 +11,9 @@ import type { TargetOutput } from "./target-output";
 
 /** Runs a Target's build or dependency installation: `command` through /bin/sh in `cwd` (the workspace when absent) with
  * `env`, within `timeoutSeconds`, its output recorded under `componentName` (setup when absent), including what a killed
- * command printed before its budget ran out. All of it is recorded before the command returns. A failing command waits
- * for its recording only up to a bound, then fails with its own error: a slow recording still finishes, just after. */
+ * command printed before its budget ran out. All of it is recorded before a command that succeeded returns. A failing
+ * command, one that exits non-zero, runs past its budget or fails outright, waits for its recording only up to a bound,
+ * then returns or fails so its own failure is reported: a slow recording still finishes, just after. */
 export type TargetCommand = (
   command: string,
   target: TargetRecord,
@@ -56,11 +57,8 @@ export function createTargetCommand(options: {
       if (!(await live.finish()) && result)
         await options.output.recordOutput(result, target, componentName);
     };
-    // A failing command waits a while for that, then reports its own failure whatever became of the recording.
-    const failWith = async (
-      failure: unknown,
-      result?: CommandResult,
-    ): Promise<never> => {
+    // A failing command waits a while for that, then goes on to its own failure whatever became of the recording.
+    const recordWithin = async (result?: CommandResult) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         record(result).catch(() => {}),
@@ -69,7 +67,6 @@ export function createTargetCommand(options: {
         }),
       ]);
       clearTimeout(timer);
-      throw failure;
     };
     let result: CommandResult;
     try {
@@ -85,7 +82,8 @@ export function createTargetCommand(options: {
       // The command's own failure is the one reported; a record kept because its group could not be stopped keeps what
       // still runs addressable for rig down.
       await owner?.disown?.(key).catch(() => {});
-      return await failWith(error);
+      await recordWithin();
+      throw error;
     }
     // What the command left running in its group is stopped before the record of the group goes.
     const leftover = await owner?.disown?.(key).then(
@@ -99,8 +97,13 @@ export function createTargetCommand(options: {
           failureCauses(error),
         ),
     );
-    if (leftover) return await failWith(leftover, result);
-    await record(result);
+    if (leftover) {
+      await recordWithin(result);
+      throw leftover;
+    }
+    // A command that exited non-zero or ran past its budget is a failure its caller reports from the result.
+    if (result.exitCode !== 0 || result.timedOut) await recordWithin(result);
+    else await record(result);
     return result;
   };
 }

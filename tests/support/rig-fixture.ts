@@ -196,45 +196,50 @@ export async function processExited(
 const unfinished = new Set<() => Promise<void>>();
 /** Every fixture still being made, which registers its cleanup once it is. */
 const starting = new Set<Promise<unknown>>();
-/** Set while `stopAbandonedFixtures` runs: a body Bun abandoned may still run on, and a fixture it asks for then is
- * refused. */
-let sweeping = false;
-/** Why each fixture asked for during this sweep was refused. */
+/** Whether a fixture may be made. A sweep closes it, and only the start of a test or a test run opens it again, so whatever
+ * is made while it is open has a sweep after it. A body Bun abandoned may still run on after a sweep, and what it asks
+ * for then is refused. */
+let open = true;
+/** What was refused since the last sweep: a fixture asked for while making them was closed, or a command asked of a
+ * fixture already being cleaned up. */
 const refused: string[] = [];
+/** Lets fixtures be made: called as each test, and each run of the tests, starts. */
+export function openFixtures() {
+  open = true;
+}
+/** Records a refusal for the next sweep to report, and throws it to the caller, which Bun reports even when it has
+ * abandoned that caller. */
+function refuse(reason: string): never {
+  refused.push(reason);
+  throw new Error(reason);
+}
 /** Cleans up each fixture a test left unfinished, as Bun leaves one when it times the test out or the test throws before its
  * cleanup, and waits for a cleanup already under way: run once every test is done, so no fixture is still in use. Until
- * none is left, it waits for the fixtures still being made and cleans up what they register. Fails naming each root it
- * had to keep, and each fixture it refused. Once it has answered, fixtures can be made again, as a repeated run makes
- * them. */
+ * none is left, it waits for the fixtures still being made and cleans up what they register. No fixture can be made from
+ * then until a test starts again. Fails naming each root it had to keep, and each refusal. */
 export async function stopAbandonedFixtures() {
-  sweeping = true;
-  try {
-    const failed: string[] = [];
-    while (starting.size > 0 || unfinished.size > 0) {
-      await Promise.allSettled(starting);
-      for (const result of await Promise.allSettled(
-        [...unfinished].map((cleanup) => cleanup()),
-      ))
-        if (result.status === "rejected") failed.push(String(result.reason));
-    }
-    failed.push(...refused.splice(0));
-    if (failed.length > 0)
-      throw new Error(
-        `A test left fixtures unfinished, and their cleanup failed or a fixture was refused:\n${failed.join("\n")}`,
-      );
-  } finally {
-    sweeping = false;
+  open = false;
+  const failed: string[] = [];
+  while (starting.size > 0 || unfinished.size > 0) {
+    await Promise.allSettled(starting);
+    for (const result of await Promise.allSettled(
+      [...unfinished].map((cleanup) => cleanup()),
+    ))
+      if (result.status === "rejected") failed.push(String(result.reason));
   }
+  failed.push(...refused.splice(0));
+  if (failed.length > 0)
+    throw new Error(
+      `A test left fixtures unfinished, and their cleanup failed or a fixture was refused:\n${failed.join("\n")}`,
+    );
 }
-/** `createFixture`, except while the sweep runs: a fixture is then refused before anything is made, since nothing would
- * clean it up. */
+/** `createFixture`, while making fixtures is open: otherwise a fixture is refused before anything is made, since no
+ * sweep would clean it up. */
 export async function rigFixture(options: FixtureOptions = {}) {
-  if (sweeping) {
-    const reason =
-      "A fixture was asked for while the tests' fixtures were being swept, by a test Bun had abandoned, and was refused.";
-    refused.push(reason);
-    throw new Error(reason);
-  }
+  if (!open)
+    refuse(
+      "A fixture was asked for once the tests' fixtures were swept, by a test Bun had abandoned, and was refused.",
+    );
   const made = createFixture(options);
   starting.add(made);
   try {
@@ -284,7 +289,7 @@ async function createFixture(options: FixtureOptions) {
     rig: [process.execPath, join(import.meta.dir, "../../src/index.ts")],
     rigd: [process.execPath, join(import.meta.dir, "../../src/rigd.ts")],
   };
-  const run = async (args: string[], cwd = repo) => {
+  const execute = async (args: string[], cwd: string) => {
     const child = Bun.spawn(args, {
       cwd,
       env: environment,
@@ -297,6 +302,25 @@ async function createFixture(options: FixtureOptions) {
       new Response(child.stderr).text(),
     ]);
     return { code, stdout, stderr };
+  };
+  /** Set once cleanup has begun: from then the fixture runs only what its cleanup does. */
+  let stopping = false;
+  /** What the test's commands still run, which cleanup waits for. */
+  const inFlight = new Set<Promise<unknown>>();
+  /** `execute`, until cleanup has begun: a command asked for later, as by a body Bun abandoned, could start what nothing
+   * stops, so it is refused. */
+  const run = async (args: string[], cwd = repo) => {
+    if (stopping)
+      refuse(
+        `The fixture at ${base} was being cleaned up, so \`${args.join(" ")}\` was refused.`,
+      );
+    const ran = execute(args, cwd);
+    inFlight.add(ran);
+    try {
+      return await ran;
+    } finally {
+      inFlight.delete(ran);
+    }
   };
   const rig = (args: string[], cwd = repo) =>
     run([...commands.rig, ...args], cwd);
@@ -377,12 +401,15 @@ async function createFixture(options: FixtureOptions) {
                 ...target.project,
               ]
             : ["down", target.kind, ...target.project];
-        await succeeded(["rig", ...args], rig(args, base));
+        await succeeded(
+          ["rig", ...args],
+          execute([...commands.rig, ...args], base),
+        );
       }
     adoptMembers(owned, groups, scan());
     const uninstalled = await succeeded(
       ["rigd", "uninstall"],
-      rigd(["uninstall"]),
+      execute([...commands.rigd, "uninstall"], base),
     );
     adoptMembers(owned, groups, scan());
     // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up. One rigd
@@ -441,7 +468,12 @@ async function createFixture(options: FixtureOptions) {
   /** `stop`, once: a later or concurrent cleanup, such as the test's own `finally` and `stopAbandonedFixtures` after a
    * timeout, answers as the first did. */
   const cleanup = () =>
-    (stopped ??= stop().finally(() => unfinished.delete(cleanup)));
+    (stopped ??= (async () => {
+      stopping = true;
+      // What a test's command started is in the record only once that command has answered.
+      await Promise.allSettled(inFlight);
+      await stop();
+    })().finally(() => unfinished.delete(cleanup)));
   unfinished.add(cleanup);
   return {
     base,

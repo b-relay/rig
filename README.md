@@ -184,7 +184,8 @@ first on the script `PATH`. A test that times out, or throws before its
 `rigFixture` cleanup, leaves that fixture to `tests/support/fixture-sweep.ts`,
 which `bunfig.toml` preloads: once the tests are done, it stops what the
 fixture left running and removes its root, and fails the run when it cannot
-confirm that. A fixture asked for while it runs is refused. After adding or reshaping slow files, refresh the
+confirm that. From then until a test starts again, a new fixture, or a command
+of a fixture being cleaned up, is refused. After adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 

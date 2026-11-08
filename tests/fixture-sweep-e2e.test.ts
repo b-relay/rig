@@ -74,7 +74,7 @@ const fixturePath = JSON.stringify(
  * and runs on until the sweep is stopping its fixture, then asks for another. Each reports what its fixtures made to
  * `$FIXTURE_REPORTS`. */
 const abandoning = `import { test } from "bun:test";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { processIdentity, recordedDaemon, rigFixture } from ${fixturePath};
 
@@ -118,7 +118,16 @@ test.concurrent("throws before its cleanup", async () => {
 
 test.concurrent("throws with a record its cleanup cannot read", async () => {
   const f = await started("unreadable", false);
-  await writeFile(join(f.root, "runtime", "state.json"), "{broken");
+  // Broken once rigd's first pass has written the record, which would otherwise replace it whole.
+  const state = join(f.root, "runtime", "state.json");
+  for (let i = 0; i < 750; i++) {
+    const text = await readFile(state, "utf8").catch(() => "");
+    try {
+      if (JSON.parse(text).host?.seenAt) break;
+    } catch {}
+    await Bun.sleep(20);
+  }
+  await writeFile(state, "{broken");
   throw new Error("before its cleanup");
 });
 
@@ -134,6 +143,12 @@ test.concurrent("resumes during the sweep and asks for another fixture", async (
     (error: Error) => ({ refused: error.message }),
   );
   await writeFile(join(reports, "late.json"), JSON.stringify(late));
+  // And its own fixture, which the sweep is cleaning up, runs nothing more.
+  const command = await f.rig(["status"]).then(
+    () => ({ ran: true }),
+    (error: Error) => ({ refused: error.message }),
+  );
+  await writeFile(join(reports, "late-command.json"), JSON.stringify(command));
 }, 1_000);
 `;
 
@@ -198,8 +213,15 @@ test("a fixture whose test timed out or threw before its cleanup has its process
       refused: expect.stringContaining("was refused"),
     });
     expect(output).toContain(
-      "A fixture was asked for while the tests' fixtures were being swept, by a test Bun had abandoned, and was refused.",
+      "A fixture was asked for once the tests' fixtures were swept, by a test Bun had abandoned, and was refused.",
     );
+    const command = `\`/usr/bin/true status\``;
+    expect(
+      JSON.parse(await readFile(join(work, "late-command.json"), "utf8")),
+    ).toEqual({
+      refused: `The fixture at ${resumed!.base} was being cleaned up, so ${command} was refused.`,
+    });
+    expect(output).toContain(`so ${command} was refused.`);
   } finally {
     await stopLeftBehind(reports);
     await rm(work, { recursive: true, force: true });
@@ -237,7 +259,92 @@ test("makes a fixture and cleans it up", async () => {
 });
 `;
 
-test("a repeated run makes its fixtures again once the sweep after a repetition has answered", async () => {
+/** A preload that loads the sweep and then adds a later teardown of its own, which marks when it starts and takes a
+ * while, as another global hook might. */
+const laterTeardown = (marker: string) => `import { afterAll } from "bun:test";
+await import(${JSON.stringify(join(import.meta.dir, "support/fixture-sweep.ts"))});
+afterAll(async () => {
+  await Bun.write(${JSON.stringify(marker)}, "");
+  await Bun.sleep(1_000);
+});
+`;
+/** A test file whose two tests time out, run on until a later teardown has started, once the sweep has stopped their
+ * fixtures, and then ask for more: one a new fixture, the other a command of its own fixture. Neither may start what
+ * nothing would stop. Each reports what it got to `$FIXTURE_REPORTS`, then lets the refusal reach Bun. */
+const resumingLater = `import { test } from "bun:test";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { rigFixture } from ${fixturePath};
+
+const reports = process.env.FIXTURE_REPORTS!;
+// Its install leaves a mark in the root, as a real rigd would leave itself running there.
+const commands = { rig: ["/usr/bin/true"], rigd: [join(reports, "marking-rigd")] };
+async function afterLaterTeardown(name: string, ask: () => Promise<unknown>) {
+  for (let i = 0; i < 3000 && !(await Bun.file(join(reports, "later-teardown")).exists()); i++)
+    await Bun.sleep(20);
+  try {
+    await ask();
+    await writeFile(join(reports, name + ".json"), JSON.stringify({ accepted: true }));
+  } catch (error) {
+    await writeFile(join(reports, name + ".json"), JSON.stringify({ refused: String(error) }));
+    throw error;
+  }
+}
+
+test.concurrent("asks for a fixture once the sweep is done", async () => {
+  await rigFixture({ commands });
+  await afterLaterTeardown("new-fixture", () => rigFixture({ commands }));
+}, 20);
+
+test.concurrent("asks its swept fixture to install rigd", async () => {
+  const f = await rigFixture({ commands });
+  await afterLaterTeardown("command", () => f.rigd(["install"]));
+}, 20);
+`;
+
+test("a body Bun abandoned that resumes after the sweep, while a later teardown runs, can make no fixture and run no command, and the run says so", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  try {
+    // Its own temporary directory, so every root the run took is seen.
+    const roots = join(work, "roots");
+    await mkdir(roots);
+    await writeFile(
+      join(work, "marking-rigd"),
+      `#!/bin/sh\n[ "$1" = install ] || exit 0\nmkdir -p "$RIG_ROOT" && touch "$RIG_ROOT/installed"\n`,
+      { mode: 0o755 },
+    );
+    const preload = join(work, "later-teardown.ts");
+    await writeFile(preload, laterTeardown(join(work, "later-teardown")));
+    const { code, output } = await testRun(
+      work,
+      resumingLater,
+      ["--preload", preload],
+      { TMPDIR: roots },
+    );
+    const asked = async (name: string) =>
+      JSON.parse(await readFile(join(work, `${name}.json`), "utf8"));
+    expect(await asked("new-fixture")).toEqual({
+      refused: expect.stringContaining(
+        "A fixture was asked for once the tests' fixtures were swept",
+      ),
+    });
+    expect(await asked("command")).toEqual({
+      refused: expect.stringContaining("`" + join(work, "marking-rigd")),
+    });
+    // Nothing was made or started, and Bun reports each refusal, failing the run.
+    expect(await readdir(roots)).toEqual([]);
+    expect(output).toContain(
+      "error: A fixture was asked for once the tests' fixtures were swept",
+    );
+    expect(output).toContain("was being cleaned up, so `");
+    expect(output).toContain("# Unhandled error between tests");
+    expect(code).not.toBe(0);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+test("a repeated run makes its fixtures again once its next repetition starts", async () => {
   const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
   try {
     const { code, output } = await testRun(work, repeated, ["--rerun-each=2"]);

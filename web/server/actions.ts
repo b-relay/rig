@@ -25,6 +25,7 @@ import { confirmedRestore } from "./restore";
 import type { DraftCheck } from "../lib/dns";
 import { DNS_DELETE_ELSEWHERE, checkedDraft, confirmedDnsDelete } from "./dns";
 import { forgetNavigation } from "./navigation";
+import { readPulseAfresh } from "./pulse";
 
 /** Server Actions: the only way the browser changes anything. Each one decides the request
  * again, exactly as the proxy did, so a page is never the only thing between a POST and rigd. */
@@ -64,6 +65,7 @@ export async function runCommand(input: unknown): Promise<Outcome<unknown>> {
     return await attempt(read(command.data));
   } finally {
     forgetNavigation();
+    readPulseAfresh();
   }
 }
 /** Restores a backup, as `rig backup restore <job> <id> <target> --yes` does, only once what was typed names the job:
@@ -77,6 +79,7 @@ export async function runRestore(input: unknown): Promise<Outcome<unknown>> {
     return await attempt(read(confirmed.command));
   } finally {
     forgetNavigation();
+    readPulseAfresh();
   }
 }
 /** Deletes a DNS record, as the Delete dialog asks, only with the record as the page read it and the name typed to
@@ -86,7 +89,12 @@ export async function runDnsDelete(input: unknown): Promise<Outcome<unknown>> {
   if (denied) return refused(denied);
   const confirmed = confirmedDnsDelete(input);
   if (!confirmed.ok) return refused(confirmed.failure);
-  return attempt(read(confirmed.command));
+  try {
+    return await attempt(read(confirmed.command));
+  } finally {
+    // rigd records the delete in Activity.
+    readPulseAfresh();
+  }
 }
 /** Checks the record dialog's draft against rigd's record rules, field by field, before the dialog sends its command. */
 export async function checkDnsRecord(
@@ -109,6 +117,7 @@ export async function runConfigEdit(input: unknown): Promise<Outcome<unknown>> {
     return await attempt(editConfig(request.data));
   } finally {
     forgetNavigation();
+    readPulseAfresh();
   }
 }
 /** Reads, reveals, or writes an operator env file (a secret). Where the signed-in browser asked from
@@ -129,7 +138,13 @@ export async function runEnvEdit(input: unknown): Promise<Outcome<unknown>> {
       : input,
   );
   if (!request.success) return refused(invalid("an env file change"));
-  return attempt(editEnv(request.data));
+  // A write is recorded in Activity; a read or a reveal changes nothing.
+  if (request.data.action !== "write") return attempt(editEnv(request.data));
+  try {
+    return await attempt(editEnv(request.data));
+  } finally {
+    readPulseAfresh();
+  }
 }
 /** Where an Operation stands whose reply never reached the browser: still queued or running,
  * finished with a recorded outcome, or unknown to rigd. */

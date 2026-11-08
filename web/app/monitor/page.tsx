@@ -1,14 +1,10 @@
 import type { Metadata } from "next";
 import { availableParallelism, hostname, totalmem } from "node:os";
 import { attempt } from "@/lib/outcome";
-import type {
-  ActivityResult,
-  DaemonHealth,
-  DoctorReport,
-  QueueResult,
-} from "@/lib/types";
+import type { DoctorReport } from "@/lib/types";
 import { bytes, chartReport, presetWindow, rangeOf } from "@/lib/usage";
-import { daemon, read } from "@/server/daemon";
+import { read } from "@/server/daemon";
+import { pagePulse } from "@/server/pulse";
 import { projectList } from "@/server/status";
 import { site } from "@/server/site";
 import { PageHeader } from "@/components/bits";
@@ -24,11 +20,10 @@ export default async function MonitorPage({
   searchParams: Promise<{ range?: string }>;
 }) {
   const range = rangeOf((await searchParams).range);
-  const [health, queue, doctor, activity, usage, list] = await Promise.all([
-    attempt(daemon().then((client) => client.health())),
-    attempt(read({ action: "queue" })),
+  // rigd's health, its queue and Activity are the page's pulse readings, which the top bar and the sidebar read too.
+  const [{ readings }, doctor, usage, list] = await Promise.all([
+    pagePulse(),
     attempt(read({ action: "doctor" })),
-    attempt(read({ action: "activity" })),
     attempt(
       read({
         action: "monitor",
@@ -38,11 +33,10 @@ export default async function MonitorPage({
     ),
     projectList(),
   ]);
+  const { health, queue, activity } = readings;
   const now = Date.now();
-  const operations = activity.ok
-    ? (activity.value as ActivityResult).operations
-    : [];
-  const queued = queue.ok ? (queue.value as QueueResult) : undefined;
+  const operations = activity.ok ? activity.value.operations : [];
+  const queued = queue.ok ? queue.value : undefined;
   const running = (
     queued?.operations ?? (queued?.running ? [queued.running] : [])
   ).filter(
@@ -70,11 +64,11 @@ export default async function MonitorPage({
                 facts: [
                   {
                     label: "Version",
-                    value: (health.value as DaemonHealth).version ?? "unknown",
+                    value: health.value.version ?? "unknown",
                   },
                   {
                     label: "Process",
-                    value: String((health.value as DaemonHealth).pid),
+                    value: String(health.value.pid),
                     wide: true,
                   },
                   {

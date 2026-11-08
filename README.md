@@ -350,7 +350,7 @@ which tests to extend:
   (`composeDaemon`) picks Rig's own Caddy (`src/providers/managed-caddy.ts`)
   when Host config has a `proxy` section, else the retiring external router
   (`src/providers/caddy-router.ts`). A Target's hostnames come from
-  `src/runtime/ports.ts` (`plannedSites`); `src/adapters/target-effects.ts`
+  `src/runtime/ports.ts` (`plannedSites`); `src/adapters/target-routes.ts`
   publishes and withholds them through the `Router` in
   `src/providers/route-file.ts`, which owns the route file's blocks; and
   `managed-caddy.ts` switches and publishes generations

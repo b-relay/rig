@@ -192,6 +192,26 @@ export async function processExited(
   }
   return true;
 }
+/** How long cleanup waits for a test's commands to answer, and again once it has killed the process groups of those that
+ * did not. */
+const COMMAND_ANSWER_MS = 5_000;
+/** Whether every one of `commands` has answered by `ms` from now; it answers as soon as they have. */
+async function answeredWithin(
+  commands: readonly { answered: Promise<unknown> }[],
+  ms: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const answered = await Promise.race([
+    Promise.allSettled(commands.map(({ answered }) => answered)).then(
+      () => true,
+    ),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+    }),
+  ]);
+  clearTimeout(timer);
+  return answered;
+}
 /** The cleanup of every fixture whose cleanup has not yet answered. */
 const unfinished = new Set<() => Promise<void>>();
 /** Every fixture still being made, which registers its cleanup once it is. */
@@ -207,11 +227,18 @@ const refused: string[] = [];
 export function openFixtures() {
   open = true;
 }
-/** Records a refusal for the next sweep to report, and throws it to the caller, which Bun reports even when it has
- * abandoned that caller. */
+/** Records a refusal for the next sweep to report, fails the run whether or not one follows, and throws it to the caller.
+ * A caller may catch it, and no sweep may follow, so it is also thrown again on its own, which Bun reports as an unhandled
+ * error wherever it runs, and the run's exit status is set: Bun 1.4.2 emits no `exit` or `beforeExit` in a test run. */
 function refuse(reason: string): never {
   refused.push(reason);
-  throw new Error(reason);
+  process.stderr.write(`Refused: ${reason}\n`);
+  process.exitCode = 1;
+  const error = new Error(reason);
+  queueMicrotask(() => {
+    throw error;
+  });
+  throw error;
 }
 /** Cleans up each fixture a test left unfinished, as Bun leaves one when it times the test out or the test throws before its
  * cleanup, and waits for a cleanup already under way: run once every test is done, so no fixture is still in use. Until
@@ -289,13 +316,22 @@ async function createFixture(options: FixtureOptions) {
     rig: [process.execPath, join(import.meta.dir, "../../src/index.ts")],
     rigd: [process.execPath, join(import.meta.dir, "../../src/rigd.ts")],
   };
-  const execute = async (args: string[], cwd: string) => {
+  /** Runs `args` to its end, answering its exit status and output. `started` is told the pid of the process, which leads a
+   * process group of its own when `detached`. */
+  const execute = async (
+    args: string[],
+    cwd: string,
+    detached = false,
+    started: (pid: number) => void = () => {},
+  ) => {
     const child = Bun.spawn(args, {
       cwd,
       env: environment,
+      detached,
       stdout: "pipe",
       stderr: "pipe",
     });
+    started(child.pid);
     const [code, stdout, stderr] = await Promise.all([
       child.exited,
       new Response(child.stdout).text(),
@@ -305,21 +341,29 @@ async function createFixture(options: FixtureOptions) {
   };
   /** Set once cleanup has begun: from then the fixture runs only what its cleanup does. */
   let stopping = false;
-  /** What the test's commands still run, which cleanup waits for. */
-  const inFlight = new Set<Promise<unknown>>();
-  /** `execute`, until cleanup has begun: a command asked for later, as by a body Bun abandoned, could start what nothing
-   * stops, so it is refused. */
+  /** The test's commands that have not yet answered, each with the process group it leads: a process it starts in the
+   * background, holding its output open, is in that group too. */
+  const inFlight = new Set<{
+    named: string;
+    group: number;
+    answered: Promise<unknown>;
+  }>();
+  /** `execute`, in a process group of its own, until cleanup has begun: a command asked for later, as by a body Bun
+   * abandoned, could start what nothing stops, so it is refused. */
   const run = async (args: string[], cwd = repo) => {
     if (stopping)
       refuse(
         `The fixture at ${base} was being cleaned up, so \`${args.join(" ")}\` was refused.`,
       );
-    const ran = execute(args, cwd);
-    inFlight.add(ran);
+    let group = 0;
+    // Spawned before `execute` first waits, so the group is known here.
+    const answered = execute(args, cwd, true, (pid) => (group = pid));
+    const command = { named: `\`${args.join(" ")}\``, group, answered };
+    inFlight.add(command);
     try {
-      return await ran;
+      return await answered;
     } finally {
-      inFlight.delete(ran);
+      inFlight.delete(command);
     }
   };
   const rig = (args: string[], cwd = repo) =>
@@ -344,10 +388,30 @@ async function createFixture(options: FixtureOptions) {
     ]);
     return await git(["rev-parse", "HEAD"]);
   };
-  /** Stops what the root records and removes it. When any of that cannot be confirmed, the root is kept, for what it
-   * records, and the cleanup fails saying why. */
-  const stop = async () => {
-    const problems: string[] = [];
+  /** Waits a while for the test's commands still running, since what they start is in the record only once they have
+   * answered. One that does not answer in time, as when a process it left in the background holds its output open, has
+   * its process group killed, while the process table shows that group still has members. Adds to `problems` each that
+   * had to be. */
+  const settleCommands = async (problems: string[]) => {
+    const waiting = [...inFlight];
+    if (await answeredWithin(waiting, COMMAND_ANSWER_MS)) return;
+    const late = waiting.filter((command) => inFlight.has(command));
+    const table = processTable(options.inspect ?? platformInspect) ?? [];
+    for (const { group } of late)
+      if (table.some((row) => row.pgid === group))
+        try {
+          process.kill(-group, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+    const killed = await answeredWithin(late, COMMAND_ANSWER_MS);
+    problems.push(
+      `commands ${late.map(({ named }) => named).join(", ")} had not answered ${COMMAND_ANSWER_MS / 1000} s after cleanup began, so their process groups were killed${killed ? "" : ", and they still have not answered"}`,
+    );
+  };
+  /** Stops what the root records and removes it, after `problems` already found. When any of that cannot be confirmed,
+   * the root is kept, for what it records, and the cleanup fails saying why. */
+  const stop = async (problems: string[]) => {
     const succeeded = async (
       args: string[],
       ran: Promise<{ code: number; stderr: string }>,
@@ -470,9 +534,9 @@ async function createFixture(options: FixtureOptions) {
   const cleanup = () =>
     (stopped ??= (async () => {
       stopping = true;
-      // What a test's command started is in the record only once that command has answered.
-      await Promise.allSettled(inFlight);
-      await stop();
+      const problems: string[] = [];
+      await settleCommands(problems);
+      await stop(problems);
     })().finally(() => unfinished.delete(cleanup)));
   unfinished.add(cleanup);
   return {

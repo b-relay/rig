@@ -24,12 +24,14 @@ type Report = {
 };
 /** Runs the test file `source` from the repository, so the run is configured as every test run here is, with
  * `$FIXTURE_REPORTS` set to `work`, where its tests report what their fixtures made. `args` are given to `bun test`, and
- * `environment` adds to what the run inherits. */
+ * `environment` adds to what the run inherits. A run still going `deadlineMs` after it started is killed, and answers
+ * `overran`. */
 async function testRun(
   work: string,
   source: string,
   args: readonly string[] = [],
   environment: Record<string, string> = {},
+  deadlineMs = 120_000,
 ) {
   const file = join(work, "child.test.ts");
   await writeFile(file, source);
@@ -39,12 +41,18 @@ async function testRun(
     stdout: "pipe",
     stderr: "pipe",
   });
+  let overran = false;
+  const deadline = setTimeout(() => {
+    overran = true;
+    run.kill("SIGKILL");
+  }, deadlineMs);
   const [code, stdout, stderr] = await Promise.all([
     run.exited,
     new Response(run.stdout).text(),
     new Response(run.stderr).text(),
   ]);
-  return { code, output: stdout + stderr };
+  clearTimeout(deadline);
+  return { code, output: stdout + stderr, overran };
 }
 /** Stops what a run left behind while it is still the process reported, and removes each root once it has. */
 async function stopLeftBehind(reports: readonly Report[]) {
@@ -339,6 +347,98 @@ test("a body Bun abandoned that resumes after the sweep, while a later teardown 
     expect(output).toContain("was being cleaned up, so `");
     expect(output).toContain("# Unhandled error between tests");
     expect(code).not.toBe(0);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}, 60_000);
+
+/** A test file whose one test runs a command that leaves a process in the background holding its output open, and times
+ * out waiting for it. It reports its fixture's root and that process to `$FIXTURE_REPORTS`. */
+const backgrounded = `import { test } from "bun:test";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { processIdentity, rigFixture } from ${fixturePath};
+
+test("waits on a command whose background process holds its output", async () => {
+  const reports = process.env.FIXTURE_REPORTS!;
+  const f = await rigFixture({ commands: { rig: ["/usr/bin/true"], rigd: ["/usr/bin/true"] } });
+  const pidFile = join(reports, "background.pid");
+  const ran = f.run(["/bin/sh", "-c", "/bin/sleep 600 & echo $! > '" + pidFile + "'"]);
+  for (let i = 0; i < 500 && !(await Bun.file(pidFile).exists()); i++) await Bun.sleep(10);
+  const pid = Number((await readFile(pidFile, "utf8")).trim());
+  await writeFile(
+    join(reports, "backgrounded.json"),
+    JSON.stringify({ base: f.base, processes: [{ pid, identity: processIdentity(pid) }] }),
+  );
+  await ran;
+}, 1_000);
+`;
+
+test("cleanup waits only a while for a command a process in its group holds open, then kills that group and names the root it keeps", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  const reports: Report[] = [];
+  try {
+    const started = Date.now();
+    const { output, overran } = await testRun(
+      work,
+      backgrounded,
+      [],
+      {},
+      60_000,
+    );
+    reports.push(
+      JSON.parse(await readFile(join(work, "backgrounded.json"), "utf8")),
+    );
+    const [backgrounded_] = reports;
+    expect(overran).toBe(false);
+    expect(Date.now() - started).toBeLessThan(45_000);
+    expect(output).toContain("this test timed out after 1000ms");
+    expect(output).toContain(
+      "had not answered 5 s after cleanup began, so their process groups were killed",
+    );
+    expect(output).toContain(`its root is kept at ${backgrounded_!.base}:`);
+    const [sleeper] = backgrounded_!.processes;
+    expect(sleeper!.identity).toBeDefined();
+    expect(processIdentity(sleeper!.pid)).not.toBe(sleeper!.identity);
+  } finally {
+    await stopLeftBehind(reports);
+    await rm(work, { recursive: true, force: true });
+  }
+}, 90_000);
+
+/** A preload that loads the sweep, then, in a later teardown, asks for a fixture and catches its refusal, as a caller may. */
+const catchingTeardown = `import { afterAll } from "bun:test";
+await import(${JSON.stringify(join(import.meta.dir, "support/fixture-sweep.ts"))});
+const { rigFixture } = await import(${fixturePath});
+afterAll(async () => {
+  await rigFixture({ commands: { rig: ["/usr/bin/true"], rigd: ["/usr/bin/true"] } }).catch(() => {});
+});
+`;
+const quiet = `import { test } from "bun:test";
+
+test("passes", () => {});
+`;
+
+test("a refusal its caller catches, after the last sweep, still fails the run", async () => {
+  const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+  try {
+    const roots = join(work, "roots");
+    await mkdir(roots);
+    const preload = join(work, "catching-teardown.ts");
+    await writeFile(preload, catchingTeardown);
+    for (const parallel of [[], ["--parallel=2"]]) {
+      const { code, output } = await testRun(
+        work,
+        quiet,
+        [...parallel, "--preload", preload],
+        { TMPDIR: roots },
+      );
+      expect(output).toContain(
+        "error: A fixture was asked for once the tests' fixtures were swept",
+      );
+      expect(code).not.toBe(0);
+    }
+    expect(await readdir(roots)).toEqual([]);
   } finally {
     await rm(work, { recursive: true, force: true });
   }

@@ -185,7 +185,9 @@ first on the script `PATH`. A test that times out, or throws before its
 which `bunfig.toml` preloads: once the tests are done, it stops what the
 fixture left running and removes its root, and fails the run when it cannot
 confirm that. From then until a test starts again, a new fixture, or a command
-of a fixture being cleaned up, is refused. After adding or reshaping slow files, refresh the
+of a fixture being cleaned up, is refused. That cleanup is not guaranteed under
+`--bail`, which skips it, nor in a nested `bun test` its parent kills. After
+adding or reshaping slow files, refresh the
 timings with
 `bun test --parallel=4 --timings=tests/timings.json --update-timings`.
 

@@ -50,6 +50,11 @@ const report = (sampledEvery: number): ChartReport => ({
     },
   ],
 });
+/** A successful reply whose one series is `series`. */
+const withSeries = (series: Record<string, unknown>) => ({
+  ok: true,
+  value: { ...report(1), series: [{ ...report(1).series[0], series }] },
+});
 const QUERY: UsageQuery = { host: true, range: "1h" };
 function polled() {
   let shown: { report?: ChartReport; failure?: Failure } = {};
@@ -81,6 +86,24 @@ test.each([
   ],
   ["a refusal without its code", { ok: false, failure: { message: "x" } }],
   ["a body that is not an outcome", { series: [] }],
+  // A card names and colours a series by its identity, so one without it is no series a card can draw.
+  ["a Project series without its Project", withSeries({ scope: "project" })],
+  [
+    "a Target series without its Target",
+    withSeries({ scope: "target", projectId: "p1", project: "pantry" }),
+  ],
+  [
+    "a Component series without its kind",
+    withSeries({
+      scope: "component",
+      projectId: "p1",
+      project: "pantry",
+      targetId: "t1",
+      target: "stable",
+      targetKind: "stable",
+      component: "web",
+    }),
+  ],
 ])(
   "a poll answered with %s is WEB_PROTOCOL and keeps the report it drew",
   async (_, answer) => {
@@ -99,6 +122,34 @@ test.each([
     expect(await usage.poll()).toEqual({ report: report(5) });
   },
 );
+
+test("a poll's Project, Target and Component series are drawn as they came, with fields a newer rigd adds", async () => {
+  const usage = polled();
+  const target = {
+    projectId: "p1",
+    project: "pantry",
+    targetId: "t1",
+    target: "stable",
+    targetKind: "stable",
+  };
+  const series = [
+    { scope: "project", projectId: "p1", project: "pantry" },
+    { scope: "target", ...target },
+    {
+      scope: "component",
+      ...target,
+      component: "web",
+      componentKind: "service",
+      added: 1,
+    },
+  ].map((identity, at) => ({
+    ...report(1).series[0]!,
+    key: String(at),
+    series: identity,
+  }));
+  answers = [{ ok: true, value: { ...report(1), series } }];
+  expect((await usage.poll()).report?.series).toEqual(series as never);
+});
 
 test("a poll answered with a refusal shows it and keeps the report; a page that is not JSON is WEB_PROTOCOL with its status", async () => {
   const usage = polled();

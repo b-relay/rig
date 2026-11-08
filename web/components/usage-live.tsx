@@ -13,6 +13,27 @@ const measureSchema = z.object({
   peak: z.optional(z.object({ index: z.number(), value: z.number() })),
   median: z.optional(z.number()),
 });
+const project = { projectId: z.string(), project: z.string() };
+const target = {
+  ...project,
+  targetId: z.string(),
+  target: z.string(),
+  targetKind: z.enum(["working", "stable", "preview"]),
+};
+/** Which series one is, with the identity its scope has (UsageSeries in src/runtime/usage-history.ts): the cards name and
+ * colour each by it. */
+const seriesSchema = z.discriminatedUnion("scope", [
+  z.looseObject({ scope: z.literal("host") }),
+  z.looseObject({ scope: z.literal("rig") }),
+  z.looseObject({ scope: z.literal("project"), ...project }),
+  z.looseObject({ scope: z.literal("target"), ...target }),
+  z.looseObject({
+    scope: z.literal("component"),
+    ...target,
+    component: z.string(),
+    componentKind: z.enum(["service", "job"]),
+  }),
+]);
 /** A `/usage` report (ChartReport) as the charts draw it. */
 const chartReportSchema = z.object({
   range: z.enum(USAGE_RANGES),
@@ -22,16 +43,7 @@ const chartReportSchema = z.object({
   series: z.array(
     z.object({
       key: z.string(),
-      series: z.looseObject({
-        scope: z.enum(["host", "rig", "project", "target", "component"]),
-        projectId: z.optional(z.string()),
-        project: z.optional(z.string()),
-        targetId: z.optional(z.string()),
-        target: z.optional(z.string()),
-        targetKind: z.optional(z.enum(["working", "stable", "preview"])),
-        component: z.optional(z.string()),
-        componentKind: z.optional(z.enum(["service", "job"])),
-      }),
+      series: seriesSchema,
       now: z.optional(
         z.object({ cpuPercent: z.number(), memoryBytes: z.number() }),
       ),

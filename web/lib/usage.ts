@@ -63,13 +63,26 @@ export function presetWindow(
 }
 
 /** Pure: a `monitor` reply as the Monitor pages draw it, for the preset it was read for. With `target`, a Project's
- * Components are kept only for that Target (none for `all`), since the page charts no others. */
+ * Components are kept only for that Target (none for `all`), since the page charts no others; the rest are left out
+ * before their points are converted, so a page showing one Target pays for no other's. */
 export function chartReport(
   report: MonitorResult,
   range: UsageRange,
   target?: string,
 ): ChartReport {
-  return componentsOf(wholeChartReport(report, range), target);
+  return wholeChartReport(
+    target === undefined
+      ? report
+      : {
+          ...report,
+          series: report.series.filter(
+            (each) =>
+              each.series.scope !== "component" ||
+              each.series.target === target,
+          ),
+        },
+    range,
+  );
 }
 
 /** Pure: whether a Project's Monitor can show `target`: `all`, a Target the Project has now, or one whose history the range
@@ -87,23 +100,6 @@ export function monitorsTarget(
       (each) => each.series.scope === "target" && each.series.target === target,
     )
   );
-}
-
-/** Pure: a chart report with a Project's Components kept only for `target` (none for `all`); every series with no
- * `target`. */
-export function componentsOf(
-  report: ChartReport,
-  target: string | undefined,
-): ChartReport {
-  return target === undefined
-    ? report
-    : {
-        ...report,
-        series: report.series.filter(
-          (each) =>
-            each.series.scope !== "component" || each.series.target === target,
-        ),
-      };
 }
 
 function wholeChartReport(

@@ -5,7 +5,6 @@ import { projectHref } from "../lib/target";
 import {
   bytes,
   chartReport,
-  componentsOf,
   currentOf,
   monitorsTarget,
   percent,
@@ -56,8 +55,9 @@ export const projectMonitor = cache(
       ),
       projectStatus(project),
     ]);
+    // The chip and the choice of Target need no Component's series; only the chosen Target's are converted, below.
     const whole = monitored.ok
-      ? chartReport(monitored.value, range)
+      ? chartReport(monitored.value, range, "all")
       : undefined;
     const hrefOf = (next: string) =>
       `${projectHref(project)}/monitor?${new URLSearchParams({ target: next, range })}`;
@@ -81,7 +81,13 @@ export const projectMonitor = cache(
     const shownId = current.find((each) => each.name === target)?.id;
     return {
       usage: monitored.ok
-        ? { ok: true, value: componentsOf(whole!, target) }
+        ? {
+            ok: true,
+            value:
+              target === "all"
+                ? whole!
+                : chartReport(monitored.value, range, target),
+          }
         : monitored,
       targets,
       target,

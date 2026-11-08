@@ -1,5 +1,6 @@
 import { cache } from "react";
-import { attempt } from "../lib/outcome";
+import { cancelled } from "../../src/domain/errors";
+import { attempt, describeFailure, refused } from "../lib/outcome";
 import { pulseStamp, type Pulse, type PulseReadings } from "../lib/pulse";
 import type { ActivityResult, DaemonHealth, QueueResult } from "../lib/types";
 import { daemon } from "./daemon";
@@ -48,29 +49,47 @@ function readFromRigd(abandon: AbortController): SharedRead {
   return shared;
 }
 
+/** The readings of a request whose browser has gone: each one cancelled, as a read its signal abandoned is. */
+function abandonedReadings(): PulseReadings {
+  const gone = refused(
+    describeFailure(
+      cancelled(
+        "rigd keeps running whatever it was asked; run rig activity to see it.",
+      ),
+    ),
+  );
+  return { health: gone, queue: gone, activity: gone };
+}
+
 /** The three pulse inputs. Each request is admitted on its own; requests that ask while a read is in flight share it rather
- * than ask rigd again, and none is kept after it answered. `signal` is this request's: the shared read is abandoned once
- * every request sharing it has gone, as when their browsers closed. */
+ * than ask rigd again, and none is kept after it answered. `signal` is this request's: once it aborts, this request is
+ * answered at once with cancelled readings, and the shared read is abandoned when every request sharing it has gone, as
+ * when their browsers closed. */
 export async function pulseReadings(
   signal?: AbortSignal,
 ): Promise<PulseReadings> {
   const admitted = await attempt(requireSession());
   if (!admitted.ok)
     return { health: admitted, queue: admitted, activity: admitted };
+  if (signal?.aborted) return abandonedReadings();
   if (!inFlight || inFlight.abandon.signal.aborted)
     inFlight = readFromRigd(new AbortController());
   const shared = inFlight;
   shared.waiting += 1;
-  const leave = () => {
-    shared.waiting -= 1;
-    if (shared.waiting === 0) shared.abandon.abort();
-  };
-  if (signal?.aborted) leave();
-  else signal?.addEventListener("abort", leave, { once: true });
+  if (!signal) return await shared.readings;
+  let leave = () => {};
+  const gone = new Promise<PulseReadings>((resolve) => {
+    leave = () => {
+      shared.waiting -= 1;
+      if (shared.waiting === 0) shared.abandon.abort();
+      resolve(abandonedReadings());
+    };
+    signal.addEventListener("abort", leave, { once: true });
+  });
   try {
-    return await shared.readings;
+    return await Promise.race([shared.readings, gone]);
   } finally {
-    signal?.removeEventListener("abort", leave);
+    signal.removeEventListener("abort", leave);
   }
 }
 

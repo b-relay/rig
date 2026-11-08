@@ -221,6 +221,26 @@ test("one browser going leaves the shared read to the others; it is abandoned wh
   expect(asked.sort()).toEqual(["activity", "health", "queue"]);
 });
 
+test("a browser that goes is answered at once, cancelled, before the read it shared answers the one still waiting", async () => {
+  answer = idle();
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const leaving = new AbortController();
+  let left: { stamp: string } | undefined;
+  const gone = pulseOf(leaving.signal).then((pulse) => (left = pulse));
+  let stayed: { stamp: string } | undefined;
+  const staying = pulseOf().then((pulse) => (stayed = pulse));
+  await whenAsked(3);
+  leaving.abort();
+  await gone;
+  expect(left!.stamp).toBe("down:CANCELLED|?|?");
+  expect(stayed).toBeUndefined();
+  open();
+  await staying;
+  expect(stayed!.stamp).toBe("i-1:42|-:0:|0:");
+  expect(asked).toHaveLength(3);
+});
+
 test("a request with no session is refused on its own, even while a signed-in one's read is in flight", async () => {
   answer = idle();
   let open = () => {};

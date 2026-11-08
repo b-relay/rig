@@ -780,7 +780,7 @@ function failPassReads(w: Awaited<ReturnType<typeof world>>) {
   w.store.read = async () => {
     if (
       failing.on &&
-      /at pass \([^)]*application\.ts/.test(new Error().stack ?? "")
+      /at pass \([^)]*supervision-passes\.ts/.test(new Error().stack ?? "")
     ) {
       failing.count++;
       throw new Error("I/O error");

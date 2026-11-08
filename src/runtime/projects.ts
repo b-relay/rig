@@ -351,3 +351,21 @@ export function identityDriftHint(
 ): string {
   return `Run rig rename ${shellWord(configName)} --project ${shellWord(registeredName)} to adopt the config name, or restore name: ${registeredName} in the config.`;
 }
+/** The Project's current rig.yaml, read once per action. A config that cannot be read, or that names another Project,
+ * yields its failure instead so recorded names keep selecting Targets to stop or inspect. */
+export async function checkoutConfig(
+  document: ConfigDocument<ProjectConfig> | undefined,
+  project: ProjectRecord,
+  deps: Pick<RuntimeDependencies, "documents">,
+): Promise<{
+  document?: ConfigDocument<ProjectConfig>;
+  failure?: unknown;
+}> {
+  try {
+    const current = document ?? (await deps.documents.read(project.repoPath));
+    assertIdentity(project, current);
+    return { document: current };
+  } catch (failure) {
+    return { failure };
+  }
+}

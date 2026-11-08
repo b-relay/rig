@@ -14,14 +14,15 @@ import { join } from "node:path";
 import { runCommand } from "../src/providers/command-runner";
 import { createProcessIdentityReader } from "../src/providers/process-identity";
 import { processLeasePath } from "../src/providers/process-lease";
+import { asksFor, reborn } from "./support/process-double";
 import {
-  daemonIdentity,
+  awaitExit,
   inspectWith,
   platformInspect,
-  processExited,
   processIdentity,
   recordedDaemon,
   rigFixture,
+  signalOwned,
   type Inspect,
 } from "./support/rig-fixture";
 
@@ -52,11 +53,14 @@ function commandOf(pid: number): string {
 }
 /** Stops `owned` if it is still the process it was, and fails when it will not go: a test's last word on what it started. */
 async function stopOwned(owned: { pid: number; identity: string } | undefined) {
-  if (owned === undefined || processIdentity(owned.pid) !== owned.identity)
+  if (
+    owned === undefined ||
+    signalOwned(owned, "SIGTERM", platformInspect) === "gone"
+  )
     return;
-  process.kill(owned.pid, "SIGTERM");
-  if (!(await processExited(owned))) process.kill(owned.pid, "SIGKILL");
-  if (!(await processExited(owned)))
+  if ((await awaitExit(owned)) !== "gone")
+    signalOwned(owned, "SIGKILL", platformInspect);
+  if ((await awaitExit(owned)) !== "gone")
     throw new Error(`process ${owned.pid} is still running`);
 }
 /** Whether rigd's first pass has recorded the Host session in `state`, by the deadline. rigd answers before that pass
@@ -96,22 +100,11 @@ test("a fixture whose record cannot be read still stops its rigd, keeps its root
     expect(failure).toContain("rigd uninstall exited with 1:");
     // Asked to stop, it stopped: it never had to be killed.
     expect(failure).not.toContain("did not stop");
-    expect(await processExited(daemon!)).toBe(true);
+    expect(await awaitExit(daemon!)).toBe("gone");
     expect(await readFile(state, "utf8")).toBe("{broken");
   } finally {
     // The root goes only once the rigd it served is confirmed gone; otherwise it stays, and the test fails saying so.
-    daemon ??= await recordedDaemon(f.root);
-    if (
-      daemon !== undefined &&
-      daemonIdentity(daemon.pid) === daemon.identity
-    ) {
-      process.kill(daemon.pid, "SIGTERM");
-      if (!(await processExited(daemon))) process.kill(daemon.pid, "SIGKILL");
-      if (!(await processExited(daemon)))
-        throw new Error(
-          `rigd ${daemon.pid} is still running; its root is kept at ${f.base}`,
-        );
-    }
+    await stopOwned(daemon ?? (await recordedDaemon(f.root)));
     await rm(f.base, { recursive: true, force: true });
   }
 }, 60_000);
@@ -330,11 +323,14 @@ test("a process whose birth changes after cleanup picked it, as a reused pid's d
     // signal, ps says another process now has the pid.
     let leasedPid = 0;
     let changed = 0;
+    const another = reborn(
+      platformInspect,
+      () => leasedPid,
+      "Thu Jan  1 00:00:00 1970",
+    );
     const inspect: Inspect = (args) => {
-      if (args.join(" ") !== `-p ${leasedPid} -o lstart=`)
-        return platformInspect(args);
-      changed++;
-      return { exitCode: 0, stdout: "Thu Jan  1 00:00:00 1970\n" };
+      if (asksFor(args, leasedPid)) changed++;
+      return another(args);
     };
     const { fixture } = await scriptedFixture(work, undefined, inspect);
     base = fixture.base;

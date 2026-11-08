@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { wallOnlyClock } from "../src/domain/clock";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -205,9 +206,14 @@ async function world(
       report: { failed() {}, succeeded() {} },
     });
   };
+  /** Marks what runs on behalf of a supervision pass the world starts, so a test can tell the pass's state reads from
+   * those of commands and the health monitor. */
+  const passing = new AsyncLocalStorage<true>();
+  const pass = (action: "reconcile" | "supervise") =>
+    passing.run(true, () => runtime[action]());
   open();
   // The first daemon's first pass records the Host session a later one compares with.
-  await runtime.reconcile();
+  await pass("reconcile");
   await runtime.command({ action: "init", repoPath: w.repo });
   const targetOf = async (kind: "working" | "stable") =>
     (await w.store.read()).targets.find((t) => t.kind === kind)!;
@@ -265,7 +271,7 @@ async function world(
     /** rigd restarts in the same Host session: the processes survive, and a new rigd reconciles what it finds. */
     async reopen() {
       open();
-      await runtime.reconcile();
+      await pass("reconcile");
     },
     /** The Host restarts and a new rigd comes up, which takes requests before its first pass runs (see `firstPass`). */
     async rebootBeforeFirstPass() {
@@ -279,7 +285,7 @@ async function world(
     },
     /** The daemon's first pass, as rigd runs it once it is listening. */
     async firstPass() {
-      await runtime.reconcile();
+      await pass("reconcile");
     },
     /** The Host restarts: nothing survives, the boot changes, and a new rigd reconciles what it finds. */
     async reboot() {
@@ -290,7 +296,7 @@ async function world(
         login: "100002",
       };
       open();
-      await runtime.reconcile();
+      await pass("reconcile");
     },
     /** One second of fake time per step: rigd's supervision pass and the health monitor's pass, each settled. */
     async advance(seconds: number) {
@@ -300,7 +306,7 @@ async function world(
           timers.splice(timers.indexOf(timer), 1);
           timer.fire();
         }
-        await runtime.supervise();
+        await pass("supervise");
         await monitor!.pass();
         await monitor!.idle();
       }
@@ -314,6 +320,8 @@ async function world(
     run: async (kind: "working" | "stable" = "working") =>
       (await targetOf(kind)).services!.web!,
     store: w.store,
+    /** Whether the caller runs on behalf of a supervision pass the world started. */
+    inPass: () => passing.getStore() === true,
     activity: async () =>
       (await w.store.read()).activity
         .filter((entry) => entry.action === "health-restart")
@@ -778,10 +786,7 @@ function failPassReads(w: Awaited<ReturnType<typeof world>>) {
   const failing = { on: true, count: 0 };
   const read = w.store.read.bind(w.store);
   w.store.read = async () => {
-    if (
-      failing.on &&
-      /at pass \([^)]*supervision-passes\.ts/.test(new Error().stack ?? "")
-    ) {
+    if (failing.on && w.inPass()) {
       failing.count++;
       throw new Error("I/O error");
     }

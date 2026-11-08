@@ -1,69 +1,324 @@
 import { expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { processLeasePath } from "../src/providers/process-lease";
+import { stopLeftBehind } from "./support/left-behind";
 import {
-  platformInspect,
-  rigFixture,
-  type Inspect,
-} from "./support/rig-fixture";
+  FAKE_PID,
+  SPOILED,
+  fakeProcess,
+  type Fault,
+} from "./support/process-double";
+import { rigFixture } from "./support/rig-fixture";
 
-// Sequential on purpose: the test replaces Date.now and process.kill, which every test running beside it would share.
-test("a rigd whose pid another process takes while cleanup waits for it to exit is not sent SIGKILL", async () => {
-  // No real process has this pid: ps answers for it through the seam alone, and no signal to it leaves the test.
-  const pid = 987654321;
-  const born = "Thu Jan  1 00:00:00 1970";
-  const replacement = "Fri Jan  2 00:00:00 1970";
-  let replaced = false;
-  const now = Date.now;
-  let skew = 0;
-  // The daemon is still there when cleanup first looks, by when its wait has run out; from then on another process has
-  // its pid.
-  const inspect: Inspect = (args) => {
-    const asked = args.join(" ");
-    if (asked === `-p ${pid} -o lstart= -o command=`)
-      return { exitCode: 0, stdout: `${born} rigd\n` };
-    if (asked !== `-p ${pid} -o lstart=`) return platformInspect(args);
-    if (replaced) return { exitCode: 0, stdout: `${replacement}\n` };
-    replaced = true;
-    skew = 60_000;
-    return { exitCode: 0, stdout: `${born}\n` };
-  };
-  const signals: { signal: unknown; stateAtSignal: string }[] = [];
-  const kill = process.kill;
-  const f = await rigFixture({
-    commands: { rig: ["/usr/bin/true"], rigd: ["/usr/bin/true"] },
-    inspect,
-  });
+// Sequential on purpose: each test replaces Date.now and process.kill, which every test running beside it would share.
+
+const exists = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
+
+/** Runs a fixture's cleanup over a process no real one has (`fakeProcess`), which the root records as its rigd, or leases
+ * as a Service rigd ran. `uninstall` is whether `rigd uninstall` succeeds. Answers the failure's lines, the signals sent to
+ * the process, and whether the root was kept. */
+async function cleanupOver(
+  as: "rigd" | "Service",
+  shown: Parameters<typeof fakeProcess>[0],
+  uninstall = true,
+) {
+  const fake = fakeProcess(shown);
   try {
-    await mkdir(join(f.root, "daemon"), { recursive: true });
-    await writeFile(
-      join(f.root, "daemon", "address.json"),
-      JSON.stringify({ pid }),
-    );
-    Date.now = () => now() + skew;
-    process.kill = ((target: number, signal?: NodeJS.Signals | number) => {
-      if (target !== pid) return kill.call(process, target, signal);
-      signals.push({
-        signal,
-        stateAtSignal: replaced ? "replacement" : "daemon",
-      });
-      return true;
-    }) as typeof process.kill;
-    const failure = await f.cleanup().then(
-      () => undefined,
-      (error: Error) => error.message,
-    );
-    Date.now = now;
-    process.kill = kill;
-    // Cleanup reached the escalation, and says it sent nothing.
-    expect(failure?.split("\n")).toContain(
-      `rigd ${pid} did not stop, and its pid no longer names that process, so it was not signalled`,
-    );
-    expect(failure).toContain(`its root is kept at ${f.base}:`);
-    expect(signals).toEqual([]);
+    const f = await rigFixture({
+      commands: {
+        rig: ["/usr/bin/true"],
+        rigd: [uninstall ? "/usr/bin/true" : "/usr/bin/false"],
+      },
+      inspect: fake.inspect,
+    });
+    try {
+      if (as === "rigd") {
+        await mkdir(join(f.root, "daemon"), { recursive: true });
+        await writeFile(
+          join(f.root, "daemon", "address.json"),
+          JSON.stringify({ pid: fake.pid }),
+        );
+      } else {
+        const key = `fake:${fake.pid}`;
+        await mkdir(join(f.root, "process-leases"), { recursive: true });
+        await writeFile(
+          processLeasePath(f.root, key),
+          JSON.stringify({
+            key,
+            pid: fake.pid,
+            identity: createHash("sha256")
+              .update(`${fake.pid}:${fake.identity}`)
+              .digest("hex"),
+          }),
+        );
+      }
+      const failure = await f.cleanup().then(
+        () => undefined,
+        (error: Error) => error.message,
+      );
+      const kept = await exists(f.base);
+      if (kept) expect(failure).toContain(`its root is kept at ${f.base}:`);
+      return { lines: failure?.split("\n") ?? [], signals: fake.signals, kept };
+    } finally {
+      await rm(f.base, { recursive: true, force: true });
+    }
   } finally {
-    Date.now = now;
-    process.kill = kill;
-    await rm(f.base, { recursive: true, force: true });
+    fake.restore();
   }
+}
+
+const pid = FAKE_PID;
+const service = `processes ${pid} (/bin/sleep 600) that rigd ran outlived rigd, and were stopped`;
+/** Where cleanup reads the process to decide what to do, and what it does with one spoiled read there (`once`), and with
+ * every read from there on spoiled (`always`). `from` is the number of the first spoiled read among those asking for the
+ * process by pid. */
+const points: {
+  at: string;
+  as: "rigd" | "Service";
+  from: number;
+  endsOn: NodeJS.Signals[];
+  uninstall?: false;
+  once: { signals: string[]; says: string };
+  always: { signals: string[]; says: string };
+}[] = [
+  {
+    at: "the read of the rigd the root records",
+    as: "rigd",
+    from: 1,
+    endsOn: ["SIGKILL"],
+    once: {
+      signals: ["SIGKILL"],
+      says: `rigd ${pid} did not stop, and was killed`,
+    },
+    always: {
+      signals: [],
+      says: `the reads of rigd ${pid}, which the root records, were inconclusive, so nothing shows that it stopped`,
+    },
+  },
+  {
+    at: "the read just before rigd's SIGTERM",
+    as: "rigd",
+    from: 2,
+    endsOn: ["SIGTERM", "SIGKILL"],
+    uninstall: false,
+    once: { signals: ["SIGTERM"], says: "rigd uninstall exited with 1: " },
+    always: {
+      signals: [],
+      says: `rigd ${pid} could not be seen to stop, since the reads of it were inconclusive, and the reads of it just before its SIGKILL were inconclusive, so it was not signalled`,
+    },
+  },
+  {
+    at: "a read in the wait for rigd to exit",
+    as: "rigd",
+    from: 2,
+    endsOn: ["SIGKILL"],
+    once: {
+      signals: ["SIGKILL"],
+      says: `rigd ${pid} did not stop, and was killed`,
+    },
+    always: {
+      signals: [],
+      says: `rigd ${pid} could not be seen to stop, since the reads of it were inconclusive, and the reads of it just before its SIGKILL were inconclusive, so it was not signalled`,
+    },
+  },
+  {
+    at: "the read just before rigd's SIGKILL",
+    as: "rigd",
+    from: 3,
+    endsOn: ["SIGKILL"],
+    once: {
+      signals: ["SIGKILL"],
+      says: `rigd ${pid} did not stop, and was killed`,
+    },
+    always: {
+      signals: [],
+      says: `rigd ${pid} did not stop, and the reads of it just before its SIGKILL were inconclusive, so it was not signalled`,
+    },
+  },
+  {
+    at: "a read in the wait once rigd was killed",
+    as: "rigd",
+    from: 4,
+    endsOn: [],
+    once: {
+      signals: ["SIGKILL"],
+      says: `rigd ${pid} did not stop, and was killed, but is still running`,
+    },
+    always: {
+      signals: ["SIGKILL"],
+      says: `rigd ${pid} did not stop, and was killed, but the reads of it since were inconclusive`,
+    },
+  },
+  // The first read of a Service by pid names it for the report.
+  {
+    at: "the read just before a Service's SIGTERM",
+    as: "Service",
+    from: 2,
+    endsOn: ["SIGTERM", "SIGKILL"],
+    once: { signals: ["SIGTERM"], says: service },
+    always: {
+      signals: [],
+      says: `${service}; the reads of ${pid} were inconclusive, so they were not killed`,
+    },
+  },
+  {
+    at: "a read in the wait for a Service to exit",
+    as: "Service",
+    from: 3,
+    endsOn: ["SIGKILL"],
+    once: {
+      signals: ["SIGTERM", "SIGKILL"],
+      says: `${service}; ${pid} had to be killed`,
+    },
+    always: {
+      signals: ["SIGTERM"],
+      says: `${service}; the reads of ${pid} were inconclusive, so they were not killed`,
+    },
+  },
+  {
+    at: "the read just before a Service's SIGKILL",
+    as: "Service",
+    from: 4,
+    endsOn: ["SIGKILL"],
+    once: {
+      signals: ["SIGTERM", "SIGKILL"],
+      says: `${service}; ${pid} had to be killed`,
+    },
+    always: {
+      signals: ["SIGTERM"],
+      says: `${service}; the reads of ${pid} were inconclusive, so they were not killed`,
+    },
+  },
+];
+
+/** Spoils reads by `fault` at the read numbered `from`, alone or from there on as `spoiled` says. */
+const spoiledFrom =
+  (from: number, fault: Fault, spoiled: "once" | "always") => (read: number) =>
+    read === from || (spoiled === "always" && read > from) ? fault : undefined;
+
+for (const point of points)
+  for (const [fault, spoiled] of SPOILED)
+    test(
+      spoiled === "once"
+        ? `one ${fault} read at ${point.at} is not taken as proof of anything: cleanup reads again and acts on what it shows`
+        : `${fault} reads from ${point.at} on keep the root, name it, and signal nothing they cannot show is the process`,
+      async () => {
+        const outcome = await cleanupOver(
+          point.as,
+          {
+            command:
+              point.as === "rigd" ? "/usr/local/bin/rigd" : "/bin/sleep 600",
+            endsOn: point.endsOn,
+            fault: spoiledFrom(point.from, fault, spoiled),
+          },
+          point.uninstall ?? true,
+        );
+        expect(outcome.kept).toBe(true);
+        expect(outcome.lines).toContain(point[spoiled].says);
+        expect(outcome.signals).toEqual(point[spoiled].signals);
+      },
+    );
+
+test("a rigd whose pid another process takes while cleanup waits for it to exit is not sent SIGKILL", async () => {
+  // The daemon is there at cleanup's first look and at the first of its wait, by when the wait has run out; from then on
+  // another process has its pid.
+  const outcome = await cleanupOver("rigd", {
+    command: "/usr/local/bin/rigd",
+    endsOn: ["SIGKILL"],
+    birth: (read) =>
+      read <= 2 ? "Thu Jan  1 00:00:00 1970" : "Fri Jan  2 00:00:00 1970",
+  });
+  expect(outcome.kept).toBe(true);
+  expect(outcome.lines).toContain(
+    `rigd ${pid} did not stop, and its pid no longer names that process, so it was not signalled`,
+  );
+  expect(outcome.signals).toEqual([]);
 });
+
+/** Where `stopLeftBehind` reads a process to decide what to do, and what it does with one spoiled read there (`once`) and
+ * with every read from there on spoiled (`always`): the signals it sends, and whether the root is removed or kept with
+ * the failure given. `from` is the number of the first spoiled read among those asking for the process by pid. */
+const leftBehind: {
+  at: string;
+  from: number;
+  endsOn: NodeJS.Signals[];
+  once: { signals: string[]; kept?: string };
+  always: { signals: string[] };
+}[] = [
+  {
+    at: "the read just before its SIGTERM",
+    from: 1,
+    endsOn: ["SIGTERM", "SIGKILL"],
+    once: { signals: ["SIGTERM"] },
+    always: { signals: [] },
+  },
+  {
+    at: "a read in the wait after its SIGTERM",
+    from: 2,
+    endsOn: ["SIGKILL"],
+    once: { signals: ["SIGTERM", "SIGKILL"] },
+    always: { signals: ["SIGTERM"] },
+  },
+  {
+    at: "the read just before its SIGKILL",
+    from: 3,
+    endsOn: ["SIGKILL"],
+    once: { signals: ["SIGTERM", "SIGKILL"] },
+    always: { signals: ["SIGTERM"] },
+  },
+  {
+    at: "a read in the wait once it was killed",
+    from: 4,
+    endsOn: [],
+    once: {
+      signals: ["SIGTERM", "SIGKILL"],
+      kept: `process ${FAKE_PID} is still running`,
+    },
+    always: { signals: ["SIGTERM", "SIGKILL"] },
+  },
+];
+for (const point of leftBehind)
+  for (const [fault, spoiled] of SPOILED)
+    test(`a process left behind whose ${spoiled === "once" ? "read" : "reads"} at ${point.at} ${spoiled === "once" ? `is ${fault} once is still stopped by what the next read shows` : `are all ${fault} is signalled only as reads show it, and its root is kept`}`, async () => {
+      const work = await mkdtemp(join(tmpdir(), "rig-fixture-left-behind-"));
+      const fake = fakeProcess({
+        command: "/bin/sleep 600",
+        endsOn: point.endsOn,
+        fault: spoiledFrom(point.from, fault, spoiled),
+      });
+      try {
+        const failure = await stopLeftBehind(
+          [
+            {
+              base: work,
+              processes: [{ pid: fake.pid, identity: fake.identity }],
+            },
+          ],
+          fake.inspect,
+        ).then(
+          () => undefined,
+          (error: Error) => error.message,
+        );
+        expect(fake.signals).toEqual(point[spoiled].signals);
+        const kept =
+          spoiled === "always"
+            ? `the reads of process ${FAKE_PID} were inconclusive, so it may still run`
+            : point.once.kept;
+        expect(failure).toBe(
+          kept === undefined
+            ? undefined
+            : `${kept}; its root is kept at ${work}`,
+        );
+        expect(await exists(work)).toBe(kept !== undefined);
+      } finally {
+        fake.restore();
+        await rm(work, { recursive: true, force: true });
+      }
+    });

@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as binaries from "../src/providers/caddy-binary";
@@ -14,8 +14,13 @@ const trace: string[] = [];
 const failing = new Map<string, Error>();
 /** The candidate binary installCaddyBinary reports while faking, or undefined to use the real modules. */
 let candidate: binaries.BinaryInstallation | undefined;
-/** The fake job: whether it ran before the install, and whether its install changes its definition. */
-const job = { running: true, definitionChanges: false };
+/** The fake job: whether it ran before the install, whether its install changes its definition, and what happens once its
+ * state is read. */
+const job: {
+  running: boolean;
+  definitionChanges: boolean;
+  afterState?: () => Promise<void>;
+} = { running: true, definitionChanges: false };
 /** How many publishers from this process an install built. */
 let publishers = 0;
 function step(name: string): void {
@@ -58,7 +63,11 @@ mock.module("../src/providers/caddy-job", () => ({
     if (!candidate) return real.job.createCaddyJob(options);
     return {
       description: "the fake job",
-      state: async () => (job.running ? "running" : "stopped"),
+      state: async () => {
+        const state = job.running ? "running" : "stopped";
+        await job.afterState?.();
+        return state;
+      },
       matches: async () => true,
       install: async () => {
         step("job install");
@@ -84,11 +93,16 @@ mock.module("../src/providers/managed-caddy", () => ({
 }));
 const { createProxyInstallation } =
   await import("../src/daemon/proxy-installation");
+type ProxyInstallation = ReturnType<typeof createProxyInstallation>;
 
 const roots: string[] = [];
 afterEach(async () => {
   candidate = undefined;
-  Object.assign(job, { running: true, definitionChanges: false });
+  Object.assign(job, {
+    running: true,
+    definitionChanges: false,
+    afterState: undefined,
+  });
   trace.length = 0;
   failing.clear();
   publishers = 0;
@@ -238,6 +252,30 @@ test("a revert that fails during either rollback ends the install with its own e
       .catch((caught: unknown) => caught),
   ).toBe(revertFailure);
   expect(trace).toEqual(["binary", "rigd publishes", "revert"]);
+});
+
+test("every install refuses a config.yaml that can no longer be read once the job is known, before it stages anything", async () => {
+  const installs = {
+    complete: (proxy: ProxyInstallation) => proxy.install(),
+    stage: (proxy: ProxyInstallation) => proxy.stage(),
+    "published by rigd": (proxy: ProxyInstallation) =>
+      proxy.installPublishedBy(async () => step("rigd publishes")),
+  };
+  for (const [name, install] of Object.entries(installs)) {
+    const proxy = await installation();
+    const config = join(roots.at(-1)!, "config.yaml");
+    job.afterState = () => chmod(config, 0o000);
+    trace.length = 0;
+    const error = await install(proxy).catch((caught: unknown) => caught);
+    expect({ name, error, trace }).toEqual({
+      name,
+      error: expect.objectContaining({
+        code: "read_failed",
+        message: "Unable to read config document.",
+      }),
+      trace: [],
+    });
+  }
 });
 
 test("staging stops once the routes are published: no job is defined and the new binary stays unconfirmed", async () => {

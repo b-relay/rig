@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { removeFileDurably } from "../providers/private-files";
 import { readHostConfig } from "../config";
+import type { HostConfig } from "../config/types";
 import type { ProxyMode, ProxySettings } from "../config/proxy-schema";
 import { inspectProxyToken } from "../adapters/proxy-token";
 import { RigError, boundedEvidence, lastOutputLine } from "../domain/errors";
@@ -88,6 +89,8 @@ interface Prepared {
   readonly job: InstallableCaddyJob;
   /** Whether the job ran before this install. */
   readonly wasRunning: boolean;
+  /** Host config as it read once the job was known. */
+  readonly host: HostConfig;
 }
 export function createProxyInstallation(
   options: ProxyInstallationOptions,
@@ -159,25 +162,26 @@ export function createProxyInstallation(
       ),
     );
   }
-  /** What every install reads before it changes anything: Host config's proxy section and the token it needs, and the Caddy
-   * job and whether it runs. */
+  /** What every install reads before it changes anything: Host config's proxy section and the token it needs, the Caddy job
+   * and whether it runs, and Host config again. */
   async function prepare(): Promise<Prepared> {
     const wanted = await settings();
     await requireToken(options.root, wanted);
     const job = await currentJob();
-    return { wanted, job, wasRunning: (await job.state()) === "running" };
+    const wasRunning = (await job.state()) === "running";
+    // Read again here, so a config.yaml that can no longer be read is refused before anything changes.
+    const host = await readHostConfig(options.root);
+    return { wanted, job, wasRunning, host };
   }
-  /** How an install with no rigd running publishes the current routes from this process through `job`. It reads the
-   * dashboard's route when called, so an install calls it before anything changes. */
-  async function publisherHere(
-    job: InstallableCaddyJob,
-  ): Promise<() => Promise<void>> {
+  /** How an install with no rigd running publishes the current routes from this process. It reads the dashboard's route
+   * when called, so an install calls it before anything changes. */
+  async function publisherHere({
+    job,
+    host,
+  }: Prepared): Promise<() => Promise<void>> {
     // No rigd runs here to find its dashboard on its port, so the domain is withheld until the rigd this install starts
     // does.
-    const configured = await configuredDashboardRoute(
-      options.root,
-      await readHostConfig(options.root),
-    );
+    const configured = await configuredDashboardRoute(options.root, host);
     const withheld = configured && {
       domain: configured.domain,
       port: null,
@@ -282,7 +286,7 @@ export function createProxyInstallation(
     },
     async install() {
       const prepared = await prepare();
-      const publish = await publisherHere(prepared.job);
+      const publish = await publisherHere(prepared);
       await activate(prepared, await stageBinary(prepared, publish));
     },
     async installPublishedBy(publish) {
@@ -291,7 +295,7 @@ export function createProxyInstallation(
     },
     async stage() {
       const prepared = await prepare();
-      const publish = await publisherHere(prepared.job);
+      const publish = await publisherHere(prepared);
       // No job is defined, so nothing runs the new binary yet: it stays pending, and the complete install after the owner's
       // sudo confirms it.
       await stageBinary(prepared, publish);

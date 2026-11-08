@@ -176,6 +176,8 @@ test("an external JSON read that is cast, held or used before a check is refused
       "export function checkedParse(text: string): unknown { return (JSON.parse)(text); }",
       "export async function checkedParens(body: Response) { const value: unknown = await (body.json)(); return value; }",
       "export async function notABody(source: Response | { json(): Promise<number> }) { return (await source.json()) as number; }",
+      "export async function intersection(body: Response & Blob) { return (await body.json()).a; }",
+      "export async function checkedIntersection(body: Response & Blob): Promise<unknown> { const value: unknown = await body.json(); return value; }",
     ].join("\n"),
     "web/components/reads.tsx": [
       "export async function Reads(response: Response) {",
@@ -197,6 +199,7 @@ test("an external JSON read that is cast, held or used before a check is refused
     "src/forms.ts:2 JSON.parse: (JSON.parse)(text)",
     "src/forms.ts:3 .json(): (await (body.json)())",
     "src/forms.ts:7 .json(): (await source.json()) as number",
+    "src/forms.ts:8 .json(): (await body.json())",
     "src/reads.ts:9 JSON.parse: JSON.parse(text) as Foo",
     "src/reads.ts:10 JSON.parse: JSON.parse(text)",
     "src/reads.ts:11 JSON.parse: JSON.parse(text)",

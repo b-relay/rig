@@ -2,6 +2,7 @@ import {
   TypeFlags,
   type Checker,
   type Symbol as TsSymbol,
+  type Type as TsType,
 } from "typescript/unstable/async";
 import {
   isArrowFunction,
@@ -115,8 +116,9 @@ async function uncheckedIn(
   return unchecked;
 }
 
-/** Which JSON read a member is: the global JSON's parse, or the json of a body, a Blob or a stream. A member of a union, such
- * as `json` of `Response | Blob`, has no owner of its own, so it is a read when the member of any type in the union is. */
+/** Which JSON read a member is: the global JSON's parse, or the json of a body, a Blob or a stream. A member of a union or an
+ * intersection, such as `json` of `Response | Blob` or `Response & Blob`, has no owner of its own, so it is a read when the
+ * member of any type the receiver is made of is. */
 async function readKind(
   checker: Checker,
   member: PropertyAccessExpression,
@@ -126,9 +128,7 @@ async function readKind(
   if (owned || (symbol && (await symbol.getParent()))) return owned;
   const receiver = await checker.getTypeAtLocation(member.expression);
   if (!receiver) return undefined;
-  for (const type of receiver.isUnionType()
-    ? ((await receiver.getTypes()) ?? [])
-    : [receiver]) {
+  for (const type of await constituents(receiver)) {
     const apparent = (await checker.getApparentType(type)) ?? type;
     const read = await ownedRead(
       await checker.getPropertyOfType(apparent, member.name.text),
@@ -136,6 +136,13 @@ async function readKind(
     if (read) return read;
   }
   return undefined;
+}
+
+/** Every type a receiver is made of, through nested unions and intersections. */
+async function constituents(type: TsType): Promise<TsType[]> {
+  if (!type.isUnionType() && !type.isIntersectionType()) return [type];
+  const parts = (await type.getTypes()) ?? [];
+  return (await Promise.all(parts.map(constituents))).flat();
 }
 
 async function ownedRead(

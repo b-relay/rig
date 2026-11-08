@@ -2498,7 +2498,8 @@ test("Preview plans use assigned ports and ignore pins, keep Branch identity, an
       code: "port_collision",
       message: "Port 5432 is used by more than one Service.",
       context: { services: ["web", "db"], port: 5432 },
-      hint: "Pin each port to its own number in rig.yaml, or set one of the two to auto.",
+      // A Preview ignores pins, so the advice is about rigd's assignment, not rig.yaml.
+      hint: "rigd assigns a Preview's ports, so rig.yaml cannot fix this: run rig down preview <branch> --destroy, deploy the Preview again, and report it as a bug in Rig if it happens again.",
     }),
   );
 });
@@ -2518,7 +2519,14 @@ test("an auto port colliding with another Service's pin is refused for the Worki
       ...roots_,
       assignedPorts: { api: 3000 },
     }),
-  ).toThrow(expect.objectContaining({ code: "port_collision" }));
+  ).toThrow(
+    // Outside a Preview the pin is in force, so the fix is in rig.yaml. (Two equal pins never get here: the schema refuses them.)
+    expect.objectContaining({
+      code: "port_collision",
+      context: { services: ["web", "api"], port: 3000 },
+      hint: "Pin each port to its own number in rig.yaml, or set one of the two to auto.",
+    }),
+  );
 });
 
 test.each(["constructor", "__proto__", "toString", "rig.nope", "web.port"])(

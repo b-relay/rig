@@ -652,7 +652,10 @@ function resolvePorts(
           `Port ${value} is used by more than one Service.`,
           "port_collision",
           { services: [owners.get(value), name], port: value },
-          "Pin each port to its own number in rig.yaml, or set one of the two to auto.",
+          // A Preview ignores pins, so only rigd's assignment can collide there.
+          input.target === "preview"
+            ? "rigd assigns a Preview's ports, so rig.yaml cannot fix this: run rig down preview <branch> --destroy, deploy the Preview again, and report it as a bug in Rig if it happens again."
+            : "Pin each port to its own number in rig.yaml, or set one of the two to auto.",
         );
       owners.set(value, name);
       resolved[`services.${name}.ports.${port}`] = value;

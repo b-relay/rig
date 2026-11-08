@@ -20,6 +20,7 @@ import {
   downCommands,
   seedFailure,
   seedSandbox,
+  seedStepRunner,
   seedSteps,
 } from "../web/server/seed";
 import { userCorrectable } from "../src/domain/errors";
@@ -390,22 +391,28 @@ test("every demo Project's rig.yaml turns on each Target its seed deploys", asyn
 
 test("seeding skips Projects already present and reports a failure without stopping the rest", async () => {
   const ran: string[] = [];
+  // The runner the site seeds with, over commands stood in for: the broken Project's init exits 1.
+  const run = seedStepRunner("/data", async (step) => {
+    if (step.kind === "rig" && step.args.includes("/data/broken"))
+      return { exitCode: 1, output: "init refused\n" };
+    if (step.kind === "rig") ran.push(step.args.join(" "));
+    return { exitCode: 0, output: "" };
+  });
+  const thrown = await run(
+    { kind: "rig", args: ["init", "--path", "/data/broken"] },
+    "broken",
+  ).catch((error: unknown) => error);
+  expect(thrown).toMatchObject({
+    _tag: "RigError",
+    code: "WEB_DEMO_SEED_FAILED",
+    message: "`rig init --path /data/broken` failed: init refused",
+    hint: "Fix what the step printed, then delete /data/broken and restart the Preview to seed broken again.",
+    details: { project: "broken", step: "rig init --path /data/broken" },
+  });
   const failures = await seedSandbox(
     "/site/demo",
     "/data",
-    {
-      exists: async (path) => path === "/data/kept",
-      run: async (step, project) => {
-        if (step.kind === "rig" && step.args.includes("/data/broken"))
-          throw seedFailure(
-            project,
-            step,
-            "init refused\n",
-            `/data/${project}`,
-          );
-        if (step.kind === "rig") ran.push(`${project}: ${step.args.join(" ")}`);
-      },
-    },
+    { exists: async (path) => path === "/data/kept", run },
     [
       { name: "kept", deployStable: true },
       { name: "broken", deployStable: true },
@@ -420,7 +427,7 @@ test("seeding skips Projects already present and reports a failure without stopp
         "`rig init --path /data/broken` failed: init refused Fix what the step printed, then delete /data/broken and restart the Preview to seed broken again.",
     },
   ]);
-  expect(ran).toEqual(["fine: init --path /data/fine"]);
+  expect(ran).toEqual(["init --path /data/fine"]);
 });
 
 test("a failed demo seed step is WEB_DEMO_SEED_FAILED, naming the Project and the step, with what the step printed", () => {

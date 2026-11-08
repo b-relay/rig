@@ -81,6 +81,23 @@ export interface SeedDependencies {
   /** Runs one step of `project` to completion; rejects when it fails. */
   run(step: SeedStep, project: string): Promise<void>;
 }
+/** The seed's `run` over `execute`, which runs one step and answers its exit code and everything it printed: a step that
+ * exits non-zero rejects with `seedFailure` for its Project, whose repository is under `projectsRoot`. */
+export function seedStepRunner(
+  projectsRoot: string,
+  execute: (step: SeedStep) => Promise<{ exitCode: number; output: string }>,
+): SeedDependencies["run"] {
+  return async (step, project) => {
+    const done = await execute(step);
+    if (done.exitCode !== 0)
+      throw seedFailure(
+        project,
+        step,
+        done.output,
+        join(projectsRoot, project),
+      );
+  };
+}
 /** Seeds every demo Project that has no repository under `projectsRoot` yet, so a restarted sandbox
  * keeps what the visitor did to it. Answers with one entry per Project whose seeding failed; a
  * failed Project does not stop the others. */

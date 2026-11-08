@@ -28,7 +28,7 @@ import {
 import { previewName, selectTarget } from "./targets";
 import { registrationRefusals } from "./registration";
 import { targetRefusals } from "./target-refusals";
-import { PREVIEW_SELECTOR, targetOn } from "../config/schema";
+import { PREVIEW_SELECTOR, targetOn } from "../config/target-roles";
 import {
   identityDriftHint,
   movedProject,

@@ -9,7 +9,7 @@ import {
   UNFIXED_NAMES_STATE_VERSION,
   runtimeStateSchema as schema,
 } from "./state-schema";
-import { WORKING_TOOL_SUFFIX } from "../config/schema";
+import { WORKING_TOOL_SUFFIX } from "../config/target-roles";
 import { RigError } from "../domain/errors";
 import { describeInvalidDocument } from "../domain/invalid-document";
 import type { RuntimeState, StateStore } from "../domain/runtime";

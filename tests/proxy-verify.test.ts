@@ -12,6 +12,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { verifyProxyCertificates } from "../src/adapters/proxy-verify";
 import { parseHostConfig } from "../src/config";
+import type { ProxySettings } from "../src/config/proxy-schema";
+import { settingsDigest } from "../src/domain/managed-proxy";
+
+/** A generation's record as Rig writes it, accepted with `proxy`. */
+const generationRecord = (id: string, proxy: ProxySettings) =>
+  JSON.stringify({
+    id,
+    ca: proxy.tls.ca,
+    settings: settingsDigest(proxy),
+    proxy,
+    customRoutes: [],
+    dashboard: null,
+    ownerRoutesOnly: true,
+    createdAt: "2026-11-08T00:00:00.000Z",
+  });
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -104,7 +119,7 @@ async function world(hostnames: string[]) {
   );
   await writeFile(
     join(generation, "generation.json"),
-    JSON.stringify({ customRoutes: [] }),
+    generationRecord("g1", parseHostConfig({ proxy: { caddy: "/c" } }).proxy!),
   );
   await symlink(join("generations", "g1"), join(root, "caddy", "current"));
   return { root, port: server.port! };
@@ -165,7 +180,7 @@ test("without --port, verify dials the HTTPS port the pinned generation was acce
   }).proxy!;
   await writeFile(
     join(w.root, "caddy", "generations", "g1", "generation.json"),
-    JSON.stringify({ proxy: accepted, customRoutes: [] }),
+    generationRecord("g1", accepted),
   );
   // Host config says 28443, which Caddy has not taken: nothing listens there.
   const [verdict] = await verifyProxyCertificates({
@@ -204,12 +219,12 @@ test("a verdict holds only for the generation and port it was made against: a ne
       );
       await writeFile(
         join(g2, "generation.json"),
-        JSON.stringify({
-          proxy: parseHostConfig({
+        generationRecord(
+          "g2",
+          parseHostConfig({
             proxy: { caddy: "/c", ports: { http: 18080, https: closedPort } },
-          }).proxy,
-          customRoutes: [],
-        }),
+          }).proxy!,
+        ),
       );
       await symlink(join("generations", "g2"), join(w.root, "caddy", "next"));
       await rename(

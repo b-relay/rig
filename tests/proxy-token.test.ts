@@ -23,6 +23,19 @@ import type { ProxySettings } from "../src/config/proxy-schema";
 import { hostRoutes, settingsDigest } from "../src/domain/managed-proxy";
 import { createRigCommand } from "../src/cli/commands";
 
+/** A generation's record as Rig writes it, accepted with `proxy`. */
+const generationRecord = (id: string, proxy: ProxySettings) =>
+  JSON.stringify({
+    id,
+    ca: proxy.tls.ca,
+    settings: settingsDigest(proxy),
+    proxy,
+    customRoutes: hostRoutes(proxy),
+    dashboard: null,
+    ownerRoutesOnly: true,
+    createdAt: "2026-11-08T00:00:00.000Z",
+  });
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0))
@@ -151,7 +164,7 @@ test("doctor names a custom Caddy file an earlier build read as ignored, and Hos
   const record = (proxy: ProxySettings) =>
     writeFile(
       join(generation, "generation.json"),
-      JSON.stringify({ proxy, customRoutes: hostRoutes(proxy) }),
+      generationRecord("g1", proxy),
     );
   await record(accepted);
   await symlink(join("generations", "g1"), join(r, "caddy", "current"));
@@ -221,7 +234,7 @@ test("doctor pins one generation for the whole inspection: a publication that sw
     await mkdir(directory, { recursive: true });
     await writeFile(
       join(directory, "generation.json"),
-      JSON.stringify({ proxy, customRoutes: hostRoutes(proxy) }),
+      generationRecord(id, proxy),
     );
     await writeFile(join(directory, "adapted.json"), JSON.stringify(adapted));
   };

@@ -18,6 +18,19 @@ export function inheritedEnvironment(
 ): Record<string, string> {
   return pickDefined(source, INHERITED_VARIABLES);
 }
+/** The environment rigd starts with, as a process or a LaunchAgent: a fixed PATH unless the installing shell's environment
+ * `source` has one, its login basics, and the daemon's own variables. */
+export function daemonEnvironment(
+  root: string,
+  source: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  return {
+    PATH: "/usr/bin:/bin",
+    ...inheritedEnvironment(source),
+    RIG_ROOT: root,
+    RIG_DAEMON_CHILD: "1",
+  };
+}
 /** Variables every application gets from the daemon's environment: the operator's PATH and HOME, the account name
  * as the installing shell had it (USER, LOGNAME, which Keychain lookups and getpass-style calls identify the operator by),
  * and the locale/zone the shell supplied.

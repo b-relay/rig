@@ -6,7 +6,8 @@ import { platformInspect, type Inspect } from "./rig-fixture";
  * - `misborn`: its row has a birth no clock gives (`Xxx Yyy 99 99:99:99 9999`);
  * - `unlisted`: whole rows without the process, but of a process not asked for in place of the fixture's own;
  * - `unasked`: the fixture's row and a process not asked for, without the process;
- * - `failing`: the fixture's row alone, as an exit would show, but with ps exiting 1. */
+ * - `failing`: the fixture's row alone, as an exit would show, but with ps exiting 1;
+ * - `alone` and `alone-reborn`: the process's whole row without the fixture's, as it is or with another real birth. */
 export const MALFORMED = [
   "failed",
   "empty",
@@ -16,6 +17,8 @@ export const MALFORMED = [
   "unlisted",
   "unasked",
   "failing",
+  "alone",
+  "alone-reborn",
 ] as const;
 /** Spoiled reads of a process: the malformed ones, and one cut off before its row, which still lists every other process
  * it asked for and so reads as the process gone; only a second read can tell it from an exit. */
@@ -131,6 +134,14 @@ function spoil(
       return { exitCode: 0, stdout: rowsBut(args, answer, [pid], [stranger]) };
     case "failing":
       return { exitCode: 1, stdout: rowsBut(args, answer, [pid]) };
+    case "alone":
+      return { exitCode: 0, stdout: rowsBut(args, answer, [process.pid]) };
+    case "alone-reborn": {
+      const reborn = changeRows(args, answer, pid, (line) =>
+        line.replace(LSTART, "Fri Jan  2 00:00:00 1970"),
+      );
+      return { exitCode: 0, stdout: rowsBut(args, reborn, [process.pid]) };
+    }
     case "truncated": {
       const stdout = rowsBut(args, answer, [pid]);
       return { exitCode: stdout ? 0 : 1, stdout };

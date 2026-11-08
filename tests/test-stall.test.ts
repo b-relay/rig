@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fakeProcess, type Fault } from "./support/process-double";
+import { asksFor, fakeProcess, type Fault } from "./support/process-double";
 import {
   awaitExit,
   platformInspect,
@@ -21,18 +21,24 @@ const roots: string[] = [];
 /** What the runs' tests started, by pid and birth, stopped only while each is still that process. */
 const children: { pid: number; identity: string }[] = [];
 /** Kills each of `started` while it is still that process, and removes `kept` only once each is seen gone. Otherwise it
- * keeps them and fails naming them. `inspect` is the `ps` it reads processes with. */
+ * keeps them and fails naming them, with why for one whose read or signal threw. `inspect` is the `ps` it reads processes
+ * with. */
 async function stopStarted(
   started: readonly { pid: number; identity: string }[],
   kept: readonly string[],
   inspect: Inspect = platformInspect,
 ) {
-  const unconfirmed: number[] = [];
-  for (const child of started) {
-    if (signalOwned(child, "SIGKILL", inspect) === "gone") continue;
-    if ((await awaitExit(child, inspect)) !== "gone")
-      unconfirmed.push(child.pid);
-  }
+  const unconfirmed: string[] = [];
+  for (const child of started)
+    try {
+      if (signalOwned(child, "SIGKILL", inspect) === "gone") continue;
+      if ((await awaitExit(child, inspect)) !== "gone")
+        unconfirmed.push(String(child.pid));
+    } catch (error) {
+      unconfirmed.push(
+        `${child.pid} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
   if (unconfirmed.length > 0)
     throw new Error(
       `processes ${unconfirmed.join(", ")} could not be seen to exit, so the roots ${kept.join(", ")} are kept`,
@@ -41,31 +47,79 @@ async function stopStarted(
 }
 afterEach(() => stopStarted(children.splice(0), roots.splice(0)));
 
-for (const [what, endsOn, fault] of [
-  ["whose reads all fail", ["SIGKILL"], "failed"],
-  ["that outlives its SIGKILL", [], undefined],
-] as const)
-  test(`the teardown keeps the roots, and fails naming them, when a process the tests started ${what}`, async () => {
+/** Ways a process the tests started cannot be seen to exit: what it ends on, how its reads and signals go wrong, what the
+ * teardown names it as, and the signals it is sent. */
+const unseenExits: {
+  what: string;
+  endsOn: NodeJS.Signals[];
+  fault?: Fault;
+  read?: "throws";
+  signal?: "throws";
+  named: (pid: number) => string;
+  signals: string[];
+}[] = [
+  {
+    what: "whose reads all fail",
+    endsOn: ["SIGKILL"],
+    fault: "failed",
+    named: String,
+    signals: [],
+  },
+  {
+    what: "that outlives its SIGKILL",
+    endsOn: [],
+    named: String,
+    signals: ["SIGKILL"],
+  },
+  {
+    what: "whose reads throw, as a ps that does not answer does",
+    endsOn: ["SIGKILL"],
+    read: "throws",
+    named: (pid) => `${pid} (ps probe timed out)`,
+    signals: [],
+  },
+  {
+    what: "whose SIGKILL throws",
+    endsOn: ["SIGKILL"],
+    signal: "throws",
+    named: (pid) => `${pid} (injected EPERM)`,
+    signals: [],
+  },
+];
+for (const each of unseenExits)
+  test(`the teardown keeps the roots, and fails naming them, when a process the tests started ${each.what}`, async () => {
     const root = await mkdtemp(join(tmpdir(), "rig-test-stall-teardown-"));
     // Sequential, as this file is: the fake replaces Date.now and process.kill.
     const fake = fakeProcess({
       command: "/bin/sleep 600",
-      endsOn,
-      fault: (): Fault | undefined => fault,
+      endsOn: each.endsOn,
+      fault: () => each.fault,
     });
+    const kill = process.kill;
+    if (each.signal)
+      process.kill = ((target: number, signal?: NodeJS.Signals | number) => {
+        if (target === fake.pid)
+          throw Object.assign(new Error("injected EPERM"), { code: "EPERM" });
+        return kill.call(process, target, signal);
+      }) as typeof process.kill;
+    const inspect: Inspect = (args) => {
+      if (each.read && asksFor(args, fake.pid))
+        throw new Error("ps probe timed out");
+      return fake.inspect(args);
+    };
     try {
       const failure = await stopStarted(
         [{ pid: fake.pid, identity: fake.identity }],
         [root],
-        fake.inspect,
+        inspect,
       ).then(
         () => undefined,
         (error: Error) => error.message,
       );
       expect(failure).toBe(
-        `processes ${fake.pid} could not be seen to exit, so the roots ${root} are kept`,
+        `processes ${each.named(fake.pid)} could not be seen to exit, so the roots ${root} are kept`,
       );
-      expect(fake.signals).toEqual(fault ? [] : ["SIGKILL"]);
+      expect(fake.signals).toEqual(each.signals);
       expect(
         await stat(root).then(
           () => true,
@@ -73,6 +127,7 @@ for (const [what, endsOn, fault] of [
         ),
       ).toBe(true);
     } finally {
+      process.kill = kill;
       fake.restore();
       await rm(root, { recursive: true, force: true });
     }

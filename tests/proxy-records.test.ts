@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { managedCaddyWorld } from "./support/managed-caddy-double";
+import { currentGeneration } from "../src/adapters/proxy-generation";
 import { proxyReport } from "../src/adapters/proxy-report";
 import { inspectManagedProxy } from "../src/adapters/proxy-inspection";
 import { parseHostConfig } from "../src/config";
@@ -111,6 +112,31 @@ test.each([
     expect(await w.caddy.republish()).toEqual({ published: true });
     await w.caddy.router.apply(app("127.0.0.1:3002"));
     expect(w.servedRoutes()).toContain("127.0.0.1:3002");
+  },
+);
+
+// #838: what the proxy report and doctor read of a generation record is checked to be an object first; one that is not
+// gives no evidence, as one that is not JSON does (#568 owns how doctor reports either).
+test.each([
+  ["null", "null"],
+  ["a list", "[]"],
+])(
+  "the generation a report reads from a record holding %s is the one an unreadable record gives",
+  async (_, content) => {
+    const w = await world();
+    await w.caddy.router.apply(app());
+    const path = join(
+      w.root,
+      "caddy",
+      "generations",
+      "g001",
+      "generation.json",
+    );
+    await writeFile(path, "{");
+    const unreadable = await currentGeneration(w.root);
+    expect(unreadable).toMatchObject({ id: "g001", customRoutes: [] });
+    await writeFile(path, content);
+    expect(await currentGeneration(w.root)).toEqual(unreadable);
   },
 );
 

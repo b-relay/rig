@@ -194,35 +194,62 @@ export async function processExited(
 }
 /** The cleanup of every fixture whose cleanup has not yet answered. */
 const unfinished = new Set<() => Promise<void>>();
+/** Every fixture still being made, which registers its cleanup once it is. */
+const starting = new Set<Promise<unknown>>();
+/** Set once the tests are done: a body Bun abandoned may still run on, and a fixture it asks for then is refused. */
+let closed = false;
+/** Why each fixture asked for once the tests were done was refused. */
+const refused: string[] = [];
 /** Cleans up each fixture a test left unfinished, as Bun leaves one when it times the test out or the test throws before its
- * cleanup, and waits for a cleanup already under way: run once every test is done, so no fixture is still in use. Fails
- * naming each root it had to keep. */
+ * cleanup, and waits for a cleanup already under way: run once every test is done, so no fixture is still in use. Until
+ * none is left, it waits for the fixtures still being made and cleans up what they register. Fails naming each root it
+ * had to keep, and each fixture it refused. */
 export async function stopAbandonedFixtures() {
-  const failed = (
-    await Promise.allSettled([...unfinished].map((cleanup) => cleanup()))
-  ).flatMap((result) =>
-    result.status === "rejected" ? [String(result.reason)] : [],
-  );
-  if (failed.length > 0)
+  closed = true;
+  const failed: string[] = [];
+  while (starting.size > 0 || unfinished.size > 0) {
+    await Promise.allSettled(starting);
+    for (const result of await Promise.allSettled(
+      [...unfinished].map((cleanup) => cleanup()),
+    ))
+      if (result.status === "rejected") failed.push(String(result.reason));
+  }
+  if (failed.length > 0 || refused.length > 0)
     throw new Error(
-      `A test left fixtures unfinished, and their cleanup failed:\n${failed.join("\n")}`,
+      `A test left fixtures unfinished, and their cleanup failed or a fixture was refused:\n${[...failed, ...refused].join("\n")}`,
     );
 }
+/** `createFixture`, while the tests run. Once they are done, a fixture is refused before anything is made, since nothing
+ * would clean it up. */
+export async function rigFixture(options: FixtureOptions = {}) {
+  if (closed) {
+    const reason =
+      "A fixture was asked for once the tests were done, by a test Bun had abandoned, and was refused.";
+    refused.push(reason);
+    throw new Error(reason);
+  }
+  const made = createFixture(options);
+  starting.add(made);
+  try {
+    return await made;
+  } finally {
+    starting.delete(made);
+  }
+}
+type FixtureOptions = {
+  readonly commands?: {
+    readonly rig: readonly string[];
+    readonly rigd: readonly string[];
+  };
+  readonly PATH?: string;
+  readonly HOME?: string;
+  readonly inspect?: Inspect;
+};
 /** Runs `rig` and `rigd` from source by default; `commands` substitutes other executables, such as `bun build --compile` output,
  * and `PATH` replaces the PATH they (and the daemon `rigd install` starts) inherit. `HOME` does the same for the home
  * directory, which is where the Services the daemon runs find the operator's caches. `inspect` replaces the `ps` cleanup
  * reads processes with. */
-export async function rigFixture(
-  options: {
-    readonly commands?: {
-      readonly rig: readonly string[];
-      readonly rigd: readonly string[];
-    };
-    readonly PATH?: string;
-    readonly HOME?: string;
-    readonly inspect?: Inspect;
-  } = {},
-) {
+async function createFixture(options: FixtureOptions) {
   const base = await mkdtemp(join(tmpdir(), "rig-battle-")),
     root = join(base, ".rig"),
     repo = join(base, "project");

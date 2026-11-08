@@ -8,7 +8,9 @@ export interface ManagedProcess {
   readonly cwd: string;
   /** When set, `cwd` must resolve inside this directory, symlinks followed: the start fails WORKING_DIR_OUTSIDE otherwise. */
   readonly cwdWithin?: string;
-  /** Used to spawn the process and never written to disk: a later start is given a freshly composed environment. */
+  /** Used to spawn the process. Under a capture wrapper it is also written, with the rest of the request, to the wrapper's
+   * request file in the Rig root's private `capture` directory, which only the user can read; the next start of the same
+   * process replaces that file. A later start is given a freshly composed environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly logRoot: string;
   /** The caller's name for this one process; every observation of it, running or exited, carries it back. */

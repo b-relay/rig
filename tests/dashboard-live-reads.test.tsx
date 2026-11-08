@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
-import "./support/dashboard-site";
+import { basic, local } from "./support/dashboard-site";
 import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import * as daemon from "../web/server/daemon";
@@ -15,6 +15,9 @@ let arrived: () => void = () => {};
 let expected = 0;
 /** How the stand-in answers a request, by its path or action; undefined holds it until the caller goes. */
 let answer: (name: string) => unknown = () => undefined;
+/** Every request the stand-in received, by path or action, and a gate that holds each answer until it opens. */
+let asked: string[] = [];
+let gate: Promise<void> | undefined;
 const rigd = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
@@ -25,6 +28,8 @@ const rigd = Bun.serve({
       pathname === "/health"
         ? "health"
         : ((await request.json()) as { action: string }).action;
+    asked.push(name);
+    if (gate) await gate;
     const reply = answer(name);
     if (reply !== undefined)
       return Response.json(name === "health" ? reply : { result: reply });
@@ -41,9 +46,18 @@ const client = new DaemonClient({ port: rigd.port!, token: "test" });
 const real = { ...daemon };
 let reading = false;
 let monitored: ((command: RuntimeCommand) => unknown) | undefined;
+/** Whether the request being served holds the key, and how many times rigd was looked for. */
+let signedIn = true;
+let discoveries = 0;
+mock.module("next/headers", () => ({
+  headers: async () =>
+    new Headers({ ...local(), ...(signedIn && { authorization: basic() }) }),
+  cookies: async () => ({ get: () => undefined, set() {} }),
+}));
 mock.module("../web/server/daemon", () => ({
   ...real,
   async daemon(root?: string) {
+    discoveries += 1;
     return reading ? client : real.daemon(root);
   },
   async read(command: RuntimeCommand, signal?: AbortSignal) {
@@ -66,6 +80,10 @@ afterAll(() => {
 afterEach(() => {
   pending.clear();
   answer = () => undefined;
+  asked = [];
+  gate = undefined;
+  signedIn = true;
+  discoveries = 0;
 });
 
 test("a pulse whose browser goes abandons every read it started, at once", async () => {
@@ -114,6 +132,107 @@ test("a pulse left to finish answers its stamp", async () => {
     busy: false,
     down: false,
   });
+});
+
+const idle =
+  (instanceId = "i-1", newest = "") =>
+  (name: string) =>
+    name === "health"
+      ? { instanceId, pid: 42, running: true }
+      : name === "queue"
+        ? { waiting: 0, operations: [] }
+        : {
+            operations: newest
+              ? [
+                  {
+                    id: "op-1",
+                    action: "up",
+                    outcome: "started",
+                    occurredAt: newest,
+                  },
+                ]
+              : [],
+          };
+const pulseOf = async (signal?: AbortSignal) =>
+  (await (
+    await pulseRoute(new Request("http://rig.test/pulse", { signal }))
+  ).json()) as { stamp: string; busy: boolean; down: boolean };
+/** Opens the stand-in's gate once `count` requests have reached it; no clock is involved. */
+async function whenAsked(count: number) {
+  for (let turn = 0; turn < 10_000 && asked.length < count; turn++)
+    await new Promise((resolve) => setImmediate(resolve));
+  expect(asked).toHaveLength(count);
+}
+
+test("twenty pulses asked while one is in flight share it: rigd is looked for once and asked three things, and every browser gets the same stamp", async () => {
+  answer = idle();
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const pulses = Array.from({ length: 20 }, () => pulseOf());
+  await whenAsked(3);
+  open();
+  const answered = await Promise.all(pulses);
+  expect(asked.sort()).toEqual(["activity", "health", "queue"]);
+  expect(discoveries).toBe(1);
+  expect(new Set(answered.map((each) => each.stamp))).toEqual(
+    new Set(["i-1:42|-:0:|0:"]),
+  );
+});
+
+test("nothing is kept once a pulse answered: an Operation recorded, a restarted rigd and a failed read each show at the next pulse", async () => {
+  answer = idle();
+  expect((await pulseOf()).stamp).toBe("i-1:42|-:0:|0:");
+  answer = idle("i-1", "2026-11-08T10:00:00.000Z");
+  expect((await pulseOf()).stamp).toBe(
+    "i-1:42|-:0:|1:2026-11-08T10:00:00.000Z",
+  );
+  answer = idle("i-2", "2026-11-08T10:00:00.000Z");
+  expect((await pulseOf()).stamp).toStartWith("i-2:42|");
+  // A failed read is not kept either.
+  answer = (name) =>
+    name === "health" ? { running: "no" } : idle("i-2")(name);
+  expect(await pulseOf()).toMatchObject({
+    stamp: expect.stringContaining("down:DAEMON_PROTOCOL"),
+  });
+  answer = idle("i-2");
+  expect((await pulseOf()).stamp).toBe("i-2:42|-:0:|0:");
+  expect(discoveries).toBe(5);
+});
+
+test("one browser going leaves the shared read to the others; it is abandoned when the last goes", async () => {
+  expected = 3;
+  const reached = new Promise<void>((resolve) => (arrived = resolve));
+  const first = new AbortController();
+  const second = new AbortController();
+  const pulses = [pulseOf(first.signal), pulseOf(second.signal)];
+  await reached;
+  first.abort();
+  for (let turn = 0; turn < 20; turn++)
+    await new Promise((resolve) => setImmediate(resolve));
+  // The other browser still waits, so rigd's answers are still wanted.
+  let abandoned = 0;
+  for (const each of pending) void each.aborted.then(() => abandoned++);
+  for (let turn = 0; turn < 20; turn++)
+    await new Promise((resolve) => setImmediate(resolve));
+  expect(abandoned).toBe(0);
+  second.abort();
+  await Promise.all([...pending].map((each) => each.aborted));
+  await Promise.all(pulses);
+  expect(asked.sort()).toEqual(["activity", "health", "queue"]);
+});
+
+test("a request with no session is refused on its own, even while a signed-in one's read is in flight", async () => {
+  answer = idle();
+  let open = () => {};
+  gate = new Promise((resolve) => (open = resolve));
+  const signed = pulseOf();
+  await whenAsked(3);
+  signedIn = false;
+  const stranger = await pulseOf();
+  expect(stranger.stamp).toBe("down:SIGN_IN_REQUIRED|?|?");
+  open();
+  expect((await signed).stamp).toBe("i-1:42|-:0:|0:");
+  expect(asked).toHaveLength(3);
 });
 
 test("a health reply rigd should not have sent is a fault: the pulse does not call it an outage, and the corner names it with its hint", async () => {

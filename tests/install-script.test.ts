@@ -1,7 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, test as bunTest, expect } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   chmod,
+  copyFile,
   lstat,
   mkdir,
   mkdtemp,
@@ -18,48 +19,154 @@ import { ownershipRecordPath } from "../src/adapters/artifact-ownership";
 import { acquireProcessLock } from "../src/adapters/process-lock";
 import { resolveRigRoot } from "../src/cli/entry-environment";
 import { installedPath } from "../src/domain/installed-path";
+import {
+  currentScope,
+  endScope,
+  runOwned,
+  testScope,
+  within,
+  type TestScope,
+} from "./support/test-processes";
 
 const TEMPLATE = join(import.meta.dir, "..", "scripts", "install");
 const TAG = "v0.1.0";
 const SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 const homes: string[] = [];
+const packs: string[] = [];
+/** How long a test's teardown waits for its body once what it runs is killed; the hook's own limit is a little longer. */
+const TEARDOWN_MS = 10_000;
+/** The running test: its scope and body. A test that timed out has what it still runs killed, is refused any more, and is
+ * waited for before its homes go, so nothing it started runs on into the next test. */
+let running: { scope: TestScope; body: Promise<void> } | undefined;
 afterEach(async () => {
+  const ending = running;
+  running = undefined;
+  if (ending) await endScope(ending.scope, ending.body, TEARDOWN_MS);
   for (const home of homes.splice(0))
     await rm(home, { recursive: true, force: true });
+}, TEARDOWN_MS + 5_000);
+afterAll(async () => {
+  for (const pack of packs.splice(0))
+    await rm(pack, { recursive: true, force: true });
 });
+function test(name: string, fn: () => Promise<void>, timeout?: number) {
+  bunTest(
+    name,
+    () => {
+      const scope = testScope();
+      const body = within(scope, fn);
+      running = { scope, body };
+      return body;
+    },
+    timeout,
+  );
+}
 
-async function run(
-  args: string[],
-  env: Record<string, string> = {},
-  cwd?: string,
-) {
-  const child = Bun.spawn(args, {
+const run = (args: string[], env: Record<string, string> = {}, cwd?: string) =>
+  runOwned(args, {
     env: { PATH: SYSTEM_PATH, ...env },
     ...(cwd ? { cwd } : {}),
-    stdout: "pipe",
-    stderr: "pipe",
   });
-  const [code, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  return { code, stdout, stderr };
-}
 const exists = (path: string) =>
   stat(path).then(
     () => true,
     () => false,
   );
 
+interface Contents {
+  /** `rigd: false` leaves rigd out of the archive, `dashboard: false` the dashboard. */
+  rigd?: boolean;
+  dashboard?: boolean;
+}
+const packed = new Map<
+  string,
+  {
+    owner: TestScope | undefined;
+    done: boolean;
+    packing: Promise<{ dir: string; sums: string }>;
+  }
+>();
+/** The release's archive per architecture, and the SHA256SUMS that names them: packed once per file for each `contents`,
+ * since every release with those contents holds the same bytes, so a test pays for its installs rather than for packing. */
+function archives(contents: Contents) {
+  const key = `${contents.rigd !== false} ${contents.dashboard !== false}`;
+  const owner = currentScope();
+  const known = packed.get(key);
+  // A pack still under way for a test that has ended may never finish: this test packs its own.
+  if (known && (known.done || known.owner === owner)) return known.packing;
+  const entry = { owner, done: false, packing: pack(contents) };
+  packed.set(key, entry);
+  entry.packing.then(
+    () => {
+      entry.done = true;
+    },
+    () => {
+      if (packed.get(key) === entry) packed.delete(key);
+    },
+  );
+  return entry.packing;
+}
+/** Runs one packing step with `PATH`, answering what it printed. A step that fails or is killed fails the pack, so a pack
+ * that is not whole never reaches the cache. */
+async function packingStep(args: string[], PATH: string, cwd?: string) {
+  const result = await run(args, { PATH }, cwd);
+  if (result.code !== 0)
+    throw new Error(
+      `Packing the fake release: ${args.join(" ")} exited with ${result.code}: ${result.stderr.trim()}`,
+    );
+  return result.stdout;
+}
+/** Packs `contents` with the `tar` and `shasum` that `PATH` finds. */
+async function pack(contents: Contents, PATH = SYSTEM_PATH) {
+  const at = await mkdtemp(join(tmpdir(), "rig-install-archives-"));
+  packs.push(at);
+  const dir = join(at, "archives");
+  await mkdir(dir);
+  for (const arch of ["arm64", "x64"]) {
+    const build = `rig-${TAG}-darwin-${arch}`;
+    const tree = join(at, "build", build);
+    await mkdir(tree, { recursive: true });
+    await writeFile(join(tree, "rig"), `#!/bin/sh\necho ${arch}\n`);
+    if (contents.dashboard !== false) {
+      await mkdir(join(tree, "dashboard", "web"), { recursive: true });
+      await writeFile(join(tree, "dashboard", "web", "server.js"), "// served");
+    }
+    if (contents.rigd !== false)
+      await writeFile(
+        join(tree, "rigd"),
+        // rigd records the arguments it ran with in the installing home's rigd-ran. rigd status reports the release it
+        // serves: this one, unless the test says another. With RIG_TEST_LOCK set, rigd install records the descriptor it
+        // was handed, whether lockf can lock that descriptor (it already holds the lock) and the lock file (another does),
+        // and what the lock file records.
+        `#!/bin/sh\necho "$@" >> "$HOME/rigd-ran"\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\n` +
+          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; /usr/bin/lockf -s -t 0 "\${RIG_INSTALL_LOCK_FD:-none}"; own=$?; /usr/bin/lockf -s -t 0 "$lock" true; printf '%s %s %s %s' "\${RIG_INSTALL_LOCK_FD:-none}" "$own" "$?" "$(cat "$lock")" > "$RIG_TEST_LOCK"; fi\n` +
+          `echo "rigd $*"\n`,
+      );
+    await packingStep(
+      [
+        "tar",
+        "-czf",
+        join(dir, `${build}.tar.gz`),
+        "-C",
+        join(at, "build"),
+        build,
+      ],
+      PATH,
+    );
+  }
+  const sums = await packingStep(
+    ["sh", "-c", "shasum -a 256 rig-*.tar.gz"],
+    PATH,
+    dir,
+  );
+  return { dir, sums };
+}
+
 /** A fake release on local files, as the release workflow publishes one: per architecture an archive whose `rig` says
  * which build it is and whose `rigd` records the arguments it ran with, then SHA256SUMS and the install script with the
  * tag written in. The Mac it runs on is chosen with fake `uname` and `sysctl` commands. */
 async function release(
-  options: {
-    /** `rigd: false` leaves rigd out of the archive, `dashboard: false` the dashboard. */
-    rigd?: boolean;
-    dashboard?: boolean;
+  options: Contents & {
     /** Rewrites SHA256SUMS once it is written. */
     sums?(written: string): string;
     machine?: "arm64" | "x86_64";
@@ -72,37 +179,9 @@ async function release(
   const files = join(home, "releases", TAG);
   await mkdir(files, { recursive: true });
   const ran = join(home, "rigd-ran");
-  for (const arch of ["arm64", "x64"]) {
-    const build = `rig-${TAG}-darwin-${arch}`;
-    const dir = join(home, "build", build);
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "rig"), `#!/bin/sh\necho ${arch}\n`);
-    if (options.dashboard !== false) {
-      await mkdir(join(dir, "dashboard", "web"), { recursive: true });
-      await writeFile(join(dir, "dashboard", "web", "server.js"), "// served");
-    }
-    if (options.rigd !== false)
-      await writeFile(
-        join(dir, "rigd"),
-        // rigd status reports the release it serves: this one, unless the test says another. With RIG_TEST_LOCK set,
-        // rigd install records the descriptor it was handed, whether lockf can lock that descriptor (it already holds the
-        // lock) and the lock file (another does), and what the lock file records.
-        `#!/bin/sh\necho "$@" >> '${ran}'\nif [ "$1" = status ]; then echo "Version    \${RIG_TEST_SERVING:-0.1.0+test}"; exit 0; fi\n` +
-          `if [ "$1" = install ] && [ -n "\${RIG_TEST_LOCK:-}" ]; then lock="$RIG_ROOT/daemon/install.lock"; /usr/bin/lockf -s -t 0 "\${RIG_INSTALL_LOCK_FD:-none}"; own=$?; /usr/bin/lockf -s -t 0 "$lock" true; printf '%s %s %s %s' "\${RIG_INSTALL_LOCK_FD:-none}" "$own" "$?" "$(cat "$lock")" > "$RIG_TEST_LOCK"; fi\n` +
-          `echo "rigd $*"\n`,
-      );
-    await run([
-      "tar",
-      "-czf",
-      join(files, `${build}.tar.gz`),
-      "-C",
-      join(home, "build"),
-      build,
-    ]);
-  }
-  const sums = (
-    await run(["sh", "-c", "shasum -a 256 rig-*.tar.gz"], {}, files)
-  ).stdout;
+  const { dir, sums } = await archives(options);
+  for (const archive of await readdir(dir))
+    await copyFile(join(dir, archive), join(files, archive));
   await writeFile(
     join(files, "SHA256SUMS"),
     options.sums ? options.sums(sums) : sums,
@@ -143,6 +222,30 @@ async function release(
 const installedArch = async (root: string) =>
   (await run([join(root, "bin", "rig")])).stdout.trim();
 
+// The fixture's own guard: a pack that is not whole must fail, so the cache never offers it to the next test.
+for (const [what, tool, body] of [
+  ["tar fails", "tar", "exit 1"],
+  ["shasum fails", "shasum", "exit 1"],
+  ["shasum is killed", "shasum", "kill -TERM $$"],
+] as const)
+  test(`packing the fake release fails when ${what}, rather than answering a pack without its archives or checksums`, async () => {
+    const home = await mkdtemp(join(tmpdir(), "rig-install-"));
+    homes.push(home);
+    const fakes = join(home, "fakes");
+    await mkdir(fakes);
+    await writeFile(join(fakes, tool), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    const failure = await pack({}, `${fakes}:${SYSTEM_PATH}`).then(
+      () => "packed",
+      (error: Error) => error.message,
+    );
+    expect(failure).toStartWith(
+      `Packing the fake release: ${tool === "tar" ? "tar -czf" : "sh -c shasum -a 256"}`,
+    );
+    expect(failure).toContain(
+      `exited with ${what === "shasum is killed" ? 143 : 1}`,
+    );
+  });
+
 test("install puts the release's rig and rigd in the Rig root's bin, runs rigd install, and says how to reach them", async () => {
   const f = await release();
   const result = await f.install();
@@ -169,19 +272,22 @@ test("install puts the release's rig and rigd in the Rig root's bin, runs rigd i
   });
   expect(again.code).toBe(0);
   expect(again.stdout).not.toContain("export PATH");
-});
+}, 30000);
 
-test("an Intel Mac gets the x64 build, and a shell under Rosetta on Apple Silicon the native arm64 one", async () => {
+test("an Intel Mac gets the x64 build", async () => {
   const intel = await release({ machine: "x86_64", translated: "0" });
   expect((await intel.install()).code).toBe(0);
   expect(await installedArch(intel.root)).toBe("x64");
+});
+
+test("a shell under Rosetta on Apple Silicon gets the native arm64 build", async () => {
   const rosetta = await release({ machine: "x86_64", translated: "1" });
   expect((await rosetta.install()).code).toBe(0);
   expect(await installedArch(rosetta.root)).toBe("arm64");
 });
 
-test("without RIG_ROOT, or with it empty, Rig is installed in ~/.rig as rig itself resolves it", async () => {
-  for (const RIG_ROOT of [undefined, ""]) {
+for (const RIG_ROOT of [undefined, ""])
+  test(`${RIG_ROOT === undefined ? "without RIG_ROOT" : "with RIG_ROOT empty"}, Rig is installed in ~/.rig as rig itself resolves it`, async () => {
     const f = await release();
     const env: Record<string, string> =
       RIG_ROOT === undefined ? {} : { RIG_ROOT };
@@ -194,37 +300,35 @@ test("without RIG_ROOT, or with it empty, Rig is installed in ~/.rig as rig itse
     expect(result.code).toBe(0);
     expect(resolveRigRoot(RIG_ROOT, f.home)).toBe(join(f.home, ".rig"));
     expect(await exists(join(f.home, ".rig", "bin", "rigd"))).toBe(true);
-  }
-});
+  });
 
-test("a download that does not match SHA256SUMS, or a SHA256SUMS that does not name it in the canonical form once, installs nothing", async () => {
-  for (const sums of [
-    // Tampered: the digest is another file's.
-    (written: string) => written.replace(/^[0-9a-f]{64}/gm, "0".repeat(64)),
-    // A BSD-style line, which shasum -c would read as a digest of another file.
-    (written: string) =>
-      written.replace(
-        /^[0-9a-f]{64}  (\S+)$/gm,
-        `SHA256 (/etc/hosts) = ${"0".repeat(64)}  $1`,
-      ),
-    // Named twice.
-    (written: string) => `${written}${written}`,
-    // Separated by a tab, by one space, or padded.
-    (written: string) => written.replace(/^([0-9a-f]{64})  /gm, "$1\t"),
-    (written: string) => written.replace(/^([0-9a-f]{64})  /gm, "$1 "),
-    (written: string) => written.replace(/\.tar\.gz$/gm, ".tar.gz "),
-    // A valid line, and a malformed one naming the archive too.
-    (written: string) =>
-      `${written}${written.replace(/^([0-9a-f]{64})  /gm, "$1\t")}`,
-  ]) {
+for (const [shape, sums] of Object.entries<(written: string) => string>({
+  // Tampered: the digest is another file's.
+  "a digest of another file": (written) =>
+    written.replace(/^[0-9a-f]{64}/gm, "0".repeat(64)),
+  // Which shasum -c would read as a digest of another file.
+  "a BSD-style line": (written) =>
+    written.replace(
+      /^[0-9a-f]{64}  (\S+)$/gm,
+      `SHA256 (/etc/hosts) = ${"0".repeat(64)}  $1`,
+    ),
+  "the archive named twice": (written) => `${written}${written}`,
+  "a tab between digest and name": (written) =>
+    written.replace(/^([0-9a-f]{64})  /gm, "$1\t"),
+  "one space between digest and name": (written) =>
+    written.replace(/^([0-9a-f]{64})  /gm, "$1 "),
+  "a padded name": (written) => written.replace(/\.tar\.gz$/gm, ".tar.gz "),
+  "a valid line and a malformed one naming the archive too": (written) =>
+    `${written}${written.replace(/^([0-9a-f]{64})  /gm, "$1\t")}`,
+}))
+  test(`a download that does not match SHA256SUMS, or a SHA256SUMS that does not name it in the canonical form once, installs nothing: ${shape}`, async () => {
     const f = await release({ sums });
     const result = await f.install();
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("nothing was installed.");
     expect(await exists(join(f.root, "bin"))).toBe(false);
     expect(await exists(f.ran)).toBe(false);
-  }
-});
+  });
 
 test("a release that cannot be downloaded installs nothing and names the address", async () => {
   const f = await release();
@@ -437,12 +541,12 @@ test("install refuses a destination that is not a regular file, before replacing
   expect(await exists(join(f.root, "bin", "rigd"))).toBe(false);
 });
 
-test("install refuses a rig or rigd that is a symbolic link, even to a regular file or to nothing, and leaves link and file alone", async () => {
-  for (const [name, target] of [
-    ["rig", "kept"],
-    ["rigd", "kept"],
-    ["rig", "missing"],
-  ] as const) {
+for (const [name, target] of [
+  ["rig", "kept"],
+  ["rigd", "kept"],
+  ["rig", "missing"],
+] as const)
+  test(`install refuses a ${name} that is a symbolic link to ${target === "kept" ? "a regular file" : "nothing"}, and leaves link and file alone`, async () => {
     const f = await release();
     const bin = join(f.root, "bin");
     await mkdir(bin, { recursive: true });
@@ -461,10 +565,9 @@ test("install refuses a rig or rigd that is a symbolic link, even to a regular f
       expect(await readFile(referent, "utf8")).toBe("the operator's own");
     expect(await exists(join(f.root, "dashboard"))).toBe(false);
     expect(await exists(f.ran)).toBe(false);
-  }
-});
+  });
 
-test("install stages nothing through a linked bin or dashboard directory, or into one others can write, and a linked root still installs", async () => {
+test("install stages nothing through a linked bin or dashboard directory", async () => {
   for (const name of ["bin", "dashboard"]) {
     const f = await release();
     const outside = join(f.home, "outside");
@@ -479,7 +582,9 @@ test("install stages nothing through a linked bin or dashboard directory, or int
     expect(await readdir(outside)).toEqual([]);
     expect(await exists(f.ran)).toBe(false);
   }
+});
 
+test("install stages nothing into a bin directory others can write", async () => {
   const open = await release();
   await mkdir(join(open.root, "bin"), { recursive: true });
   await chmod(join(open.root, "bin"), 0o775);
@@ -490,7 +595,9 @@ test("install stages nothing through a linked bin or dashboard directory, or int
   );
   expect(refused.stderr).toContain(`chmod 700 ${open.root}/bin`);
   expect(await readdir(join(open.root, "bin"))).toEqual([]);
+});
 
+test("a Rig root that is a link to a private directory still installs", async () => {
   const linked = await release();
   const volume = join(linked.home, "volume");
   await mkdir(volume, { mode: 0o700 });

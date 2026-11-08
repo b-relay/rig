@@ -130,10 +130,12 @@ test("a stalled or dripping upload is refused at the receive deadline and its co
 test("an upload's timer runs for the documented 10 s, or the deadline the control plane is given", async () => {
   const real = globalThis.setTimeout;
   const delays: (number | undefined)[] = [];
+  // Only the timers the control plane's body reader sets: the process sets others while the requests run.
   const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
     ...args: Parameters<typeof setTimeout>
   ) => {
-    delays.push(args[1]);
+    if (new Error().stack?.includes("/src/daemon/request-body.ts:"))
+      delays.push(args[1]);
     return real(...args);
   }) as typeof setTimeout);
   const documented = controlPlane();

@@ -231,10 +231,20 @@ test("a change that fails, at once or after waiting, saves nothing and fails onl
     throw new Error("refused after waiting");
   });
   const kept = at.store.update(add("kept"));
+  // Every outcome is taken before the gate opens: the store may refuse `later` while the test still waits on `refused`,
+  // and Bun's `expect(...).rejects` on an unsettled promise runs the event loop until it settles.
+  const failure = (update: Promise<void>) =>
+    update.then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+  const outcomes = Promise.all([failure(refused), failure(later), kept]);
   open();
-  await expect(refused).rejects.toThrow("refused at once");
-  await expect(later).rejects.toThrow("refused after waiting");
-  await kept;
+  expect(await outcomes).toEqual([
+    "refused at once",
+    "refused after waiting",
+    undefined,
+  ]);
   expect(names(await new FileStateStore(at.root).read())).toEqual([
     "first",
     "kept",

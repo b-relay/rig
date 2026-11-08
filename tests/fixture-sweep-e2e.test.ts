@@ -618,16 +618,17 @@ for (const [read, fault] of [
     ]);
     let owned: { pid: number; identity: string } | undefined;
     try {
-      // The trap is set once the shell has become the sleep, which keeps its pid and birth.
+      // The trap is set once the shell has become the sleep, which keeps its pid and birth; the shell's own command line
+      // names the sleep too.
       for (
         let i = 0;
         i < 500 &&
-        !platformInspect([
+        platformInspect([
           "-p",
           String(child.pid),
           "-o",
           "command=",
-        ]).stdout.includes("sleep 600");
+        ]).stdout.trim() !== "/bin/sleep 600";
         i++
       )
         await Bun.sleep(10);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Cloud, Lock, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import {
   DNS_RECORD_TYPES,
@@ -271,15 +271,26 @@ export function RecordDialog({
     { busy: false },
   );
   const busy = check.busy || act.busy;
-  // Counts edits, so a check answered after the draft changed speaks for a draft no longer shown, and is dropped.
-  const edits = useRef(0);
+  // Counts edits and dismissals, so a check answered after either speaks for a draft no longer shown, and is dropped:
+  // a dismissed dialog never writes.
+  const turns = useRef(0);
+  useEffect(
+    () => () => {
+      turns.current += 1;
+    },
+    [],
+  );
   const set = <K extends keyof RecordDraft>(key: K, value: RecordDraft[K]) => {
-    edits.current += 1;
+    turns.current += 1;
     setDraft((now) => ({ ...now, [key]: value }));
     setIssues(({ [key]: _gone, ...rest }) => rest);
   };
+  const dismiss = () => {
+    turns.current += 1;
+    onClose();
+  };
   const save = async () => {
-    const checking = edits.current;
+    const checking = turns.current;
     setCheck({ busy: true });
     let outcome: Outcome<DraftCheck>;
     try {
@@ -287,7 +298,7 @@ export function RecordDialog({
     } catch (error) {
       outcome = { ok: false, failure: transportFailure(error) };
     }
-    if (edits.current !== checking) {
+    if (turns.current !== checking) {
       setCheck({ busy: false });
       return;
     }
@@ -310,7 +321,7 @@ export function RecordDialog({
   const issue = (key: keyof RecordDraft) =>
     issues[key] ? [issues[key]!] : undefined;
   return (
-    <Dialog open onOpenChange={(open) => (open ? undefined : onClose())}>
+    <Dialog open onOpenChange={(open) => (open ? undefined : dismiss())}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>
@@ -462,7 +473,7 @@ export function RecordDialog({
           </Field>
           <Failure failure={check.failure ?? act.failure} />
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={onClose}>
+            <Button type="button" variant="outline" onClick={dismiss}>
               Cancel
             </Button>
             <Button type="submit" disabled={busy}>

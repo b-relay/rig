@@ -42,9 +42,10 @@ const { RecordDialog } = await import("../web/components/dns-records");
 function dialog() {
   held.length = 0;
   sent.length = 0;
-  let closed = false;
+  let closed = 0;
+  let gone = false;
   const mounted = mountWithoutDom(RecordDialog);
-  mounted.render({ zone: "example.com", onClose: () => (closed = true) });
+  mounted.render({ zone: "example.com", onClose: () => (closed += 1) });
   const find = (match: (props: Record<string, unknown>) => boolean) =>
     elements(mounted.tree).find((each) => match(each.props))!;
   const type = (id: string, value: string) =>
@@ -71,10 +72,32 @@ function dialog() {
     held.shift()!.answer();
     for (let turn = 0; turn < 20; turn++) {
       await new Promise((resolve) => setImmediate(resolve));
-      mounted.render();
+      if (!gone) mounted.render();
     }
   };
-  return { type, save, issues, answer, closed: () => closed };
+  /** Cancel, Escape or the close button, as Radix reports them, or the page taking the dialog away. */
+  const dismiss = {
+    cancel: () =>
+      mounted.act(() =>
+        (
+          find(
+            (props) => props.type === "button" && props.variant === "outline",
+          ).props.onClick as () => void
+        )(),
+      ),
+    escape: () =>
+      mounted.act(() =>
+        (
+          find((props) => typeof props.onOpenChange === "function").props
+            .onOpenChange as (open: boolean) => void
+        )(false),
+      ),
+    unmount: () => {
+      gone = true;
+      mounted.unmount();
+    },
+  };
+  return { type, save, issues, answer, dismiss, closed: () => closed };
 }
 
 test("a field changed while its draft is checked keeps its issue cleared", async () => {
@@ -104,7 +127,7 @@ test("a draft changed while it is checked is not sent; the draft shown is sent o
   page.type("dns-name", "api");
   await page.answer();
   expect(sent).toEqual([]);
-  expect(page.closed()).toBe(false);
+  expect(page.closed()).toBe(0);
   page.save();
   await page.answer();
   expect(sent).toHaveLength(1);
@@ -112,5 +135,22 @@ test("a draft changed while it is checked is not sent; the draft shown is sent o
     action: "dns-create",
     dns: { zone: "example.com", record: { name: "api.example.com" } },
   });
-  expect(page.closed()).toBe(true);
+  expect(page.closed()).toBe(1);
 });
+
+test.each(["cancel", "escape", "unmount"] as const)(
+  "a dialog dismissed (%s) while its draft is checked sends nothing and closes once",
+  async (how) => {
+    const page = dialog();
+    page.type("dns-name", "app");
+    page.type("dns-content", "203.0.113.5");
+    page.save();
+    expect(held).toHaveLength(1);
+    page.dismiss[how]();
+    const closedByDismissal = how === "unmount" ? 0 : 1;
+    expect(page.closed()).toBe(closedByDismissal);
+    await page.answer();
+    expect(sent).toEqual([]);
+    expect(page.closed()).toBe(closedByDismissal);
+  },
+);

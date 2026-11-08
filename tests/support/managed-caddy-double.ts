@@ -172,6 +172,8 @@ export async function managedCaddyWorld(
     beforeConfig: undefined as undefined | (() => Promise<void>),
     /** Runs each time the fake Caddy loads a configuration, with it, before the load is reported done. */
     onLoad: undefined as undefined | ((config: unknown) => Promise<void>),
+    /** Set to make `caddy adapt` print this instead of the configuration it adapts. */
+    adaptPrints: undefined as string | undefined,
     loaded: {} as unknown,
   };
   const run: CommandRunner = async ({ command }) => {
@@ -180,7 +182,8 @@ export async function managedCaddyWorld(
     if (verb === "adapt")
       return {
         exitCode: 0,
-        stdout: JSON.stringify(await fakeAdapt(command[3]!)),
+        stdout:
+          control.adaptPrints ?? JSON.stringify(await fakeAdapt(command[3]!)),
         stderr: "",
       };
     const failure = failures[verb as "validate"];
@@ -212,14 +215,23 @@ export async function managedCaddyWorld(
               "Read the end of Caddy's log.",
             );
           }
+          // Caddy starts from the current generation's adapted JSON; without one it exits at once, as a new process does.
+          const entry = await readFile(
+            join(root, "caddy", "current", "adapted.json"),
+            "utf8",
+          ).catch(() => undefined);
+          if (entry === undefined) {
+            control.state = "stopped";
+            control.reachable = false;
+            throw new RigError(
+              "PROXY_START",
+              "Rig's Caddy did not answer on its socket within 1 seconds.",
+              "Read the end of Caddy's log.",
+            );
+          }
           control.state = "running";
           control.reachable = true;
-          control.loaded = JSON.parse(
-            await readFile(
-              join(root, "caddy", "current", "adapted.json"),
-              "utf8",
-            ),
-          );
+          control.loaded = JSON.parse(entry);
           await control.onLoad?.(control.loaded);
         },
       },

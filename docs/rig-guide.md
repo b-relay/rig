@@ -396,6 +396,12 @@ previous generation; if that fails too, the error says so, and `rig doctor`
 reports Caddy stopped. A Caddy that was stopped before a change stays stopped. If Caddy's admin socket does
 not answer while its job may still be running, the change fails with
 `PROXY_UNREACHABLE` rather than assume an old route stopped serving.
+A record Rig keeps under `<RIG_ROOT>/caddy` (a generation's `generation.json`
+or `adapted.json`, `settings-rejected.json`, `process.json` or
+`bin/state.json`) that cannot be read or is not what Rig wrote is refused as
+`PROXY_STATE_CORRUPT`, naming the file and its repair: delete it, then run the
+`rig proxy reload` or `rigd install` the hint names. An answer from Caddy's admin socket
+that is not a configuration is `PROXY_PROTOCOL`.
 
 Your own hostnames, outside any Rig Project, go under `proxy.routes` in Host
 config, each sent to a service on this Mac:

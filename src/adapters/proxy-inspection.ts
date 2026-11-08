@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
+import { RigError } from "../domain/errors";
 import { proxyPaths } from "../domain/managed-proxy";
 import {
   currentGeneration,
@@ -87,43 +88,68 @@ export async function inspectManagedProxy(
       admin,
     });
   const [state, reachable] = await Promise.all([
-    job.state(),
+    // A process record Rig cannot read is reported here, with its file and repair, and the inspection goes on.
+    job
+      .state()
+      .catch((error: unknown) =>
+        error instanceof RigError ? error : Promise.reject(error),
+      ),
     admin.reachable(),
   ]);
   checks.push(
-    reachable
+    state instanceof RigError
       ? {
           name: "proxy-process",
-          ok: true,
-          message: "Rig's Caddy is running and answers on its admin socket.",
+          ok: false,
+          message: state.message,
+          reason: "proxy-state-corrupt",
+          hint: state.hint,
         }
-      : state === "stopped"
+      : reachable
         ? {
             name: "proxy-process",
-            ok: false,
-            message: `Rig's Caddy is not running (${job.description}), so no route is served.`,
-            reason: "proxy-stopped",
-            hint: `Run rigd install; if Caddy stops again, read the end of ${paths.jobLog}.`,
+            ok: true,
+            message: "Rig's Caddy is running and answers on its admin socket.",
           }
-        : {
-            name: "proxy-process",
-            ok: false,
-            message:
-              state === "running"
-                ? "Rig's Caddy is running but its admin socket does not answer, so route changes fail until it does."
-                : "Rig's Caddy could not be observed: launchd did not say whether it runs.",
-            reason: "proxy-unreachable",
-            hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
-          },
+        : state === "stopped"
+          ? {
+              name: "proxy-process",
+              ok: false,
+              message: `Rig's Caddy is not running (${job.description}), so no route is served.`,
+              reason: "proxy-stopped",
+              hint: `Run rigd install; if Caddy stops again, read the end of ${paths.jobLog}.`,
+            }
+          : {
+              name: "proxy-process",
+              ok: false,
+              message:
+                state === "running"
+                  ? "Rig's Caddy is running but its admin socket does not answer, so route changes fail until it does."
+                  : "Rig's Caddy could not be observed: launchd did not say whether it runs.",
+              reason: "proxy-unreachable",
+              hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
+            },
   );
   // One generation for the whole inspection, resolved once: its settings, routes and adapted JSON all come from it.
   const generation = await currentGeneration(root);
   checks.push(...(await generationChecks(root, paths, settings, generation)));
   // What Caddy runs, not what the files say: after a crash between switching and activating they differ.
   if (reachable) {
-    const loaded = await admin.config();
+    const loaded = await admin
+      .config()
+      .catch((error: unknown) =>
+        error instanceof RigError ? error : Promise.reject(error),
+      );
     const expected = generation?.adapted;
-    if (expected !== undefined)
+    if (loaded instanceof RigError)
+      checks.push({
+        name: "proxy-serving",
+        ok: false,
+        message: loaded.message,
+        reason: "proxy-unreachable",
+        hint: loaded.hint,
+      });
+    else if (expected !== undefined)
       checks.push(
         Bun.deepEquals(loaded, expected)
           ? {
@@ -183,25 +209,36 @@ async function generationChecks(
         hint: "Run rigd install.",
       },
     ];
-  const pending = await pendingSettings(root, settings, generation.proxy);
+  const pending = await pendingSettings(root, settings, generation.proxy).catch(
+    (error: unknown) =>
+      error instanceof RigError ? error : Promise.reject(error),
+  );
   checks.push(
-    pending
+    pending instanceof RigError
       ? {
           name: "proxy-settings",
           ok: false,
-          message: `The proxy section of config.yaml${pending.fields.length ? ` (${pending.fields.join(", ")})` : ""} is not what Rig's Caddy serves: ${pending.reason}`,
-          reason: pending.code
-            ? "proxy-settings-refused"
-            : "proxy-settings-pending",
-          hint: pending.code
-            ? "Fix the proxy section of config.yaml and run rig proxy reload. Caddy keeps serving the settings it last accepted."
-            : "Run rig proxy reload to apply it.",
+          message: pending.message,
+          reason: "proxy-settings-unknown",
+          hint: pending.hint,
         }
-      : {
-          name: "proxy-settings",
-          ok: true,
-          message: "Rig's Caddy serves the proxy section of config.yaml.",
-        },
+      : pending
+        ? {
+            name: "proxy-settings",
+            ok: false,
+            message: `The proxy section of config.yaml${pending.fields.length ? ` (${pending.fields.join(", ")})` : ""} is not what Rig's Caddy serves: ${pending.reason}`,
+            reason: pending.code
+              ? "proxy-settings-refused"
+              : "proxy-settings-pending",
+            hint: pending.code
+              ? "Fix the proxy section of config.yaml and run rig proxy reload. Caddy keeps serving the settings it last accepted."
+              : "Run rig proxy reload to apply it.",
+          }
+        : {
+            name: "proxy-settings",
+            ok: true,
+            message: "Rig's Caddy serves the proxy section of config.yaml.",
+          },
   );
   return checks;
 }

@@ -1,8 +1,57 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { describeFailure, type Failure, type Outcome } from "@/lib/outcome";
+// The compact Zod API, as live-refresh.tsx uses it, for the polled report.
+import * as z from "zod/mini";
+import { USAGE_RANGES } from "../../src/domain/usage-summary";
+import { describeFailure, type Failure } from "@/lib/outcome";
+import { outcomeReply } from "@/lib/outcome-reply";
 import type { ChartReport } from "@/lib/usage";
+
+const measureSchema = z.object({
+  average: z.array(z.nullable(z.number())),
+  peak: z.optional(z.object({ index: z.number(), value: z.number() })),
+  median: z.optional(z.number()),
+});
+const project = { projectId: z.string(), project: z.string() };
+const target = {
+  ...project,
+  targetId: z.string(),
+  target: z.string(),
+  targetKind: z.enum(["working", "stable", "preview"]),
+};
+/** Which series one is, with the identity its scope has (UsageSeries in src/runtime/usage-history.ts): the cards name and
+ * colour each by it. */
+const seriesSchema = z.discriminatedUnion("scope", [
+  z.looseObject({ scope: z.literal("host") }),
+  z.looseObject({ scope: z.literal("rig") }),
+  z.looseObject({ scope: z.literal("project"), ...project }),
+  z.looseObject({ scope: z.literal("target"), ...target }),
+  z.looseObject({
+    scope: z.literal("component"),
+    ...target,
+    component: z.string(),
+    componentKind: z.enum(["service", "job"]),
+  }),
+]);
+/** A `/usage` report (ChartReport) as the charts draw it. */
+const chartReportSchema = z.object({
+  range: z.enum(USAGE_RANGES),
+  from: z.number(),
+  step: z.number().check(z.positive()),
+  sampledEvery: z.number().check(z.positive()),
+  series: z.array(
+    z.object({
+      key: z.string(),
+      series: seriesSchema,
+      now: z.optional(
+        z.object({ cpuPercent: z.number(), memoryBytes: z.number() }),
+      ),
+      cpu: measureSchema,
+      memory: measureSchema,
+    }),
+  ),
+});
 
 /** The query a Monitor page polls: the whole Host's CPU and memory, or one Project's with only `target`'s Components
  * (none for `all`), over `range`. */
@@ -43,8 +92,17 @@ export function useUsage(
             signal: stop.signal,
             cache: "no-store",
           });
-          const outcome = (await response.json()) as Outcome<ChartReport>;
-          if (outcome.ok) {
+          const outcome = outcomeReply(
+            await response.json().catch(() => undefined),
+            chartReportSchema,
+          );
+          if (!outcome)
+            setFailure({
+              code: "WEB_PROTOCOL",
+              message: `The usage read answered ${response.status}.`,
+              hint: "Reload the page; if it persists, restart the dashboard.",
+            });
+          else if (outcome.ok) {
             sampledEvery.current = outcome.value.sampledEvery;
             setReport(outcome.value);
             setFailure(undefined);

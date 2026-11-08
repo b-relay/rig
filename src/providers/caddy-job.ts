@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { openPrivateFile, replacePrivateFile } from "./private-files";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { RigError } from "../domain/errors";
 import { renderLaunchdPlist } from "../domain/launchd-plist";
 import { LAUNCHCTL_NOT_FOUND } from "../domain/system-install";
@@ -11,7 +12,20 @@ import {
   processExists,
   processStartTime,
   recordedProcess,
+  type ProcessRecord,
 } from "../daemon/process-identity";
+import { readProxyRecord } from "./proxy-records";
+
+/** `caddy/process.json`: the detached Caddy's pid and the start time ps reported, which together name that one process. */
+const processRecordSchema = z.object({
+  // A pid_t: the kernel query narrows a pid to 32 bits, so a larger one would name another process.
+  pid: z
+    .number()
+    .int()
+    .min(1)
+    .max(2 ** 31 - 1),
+  startedAt: z.string().min(1).optional(),
+});
 import type { CaddyAdminClient } from "./caddy-admin";
 import type { CaddyJob, CaddyJobState } from "./managed-caddy";
 
@@ -342,14 +356,14 @@ export function createProcessCaddyJob(options: {
 }): InstallableCaddyJob {
   const { paths } = options;
   const deadlineMs = options.deadlineMs ?? 30_000;
-  async function record(): Promise<
-    { pid: number; startedAt?: string } | undefined
-  > {
-    try {
-      return JSON.parse(await readFile(paths.processRecord, "utf8"));
-    } catch {
-      return undefined;
-    }
+  /** The recorded process, undefined when none is; one that cannot be checked is refused before its pid reaches a signal. */
+  async function record(): Promise<ProcessRecord | undefined> {
+    return readProxyRecord(
+      paths.processRecord,
+      processRecordSchema,
+      "the process record of its Caddy",
+      `If Rig's Caddy still runs (it answers on ${paths.socket}), stop it; then delete the record and run the command again.`,
+    );
   }
   async function state(): Promise<CaddyJobState> {
     const recorded = await record();
@@ -391,10 +405,11 @@ export function createProcessCaddyJob(options: {
         : startFailure(paths, deadlineMs);
   }
   /** Stops the recorded process. A `signal` that aborts ends the waits for it to exit: the restart is cancelled, and the
-   * record stays while the process may still run, so whoever reads it next finds it. */
+   * record stays while the process may still run, so whoever reads it next finds it. Caddy is asked to stop through its
+   * socket first, which needs no record; a record that cannot be read is then refused, before any signal. */
   async function stop(signal?: AbortSignal): Promise<void> {
-    const recorded = await record();
     await options.admin.stop();
+    const recorded = await record();
     if (recorded && (await recordedProcess(recorded)) === "running") {
       const gone = await until(
         async () => !processExists(recorded.pid),

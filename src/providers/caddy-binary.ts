@@ -9,7 +9,9 @@ import {
   symlink,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { z } from "zod";
 import { privateDirectory, replacePrivateFile } from "./private-files";
+import { readProxyRecord } from "./proxy-records";
 import { RigError } from "../domain/errors";
 import type { ProxyPaths } from "../domain/managed-proxy";
 import type { CommandRunner } from "./contracts";
@@ -109,19 +111,25 @@ export async function installCaddyBinary(options: {
   await pruneBinaries(paths, [file, good]);
   return { changed: true, file, ...(good ? { previous: good } : {}), version };
 }
+/** A copy's file name in `bin`, so a recorded name joined to that directory stays inside it. */
+const COPY_NAME = /^caddy-[0-9a-f]{16}$/;
+const copyName = z.string().regex(COPY_NAME, "must name a caddy-<hex> copy");
 /** `bin/state.json`: the copy known to have served, and one switched to but not yet confirmed running. */
-interface BinaryState {
-  readonly lastGood?: string;
-  readonly pending?: string;
-}
+const binaryStateSchema = z.object({
+  lastGood: copyName.optional(),
+  pending: copyName.optional(),
+});
+type BinaryState = z.infer<typeof binaryStateSchema>;
+/** The recorded state, empty before the first install; one that cannot be read or checked is refused. */
 async function readBinaryState(paths: ProxyPaths): Promise<BinaryState> {
-  try {
-    return JSON.parse(
-      await readFile(join(paths.bin, "state.json"), "utf8"),
-    ) as BinaryState;
-  } catch {
-    return {};
-  }
+  return (
+    (await readProxyRecord(
+      join(paths.bin, "state.json"),
+      binaryStateSchema,
+      "which copy of Caddy last served",
+      "Delete it, then run rigd install again: Rig installs proxy.caddy afresh.",
+    )) ?? {}
+  );
 }
 async function writeBinaryState(
   paths: ProxyPaths,
@@ -208,6 +216,6 @@ async function pruneBinaries(
 ): Promise<void> {
   const kept = new Set(keep.filter(Boolean).map((path) => basename(path!)));
   for (const name of await readdir(paths.bin).catch(() => []))
-    if (/^caddy-[0-9a-f]{16}$/.test(name) && !kept.has(name))
+    if (COPY_NAME.test(name) && !kept.has(name))
       await rm(join(paths.bin, name), { force: true });
 }

@@ -352,6 +352,38 @@ test("a reply the Logs page cannot read is WEB_PROTOCOL with its status and a hi
   expect(textOf(mounted.tree)).toContain("line 2");
 });
 
+// #617: an outcome is checked through to its page before the lines and the cursor are replaced.
+test.each([
+  ["no page", { ok: true, value: null }],
+  ["a page without a cursor", { ok: true, value: { entries: [] } }],
+  [
+    "a line of the wrong shape",
+    { ok: true, value: { cursor: "c2", entries: [{ line: 5 }] } },
+  ],
+  ["a refusal without its code", { ok: false, failure: { message: "x" } }],
+])(
+  "a successful reply holding %s is WEB_PROTOCOL, and keeps the lines and the cursor",
+  async (_, answer) => {
+    const mounted = viewer("", page(["line 1"], "c1"));
+    answers = [answer];
+    followTimers.pop()!();
+    await settle(mounted);
+    expect(
+      elements(mounted.tree).find((each) => each.props.failure)?.props.failure,
+    ).toEqual({
+      code: "WEB_PROTOCOL",
+      message: "The log read answered 200.",
+      hint: "Reload the page; if it persists, restart the dashboard.",
+    });
+    expect(textOf(mounted.tree)).toContain("line 1");
+    answers = [{ ok: true, value: page(["line 2"], "c2") }];
+    followTimers.pop()!();
+    await settle(mounted);
+    expect(reads.at(-1)).toMatchObject({ after: "c1" });
+    expect(textOf(mounted.tree)).toContain("line 2");
+  },
+);
+
 test("a read that never reached the site is still UNREACHABLE", async () => {
   const mounted = viewer("", page(["line 1"], "c1"));
   globalThis.fetch = (async () => {

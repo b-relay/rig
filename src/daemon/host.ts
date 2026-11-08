@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { writeStartupFailure } from "./startup-failure";
 import { startControlPlane } from "./server";
 import type { TransportOutcome } from "./transport-evidence";
-import { readDaemonToken, ownerSchema } from "./files";
+import { addressSchema, readDaemonToken, ownerSchema } from "./files";
 import type { RuntimeCommand } from "./protocol";
 import { RigError } from "../domain/errors";
 import type { z } from "zod";
@@ -99,20 +99,15 @@ async function readLease(
   }
   return undefined;
 }
-/** The instanceId a record names, or undefined when it is absent or unreadable. */
+/** The instanceId a lease or address record names, or undefined when it is absent or unreadable. */
 async function recordedInstance(path: string): Promise<string | undefined> {
-  try {
-    const saved: unknown = JSON.parse(await readFile(path, "utf8"));
-    return typeof saved === "object" &&
-      saved !== null &&
-      "instanceId" in saved &&
-      typeof saved.instanceId === "string"
-      ? saved.instanceId
-      : undefined;
-  } catch {
-    return undefined;
-  }
+  const saved = await readFile(path, "utf8")
+    .then((text) => recordInstanceSchema.safeParse(JSON.parse(text)))
+    .catch(() => undefined);
+  return saved?.success ? saved.data.instanceId : undefined;
 }
+/** The one field both records share that says which rigd wrote them. */
+const recordInstanceSchema = addressSchema.pick({ instanceId: true });
 async function acquireAndServe(options: DaemonHostOptions): Promise<void> {
   const directory = join(options.root, "daemon"),
     lease = join(directory, "owner.json"),

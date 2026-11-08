@@ -11,12 +11,15 @@ import {
   Search,
   WrapText,
 } from "lucide-react";
+// The compact Zod API, as live-refresh.tsx uses it, for the polled page.
+import * as z from "zod/mini";
 import { RigError } from "../../src/domain/errors";
 import {
   describeFailure,
   type Failure as FailureShape,
   type Outcome,
 } from "@/lib/outcome";
+import { outcomeReply } from "@/lib/outcome-reply";
 import {
   componentSlot,
   FIRST_LOG_LINES,
@@ -139,7 +142,7 @@ export function LogViewer({
         );
         if (stopped) return;
         if (outcome.ok) {
-          const page = outcome.value as LogsResult;
+          const page = outcome.value;
           cursor.current = page.cursor;
           setFailure(undefined);
           if (after === undefined) {
@@ -542,19 +545,34 @@ function Chip({
     </button>
   );
 }
+/** The fields of a `logs` reply (LogsResult) the viewer reads. */
+const logsPageSchema = z.object({
+  cursor: z.string(),
+  entries: z.array(
+    z.object({
+      timestamp: z.string(),
+      component: z.string(),
+      stream: z.enum(["stdout", "stderr", "health", "unknown"]),
+      line: z.string(),
+    }),
+  ),
+});
 /** One page of the log through the site's GET route, not a Server Action: Next runs those one at a
- * time, so a follow would otherwise wait behind a deploy started from this page. */
+ * time, so a follow would otherwise wait behind a deploy started from this page. A reply that is not a page or a refusal
+ * is WEB_PROTOCOL. */
 async function readLogs(
   command: Record<string, unknown>,
   signal: AbortSignal,
-): Promise<Outcome<unknown>> {
+): Promise<Outcome<Pick<LogsResult, "cursor" | "entries">>> {
   const response = await fetch(
     `/log-lines?q=${encodeURIComponent(JSON.stringify(command))}`,
     { cache: "no-store", signal },
   );
-  const body = (await response.json().catch(() => undefined)) as
-    Outcome<unknown> | undefined;
-  if (!body || typeof body !== "object" || !("ok" in body))
+  const body = outcomeReply(
+    await response.json().catch(() => undefined),
+    logsPageSchema,
+  );
+  if (!body)
     throw new RigError(
       "WEB_PROTOCOL",
       `The log read answered ${response.status}.`,

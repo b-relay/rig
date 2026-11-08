@@ -13,6 +13,10 @@ import {
   type HostRoute,
   type PublishedDashboard,
 } from "../domain/managed-proxy";
+import {
+  readProxyRecord,
+  rejectedSettingsSchema,
+} from "../providers/proxy-records";
 
 /** One generation as it was published: read from its own directory, never through the `current` link again, so a reader
  * that pins it sees one generation even while a publication switches the link. */
@@ -110,14 +114,13 @@ export async function pendingSettings(
       !CADDY_IGNORED_FIELDS.has(field) &&
       !Bun.deepEquals(accepted[field], requested[field]),
   );
-  const rejection = await readFile(proxyPaths(root).rejectedSettings, "utf8")
-    .then((text) => JSON.parse(text) as Record<string, unknown>)
-    .catch(() => undefined);
+  const rejection = await readProxyRecord(
+    proxyPaths(root).rejectedSettings,
+    rejectedSettingsSchema,
+    "why it refused the proxy section of Host config",
+    "Delete it, then run rig proxy reload: Rig records the refusal again if it still refuses them.",
+  );
   if (rejection?.settings === settingsDigest(requested))
-    return {
-      fields,
-      reason: String(rejection.reason),
-      ...(typeof rejection.code === "string" ? { code: rejection.code } : {}),
-    };
+    return { fields, reason: rejection.reason, code: rejection.code };
   return { fields, reason: "Not applied yet: run rig proxy reload." };
 }

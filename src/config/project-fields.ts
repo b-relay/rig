@@ -142,13 +142,17 @@ const envName = z
 const environmentMap = (scope: ReferenceScope) =>
   z
     .unknown()
-    // The record parser drops a __proto__ key without a word, so it is refused before it gets there.
+    // The record parser drops a __proto__ key without a word, so it is refused before it gets there. The refusal aborts,
+    // as a wrong type does, so the cross-field rules never read the map the record parser did not check.
     .refine(
       (env) =>
         typeof env !== "object" ||
         env === null ||
         !Object.hasOwn(env, "__proto__"),
-      "__proto__ is not an environment variable name.",
+      {
+        message: "__proto__ is not an environment variable name.",
+        abort: true,
+      },
     )
     .pipe(
       z.record(

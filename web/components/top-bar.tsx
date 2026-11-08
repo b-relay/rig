@@ -1,11 +1,11 @@
 import Link from "@/components/link";
-import { Suspense, type ReactNode } from "react";
+import { Suspense } from "react";
 import { pagePulse } from "@/server/pulse";
 import { rigdAway } from "@/lib/pulse";
 import type { Theme } from "@/lib/theme";
 import { LiveRefresh } from "./live-refresh";
 import { Brand } from "./shell/brand";
-import { MobileMenu } from "./shell/mobile-menu";
+import { MenuButton } from "./shell/navigation";
 import { ThemeSwitch } from "./theme-switch";
 import { cn } from "@/lib/utils";
 
@@ -14,12 +14,9 @@ import { cn } from "@/lib/utils";
  * in and must learn nothing about this Mac. */
 export function TopBar({
   bare = false,
-  menu,
   theme,
 }: {
   bare?: boolean;
-  /** The sidebar, shown in a drawer below the width where it stays open. */
-  menu?: ReactNode;
   theme: Theme | undefined;
 }) {
   return (
@@ -29,7 +26,7 @@ export function TopBar({
           <Brand />
         ) : (
           <>
-            <MobileMenu>{menu}</MobileMenu>
+            <MenuButton />
             <Brand className="lg:hidden" />
             <div className="ml-auto flex items-center gap-1">
               <LiveRefresh

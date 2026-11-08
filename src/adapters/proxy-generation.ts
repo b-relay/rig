@@ -4,6 +4,7 @@ import {
   proxySettingsSchema,
   type ProxySettings,
 } from "../config/proxy-schema";
+import { isRecord, type Fields } from "../config/record";
 import {
   CADDY_IGNORED_FIELDS,
   generationFiles,
@@ -47,9 +48,11 @@ export async function currentGeneration(
     ? target
     : join(dirname(link), target);
   const files = generationFiles(directory);
+  // A record that is not an object reads as one that is not JSON: no evidence (#568 owns how doctor reports either).
   const metadata = await readFile(files.metadata, "utf8")
-    .then((text) => JSON.parse(text) as Record<string, unknown>)
-    .catch(() => ({}) as Record<string, unknown>);
+    .then((text): unknown => JSON.parse(text))
+    .then((record) => (isRecord(record) ? record : {}))
+    .catch((): Fields => ({}));
   const proxy = proxySettingsSchema.safeParse(metadata.proxy);
   const customRoutes = Array.isArray(metadata.customRoutes)
     ? metadata.customRoutes.flatMap((entry: unknown) => {

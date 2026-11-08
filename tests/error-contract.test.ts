@@ -6,6 +6,7 @@ import {
   contractBreaches,
   type ContractBreach,
 } from "./support/error-contract";
+import { excluded, trackedSourceFiles } from "./support/production-files";
 
 /** Every failure Rig makes is a RigError or a ConfigError, with structured context and a hint of its own (AGENTS.md).
  * This reads the production code under src/ and web/ with the TypeScript checker and refuses, by file and line, any
@@ -13,25 +14,6 @@ import {
  * ConfigError whose hint is missing or may be undefined. */
 
 const REPOSITORY = join(import.meta.dir, "..");
-
-/** Files under src/ and web/ that are not Rig's production code, so the contract does not apply to them. */
-const EXCLUDED: readonly { matches: (file: string) => boolean; why: string }[] =
-  [
-    {
-      matches: (file) => /\.test\.tsx?$/.test(file),
-      why: "Tests, which throw to fail.",
-    },
-    {
-      matches: (file) => file.startsWith("web/demo/"),
-      why: "Sample Projects the dashboard's demo mode deploys; they are its users' code, not Rig's.",
-    },
-    {
-      matches: (file) => file === "web/postcss.config.mjs",
-      why: "Build tooling for the dashboard's CSS.",
-    },
-  ];
-const excluded = (file: string) =>
-  EXCLUDED.some(({ matches }) => matches(file));
 
 /** Errors of another class that never leave the code that makes them, each with what catches or reads it. An entry names
  * its file and the error's class, or its literal message or expression text, and `count` is how many breaches it matches
@@ -159,14 +141,7 @@ test("every allowed sentinel is made exactly as often as its entry says, so the 
 
 test("every tracked source file under src/ and web/ is read, or excluded with its reason", async () => {
   const { files } = await repositoryBreaches();
-  const listed = Bun.spawnSync(["git", "ls-files", "-z", "--", "src", "web"], {
-    cwd: REPOSITORY,
-  });
-  expect(listed.exitCode).toBe(0);
-  const tracked = listed.stdout
-    .toString()
-    .split("\0")
-    .filter((file) => /\.(ts|tsx|js|mjs)$/.test(file));
+  const tracked = trackedSourceFiles(REPOSITORY);
   expect(tracked).toContain("src/domain/errors.ts");
   expect(tracked).toContain("web/components/config-editor.tsx");
   const read = new Set(files);

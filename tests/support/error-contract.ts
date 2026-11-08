@@ -1,6 +1,5 @@
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import {
-  API,
   SignatureKind,
   SymbolFlags,
   type Checker,
@@ -24,6 +23,7 @@ import {
   type Node,
   type SourceFile,
 } from "typescript/unstable/ast";
+import { readProductionFiles } from "./production-files";
 
 /** A place where production code breaks the error contract: every error is a RigError or a ConfigError, and a ConfigError
  * has a hint of its own. */
@@ -47,52 +47,36 @@ const TAGGED_CLASSES = [
   { file: "src/config/errors.ts", name: "ConfigError" },
 ] as const;
 
-/** The files under `src/` and `web/` of `root` that were read, and every breach in them. Each is read with the type checker
- * of the first TypeScript project that holds it: `tsconfig.json`, then `web/tsconfig.json` when present. TypeScript 7
- * offers its checker only through its unstable API; package.json pins that version. A file `excluded` names is not read. */
+/** The files under `src/` and `web/` of `root` that were read (see `readProductionFiles`), and every breach in them. A
+ * file `excluded` names is not read. */
 export async function contractBreaches(
   root: string,
   excluded: (file: string) => boolean,
 ): Promise<{ files: string[]; breaches: ContractBreach[] }> {
-  const api = new API({ cwd: root });
-  try {
-    const projects = [join(root, "tsconfig.json")];
-    if (await Bun.file(join(root, "web", "tsconfig.json")).exists())
-      projects.push(join(root, "web", "tsconfig.json"));
-    const snapshot = await api.updateSnapshot({ openProjects: projects });
-    const files = new Set<string>();
-    const breaches: ContractBreach[] = [];
-    for (const { program, checker } of snapshot.getProjects()) {
-      // Resolved on the first file to read: a project with none may have no global types at all.
-      let contract: Promise<Contract> | undefined;
-      for (const name of await program.getSourceFileNames()) {
-        const file = relative(root, name);
-        if (
-          files.has(file) ||
-          !/^(src|web)\//.test(file) ||
-          file.includes("node_modules/") ||
-          excluded(file)
-        )
-          continue;
-        const source = await program.getSourceFile(name);
-        if (!source)
-          throw new Error(`TypeScript gave no syntax tree for ${file}.`);
-        files.add(file);
-        contract ??= contractTypes(root, program, checker);
-        breaches.push(
-          ...(await breachesIn(source, file, checker, await contract)),
+  const breaches: ContractBreach[] = [];
+  // Resolved per project on its first file to read: a project with none may have no global types at all.
+  const contracts = new Map<Checker, Promise<Contract>>();
+  const files = await readProductionFiles(
+    root,
+    excluded,
+    async (source, file, { program, checker }) => {
+      let contract = contracts.get(checker);
+      if (!contract)
+        contracts.set(
+          checker,
+          (contract = contractTypes(root, program, checker)),
         );
-      }
-    }
-    return {
-      files: [...files].sort(),
-      breaches: breaches.sort(
-        (a, b) => a.file.localeCompare(b.file) || a.line - b.line,
-      ),
-    };
-  } finally {
-    await api.close();
-  }
+      breaches.push(
+        ...(await breachesIn(source, file, checker, await contract)),
+      );
+    },
+  );
+  return {
+    files,
+    breaches: breaches.sort(
+      (a, b) => a.file.localeCompare(b.file) || a.line - b.line,
+    ),
+  };
 }
 
 interface Contract {

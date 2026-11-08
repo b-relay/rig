@@ -767,7 +767,9 @@ test("recording a Host restart's stop of a Target answers false when its state r
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
   const target = (await w.store.read()).targets[0]!;
   const store = Object.create(w.store) as typeof w.store;
+  let reads = 0;
   store.read = async () => {
+    reads++;
     throw new Error("I/O error");
   };
   let writes = 0;
@@ -776,8 +778,11 @@ test("recording a Host restart's stop of a Target answers false when its state r
     throw new Error("the step wrote");
   };
   const diagnostics: unknown[] = [];
+  // The step may catch what the lifecycle throws, so count its uses rather than rely on the throw alone.
+  let lifecycleUses = 0;
   const unused = new Proxy({} as never, {
     get() {
+      lifecycleUses++;
       throw new Error("the step used the lifecycle");
     },
   });
@@ -794,6 +799,8 @@ test("recording a Host restart's stop of a Target answers false when its state r
     },
   );
   expect(recorded).toBe(false);
+  expect(reads).toBe(1);
+  expect(lifecycleUses).toBe(0);
   expect(writes).toBe(0);
   expect(diagnostics).toEqual([
     expect.objectContaining({

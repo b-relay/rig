@@ -197,6 +197,14 @@ export function fakeProcess(options: {
   let reads = 0;
   let skew = 0;
   const signals: unknown[] = [];
+  /** The real processes, read once: only the fake's row changes from one table read to the next. */
+  const tables = new Map<string, ReturnType<Inspect>>();
+  const realTable = (args: readonly string[]) => {
+    const key = args.join(" ");
+    const read = tables.get(key) ?? platformInspect(args);
+    if (read.exitCode === 0) tables.set(key, read);
+    return read;
+  };
   const shown: Inspect = (args) => {
     const table = args[0] === "-axo";
     const at = args.indexOf("-p");
@@ -204,7 +212,7 @@ export function fakeProcess(options: {
       ? []
       : args[at + 1]!.split(",").filter((each) => each !== String(pid));
     const real = table
-      ? platformInspect(args)
+      ? realTable(args)
       : others.length > 0
         ? platformInspect(
             args.map((arg, index) =>

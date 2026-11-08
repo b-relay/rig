@@ -72,9 +72,12 @@ async function stopLeftBehind(reports: readonly Report[]) {
         continue;
       process.kill(owned.pid, "SIGTERM");
       const known = { pid: owned.pid, identity: owned.identity };
-      if (!(await processExited(known)))
-        signalOwned(known, "SIGKILL", platformInspect);
-      if (!(await processExited(known)))
+      // One whose pid no longer names it by the SIGKILL has gone, and is not signalled.
+      if (
+        !(await processExited(known)) &&
+        signalOwned(known, "SIGKILL", platformInspect) &&
+        !(await processExited(known))
+      )
         throw new Error(
           `process ${owned.pid} is still running; its root is kept at ${report.base}`,
         );

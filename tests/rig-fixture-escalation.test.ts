@@ -55,8 +55,10 @@ test("a rigd whose pid another process takes while cleanup waits for it to exit 
     );
     Date.now = now;
     process.kill = kill;
-    // Cleanup reached the escalation: the daemon had not exited when its wait ran out.
-    expect(failure).toContain(`rigd ${pid} did not stop`);
+    // Cleanup reached the escalation, and says it sent nothing.
+    expect(failure?.split("\n")).toContain(
+      `rigd ${pid} did not stop, and its pid no longer names that process, so it was not signalled`,
+    );
     expect(failure).toContain(`its root is kept at ${f.base}:`);
     expect(signals).toEqual([]);
   } finally {

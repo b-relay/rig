@@ -215,14 +215,23 @@ export async function managedCaddyWorld(
               "Read the end of Caddy's log.",
             );
           }
+          // Caddy starts from the current generation's adapted JSON; without one it exits at once, as a new process does.
+          const entry = await readFile(
+            join(root, "caddy", "current", "adapted.json"),
+            "utf8",
+          ).catch(() => undefined);
+          if (entry === undefined) {
+            control.state = "stopped";
+            control.reachable = false;
+            throw new RigError(
+              "PROXY_START",
+              "Rig's Caddy did not answer on its socket within 1 seconds.",
+              "Read the end of Caddy's log.",
+            );
+          }
           control.state = "running";
           control.reachable = true;
-          control.loaded = JSON.parse(
-            await readFile(
-              join(root, "caddy", "current", "adapted.json"),
-              "utf8",
-            ),
-          );
+          control.loaded = JSON.parse(entry);
           await control.onLoad?.(control.loaded);
         },
       },

@@ -88,34 +88,47 @@ export async function inspectManagedProxy(
       admin,
     });
   const [state, reachable] = await Promise.all([
-    job.state(),
+    // A process record Rig cannot read is reported here, with its file and repair, and the inspection goes on.
+    job
+      .state()
+      .catch((error: unknown) =>
+        error instanceof RigError ? error : Promise.reject(error),
+      ),
     admin.reachable(),
   ]);
   checks.push(
-    reachable
+    state instanceof RigError
       ? {
           name: "proxy-process",
-          ok: true,
-          message: "Rig's Caddy is running and answers on its admin socket.",
+          ok: false,
+          message: state.message,
+          reason: "proxy-state-corrupt",
+          hint: state.hint,
         }
-      : state === "stopped"
+      : reachable
         ? {
             name: "proxy-process",
-            ok: false,
-            message: `Rig's Caddy is not running (${job.description}), so no route is served.`,
-            reason: "proxy-stopped",
-            hint: `Run rigd install; if Caddy stops again, read the end of ${paths.jobLog}.`,
+            ok: true,
+            message: "Rig's Caddy is running and answers on its admin socket.",
           }
-        : {
-            name: "proxy-process",
-            ok: false,
-            message:
-              state === "running"
-                ? "Rig's Caddy is running but its admin socket does not answer, so route changes fail until it does."
-                : "Rig's Caddy could not be observed: launchd did not say whether it runs.",
-            reason: "proxy-unreachable",
-            hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
-          },
+        : state === "stopped"
+          ? {
+              name: "proxy-process",
+              ok: false,
+              message: `Rig's Caddy is not running (${job.description}), so no route is served.`,
+              reason: "proxy-stopped",
+              hint: `Run rigd install; if Caddy stops again, read the end of ${paths.jobLog}.`,
+            }
+          : {
+              name: "proxy-process",
+              ok: false,
+              message:
+                state === "running"
+                  ? "Rig's Caddy is running but its admin socket does not answer, so route changes fail until it does."
+                  : "Rig's Caddy could not be observed: launchd did not say whether it runs.",
+              reason: "proxy-unreachable",
+              hint: `Run rigd install to restart it, and read the end of ${paths.log} if it stays unreachable.`,
+            },
   );
   // One generation for the whole inspection, resolved once: its settings, routes and adapted JSON all come from it.
   const generation = await currentGeneration(root);

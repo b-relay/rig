@@ -848,7 +848,16 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           !Bun.deepEquals(recorded, await options.dashboard?.confirmed())
         );
       };
-      if (await unconfirmed()) {
+      // Nor may it read adapted JSON that is gone or refused (deleted as PROXY_STATE_CORRUPT's hint says): Caddy could not
+      // start from it, and every later change would make the same restart.
+      const startable = async () => {
+        const served = await currentGeneration();
+        return (
+          served !== undefined &&
+          (await adaptedOf(served).catch(() => undefined)) !== undefined
+        );
+      };
+      if ((await unconfirmed()) || !(await startable())) {
         const { settings, ownerRoutesOnly } = await accepted();
         await publish(
           (await readText(generationFiles(current).routes)) ?? "",
@@ -861,6 +870,12 @@ export function createManagedCaddy(options: ManagedCaddyOptions): ManagedCaddy {
           throw new RigError(
             "PROXY_RECOVERY",
             "Rig's Caddy could not be given a configuration that withholds the dashboard's domain before its restart.",
+            "Run rig doctor; rigd tries again with its next change.",
+          );
+        if (!(await startable()))
+          throw new RigError(
+            "PROXY_RECOVERY",
+            "Rig's Caddy could not be given a configuration to start from before its restart.",
             "Run rig doctor; rigd tries again with its next change.",
           );
       }

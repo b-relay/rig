@@ -139,6 +139,36 @@ test.each([
   },
 );
 
+test.each([
+  ["adapted.json", "running"],
+  ["adapted.json", "stopped by a restart it never saw through"],
+])(
+  "deleting a refused %s repairs it for the next rigd too, whose recovery restarts a Caddy %s",
+  async (file, before) => {
+    const w = await world();
+    await w.caddy.router.apply(app());
+    const paths = proxyPaths(w.root);
+    // The rigd that met the refusal ended without recording a clean stop, and the owner deleted the file, as its hint says.
+    await rm(join(paths.generations, "g001", file));
+    if (before !== "running") {
+      await writeFile(paths.restore, "{}\n");
+      w.control.state = "stopped";
+      w.control.reachable = false;
+    }
+    const next = w.reopen();
+    // The reload succeeds, whether its recovery or the reload itself built the replacement.
+    await next.republish();
+    expect(await w.current()).not.toBe("g001");
+    expect(await Bun.file(join(paths.current, "adapted.json")).exists()).toBe(
+      true,
+    );
+    expect(await Bun.file(paths.restore).exists()).toBe(false);
+    expect(w.control.state).toBe("running");
+    await next.router.apply(app("127.0.0.1:3002"));
+    expect(w.servedRoutes()).toContain("127.0.0.1:3002");
+  },
+);
+
 test("a refusal record of the wrong shape is refused by rig proxy and reported by doctor, never shown as the reason", async () => {
   const w = await world({ routes: { "own.example.test": 3005 } });
   await w.caddy.router.apply(app());
@@ -253,6 +283,10 @@ test.each([
   ["null", "null"],
   ["pid 0, which signals the whole process group", '{"pid":0}'],
   ["a negative pid", '{"pid":-1}'],
+  [
+    "a pid past 32 bits, which the kernel query would read as this process",
+    `{"pid":${2 ** 32 + process.pid}}`,
+  ],
   ["a pid that is text", '{"pid":"1"}'],
   ["a start time that is no text", `{"pid":${process.pid},"startedAt":5}`],
   ["malformed JSON", '{"pid":'],
@@ -300,6 +334,34 @@ test.each([
     expect(await Bun.file(paths.processRecord).text()).toBe(content);
   },
 );
+
+test("doctor reports a Caddy process record it cannot read as a failing check with its file and repair, and inspects the rest", async () => {
+  const root = await freshRoot();
+  const paths = proxyPaths(root);
+  await mkdir(paths.caddy, { recursive: true });
+  await writeFile(paths.processRecord, '{"pid":0}');
+  const checks = await inspectManagedProxy(root, settings(), "process");
+  expect(checks.find((check) => check.name === "proxy-process")).toEqual({
+    name: "proxy-process",
+    ok: false,
+    message: "Rig cannot read the process record of its Caddy.",
+    reason: "proxy-state-corrupt",
+    hint: corrupt(
+      paths.processRecord,
+      "",
+      `If Rig's Caddy still runs (it answers on ${paths.socket}), stop it; then delete the record and run the command again.`,
+    ).hint,
+  });
+  // The checks before it and after it are all still there.
+  expect(checks.map((check) => check.name)).toEqual(
+    expect.arrayContaining([
+      "proxy-token",
+      "proxy-binary",
+      "proxy-process",
+      "proxy-config",
+    ]),
+  );
+});
 
 test("a valid Caddy process record still reads as before, and none is a stopped Caddy", async () => {
   const root = await freshRoot();

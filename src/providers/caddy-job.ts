@@ -18,7 +18,12 @@ import { readProxyRecord } from "./proxy-records";
 
 /** `caddy/process.json`: the detached Caddy's pid and the start time ps reported, which together name that one process. */
 const processRecordSchema = z.object({
-  pid: z.number().int().positive(),
+  // A pid_t: the kernel query narrows a pid to 32 bits, so a larger one would name another process.
+  pid: z
+    .number()
+    .int()
+    .min(1)
+    .max(2 ** 31 - 1),
   startedAt: z.string().min(1).optional(),
 });
 import type { CaddyAdminClient } from "./caddy-admin";

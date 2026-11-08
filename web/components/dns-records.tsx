@@ -8,19 +8,21 @@ import {
   TTL_CHOICES,
   deleteCommand,
   deleteConfirmed,
-  draftRecord,
   editable,
   filterRecords,
   recordDraft,
   relativeName,
   saveCommand,
   ttlLabel,
+  type DraftCheck,
   type RecordDraft,
 } from "@/lib/dns";
+import type { Failure as FailureShape, Outcome } from "@/lib/outcome";
+import { transportFailure } from "@/lib/reconcile";
 import type { DnsRecord, DnsRecordType, DnsZone } from "@/lib/types";
 import { CARD, Failure, Field, Mono } from "./bits";
 import { useRun } from "./operations";
-import { runDnsDelete } from "@/server/actions";
+import { checkDnsRecord, runDnsDelete } from "@/server/actions";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -264,12 +266,29 @@ export function RecordDialog({
     Partial<Record<keyof RecordDraft, string>>
   >({});
   const act = useRun();
+  // The server checks the draft against rigd's record rules, so the page carries none of them.
+  const [check, setCheck] = useState<{ busy: boolean; failure?: FailureShape }>(
+    { busy: false },
+  );
+  const busy = check.busy || act.busy;
   const set = <K extends keyof RecordDraft>(key: K, value: RecordDraft[K]) => {
     setDraft((now) => ({ ...now, [key]: value }));
     setIssues(({ [key]: _gone, ...rest }) => rest);
   };
   const save = async () => {
-    const checked = draftRecord(zone, draft);
+    setCheck({ busy: true });
+    let outcome: Outcome<DraftCheck>;
+    try {
+      outcome = await checkDnsRecord({ zone, draft });
+    } catch (error) {
+      outcome = { ok: false, failure: transportFailure(error) };
+    }
+    if (!outcome.ok) {
+      setCheck({ busy: false, failure: outcome.failure });
+      return;
+    }
+    setCheck({ busy: false });
+    const checked = outcome.value;
     if (!checked.ok) {
       setIssues(checked.issues);
       return;
@@ -433,13 +452,13 @@ export function RecordDialog({
               maxLength={500}
             />
           </Field>
-          <Failure failure={act.failure} />
+          <Failure failure={check.failure ?? act.failure} />
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={act.busy}>
-              {act.busy ? "Saving…" : record ? "Save" : "Add record"}
+            <Button type="submit" disabled={busy}>
+              {busy ? "Saving…" : record ? "Save" : "Add record"}
             </Button>
           </DialogFooter>
         </form>

@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
 import { renderStatus } from "../src/cli/output";
 import type { ManagedComponent } from "../src/config/types";
-import {
-  healthSummary,
-  type ServiceHealth,
-} from "../src/domain/project-status";
+import { healthSummary } from "../src/domain/health-summary";
+import type { ServiceHealth } from "../src/domain/project-status";
 import type { TargetRecord } from "../src/domain/runtime";
 import { observeTargets, type ObservationEffects } from "../src/runtime/status";
 import { controlledDeadline } from "./controlled-observation-deadline";

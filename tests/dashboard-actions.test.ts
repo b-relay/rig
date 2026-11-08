@@ -4,7 +4,7 @@ import type { RuntimeCommand } from "../src/daemon/protocol";
 import { RigError } from "../src/domain/errors";
 import * as daemon from "../web/server/daemon";
 
-/** The dashboard's DNS delete and its settling of an Operation whose reply was lost, through their Server Actions: what
+/** The dashboard's DNS delete and record check, and its settling of an Operation whose reply was lost, through their Server Actions: what
  * reaches rigd, and what the browser is answered. Next's request headers and rigd's control plane are stood in for;
  * admission is the real one, for a signed-in browser on this Mac. tests/dashboard-env-revisions.test.ts drives the config
  * and env actions against a real control plane. */
@@ -34,7 +34,7 @@ beforeAll(() => {
 afterAll(() => {
   capturing = false;
 });
-const { runCommand, runDnsDelete, settleOperation } =
+const { checkDnsRecord, runCommand, runDnsDelete, settleOperation } =
   await import("../web/server/actions");
 
 /** Runs `act` with requests from a page on another site. */
@@ -114,6 +114,58 @@ test("a DNS delete without its typed name, not a delete, or from another site ne
     ok: false,
     failure: { code: "ORIGIN" },
   });
+  expect(sent).toEqual([]);
+});
+
+test("the record dialog's draft is checked on the server against rigd's record rules, and reaches no rigd", async () => {
+  sent.length = 0;
+  const draft = {
+    type: "A",
+    name: "app",
+    content: "203.0.113.5",
+    ttl: 300,
+    proxied: true,
+    priority: "10",
+    comment: "",
+  };
+  expect(await checkDnsRecord({ zone: "example.com", draft })).toEqual({
+    ok: true,
+    value: {
+      ok: true,
+      record: {
+        name: "app.example.com",
+        type: "A",
+        content: "203.0.113.5",
+        ttl: 300,
+        proxied: true,
+      },
+    },
+  });
+  expect(
+    await checkDnsRecord({
+      zone: "example.com",
+      draft: { ...draft, content: "1.2.3" },
+    }),
+  ).toEqual({
+    ok: true,
+    value: {
+      ok: false,
+      issues: { content: "It must be an IPv4 address such as 100.64.0.1." },
+    },
+  });
+  for (const input of [
+    undefined,
+    { zone: "example.com" },
+    { zone: "example.com", draft: { ...draft, ttl: "300" } },
+    { zone: "example.com", draft: { ...draft, type: "NS" } },
+  ])
+    expect(await checkDnsRecord(input)).toMatchObject({
+      ok: false,
+      failure: { code: "INVALID_REQUEST" },
+    });
+  expect(
+    await fromElsewhere(() => checkDnsRecord({ zone: "example.com", draft })),
+  ).toMatchObject({ ok: false, failure: { code: "ORIGIN" } });
   expect(sent).toEqual([]);
 });
 

@@ -2,19 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  platformInspect,
-  processExited,
-  signalOwned,
-} from "./support/rig-fixture";
+import { awaitExit, platformInspect, signalOwned } from "./support/rig-fixture";
 
 const roots: string[] = [];
 /** What the runs' tests started, by pid and birth, stopped only while each is still that process. */
 const children: { pid: number; identity: string }[] = [];
 afterEach(async () => {
   for (const child of children.splice(0))
-    if (signalOwned(child, "SIGKILL", platformInspect))
-      await processExited(child);
+    if (signalOwned(child, "SIGKILL", platformInspect) === "sent")
+      await awaitExit(child);
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });

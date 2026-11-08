@@ -69,31 +69,81 @@ export function inspectWith(command: readonly string[], ms: number): Inspect {
   };
 }
 export const platformInspect = inspectWith(["/bin/ps"], INSPECT_ANSWER_MS);
-/** When the process `pid` started, while it is alive: with its pid, all that names it, since a process that execs keeps
- * both, and a later process of that pid has another. */
+/** A process as `ps` shows it: when it started, which with its pid is all that names it, since a process that execs keeps
+ * both, and a later process of that pid has another; and what it runs. */
+type ProcessRow = { birth: string; command: string };
+/** One row of `ps -o pid=,lstart=,command=`, its lstart in the C locale, as in `Thu Jan  1 00:00:00 1970`. */
+const PROCESS_ROW =
+  /^\s*(\d+)\s+([A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4})(?:\s+(.*))?$/;
+/** One read of `pid`, asked together with the fixture's own process, which every read that worked lists: the row it shows
+ * for `pid`; `gone` when it lists the fixture's process but not `pid`; `unknown` when it failed, or came back empty or
+ * malformed, which shows nothing either way. */
+function readProcess(
+  pid: number,
+  inspect: Inspect,
+): ProcessRow | "gone" | "unknown" {
+  const listed = inspect([
+    "-p",
+    `${pid},${process.pid}`,
+    "-o",
+    "pid=,lstart=,command=",
+  ]);
+  if (listed.exitCode !== 0) return "unknown";
+  const rows = new Map<number, ProcessRow>();
+  for (const line of listed.stdout.split("\n").filter((line) => line.trim())) {
+    const row = PROCESS_ROW.exec(line);
+    if (!row) return "unknown";
+    rows.set(Number(row[1]), { birth: row[2]!, command: row[3] ?? "" });
+  }
+  if (
+    !rows.has(process.pid) ||
+    [...rows.keys()].some((other) => other !== pid && other !== process.pid)
+  )
+    return "unknown";
+  return rows.get(pid) ?? "gone";
+}
+/** The reads of a process proved neither that it runs nor that it is gone. */
+class InconclusiveReads extends Error {}
+/** How many reads one look at a process may take before it counts as unknown. */
+const READS_PER_LOOK = 3;
+/** Looks for a process `is` accepts at `pid`: its row once a read shows one, `gone` once two reads that worked show none,
+ * and `unknown` when neither happens within `READS_PER_LOOK` reads. One read that worked is never enough for `gone`, since
+ * a truncated answer can leave the row out. */
+function look(
+  pid: number,
+  inspect: Inspect,
+  is: (row: ProcessRow) => boolean,
+): ProcessRow | "gone" | "unknown" {
+  let gone = 0;
+  for (let read = 0; read < READS_PER_LOOK; read++) {
+    const seen = readProcess(pid, inspect);
+    if (seen === "unknown") continue;
+    if (seen !== "gone" && is(seen)) return seen;
+    if (++gone === 2) return "gone";
+  }
+  return "unknown";
+}
+export type ProcessState = "running" | "gone" | "unknown";
+/** Whether `owned` still runs: `running` on a read that shows it, `gone` once two reads that worked show its pid absent or
+ * another process's, `unknown` while the reads prove neither. */
+export function processState(
+  owned: { pid: number; identity: string },
+  inspect: Inspect = platformInspect,
+): ProcessState {
+  const seen = look(owned.pid, inspect, (row) => row.birth === owned.identity);
+  return typeof seen === "string" ? seen : "running";
+}
+/** When the process `pid` started, or undefined once it is gone. Throws when the reads of it prove neither. */
 export function processIdentity(
   pid: number,
   inspect: Inspect = platformInspect,
 ): string | undefined {
-  return (
-    inspect(["-p", String(pid), "-o", "lstart="]).stdout.trim() || undefined
-  );
-}
-/** `processIdentity`, while the process is a rigd. */
-export function daemonIdentity(
-  pid: number,
-  inspect: Inspect = platformInspect,
-): string | undefined {
-  // lstart is 24 characters in the C locale; what the process runs follows it.
-  const seen = inspect([
-    "-p",
-    String(pid),
-    "-o",
-    "lstart=",
-    "-o",
-    "command=",
-  ]).stdout;
-  return seen.slice(24).includes("rigd") ? seen.slice(0, 24).trim() : undefined;
+  const seen = look(pid, inspect, () => true);
+  if (seen === "unknown")
+    throw new InconclusiveReads(
+      `the reads of process ${pid} were inconclusive`,
+    );
+  return seen === "gone" ? undefined : seen.birth;
 }
 /** What the process `pid` runs, for a report: never what decides which process it is. */
 const commandOf = (pid: number, inspect: Inspect) =>
@@ -117,7 +167,8 @@ function processTable(inspect: Inspect) {
   return listed.exitCode === 0 && table.length > 0 ? table : undefined;
 }
 type ProcessTable = NonNullable<ReturnType<typeof processTable>>;
-/** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits. */
+/** The rigd `root` records now, read before an uninstall removes that record, which it does before the process exits:
+ * undefined when it records none, or none runs at the pid it records. Throws when the reads of that pid prove neither. */
 export async function recordedDaemon(
   root: string,
   inspect: Inspect = platformInspect,
@@ -125,8 +176,13 @@ export async function recordedDaemon(
   const { pid } = (await readFile(join(root, "daemon", "address.json"), "utf8")
     .then((text) => JSON.parse(text))
     .catch(() => ({}))) as { pid?: number };
-  const identity = pid === undefined ? undefined : daemonIdentity(pid, inspect);
-  return identity === undefined ? undefined : { pid: pid!, identity };
+  if (pid === undefined) return undefined;
+  const seen = look(pid, inspect, (row) => row.command.includes("rigd"));
+  if (seen === "unknown")
+    throw new InconclusiveReads(
+      `the reads of rigd ${pid}, which the root records, were inconclusive`,
+    );
+  return seen === "gone" ? undefined : { pid, identity: seen.birth };
 }
 /** The leases in `root`, read apart from its Target record, so a Service is found whatever that record holds: rigd's, and
  * those of the capture wrappers it runs, which lease the applications. Read before rig down or rigd uninstall, which
@@ -183,35 +239,36 @@ function adoptMembers(
       for (const row of table)
         if (row.pgid === group.pgid) owned.set(row.pid, row.birth);
 }
-/** Signals `owned` while it is still that process; one that has just exited, or whose pid another now has, is left alone.
- * Answers whether the signal was sent. */
+/** Signals `owned` while a read just before shows it is still that process: `sent`, or, unsignalled, `gone` when it has
+ * exited or another process has its pid, and `unknown` when the reads prove neither. */
 export function signalOwned(
   owned: { pid: number; identity: string },
   signal: NodeJS.Signals,
   inspect: Inspect,
-): boolean {
-  if (processIdentity(owned.pid, inspect) !== owned.identity) return false;
+): "sent" | "gone" | "unknown" {
+  const state = processState(owned, inspect);
+  if (state !== "running") return state;
   try {
     process.kill(owned.pid, signal);
-    return true;
+    return "sent";
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    return false;
+    return "gone";
   }
 }
 /** How long a rigd or a Service may take to exit once it has been told to, on a machine as loaded as a test run makes it. */
 const PROCESS_EXIT_MS = 15_000;
-/** Whether the process `owned` is gone by the deadline; it answers as soon as it is. */
-export async function processExited(
+/** Waits for the process `owned` to exit: `gone` as soon as it has, otherwise what the last look found at the deadline. */
+export async function awaitExit(
   owned: { pid: number; identity: string },
   inspect: Inspect = platformInspect,
-): Promise<boolean> {
+): Promise<ProcessState> {
   const deadline = Date.now() + PROCESS_EXIT_MS;
-  while (processIdentity(owned.pid, inspect) === owned.identity) {
-    if (Date.now() >= deadline) return false;
+  for (;;) {
+    const state = processState(owned, inspect);
+    if (state === "gone" || Date.now() >= deadline) return state;
     await Bun.sleep(20);
   }
-  return true;
 }
 /** How long cleanup waits for a test's commands to answer, and again once it has killed the process groups of those that
  * did not. */
@@ -370,14 +427,16 @@ async function createFixture(options: FixtureOptions) {
     leader: string | undefined | Error;
     answered: Promise<unknown>;
   }>();
-  /** `processIdentity`, or the error of a `ps` that gave no answer to trust. */
-  const identityOf = (pid: number): string | undefined | Error => {
+  /** What `read` answers, or the error of a `ps` that gave no answer to trust. */
+  const unthrown = <T>(read: () => T): T | Error => {
     try {
-      return processIdentity(pid, options.inspect ?? platformInspect);
+      return read();
     } catch (error) {
       return error instanceof Error ? error : new Error(String(error));
     }
   };
+  const identityOf = (pid: number) =>
+    unthrown(() => processIdentity(pid, options.inspect ?? platformInspect));
   /** `execute`, in a process group of its own, until cleanup has begun: a command asked for later, as by a body Bun
    * abandoned, could start what nothing stops, so it is refused. */
   const run = async (args: string[], cwd = repo) => {
@@ -435,17 +494,23 @@ async function createFixture(options: FixtureOptions) {
     const killed: typeof waiting = [];
     for (const command of waiting.filter((each) => inFlight.has(each))) {
       // The group is the command's only while its leader is still the process it started, read just before the signal.
-      const leader = identityOf(command.group);
-      const unread = [command.leader, leader].find(
-        (read): read is Error => read instanceof Error,
-      );
-      if (unread) {
+      const started = command.leader;
+      const leader =
+        typeof started === "string"
+          ? unthrown(() =>
+              processState(
+                { pid: command.group, identity: started },
+                options.inspect ?? platformInspect,
+              ),
+            )
+          : started;
+      if (leader instanceof Error || leader === "unknown") {
         problems.push(
-          `${command.named} ${late}, and its process group's leader could not be read (${unread.message}), so nothing was signalled; what holds its output open may still run`,
+          `${command.named} ${late}, and its process group's leader could not be read (${leader instanceof Error ? leader.message : `the reads of process ${command.group} were inconclusive`}), so nothing was signalled; what holds its output open may still run`,
         );
         continue;
       }
-      if (command.leader === undefined || leader !== command.leader) {
+      if (leader !== "running") {
         problems.push(
           `${command.named} ${late}, and its process group's leader is no longer the process it started, so nothing was signalled; what holds its output open may still run`,
         );
@@ -485,7 +550,15 @@ async function createFixture(options: FixtureOptions) {
     // Tests stop their own Targets; after a failed assertion, whatever the root records is stopped by its role or Preview name,
     // through the rigd that serves the root. A test that already stopped its rigd has nothing left that rig down could ask.
     const inspect = options.inspect ?? platformInspect;
-    const daemon = await recordedDaemon(root, inspect);
+    // A rigd whose reads were inconclusive may still run: it is asked to stop as one that does, and the root is kept.
+    const daemon = await recordedDaemon(root, inspect).catch(
+      (error: unknown) => {
+        if (error instanceof InconclusiveReads) return error;
+        throw error;
+      },
+    );
+    if (daemon instanceof Error)
+      problems.push(`${daemon.message}, so nothing shows that it stopped`);
     const leased = await readLeases(root);
     for (const path of leased.unreadable)
       problems.push(`the lease ${path} could not be read`);
@@ -534,18 +607,23 @@ async function createFixture(options: FixtureOptions) {
     adoptMembers(owned, groups, scan());
     // A daemon that outlives this would run on with its root deleted, for as long as the machine stays up. One rigd
     // uninstall could not stop is asked to stop here; one that will not is killed.
-    if (daemon !== undefined) {
-      if (
-        !uninstalled &&
-        daemonIdentity(daemon.pid, inspect) === daemon.identity
-      )
-        process.kill(daemon.pid, "SIGTERM");
-      if (!(await processExited(daemon, inspect))) {
-        problems.push(
-          signalOwned(daemon, "SIGKILL", inspect)
-            ? `rigd ${daemon.pid} did not stop, and was killed${(await processExited(daemon, inspect)) ? "" : ", but is still running"}`
-            : `rigd ${daemon.pid} did not stop, and its pid no longer names that process, so it was not signalled`,
-        );
+    if (daemon !== undefined && !(daemon instanceof Error)) {
+      if (!uninstalled) signalOwned(daemon, "SIGTERM", inspect);
+      const exit = await awaitExit(daemon, inspect);
+      if (exit !== "gone") {
+        const stopped =
+          exit === "running"
+            ? "did not stop"
+            : "could not be seen to stop, since the reads of it were inconclusive";
+        const kill = signalOwned(daemon, "SIGKILL", inspect);
+        const after = kill === "sent" ? await awaitExit(daemon, inspect) : kill;
+        const killed =
+          kill === "gone"
+            ? "its pid no longer names that process, so it was not signalled"
+            : kill === "unknown"
+              ? "the reads of it just before its SIGKILL were inconclusive, so it was not signalled"
+              : `was killed${after === "gone" ? "" : after === "running" ? ", but is still running" : ", but the reads of it since were inconclusive"}`;
+        problems.push(`rigd ${daemon.pid} ${stopped}, and ${killed}`);
       }
     }
     // What rigd ran and did not stop is stopped here, and the root goes only once it has exited.
@@ -562,11 +640,20 @@ async function createFixture(options: FixtureOptions) {
       for (const each of surviving) signalOwned(each, "SIGTERM", inspect);
       const stubborn: typeof surviving = [];
       for (const each of surviving)
-        if (!(await processExited(each, inspect))) stubborn.push(each);
-      for (const each of stubborn) signalOwned(each, "SIGKILL", inspect);
-      for (const each of stubborn) await processExited(each, inspect);
+        if ((await awaitExit(each, inspect)) !== "gone") stubborn.push(each);
+      const kills = stubborn.map((each) => ({
+        ...each,
+        kill: signalOwned(each, "SIGKILL", inspect),
+      }));
+      for (const each of kills)
+        if (each.kill === "sent") await awaitExit(each, inspect);
+      const pids = (kill: string) =>
+        kills
+          .filter((each) => each.kill === kill)
+          .map(({ pid }) => pid)
+          .join(", ");
       problems.push(
-        `processes ${surviving.map(({ named }) => named).join(", ")} that rigd ran outlived rigd, and were stopped${stubborn.length > 0 ? `; ${stubborn.map(({ pid }) => pid).join(", ")} had to be killed` : ""}`,
+        `processes ${surviving.map(({ named }) => named).join(", ")} that rigd ran outlived rigd, and were stopped${pids("sent") ? `; ${pids("sent")} had to be killed` : ""}${pids("unknown") ? `; the reads of ${pids("unknown")} were inconclusive, so they were not killed` : ""}`,
       );
     }
     // Nothing may run on in a leased group: a member born once its leader had gone cannot be tied to the lease, so it is

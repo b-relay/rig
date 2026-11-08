@@ -7,15 +7,24 @@ import type { RuntimeCommand } from "../lib/types";
  * with the job's name typed. Server-only, since the command grammar it checks against is rigd's own. */
 
 /** What the dashboard's Restore sends its own server action: the command, and what was typed to confirm it. */
-const restoreRequestSchema = z.strictObject({
-  command: commandSchema.refine(
-    (command) =>
-      command.action === "restore" &&
-      command.job !== undefined &&
-      command.backup !== undefined &&
-      command.backup !== "latest",
-  ),
-  typed: z.string().max(256),
+export const restoreRequestSchema = z.strictObject({
+  command: commandSchema
+    .refine(
+      (command) =>
+        command.action === "restore" &&
+        command.job !== undefined &&
+        command.backup !== undefined &&
+        command.backup !== "latest",
+    )
+    .describe(
+      "The restore the dialog asks rigd to run, in rigd's own command grammar: the restore action, naming its job and one backup by its id, never latest, so the backup the dialog showed is the one restored.",
+    ),
+  typed: z
+    .string()
+    .max(256)
+    .describe(
+      "What was typed in the Restore dialog to confirm, up to 256 characters. The restore runs only when, with surrounding whitespace trimmed, it is the job's name exactly.",
+    ),
 });
 /** Pure: the restore command `input` asks for once what was typed names its job exactly, or why it is refused. The
  * dashboard always names the backup by its id, so what was shown is what is restored. The server decides this; the

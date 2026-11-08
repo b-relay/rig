@@ -1,14 +1,16 @@
 import type { ManagedComponent } from "../config/types";
 import {
+  RigError,
   failureCauses,
   failureReason,
   type FailureCauses,
 } from "../domain/errors";
 import { within } from "../domain/paths";
-import type {
-  HeldCheckout,
-  RuntimeState,
-  TargetRecord,
+import {
+  readOnlyState,
+  type HeldCheckout,
+  type RuntimeState,
+  type TargetRecord,
 } from "../domain/runtime";
 import { boundedObservations } from "./bounded-observations";
 import type { RuntimeDependencies } from "./contracts";
@@ -232,4 +234,94 @@ function recordedService(
       readyTimeout: 0,
     }
   );
+}
+/** Drops the mirror registration of each checkout in `kept`, whose Target is gone, and forgets the records of those it
+ * dropped; one that fails stays recorded for the next offer, and its failure is resolved. */
+export async function forgetReleasedCheckouts(
+  kept: readonly HeldCheckout[],
+  deps: Pick<RuntimeDependencies, "sources" | "store">,
+): Promise<unknown[]> {
+  const released: HeldCheckout[] = [];
+  const failures: unknown[] = [];
+  for (const checkout of kept)
+    try {
+      await deps.sources.release({
+        project: checkout.project,
+        workspacePath: checkout.workspace,
+      });
+      released.push(checkout);
+    } catch (error) {
+      failures.push(error);
+    }
+  if (!released.length) return failures;
+  await deps.store.update((state) => {
+    state.heldCheckouts = state.heldCheckouts?.filter(
+      (other) =>
+        !released.some(
+          (done) =>
+            done.target === other.target && done.workspace === other.workspace,
+        ),
+    );
+  });
+  return failures;
+}
+/** Gives back the checkouts held for `target` (one a job run kept, recorded with the run's end, one a kept Service ran
+ * in, recorded by its deploy, or one a recovery dropped) once no job run or Service process runs in them, and forgets each
+ * one given back or that is a plan's checkout again. One still run in stays recorded for the next offer, and is no
+ * failure. The caller holds the Target. One that cannot be removed stays recorded too, and is a diagnostic, never an
+ * Operation's failure: it is resolved, for the scheduler's offer to report (CHECKOUT_RELEASE). */
+export async function releaseHeldCheckouts(
+  target: TargetRecord,
+  deps: RevisionDependencies & Pick<RuntimeDependencies, "diagnostic" | "id">,
+): Promise<RigError[]> {
+  const held = ((await readOnlyState(deps.store)).heldCheckouts ?? []).filter(
+    (checkout) => checkout.target === target.id,
+  );
+  const failures: RigError[] = [];
+  for (const checkout of held) {
+    const [result] = await releaseRevisions(
+      [
+        {
+          ...target,
+          plan: { ...target.plan, workspacePath: checkout.workspace },
+        },
+      ],
+      deps,
+    );
+    if (result?.outcome === "failed") {
+      await deps
+        .diagnostic({
+          operationId: deps.id(),
+          action: "held-checkout",
+          outcome: "revision-retained",
+          target: target.name,
+          path: result.workspacePath,
+          ...result.causes,
+        })
+        .catch(() => {});
+      failures.push(
+        new RigError(
+          "CHECKOUT_RELEASE",
+          result.warning,
+          "Rig offers it again every 30 seconds; check that the checkout's directory under the Rig root can be removed.",
+          { path: result.workspacePath },
+          result.causes,
+        ),
+      );
+    }
+    // Given back, or a plan's own checkout again (which the deploy that supersedes it gives back), or nothing Rig owns.
+    if (
+      result === undefined ||
+      result.outcome === "released" ||
+      result.outcome === "planned"
+    )
+      await deps.store.update((state) => {
+        state.heldCheckouts = state.heldCheckouts?.filter(
+          (other) =>
+            other.target !== checkout.target ||
+            other.workspace !== checkout.workspace,
+        );
+      });
+  }
+  return failures;
 }

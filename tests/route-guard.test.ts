@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ManagedComponent, TargetPlan } from "../src/config/types";
+import { RigError } from "../src/domain/errors";
 import type { TargetRecord } from "../src/domain/runtime";
 import type { ProcessObservation } from "../src/providers/contracts";
 import {
@@ -393,7 +394,11 @@ function following(f: ReturnType<typeof fixture>) {
       told.push("withdrawn");
     },
     exited: (service, seen) =>
-      new Error(`${service} exited with ${seen.exitCode}`),
+      new RigError(
+        "PROCESS_EXITED",
+        `${service} exited with ${seen.exitCode}`,
+        "Inspect the Target logs.",
+      ),
   });
   return { start, told };
 }

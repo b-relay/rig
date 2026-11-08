@@ -19,9 +19,15 @@ const EVERY_MS = 15_000;
 const BUSY_MS = 3_000;
 /** Even an unchanged stamp gets a redraw this often, for the few things rigd records nothing about. */
 const AT_LEAST_EVERY_MS = 120_000;
+/** The pulse as `/pulse` sends it (`Pulse` in lib/pulse.ts). Its fields are described here in comments, not with Zod,
+ * whose descriptions would ship to every page. */
 const pulseSchema = z.object({
+  // Opaque: it changes whenever rigd's record changed in a way a page would show. A changed stamp redraws the page.
   stamp: z.string(),
+  // rigd is running an Operation someone asked for: every pulse redraws, and pulses come every 3 s instead of 15.
   busy: z.boolean(),
+  // rigd is away (not running, unreachable, timed out or interrupted). The page keeps what it last read, says rigd is
+  // unreachable, and redraws only once rigd answers.
   down: z.boolean(),
 });
 type Reach = "live" | "offline" | "rigd-down";

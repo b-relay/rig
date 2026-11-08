@@ -1,17 +1,19 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStartTime } from "../src/daemon/process-identity";
 
 /** The pages Next itself renders for a path the proxy lets through without the key (a missing static file, the icon)
- * go through the root layout, which must show nothing of rigd to such a request. Builds the site from a copy of this
+ * go through the root layout, which must show nothing of rigd to such a request. A signed-in page sends its sidebar
+ * once, and the build's browser scripts carry none of rigd's schemas. Builds the site from a copy of this
  * checkout, so the repository's own build is left alone, and serves it with `next start` against a temporary Rig root
  * whose rigd is a stand-in that counts every request it receives. */
 
 const repository = join(import.meta.dir, "..");
 const KEY = "render-test-access-key-".padEnd(43, "k");
 let work: string;
+let checkout: string;
 let site: ReturnType<typeof Bun.spawn> | undefined;
 let rigd: ReturnType<typeof Bun.serve> | undefined;
 let reads = 0;
@@ -30,7 +32,7 @@ const run = async (argv: string[], cwd: string) => {
 
 beforeAll(async () => {
   work = await mkdtemp(join(tmpdir(), "rig-dashboard-render-"));
-  const checkout = join(work, "checkout");
+  checkout = join(work, "checkout");
   const root = join(work, "root");
   for (const entry of ["web", "src", "package.json", "tsconfig.json"])
     await cp(join(repository, entry), join(checkout, entry), {
@@ -139,7 +141,7 @@ const render = async (path: string, headers: Record<string, string> = {}) => {
   };
 };
 
-test("a missing static file and the icon render a bare not-found page without the key, and read nothing of rigd", async () => {
+test("a missing static file and the icon render a bare not-found page without the key, and read nothing of rigd; with it, the sidebar comes once", async () => {
   reads = 0;
   for (const path of ["/_next/static/chunks/missing.js", "/favicon.ico"]) {
     const page = await render(path);
@@ -157,4 +159,28 @@ test("a missing static file and the icon render a bare not-found page without th
   expect(signedIn.status).toBe(404);
   expect(signedIn.body).toContain("<aside");
   expect(reads).toBeGreaterThan(0);
+  // A signed-in page sends its sidebar once, for both the open sidebar and the narrow screen's drawer. Here, not in a
+  // test of its own, because this file's tests run at once and the count of reads above is this test's.
+  const payload = await render("/activity?_rsc", {
+    authorization: `Basic ${Buffer.from(`rig:${KEY}`).toString("base64")}`,
+    rsc: "1",
+  });
+  expect(payload.status).toBe(200);
+  expect(payload.body.split('"aria-label":"Projects"').length - 1).toBe(1);
+  expect(payload.body.split('"aria-label":"Sections"').length - 1).toBe(1);
+  expect(signedIn.body).toContain('aria-label="Open the menu"');
 }, 60_000);
+
+test("the browser's scripts hold none of rigd's schemas and no Zod error messages", async () => {
+  const chunks = join(checkout, "web", ".next", "static", "chunks");
+  const scripts = (await readdir(chunks)).filter((name) =>
+    name.endsWith(".js"),
+  );
+  expect(scripts.length).toBeGreaterThan(0);
+  for (const name of scripts) {
+    const script = await Bun.file(join(chunks, name)).text();
+    // rigd's schemas document every field; Zod's full API, or its compact one imported whole, brings its locales.
+    expect(script, name).not.toContain(".describe(");
+    expect(script, name).not.toContain("Too big: expected");
+  }
+});

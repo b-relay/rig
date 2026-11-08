@@ -86,6 +86,9 @@ for arch in arm64 x64; do
 		[ "$archs" = "$machine" ] || fail "$build/$name is built for \"$archs\", not $machine."
 	done
 	[ -f "$work/$build/dashboard/web/server.js" ] || fail "$build has no dashboard/web/server.js."
+	# 4 MB that only Next.js's build reads; scripts/build-dashboard.sh leaves it out.
+	[ ! -e "$work/$build/dashboard/node_modules/next/dist/server/capsize-font-metrics.json" ] ||
+		fail "$build carries Next.js's build-only font metrics in its dashboard."
 	check_notices "$work/$build/dashboard/THIRD_PARTY_NOTICES"
 done
 for name in rig rigd; do

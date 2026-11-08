@@ -21,6 +21,9 @@ const config: NextConfig = {
     // A navigation while the network is down waits for it to return instead of leaving the page
     // for the browser's error screen.
     useOffline: true,
+    // rigd runs the site on every Host, where it mostly waits unopened: each page's code loads when it is first
+    // asked for, not every page's at start (about 20 MB less memory until then; a first visit takes no longer).
+    preloadEntriesOnStart: false,
   },
   headers: async () => [
     {

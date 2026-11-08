@@ -89,7 +89,7 @@ test("the skip link comes before the sidebar and names the main region, which ca
     `${import.meta.dir}/../web/app/layout.tsx`,
   ).text();
   expect(layout.indexOf("<SkipToContent />")).toBeLessThan(
-    layout.indexOf("<aside"),
+    layout.indexOf("<Navigation"),
   );
   expect(layout).toMatch(/id=\{CONTENT_ID\}\s+tabIndex=\{-1\}/);
 });

@@ -1,6 +1,6 @@
 import type { Refusal, TargetReport } from "./types";
 /** A Service's cached health check result on one line, as `rig status` prints it. */
-export { healthSummary } from "../../src/domain/project-status";
+export { healthSummary } from "../../src/domain/health-summary";
 
 /** Pure: why rigd refuses a command now, then what to do about it, for a tooltip or a line beneath a control. */
 export const refusalText = (refusal: Refusal): string =>

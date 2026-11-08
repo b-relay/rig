@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
-import type { ProjectStatusReport } from "../src/domain/project-status";
-import type { RuntimeCommand } from "../src/daemon/protocol";
 import { runRigCli } from "../src/cli/rig";
 import { formatBytes } from "../src/domain/bytes";
 import { generatedPreviewName } from "../src/domain/target-selector";
+import { cliHarness, recordedInLog } from "./support/cli-harness";
 import { shellArgs } from "./support/shell-args";
 
 /** `rig backup list` and `rig backup restore` (ADR 0017) with an injected client: no daemon, filesystem or terminal. */
@@ -48,79 +47,57 @@ function harness(
   } = {},
 ) {
   const target = options.target ?? "stable";
-  const requests: RuntimeCommand[] = [];
   const questions: string[] = [];
-  let out = "";
-  let err = "";
   const controller = new AbortController();
   let polls = 0;
-  const deps = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        return { project: "melody", targets: [] };
-      },
-      async command(request: RuntimeCommand) {
-        requests.push(request);
-        if (request.action === "backups")
-          return {
-            ...BACKUPS,
-            backups: BACKUPS.backups.map((backup) => ({ ...backup, target })),
-          };
-        if (request.action === "restore")
-          return {
-            operationId: "op-1",
-            project: "melody",
-            target,
-            action: "restore",
-            outcome: "started",
-            job: request.job,
-            backup: request.backup,
-          };
-        if (request.action === "activity") {
-          polls++;
-          // Ctrl-C after a few polls when the restore never ends.
-          if (!options.ended && polls === 3) controller.abort();
-          return {
-            operations: [
-              {
-                id: "op-1",
-                action: "restore",
-                outcome: "started",
-                occurredAt: "2026-10-11T09:00:00.000Z",
-                message: "db-backup from 20261011T030000Z-17",
-              },
-              ...(options.ended && polls > 1
-                ? [
-                    {
-                      id: "op-1",
-                      action: "restore",
-                      outcome: options.ended,
-                      occurredAt: "2026-10-11T09:00:05.000Z",
-                      message: `db-backup: restore from 20261011T030000Z-17 ${options.ended === "succeeded" ? "succeeded in 5s" : "failed in 5s: exit 1"}`,
-                    },
-                  ]
-                : []),
-            ],
-          };
-        }
-        return {};
-      },
+  const cli = cliHarness({
+    command: (request) => {
+      if (request.action === "backups")
+        return {
+          ...BACKUPS,
+          backups: BACKUPS.backups.map((backup) => ({ ...backup, target })),
+        };
+      if (request.action === "restore")
+        return {
+          operationId: "op-1",
+          project: "melody",
+          target,
+          action: "restore",
+          outcome: "started",
+          job: request.job,
+          backup: request.backup,
+        };
+      if (request.action === "activity") {
+        polls++;
+        // Ctrl-C after a few polls when the restore never ends.
+        if (!options.ended && polls === 3) controller.abort();
+        return {
+          operations: [
+            {
+              id: "op-1",
+              action: "restore",
+              outcome: "started",
+              occurredAt: "2026-10-11T09:00:00.000Z",
+              message: "db-backup from 20261011T030000Z-17",
+            },
+            ...(options.ended && polls > 1
+              ? [
+                  {
+                    id: "op-1",
+                    action: "restore",
+                    outcome: options.ended,
+                    occurredAt: "2026-10-11T09:00:05.000Z",
+                    message: `db-backup: restore from 20261011T030000Z-17 ${options.ended === "succeeded" ? "succeeded in 5s" : "failed in 5s: exit 1"}`,
+                  },
+                ]
+              : []),
+          ],
+        };
+      }
+      return {};
     },
-    output: {
-      write(value: string) {
-        out += value;
-      },
-      error(value: string) {
-        err += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
+    status: () => ({ project: "melody", targets: [] }),
+    record: recordedInLog,
     ...(options.interactive === false
       ? {}
       : {
@@ -135,16 +112,8 @@ function harness(
           },
         }),
     signal: controller.signal,
-    wait: async () => {},
-    newOperationId: () => "op-1",
-  };
-  return {
-    deps,
-    requests,
-    questions,
-    out: () => out,
-    err: () => err,
-  };
+  });
+  return { ...cli, questions };
 }
 
 test("rig backup list sends the backups read, every Target's unless one is named, and shows time, size and run", async () => {

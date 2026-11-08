@@ -1,96 +1,37 @@
 import type { ProjectStatusReport } from "../domain/project-status";
 import { expect, test } from "bun:test";
-import { runRigCli } from "./rig";
 import { formatClock } from "./stop-display";
 import { RigError } from "../domain/errors";
+import { cliHarness, recordedInLog } from "../../tests/support/cli-harness";
 
 test("bare help exits successfully without contacting the daemon", async () => {
-  let text = "";
-  let calls = 0;
-  const exit = await runRigCli([], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        return {};
-      },
-    },
-    output: {
-      write(value) {
-        text += value;
-      },
-      error(value) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "test-operation",
-  });
+  const cli = cliHarness({ operationId: "test-operation" });
+  const exit = await cli.run([]);
   expect(exit).toBe(0);
-  expect(text).toContain("Usage: rig");
-  expect(text).not.toContain("[ERROR]");
-  expect(calls).toBe(0);
+  expect(cli.text()).toContain("Usage: rig");
+  expect(cli.text()).not.toContain("[ERROR]");
+  expect(cli.requests.length).toBe(0);
 });
 
 test("a lifecycle command sends one correlated daemon request and prints its outcome; it takes no --json", async () => {
-  const requests: unknown[] = [];
-  let text = "";
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command(request: unknown) {
-        requests.push(request);
-        return {
-          project: "pantry",
-          target: "stable",
-          action: "up",
-          outcome: "unchanged",
-          operationId: "op-42",
-        };
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-42",
-  };
+  const cli = cliHarness({
+    command: () => ({
+      project: "pantry",
+      target: "stable",
+      action: "up",
+      outcome: "unchanged",
+      operationId: "op-42",
+    }),
+    operationId: "op-42",
+  });
   // An action answers with its exit and a line; --json is for reads.
-  expect(
-    await runRigCli(
-      ["up", "stable", "--project", "pantry", "--json"],
-      dependencies,
-    ),
-  ).toBe(1);
-  expect(requests).toEqual([]);
-  text = "";
-  expect(
-    await runRigCli(["up", "stable", "--project", "pantry"], dependencies),
-  ).toBe(0);
-  expect(requests).toEqual([
+  expect(await cli.run(["up", "stable", "--project", "pantry", "--json"])).toBe(
+    1,
+  );
+  expect(cli.requests).toEqual([]);
+  cli.clear();
+  expect(await cli.run(["up", "stable", "--project", "pantry"])).toBe(0);
+  expect(cli.requests).toEqual([
     {
       action: "up",
       repoPath: "/workspace",
@@ -99,11 +40,10 @@ test("a lifecycle command sends one correlated daemon request and prints its out
       operationId: "op-42",
     },
   ]);
-  expect(text).toBe("pantry stable unchanged\n");
+  expect(cli.text()).toBe("pantry stable unchanged\n");
 });
 
 test("status renders observed component states and keeps configured routes visible", async () => {
-  let text = "";
   const result: ProjectStatusReport = {
     project: "pantry",
     targets: [
@@ -128,93 +68,49 @@ test("status renders observed component states and keeps configured routes visib
       },
     ],
   };
-  const exit = await runRigCli(["status"], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status() {
-        return result;
-      },
-      async command() {
-        return result;
-      },
-    },
-    output: {
-      write(value) {
-        text += value;
-      },
-      error(value) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-status",
+  const cli = cliHarness({
+    status: () => result,
+    command: () => result,
+    operationId: "op-status",
   });
+  const exit = await cli.run(["status"]);
   expect(exit).toBe(0);
-  expect(text).toContain("stable  degraded  main@abc1234");
-  expect(text).toContain("web  failed  :3070  https://pantry.b-relay.com");
-  expect(text).toContain("convex  healthy  :3290");
-  expect(text).toContain("Failures\n  stable web: exited with code 1");
-  expect(text).not.toContain("op-status");
+  expect(cli.text()).toContain("stable  degraded  main@abc1234");
+  expect(cli.text()).toContain(
+    "web  failed  :3070  https://pantry.b-relay.com",
+  );
+  expect(cli.text()).toContain("convex  healthy  :3290");
+  expect(cli.text()).toContain("Failures\n  stable web: exited with code 1");
+  expect(cli.text()).not.toContain("op-status");
 });
 
 test("usage errors never call runtime or advertise diagnostics; unexpected failures correlate useful evidence", async () => {
   const { RigError } = await import("../domain/errors");
-  let text = "";
-  let calls = 0;
-  const events: unknown[] = [];
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        throw new RigError(
-          "PROVIDER_START",
-          "The web process could not start.",
-          "Inspect rig logs stable.",
-          { token: "secret" },
-        );
-      },
+  const cli = cliHarness({
+    command: () => {
+      throw new RigError(
+        "PROVIDER_START",
+        "The web process could not start.",
+        "Inspect rig logs stable.",
+        { token: "secret" },
+      );
     },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record(entry: unknown) {
-        events.push(entry);
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-failed",
-  };
-  expect(await runRigCli(["up", "preview"], dependencies)).toBe(1);
-  expect(calls).toBe(0);
-  expect(text).not.toContain("Details:");
-  expect(text).toContain("rig up --help");
-  text = "";
-  expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
-  expect(text).toContain("The web process could not start.");
-  expect(text).toContain("Inspect rig logs stable.");
-  expect(text).toContain("Operation: op-failed");
-  expect(text).toContain("Details: /isolated/.rig/logs/rig/rig.jsonl");
-  expect(text).not.toContain("secret");
-  expect(text).not.toContain("PROVIDER_START");
-  expect(events).toContainEqual({
+    record: recordedInLog,
+    operationId: "op-failed",
+  });
+  expect(await cli.run(["up", "preview"])).toBe(1);
+  expect(cli.requests.length).toBe(0);
+  expect(cli.text()).not.toContain("Details:");
+  expect(cli.text()).toContain("rig up --help");
+  cli.clear();
+  expect(await cli.run(["up", "stable"])).toBe(1);
+  expect(cli.text()).toContain("The web process could not start.");
+  expect(cli.text()).toContain("Inspect rig logs stable.");
+  expect(cli.text()).toContain("Operation: op-failed");
+  expect(cli.text()).toContain("Details: /isolated/.rig/logs/rig/rig.jsonl");
+  expect(cli.text()).not.toContain("secret");
+  expect(cli.text()).not.toContain("PROVIDER_START");
+  expect(cli.events).toContainEqual({
     event: "command.failed",
     level: "error",
     operationId: "op-failed",
@@ -224,41 +120,16 @@ test("usage errors never call runtime or advertise diagnostics; unexpected failu
 
 test("a failure during interactive preflight still carries the Operation id next to Details", async () => {
   const { RigError } = await import("../domain/errors");
-  let text = "";
-  const events: any[] = [];
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        throw new RigError(
-          "STATE_CORRUPT",
-          "The registry could not be read.",
-          "Run rig doctor.",
-        );
-      },
+  const cli = cliHarness({
+    command: () => {
+      throw new RigError(
+        "STATE_CORRUPT",
+        "The registry could not be read.",
+        "Run rig doctor.",
+      );
     },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record(entry: unknown) {
-        events.push(entry);
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
+    record: recordedInLog,
     interaction: {
-      async select(): Promise<string> {
-        throw new Error("Unexpected prompt");
-      },
       async text(): Promise<string> {
         throw new Error("Unexpected prompt");
       },
@@ -266,14 +137,13 @@ test("a failure during interactive preflight still carries the Operation id next
         throw new Error("Unexpected prompt");
       },
     },
-    wait: async () => {},
-    newOperationId: () => "op-preflight",
-  };
-  expect(await runRigCli(["init"], dependencies)).toBe(1);
-  expect(text).toContain("The registry could not be read.");
-  expect(text).toContain("Operation: op-preflight");
-  expect(text).toContain("Details: /isolated/.rig/logs/rig/rig.jsonl");
-  expect(events).toContainEqual({
+    operationId: "op-preflight",
+  });
+  expect(await cli.run(["init"])).toBe(1);
+  expect(cli.text()).toContain("The registry could not be read.");
+  expect(cli.text()).toContain("Operation: op-preflight");
+  expect(cli.text()).toContain("Details: /isolated/.rig/logs/rig/rig.jsonl");
+  expect(cli.events).toContainEqual({
     event: "command.failed",
     level: "error",
     operationId: "op-preflight",
@@ -282,103 +152,54 @@ test("a failure during interactive preflight still carries the Operation id next
 });
 
 test("an empty Preview branch is a usage error, not the current Branch", async () => {
-  let text = "";
-  let calls = 0;
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        return {};
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-empty",
-  };
+  const cli = cliHarness({
+    command: () => ({}),
+    record: recordedInLog,
+    operationId: "op-empty",
+  });
   for (const args of [
     ["deploy", "preview", ""],
     ["up", "preview", ""],
     ["logs", "preview", ""],
   ]) {
-    text = "";
-    expect(await runRigCli(args, dependencies)).toBe(1);
-    expect(text).toContain("branch");
-    expect(text).toContain("It is empty.");
-    expect(text).toMatch(new RegExp(`Run rig ${args[0]}( preview)? --help\\.`));
+    cli.clear();
+    expect(await cli.run(args)).toBe(1);
+    expect(cli.text()).toContain("branch");
+    expect(cli.text()).toContain("It is empty.");
+    expect(cli.text()).toMatch(
+      new RegExp(`Run rig ${args[0]}( preview)? --help\\.`),
+    );
   }
-  expect(calls).toBe(0);
+  expect(cli.requests.length).toBe(0);
 });
 
 test("preserves deployment/init options and rejects unsafe destroy before runtime", async () => {
-  const requests: any[] = [];
-  let error = "";
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command(request: { action?: string }) {
-        requests.push(request);
-        if (request.action === "deployment-context")
-          return {
+  const cli = cliHarness({
+    command: (request) =>
+      request.action === "deployment-context"
+        ? {
             project: "test",
             repoPath: "/workspace",
             productionBranch: "main",
             currentBranch: "main",
             targets: { working: "working", stable: "stable" },
             selected: "stable",
-          };
-        return { project: "test", outcome: "unchanged" };
-      },
-    },
-    output: {
-      write() {},
-      error(value: string) {
-        error += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-options",
-  };
+          }
+        : { project: "test", outcome: "unchanged" },
+    operationId: "op-options",
+  });
   expect(
-    await runRigCli(
-      [
-        "deploy",
-        "preview",
-        "feature/example",
-        "--deployment",
-        "example",
-        "--no-up",
-        "--force",
-      ],
-      dependencies,
-    ),
+    await cli.run([
+      "deploy",
+      "preview",
+      "feature/example",
+      "--deployment",
+      "example",
+      "--no-up",
+      "--force",
+    ]),
   ).toBe(0);
-  expect(requests.at(-1)).toMatchObject({
+  expect(cli.requests.at(-1)).toMatchObject({
     action: "deploy",
     target: "preview",
     branch: "feature/example",
@@ -386,37 +207,34 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     force: true,
     noUp: true,
   });
-  expect(await runRigCli(["forget", "demo"], dependencies)).toBe(0);
-  expect(requests.at(-1)).toMatchObject({
+  expect(await cli.run(["forget", "demo"])).toBe(0);
+  expect(cli.requests.at(-1)).toMatchObject({
     action: "forget",
     project: "demo",
     repoPath: "/workspace",
   });
   expect(
-    await runRigCli(
-      [
-        "init",
-        "--path",
-        "../other",
-        "--project",
-        "app",
-        "--production-branch",
-        "production",
-        "--service",
-        "web",
-        "--command",
-        "bun web.ts",
-        "--port",
-        "3010",
-        "--tool",
-        "app",
-        "--bin",
-        "app.ts",
-      ],
-      dependencies,
-    ),
+    await cli.run([
+      "init",
+      "--path",
+      "../other",
+      "--project",
+      "app",
+      "--production-branch",
+      "production",
+      "--service",
+      "web",
+      "--command",
+      "bun web.ts",
+      "--port",
+      "3010",
+      "--tool",
+      "app",
+      "--bin",
+      "app.ts",
+    ]),
   ).toBe(0);
-  expect(requests.at(-1)).toMatchObject({
+  expect(cli.requests.at(-1)).toMatchObject({
     action: "init",
     repoPath: "/other",
     project: "app",
@@ -425,55 +243,21 @@ test("preserves deployment/init options and rejects unsafe destroy before runtim
     tool: { name: "app", bin: "app.ts" },
   });
   expect(
-    await runRigCli(
-      ["down", "preview", "--deployment", "example", "--destroy"],
-      dependencies,
-    ),
+    await cli.run(["down", "preview", "--deployment", "example", "--destroy"]),
   ).toBe(0);
-  expect(requests.at(-1)).toMatchObject({
+  expect(cli.requests.at(-1)).toMatchObject({
     action: "destroy",
     target: "preview",
     deployment: "example",
   });
-  const count = requests.length;
-  expect(await runRigCli(["down", "stable", "--destroy"], dependencies)).toBe(
-    1,
-  );
-  expect(requests.length).toBe(count);
-  expect(error).toContain("Preview");
+  const count = cli.requests.length;
+  expect(await cli.run(["down", "stable", "--destroy"])).toBe(1);
+  expect(cli.requests.length).toBe(count);
+  expect(cli.err()).toContain("Preview");
 });
 
 test("every command supports both help flags without side effects; removed global options fail", async () => {
-  let calls = 0;
-  let text = "";
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        return {};
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "help",
-  };
+  const cli = cliHarness({ operationId: "help" });
   for (const path of [
     [],
     ["list"],
@@ -494,30 +278,28 @@ test("every command supports both help flags without side effects; removed globa
     ["forget"],
   ]) {
     for (const flag of ["--help", "-h"]) {
-      text = "";
-      expect(await runRigCli([...path, flag], dependencies)).toBe(0);
-      expect(text).toContain("Usage: rig");
+      cli.clear();
+      expect(await cli.run([...path, flag])).toBe(0);
+      expect(cli.text()).toContain("Usage: rig");
     }
   }
-  expect(calls).toBe(0);
-  text = "";
-  expect(await runRigCli(["--version"], dependencies)).toBe(0);
-  expect(text.trim()).toBe((await import("../domain/version")).RIG_BUILD);
-  expect(calls).toBe(0);
+  expect(cli.requests.length).toBe(0);
+  cli.clear();
+  expect(await cli.run(["--version"])).toBe(0);
+  expect(cli.text().trim()).toBe((await import("../domain/version")).RIG_BUILD);
+  expect(cli.requests.length).toBe(0);
   for (const args of [
     ["--log-level", "debug"],
     ["status", "--state-root", "/tmp/forbidden"],
     ["config", "read"],
     ["up", "--json"],
   ])
-    expect(await runRigCli(args, dependencies)).toBe(1);
-  expect(calls).toBe(0);
+    expect(await cli.run(args)).toBe(1);
+  expect(cli.requests.length).toBe(0);
 });
 
 test("follow uses opaque cursors, preserves duplicate lines and exits on cancellation without lifecycle changes", async () => {
   const controller = new AbortController();
-  let text = "";
-  const requests: any[] = [];
   let waits = 0;
   const entry = {
     timestamp: "2026-09-09T09:42:11Z",
@@ -525,97 +307,52 @@ test("follow uses opaque cursors, preserves duplicate lines and exits on cancell
     stream: "stdout",
     line: "same line",
   };
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
+  const cli = cliHarness({
     signal: controller.signal,
     async wait() {
       if (++waits === 3) controller.abort();
     },
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command(request: unknown) {
-        requests.push(request);
-        return {
-          project: "pantry",
-          target: "stable",
-          entries: requests.length === 2 ? [] : [entry],
-          cursor: ["cursor-a", "cursor-b", "cursor-c"][requests.length - 1],
-        };
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    newOperationId: () => "op-logs",
-  };
-  expect(await runRigCli(["logs", "stable", "--follow"], dependencies)).toBe(0);
-  expect(requests).toHaveLength(3);
-  expect(requests[1]).toMatchObject({ action: "logs", after: "cursor-a" });
-  expect(requests[2]).toMatchObject({ action: "logs", after: "cursor-b" });
-  expect(text.match(/same line/g)).toHaveLength(2);
-  expect(text.match(/pantry stable/g)).toHaveLength(1);
-  expect(text).toContain("09:42:11Z  web  > same line");
+    command: () => ({
+      project: "pantry",
+      target: "stable",
+      entries: cli.requests.length === 2 ? [] : [entry],
+      cursor: ["cursor-a", "cursor-b", "cursor-c"][cli.requests.length - 1],
+    }),
+    operationId: "op-logs",
+  });
+  expect(await cli.run(["logs", "stable", "--follow"])).toBe(0);
+  expect(cli.requests).toHaveLength(3);
+  expect(cli.requests[1]).toMatchObject({ action: "logs", after: "cursor-a" });
+  expect(cli.requests[2]).toMatchObject({ action: "logs", after: "cursor-b" });
+  expect(cli.text().match(/same line/g)).toHaveLength(2);
+  expect(cli.text().match(/pantry stable/g)).toHaveLength(1);
+  expect(cli.text()).toContain("09:42:11Z  web  > same line");
 });
 
 test("sink failure preserves success and unexpected error while never advertising an absent file", async () => {
-  let output = "";
-  let error = "";
   let failing = false;
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        if (failing) throw new Error("secret provider stack");
-        return { project: "pantry", target: "stable", outcome: "started" };
-      },
+  const cli = cliHarness({
+    command: () => {
+      if (failing) throw new Error("secret provider stack");
+      return { project: "pantry", target: "stable", outcome: "started" };
     },
-    output: {
-      write(value: string) {
-        output += value;
-      },
-      error(value: string) {
-        error += value;
-      },
+    async record() {
+      throw new Error("write failed");
     },
-    diagnostics: {
-      async record() {
-        throw new Error("write failed");
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-no-log",
-  };
-  expect(await runRigCli(["up", "stable"], dependencies)).toBe(0);
-  expect(output).toContain("pantry stable started");
-  expect(error).toContain("Diagnostic evidence could not be recorded.");
+    operationId: "op-no-log",
+  });
+  expect(await cli.run(["up", "stable"])).toBe(0);
+  expect(cli.out()).toContain("pantry stable started");
+  expect(cli.err()).toContain("Diagnostic evidence could not be recorded.");
   failing = true;
-  output = "";
-  error = "";
-  expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
-  expect(error).toContain("Rig could not complete this operation.");
-  expect(error).not.toContain("Details:");
-  expect(error).not.toContain("secret provider stack");
+  cli.clear();
+  expect(await cli.run(["up", "stable"])).toBe(1);
+  expect(cli.err()).toContain("Rig could not complete this operation.");
+  expect(cli.err()).not.toContain("Details:");
+  expect(cli.err()).not.toContain("secret provider stack");
 });
 
 test("config and doctor expose user views while suppressing editor metadata and passing failure notes", async () => {
-  let text = "";
   let result: unknown = {
     project: "pantry",
     path: "/repo/rig.yaml",
@@ -623,61 +360,35 @@ test("config and doctor expose user views while suppressing editor metadata and 
     revision: "private-revision",
     config: { name: "pantry" },
   };
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        return result;
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-views",
-  };
-  expect(await runRigCli(["config"], dependencies)).toBe(0);
-  expect(text).toContain("/repo/rig.yaml");
-  expect(text).toContain('"name": "pantry"');
-  expect(text).not.toContain("private-revision");
-  text = "";
+  const cli = cliHarness({ command: () => result, operationId: "op-views" });
+  expect(await cli.run(["config"])).toBe(0);
+  expect(cli.text()).toContain("/repo/rig.yaml");
+  expect(cli.text()).toContain('"name": "pantry"');
+  expect(cli.text()).not.toContain("private-revision");
+  cli.clear();
   result = {
     ok: true,
     checks: [
       { name: "daemon", ok: true, message: "healthy", reason: "unreachable" },
     ],
   };
-  expect(await runRigCli(["doctor"], dependencies)).toBe(0);
-  expect(text).toBe("Host healthy\nNo problems found.\n");
-  text = "";
+  expect(await cli.run(["doctor"])).toBe(0);
+  expect(cli.text()).toBe("Host healthy\nNo problems found.\n");
+  cli.clear();
   result = { ok: true, checks: [], project: "pantry" };
-  expect(await runRigCli(["doctor"], dependencies)).toBe(0);
-  expect(text).toBe("Host and pantry healthy\nNo problems found.\n");
-  text = "";
+  expect(await cli.run(["doctor"])).toBe(0);
+  expect(cli.text()).toBe("Host and pantry healthy\nNo problems found.\n");
+  cli.clear();
   result = {
     ok: true,
     checks: [],
     note: "Project checks were skipped: no Project selected.",
   };
-  expect(await runRigCli(["doctor"], dependencies)).toBe(0);
-  expect(text).toBe(
+  expect(await cli.run(["doctor"])).toBe(0);
+  expect(cli.text()).toBe(
     "Host healthy\nNo problems found.\nProject checks were skipped: no Project selected.\n",
   );
-  text = "";
+  cli.clear();
   result = {
     ok: false,
     checks: [
@@ -689,187 +400,101 @@ test("config and doctor expose user views while suppressing editor metadata and 
       },
     ],
   };
-  expect(await runRigCli(["doctor"], dependencies)).toBe(1);
-  expect(text).toContain("daemon: Daemon is unreachable.");
-  expect(text).toContain("Run rigd status.");
+  expect(await cli.run(["doctor"])).toBe(1);
+  expect(cli.text()).toContain("daemon: Daemon is unreachable.");
+  expect(cli.text()).toContain("Run rigd status.");
 });
 
 test("scoped JSON also renders usage failures before a daemon request is created", async () => {
-  let text = "",
-    errors = "",
-    calls = 0;
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        return {};
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        errors += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "unused",
-  };
-  expect(
-    await runRigCli(
-      ["activity", "--all", "--project", "x", "--json"],
-      dependencies,
-    ),
-  ).toBe(1);
-  expect(JSON.parse(text)).toMatchObject({ error: { code: "USAGE" } });
-  expect(errors).toBe("");
-  expect(calls).toBe(0);
+  const cli = cliHarness({ command: () => ({}), operationId: "unused" });
+  expect(await cli.run(["activity", "--all", "--project", "x", "--json"])).toBe(
+    1,
+  );
+  expect(JSON.parse(cli.out())).toMatchObject({ error: { code: "USAGE" } });
+  expect(cli.err()).toBe("");
+  expect(cli.requests.length).toBe(0);
   // An action takes no --json, so its refusal is text.
-  text = "";
-  expect(await runRigCli(["up", "--json"], dependencies)).toBe(1);
-  expect(text).toBe("");
-  expect(errors).toContain("unknown option");
+  cli.clear();
+  expect(await cli.run(["up", "--json"])).toBe(1);
+  expect(cli.out()).toBe("");
+  expect(cli.err()).toContain("unknown option");
 });
 
 test("cancellation during diagnostics prevents submission of the prepared mutation", async () => {
   const controller = new AbortController();
-  let calls = 0;
-  const code = await runRigCli(["up", "working"], {
+  const cli = cliHarness({
     root: "/isolated",
     cwd: "/repo",
     signal: controller.signal,
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        return {};
-      },
+    command: () => ({}),
+    async record() {
+      controller.abort();
+      return {};
     },
-    output: { write() {}, error() {} },
-    diagnostics: {
-      async record() {
-        controller.abort();
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "cancelled",
+    operationId: "cancelled",
   });
+  const code = await cli.run(["up", "working"]);
   expect(code).toBe(0);
-  expect(calls).toBe(0);
+  expect(cli.requests.length).toBe(0);
 });
 
 test("follow reports daemon failure even when cancellation happens during the failed read", async () => {
   const controller = new AbortController();
-  let calls = 0;
-  let errors = "";
-  const exit = await runRigCli(["logs", "stable", "--follow"], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
+  const cli = cliHarness({
     signal: controller.signal,
-    wait: async () => {},
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status");
-      },
-      async command() {
-        if (++calls === 1) return { entries: [], cursor: "opaque-a" };
-        controller.abort();
-        throw new Error("daemon failed during read");
-      },
+    command: () => {
+      if (cli.requests.length === 1) return { entries: [], cursor: "opaque-a" };
+      controller.abort();
+      throw new Error("daemon failed during read");
     },
-    output: {
-      write() {},
-      error(value) {
-        errors += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    newOperationId: () => "follow-failure",
+    operationId: "follow-failure",
   });
+  const exit = await cli.run(["logs", "stable", "--follow"]);
   expect(exit).toBe(1);
-  expect(calls).toBe(2);
-  expect(errors).toContain("Rig could not complete this operation.");
+  expect(cli.requests.length).toBe(2);
+  expect(cli.err()).toContain("Rig could not complete this operation.");
 });
 
 for (const when of ["before start", "during wait", "after page"] as const) {
   test(`follow cancellation ${when} stops without another poll`, async () => {
     const controller = new AbortController();
     const { waitForLogPoll } = await import("../adapters/log-follow-scheduler");
-    let polls = 0,
-      waits = 0;
+    let waits = 0;
     if (when === "before start") controller.abort();
     const start = performance.now();
-    let errors = "";
+    const cli = cliHarness({
+      signal: controller.signal,
+      async wait(milliseconds, signal) {
+        waits++;
+        expect(milliseconds).toBe(250);
+        expect(signal).toBe(controller.signal);
+        queueMicrotask(() => controller.abort());
+        await waitForLogPoll(milliseconds, signal);
+      },
+      command: () => ({ entries: [], cursor: "opaque" }),
+      output: {
+        write() {
+          if (when === "after page") controller.abort();
+        },
+      },
+      operationId: "cancel-follow",
+    });
     expect(
-      await runRigCli(["logs", "stable", "--follow"], {
-        root: "/isolated/.rig",
-        cwd: "/workspace",
-        signal: controller.signal,
-        async wait(milliseconds, signal) {
-          waits++;
-          expect(milliseconds).toBe(250);
-          expect(signal).toBe(controller.signal);
-          queueMicrotask(() => controller.abort());
-          await waitForLogPoll(milliseconds, signal);
-        },
-        client: {
-          async status() {
-            throw new Error("Unexpected status");
-          },
-          async command() {
-            polls++;
-            return { entries: [], cursor: "opaque" };
-          },
-        },
-        output: {
-          write() {
-            if (when === "after page") controller.abort();
-          },
-          error(value) {
-            errors += value;
-          },
-        },
-        diagnostics: {
-          async record() {
-            return {};
-          },
-        },
-        newOperationId: () => "cancel-follow",
-      }),
+      await cli.run(["logs", "stable", "--follow"]),
       // Cancelled before its first page, the read never answered; once it follows, cancelling is how the stream ends.
     ).toBe(when === "before start" ? 130 : 0);
-    expect(errors).toBe(
+    expect(cli.err()).toBe(
       when === "before start"
         ? "The read was interrupted before rigd answered; nothing was printed.\nRun it again.\n"
         : "",
     );
     expect(performance.now() - start).toBeLessThan(250);
-    expect(polls).toBe(when === "before start" ? 0 : 1);
+    expect(cli.requests.length).toBe(when === "before start" ? 0 : 1);
     expect(waits).toBe(when === "during wait" ? 1 : 0);
   });
 }
 
 test("a mutation rigd has not answered after the notice delay tells the user which operation it is waiting behind", async () => {
-  let text = "";
-  const asked: string[] = [];
   let finish!: (value: unknown) => void;
   const stopping = {
     operationId: "slow-down",
@@ -890,53 +515,33 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
     },
     { state: "running", phase: "starting" },
   ];
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command(request: { action: string; operation?: string }) {
-        asked.push(request.action);
-        if (request.action === "queue") {
-          expect(request.operation).toBe("mine");
-          return { waiting: 2, operations: [], operation: positions.shift() };
-        }
-        return await new Promise((resolve) => (finish = resolve));
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
+  const cli = cliHarness({
+    async command(request) {
+      if (request.action === "queue") {
+        expect(request.operation).toBe("mine");
+        return { waiting: 2, operations: [], operation: positions.shift() };
+      }
+      return await new Promise((resolve) => (finish = resolve));
     },
     wait: async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     },
-    newOperationId: () => "mine",
-  };
-  const run = runRigCli(["up", "stable", "--project", "beta"], dependencies);
+    operationId: "mine",
+  });
+  const asked = () => cli.requests.map((request) => request.action);
+  const run = cli.run(["up", "stable", "--project", "beta"]);
   // Polls until rigd has nothing more to say, however slowly the machine runs.
   for (
     const deadline = Date.now() + 5000;
-    asked.length < 6 && Date.now() < deadline;
+    asked().length < 6 && Date.now() < deadline;
   )
     await new Promise((resolve) => setTimeout(resolve, 5));
   await new Promise((resolve) => setTimeout(resolve, 20));
   // Polling goes on while the command runs, and stops once rigd has nothing to say about it.
-  expect(asked).toEqual(["up", "queue", "queue", "queue", "queue", "queue"]);
+  expect(asked()).toEqual(["up", "queue", "queue", "queue", "queue", "queue"]);
   // One plain appended line per change of what it waits for, with its start in local time; no cursor movement.
   const startedAt = formatClock(new Date("2026-09-14T10:00:00.000Z"), true);
-  expect(text).toBe(
+  expect(cli.text()).toBe(
     `Waiting: beta stable is stopping (operation slow-down, started ${startedAt}); 1 more ahead of this command\n` +
       `Waiting: beta stable is starting (operation next-up, started ${startedAt})\n`,
   );
@@ -948,12 +553,10 @@ test("a mutation rigd has not answered after the notice delay tells the user whi
     operationId: "mine",
   });
   expect(await run).toBe(0);
-  expect(text).toContain("beta stable started");
+  expect(cli.text()).toContain("beta stable started");
 });
 
 test("rig activity shows each record's message and Operation id, and rig activity <id> asks for that operation", async () => {
-  let text = "";
-  const requests: unknown[] = [];
   let result: unknown = {
     operations: [
       {
@@ -982,36 +585,9 @@ test("rig activity shows each record's message and Operation id, and rig activit
       },
     ],
   };
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command(request: unknown) {
-        requests.push(request);
-        return result;
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-activity",
-  };
-  expect(await runRigCli(["activity"], dependencies)).toBe(0);
-  expect(text).toBe(
+  const cli = cliHarness({ command: () => result, operationId: "op-activity" });
+  expect(await cli.run(["activity"])).toBe(0);
+  expect(cli.text()).toBe(
     [
       "2026-09-10T22:14:03.120Z  app  working  up  failed  0b1f2c3d-op",
       "    PROCESS_START",
@@ -1021,19 +597,19 @@ test("rig activity shows each record's message and Operation id, and rig activit
       "",
     ].join("\n"),
   );
-  expect(requests).toMatchObject([
+  expect(cli.requests).toMatchObject([
     { action: "activity", repoPath: "/workspace" },
   ]);
-  expect(requests[0]).not.toHaveProperty("operation");
-  text = "";
+  expect(cli.requests[0]).not.toHaveProperty("operation");
+  cli.clear();
   result = { operations: [], operation: "0b1f2c3d-op" };
-  expect(await runRigCli(["activity", "0b1f2c3d-op"], dependencies)).toBe(0);
-  expect(requests.at(-1)).toMatchObject({
+  expect(await cli.run(["activity", "0b1f2c3d-op"])).toBe(0);
+  expect(cli.requests.at(-1)).toMatchObject({
     action: "activity",
     repoPath: "/workspace",
     operation: "0b1f2c3d-op",
   });
-  expect(text).toBe("No activity recorded for Operation 0b1f2c3d-op.\n");
+  expect(cli.text()).toBe("No activity recorded for Operation 0b1f2c3d-op.\n");
 });
 
 test.each([
@@ -1051,44 +627,19 @@ test.each([
 ])(
   "a %s failure the user can correct prints its message and hint without Operation or Details lines",
   async (code) => {
-    let text = "";
-    const dependencies = {
-      root: "/isolated/.rig",
-      cwd: "/workspace",
-      client: {
-        async status(): Promise<ProjectStatusReport> {
-          throw new Error("Unexpected status read");
-        },
-        async command(): Promise<unknown> {
-          throw new RigError(
-            code,
-            "Something you can fix.",
-            "Fix it this way.",
-          );
-        },
+    const cli = cliHarness({
+      command: () => {
+        throw new RigError(code, "Something you can fix.", "Fix it this way.");
       },
-      output: {
-        write(value: string) {
-          text += value;
-        },
-        error(value: string) {
-          text += value;
-        },
-      },
-      diagnostics: {
-        async record() {
-          return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-        },
-      },
-      wait: async () => {},
-      newOperationId: () => "op-correctable",
-    };
-    expect(await runRigCli(["up", "stable"], dependencies)).toBe(1);
-    expect(text).toBe("Something you can fix.\nFix it this way.\n");
-    text = "";
+      record: recordedInLog,
+      operationId: "op-correctable",
+    });
+    expect(await cli.run(["up", "stable"])).toBe(1);
+    expect(cli.text()).toBe("Something you can fix.\nFix it this way.\n");
+    cli.clear();
     // A read with --json reports the same failure as JSON.
-    expect(await runRigCli(["list", "--json"], dependencies)).toBe(1);
-    expect(JSON.parse(text)).toEqual({
+    expect(await cli.run(["list", "--json"])).toBe(1);
+    expect(JSON.parse(cli.text())).toEqual({
       error: {
         code,
         message: "Something you can fix.",
@@ -1099,108 +650,61 @@ test.each([
 );
 
 test("an invalid --project or --deployment is refused by rig before any request, naming the flag and the rule", async () => {
-  let text = "",
-    calls = 0;
-  const dependencies = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        calls++;
-        throw new Error("Unexpected status read");
-      },
-      async command() {
-        calls++;
-        return {};
-      },
-    },
-    output: {
-      write(value: string) {
-        text += value;
-      },
-      error(value: string) {
-        text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-invalid-flag",
-  };
-  expect(
-    await runRigCli(["status", "--project", "a".repeat(129)], dependencies),
-  ).toBe(1);
-  expect(text).toContain("--project");
-  expect(text).toContain("128");
-  expect(text).not.toContain("Operation:");
+  const cli = cliHarness({
+    command: () => ({}),
+    record: recordedInLog,
+    operationId: "op-invalid-flag",
+  });
+  expect(await cli.run(["status", "--project", "a".repeat(129)])).toBe(1);
+  expect(cli.text()).toContain("--project");
+  expect(cli.text()).toContain("128");
+  expect(cli.text()).not.toContain("Operation:");
   for (const args of [
     ["deploy", "preview", "main", "--deployment", "bad name"],
     ["up", "preview", "--deployment", "-lead"],
     ["logs", "preview", "--deployment", "x y"],
     ["down", "preview", "--deployment", ""],
   ]) {
-    text = "";
-    expect(await runRigCli(args, dependencies)).toBe(1);
-    expect(text).toContain("--deployment");
-    expect(text).toContain("letters, digits");
-    expect(text).not.toContain("Operation:");
+    cli.clear();
+    expect(await cli.run(args)).toBe(1);
+    expect(cli.text()).toContain("--deployment");
+    expect(cli.text()).toContain("letters, digits");
+    expect(cli.text()).not.toContain("Operation:");
   }
-  expect(calls).toBe(0);
+  expect(cli.requests.length).toBe(0);
 });
 
 test("Ctrl-C after a mutation is submitted is acknowledged, and a second one detaches with exit 130", async () => {
   const cancel = new AbortController();
   const detach = new AbortController();
-  let text = "",
-    errors = "";
-  const events: { event: string; operationId?: string }[] = [];
   const submitted: (AbortSignal | undefined)[] = [];
-  const exit = await runRigCli(["up", "working"], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
+  const cli = cliHarness({
     signal: cancel.signal,
     detach: detach.signal,
-    wait: async () => {},
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status");
-      },
-      command(request, signal) {
-        if (request.action === "queue") return Promise.resolve({});
-        submitted.push(signal);
-        queueMicrotask(() => cancel.abort());
-        return new Promise(() => {});
-      },
+    command(request, signal) {
+      if (request.action === "queue") return Promise.resolve({});
+      submitted.push(signal);
+      queueMicrotask(() => cancel.abort());
+      return new Promise(() => {});
     },
     output: {
-      write(value) {
-        text += value;
-      },
       error(value) {
-        errors += value;
         if (value.includes("Ctrl-C again")) setTimeout(() => detach.abort(), 5);
       },
     },
-    diagnostics: {
-      async record(entry) {
-        events.push({
-          event: entry.event,
-          ...(entry.operationId ? { operationId: entry.operationId } : {}),
-        });
-        return {};
-      },
-    },
-    newOperationId: () => "slow-up",
+    operationId: "slow-up",
   });
+  const exit = await cli.run(["up", "working"]);
+  const events = cli.events.map((entry) => ({
+    event: entry.event,
+    ...(entry.operationId ? { operationId: entry.operationId } : {}),
+  }));
   expect(exit).toBe(130);
-  expect(errors).toContain("rigd is still running up (operation slow-up)");
-  expect(errors).toContain("Press Ctrl-C again to detach.");
-  expect(errors).toContain("Detached from operation slow-up");
-  expect(errors).toContain("rig activity slow-up");
-  expect(text).toBe("");
+  expect(cli.err()).toContain("rigd is still running up (operation slow-up)");
+  expect(cli.err()).toContain("Press Ctrl-C again to detach.");
+  expect(cli.err()).toContain("Detached from operation slow-up");
+  expect(cli.err()).toContain("rig activity slow-up");
+  expect(cli.out()).toBe("");
   expect(submitted).toEqual([detach.signal]);
   expect(events).toEqual([
     { event: "command.started", operationId: "slow-up" },
@@ -1210,97 +714,53 @@ test("Ctrl-C after a mutation is submitted is acknowledged, and a second one det
 
 test("a mutation that finishes after the first Ctrl-C still renders its result and exits 0", async () => {
   const cancel = new AbortController();
-  let text = "",
-    errors = "";
-  const exit = await runRigCli(["up", "stable", "--project", "beta"], {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
+  const cli = cliHarness({
     signal: cancel.signal,
     detach: new AbortController().signal,
-    wait: async () => {},
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status");
-      },
-      async command(request) {
-        if (request.action === "queue") return {};
-        cancel.abort();
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        return {
-          project: "beta",
-          target: "stable",
-          action: "up",
-          outcome: "started",
-          operationId: "mine",
-        };
-      },
+    async command(request) {
+      if (request.action === "queue") return {};
+      cancel.abort();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return {
+        project: "beta",
+        target: "stable",
+        action: "up",
+        outcome: "started",
+        operationId: "mine",
+      };
     },
-    output: {
-      write(value) {
-        text += value;
-      },
-      error(value) {
-        errors += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    newOperationId: () => "mine",
+    operationId: "mine",
   });
+  const exit = await cli.run(["up", "stable", "--project", "beta"]);
   expect(exit).toBe(0);
-  expect(errors).toContain("Press Ctrl-C again to detach.");
-  expect(text).toContain("beta stable started");
+  expect(cli.err()).toContain("Press Ctrl-C again to detach.");
+  expect(cli.out()).toContain("beta stable started");
 });
 
 for (const json of [false, true])
   test(`Ctrl-C during a read is passed to the client, and the read that never answered exits 130 (json: ${json})`, async () => {
     const cancel = new AbortController();
-    let text = "";
-    let errors = "";
     let received: AbortSignal | undefined;
-    const exit = await runRigCli(json ? ["list", "--json"] : ["list"], {
-      root: "/isolated/.rig",
-      cwd: "/workspace",
+    const cli = cliHarness({
       signal: cancel.signal,
-      wait: async () => {},
-      client: {
-        async status(): Promise<ProjectStatusReport> {
-          throw new Error("Unexpected status");
-        },
-        command(_request, signal) {
-          received = signal;
-          return new Promise((_resolve, reject) => {
-            signal?.addEventListener("abort", () =>
-              reject(
-                new RigError(
-                  "CANCELLED",
-                  "The operation was cancelled.",
-                  "Retry.",
-                ),
+      command(_request, signal) {
+        received = signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () =>
+            reject(
+              new RigError(
+                "CANCELLED",
+                "The operation was cancelled.",
+                "Retry.",
               ),
-            );
-            queueMicrotask(() => cancel.abort());
-          });
-        },
+            ),
+          );
+          queueMicrotask(() => cancel.abort());
+        });
       },
-      output: {
-        write(value) {
-          text += value;
-        },
-        error(value) {
-          errors += value;
-        },
-      },
-      diagnostics: {
-        async record() {
-          return {};
-        },
-      },
-      newOperationId: () => "read",
+      operationId: "read",
     });
+    const exit = await cli.run(json ? ["list", "--json"] : ["list"]);
     expect(exit).toBe(130);
     expect(received).toBe(cancel.signal);
     const interrupted = {
@@ -1310,53 +770,23 @@ for (const json of [false, true])
       hint: "Run it again.",
     };
     if (json) {
-      expect(JSON.parse(text)).toEqual({ error: interrupted });
-      expect(errors).toBe("");
+      expect(JSON.parse(cli.out())).toEqual({ error: interrupted });
+      expect(cli.err()).toBe("");
     } else {
-      expect(text).toBe("");
-      expect(errors).toBe(`${interrupted.message}\n${interrupted.hint}\n`);
+      expect(cli.out()).toBe("");
+      expect(cli.err()).toBe(`${interrupted.message}\n${interrupted.hint}\n`);
     }
   });
 
-function quietDependencies(sink: { text: string }) {
-  return {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(): Promise<ProjectStatusReport> {
-        throw new Error("Unexpected status read");
-      },
-      async command(): Promise<unknown> {
-        throw new Error("Unexpected daemon request");
-      },
-    },
-    output: {
-      write(value: string) {
-        sink.text += value;
-      },
-      error(value: string) {
-        sink.text += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return {};
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "usage",
-  };
-}
 test("help names an unknown command and fails, while help <command> and <command> help show that command's usage", async () => {
-  const sink = { text: "" };
-  const dependencies = quietDependencies(sink);
-  expect(await runRigCli(["help", "nonsense"], dependencies)).toBe(1);
-  expect(sink.text).toContain("Unknown command 'nonsense'.");
-  expect(sink.text).toContain("Run rig --help.");
+  const cli = cliHarness({ operationId: "usage" });
+  expect(await cli.run(["help", "nonsense"])).toBe(1);
+  expect(cli.text()).toContain("Unknown command 'nonsense'.");
+  expect(cli.text()).toContain("Run rig --help.");
   for (const path of [["help", "deploy"], ["deploy", "help"], ["help"]]) {
-    sink.text = "";
-    expect(await runRigCli(path, dependencies)).toBe(0);
-    expect(sink.text).toContain(
+    cli.clear();
+    expect(await cli.run(path)).toBe(0);
+    expect(cli.text()).toContain(
       path.length === 1
         ? "Usage: rig "
         : `Usage: rig ${path.filter((part) => part !== "help").join(" ")}`,
@@ -1364,8 +794,7 @@ test("help names an unknown command and fails, while help <command> and <command
   }
 });
 test("a usage error hints the failing subcommand's own help", async () => {
-  const sink = { text: "" };
-  const dependencies = quietDependencies(sink);
+  const cli = cliHarness({ operationId: "usage" });
   for (const [path, hint] of [
     [["up", "--bogus"], "Run rig up --help."],
     [["deploy", "preview", "--bogus"], "Run rig deploy --help."],
@@ -1375,14 +804,13 @@ test("a usage error hints the failing subcommand's own help", async () => {
     ],
     [["nonsense"], "Run rig --help."],
   ] as const) {
-    sink.text = "";
-    expect(await runRigCli([...path], dependencies)).toBe(1);
-    expect(sink.text).toContain(hint);
+    cli.clear();
+    expect(await cli.run([...path])).toBe(1);
+    expect(cli.text()).toContain(hint);
   }
 });
 test("an empty option or argument value is refused instead of silently dropped", async () => {
-  const sink = { text: "" };
-  const dependencies = quietDependencies(sink);
+  const cli = cliHarness({ operationId: "usage" });
   for (const [path, flag] of [
     [["init", "--path", ""], "--path"],
     [["init", "--production-branch", ""], "--production-branch"],
@@ -1392,9 +820,9 @@ test("an empty option or argument value is refused instead of silently dropped",
     [["up", "--project", ""], "--project"],
     [["deploy", "preview", "--deployment", "", "main"], "--deployment"],
   ] as const) {
-    sink.text = "";
-    expect(await runRigCli([...path], dependencies)).toBe(1);
-    expect(sink.text).toContain(flag);
-    expect(sink.text.toLowerCase()).toContain("empty");
+    cli.clear();
+    expect(await cli.run([...path])).toBe(1);
+    expect(cli.text()).toContain(flag);
+    expect(cli.text().toLowerCase()).toContain("empty");
   }
 });

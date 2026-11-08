@@ -1,46 +1,18 @@
 import { expect, test } from "bun:test";
-import type { ProjectStatusReport } from "../src/domain/project-status";
 import type { RuntimeCommand } from "../src/daemon/protocol";
 import { runRigCli } from "../src/cli/rig";
+import { cliHarness, recordedInLog } from "./support/cli-harness";
 import { shellArgs } from "./support/shell-args";
 
 /** Drives the CLI grammar with an injected client; no daemon, filesystem or terminal. */
 function harness(
   reply: (request: RuntimeCommand) => unknown = () => ({ outcome: "started" }),
 ) {
-  const requests: RuntimeCommand[] = [];
-  let out = "";
-  let err = "";
-  const deps = {
-    root: "/isolated/.rig",
-    cwd: "/workspace",
-    client: {
-      async status(selection: RuntimeCommand): Promise<ProjectStatusReport> {
-        requests.push({ ...selection, action: "status" });
-        return { project: "demo", targets: [] };
-      },
-      async command(request: RuntimeCommand) {
-        requests.push(request);
-        return reply(request);
-      },
-    },
-    output: {
-      write(value: string) {
-        out += value;
-      },
-      error(value: string) {
-        err += value;
-      },
-    },
-    diagnostics: {
-      async record() {
-        return { path: "/isolated/.rig/logs/rig/rig.jsonl" };
-      },
-    },
-    wait: async () => {},
-    newOperationId: () => "op-1",
-  };
-  return { deps, requests, out: () => out, err: () => err };
+  return cliHarness({
+    command: reply,
+    status: () => ({ project: "demo", targets: [] }),
+    record: recordedInLog,
+  });
 }
 
 test("preview commands reject a Branch positional combined with --deployment instead of acting on the deployment", async () => {

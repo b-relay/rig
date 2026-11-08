@@ -1,12 +1,16 @@
 /* Preloaded into a source rigd: counts every process it starts and every read of its runtime state, in the file $IDLE_TALLY. */
-import { writeFileSync } from "node:fs";
+import { renameSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const childProcess = require("node:child_process");
 const { syncBuiltinESMExports } = require("node:module");
 const tally = { reads: 0, spawns: [] as string[] };
 const path = process.env.IDLE_TALLY!;
-const save = () => writeFileSync(path, JSON.stringify(tally));
+// Replaced whole through a file beside it, so the test, which reads the tally while rigd runs, never reads half of one.
+const save = () => {
+  writeFileSync(`${path}.partial`, JSON.stringify(tally));
+  renameSync(`${path}.partial`, path);
+};
 const spawned = (command: readonly string[]) => {
   tally.spawns.push(command.join(" "));
   save();

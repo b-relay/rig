@@ -165,17 +165,20 @@ function adoptMembers(
       for (const row of table)
         if (row.pgid === group.pgid) owned.set(row.pid, row.birth);
 }
-/** Signals `owned` while it is still that process; one that has just exited, or whose pid another now has, is left alone. */
-function signalOwned(
+/** Signals `owned` while it is still that process; one that has just exited, or whose pid another now has, is left alone.
+ * Answers whether the signal was sent. */
+export function signalOwned(
   owned: { pid: number; identity: string },
   signal: NodeJS.Signals,
   inspect: Inspect,
-) {
-  if (processIdentity(owned.pid, inspect) !== owned.identity) return;
+): boolean {
+  if (processIdentity(owned.pid, inspect) !== owned.identity) return false;
   try {
     process.kill(owned.pid, signal);
+    return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    return false;
   }
 }
 /** How long a rigd or a Service may take to exit once it has been told to, on a machine as loaded as a test run makes it. */
@@ -506,9 +509,10 @@ async function createFixture(options: FixtureOptions) {
       )
         process.kill(daemon.pid, "SIGTERM");
       if (!(await processExited(daemon, inspect))) {
-        process.kill(daemon.pid, "SIGKILL");
         problems.push(
-          `rigd ${daemon.pid} did not stop, and was killed${(await processExited(daemon, inspect)) ? "" : ", but is still running"}`,
+          signalOwned(daemon, "SIGKILL", inspect)
+            ? `rigd ${daemon.pid} did not stop, and was killed${(await processExited(daemon, inspect)) ? "" : ", but is still running"}`
+            : `rigd ${daemon.pid} did not stop, and its pid no longer names that process, so it was not signalled`,
         );
       }
     }

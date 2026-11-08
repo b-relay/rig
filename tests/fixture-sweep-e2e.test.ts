@@ -15,6 +15,7 @@ import {
   processExited,
   processIdentity,
   rigFixture,
+  signalOwned,
   type Inspect,
 } from "./support/rig-fixture";
 
@@ -60,19 +61,26 @@ async function testRun(
   clearTimeout(deadline);
   return { code, output: stdout + stderr, overran };
 }
-/** Stops what a run left behind while it is still the process reported, and removes each root once it has. */
-async function stopLeftBehind(reports: readonly Report[]) {
+/** Stops what a run left behind while it is still the process reported, and removes each root once it has. `inspect` is
+ * the `ps` it reads processes with. */
+async function stopLeftBehind(
+  reports: readonly Report[],
+  inspect: Inspect = platformInspect,
+) {
   for (const report of reports) {
     for (const owned of report.processes) {
       if (
         owned.identity === undefined ||
-        processIdentity(owned.pid) !== owned.identity
+        processIdentity(owned.pid, inspect) !== owned.identity
       )
         continue;
       process.kill(owned.pid, "SIGTERM");
       const known = { pid: owned.pid, identity: owned.identity };
-      if (!(await processExited(known))) process.kill(owned.pid, "SIGKILL");
-      if (!(await processExited(known)))
+      if (!(await processExited(known, inspect)))
+        signalOwned(known, "SIGKILL", inspect);
+      // Sent or not, since a SIGKILL is skipped on any read that does not show the process: the root goes only once the
+      // wait sees it gone.
+      if (!(await processExited(known, inspect)))
         throw new Error(
           `process ${owned.pid} is still running; its root is kept at ${report.base}`,
         );
@@ -596,6 +604,68 @@ test("a group signal that fails is reported, and cleanup still stops the daemon 
     await rm(work, { recursive: true, force: true });
   }
 }, 60_000);
+
+for (const [read, fault] of [
+  ["an empty", { exitCode: 1, stdout: "" }],
+  ["a partial", { exitCode: 0, stdout: "Thu Jan\n" }],
+] as const)
+  test(`a process left behind that ignores SIGTERM keeps its root when ${read} read of it comes as the SIGKILL is due`, async () => {
+    const work = await mkdtemp(join(tmpdir(), "rig-fixture-sweep-"));
+    const child = Bun.spawn([
+      "/bin/sh",
+      "-c",
+      "trap '' TERM; exec /bin/sleep 600",
+    ]);
+    let owned: { pid: number; identity: string } | undefined;
+    try {
+      // The trap is set once the shell has become the sleep, which keeps its pid and birth; the shell's own command line
+      // names the sleep too.
+      for (
+        let i = 0;
+        i < 500 &&
+        platformInspect([
+          "-p",
+          String(child.pid),
+          "-o",
+          "command=",
+        ]).stdout.trim() !== "/bin/sleep 600";
+        i++
+      )
+        await Bun.sleep(10);
+      owned = { pid: child.pid, identity: processIdentity(child.pid)! };
+      // One read of it fails once the wait after SIGTERM has run out, as it would during its last look or the SIGKILL's.
+      const due = Date.now() + 15_000;
+      let faulted = false;
+      const inspect: Inspect = (args) => {
+        if (
+          !faulted &&
+          Date.now() >= due &&
+          args.join(" ") === `-p ${child.pid} -o lstart=`
+        ) {
+          faulted = true;
+          return fault;
+        }
+        return platformInspect(args);
+      };
+      const failure = await stopLeftBehind(
+        [{ base: work, processes: [owned] }],
+        inspect,
+      ).then(
+        () => undefined,
+        (error: Error) => error.message,
+      );
+      expect(faulted).toBe(true);
+      expect(failure).toBe(
+        `process ${child.pid} is still running; its root is kept at ${work}`,
+      );
+      expect(await exists(work)).toBe(true);
+      expect(processIdentity(child.pid)).toBe(owned.identity);
+    } finally {
+      if (!owned) child.kill("SIGKILL");
+      await stopHeld(owned ? [owned] : [], child.exited);
+      await rm(work, { recursive: true, force: true });
+    }
+  }, 60_000);
 
 /** A preload that loads the sweep, then, in a later teardown, asks for a fixture and catches its refusal, as a caller may. */
 const catchingTeardown = `import { afterAll } from "bun:test";

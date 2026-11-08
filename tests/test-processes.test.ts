@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,12 +30,38 @@ async function until(holds: () => boolean | Promise<boolean>) {
 const recordedNumber = async (path: string) =>
   Number(await readFile(path, "utf8").catch(() => "")) || undefined;
 
-/** Each test's directory, and the file its shell records the sleep it starts in. */
-const started: { dir: string; descendant: string }[] = [];
-// Whatever the test came to, and without the helper it tests, the sleep it left is killed, while its pid is still that sleep.
+/** Whether any process, an unreaped one included, is left in the process group `group`. */
+const groupLeft = (group: number) =>
+  Bun.spawnSync(["/bin/ps", "-axo", "pgid="])
+    .stdout.toString()
+    .split("\n")
+    .some((line) => Number(line) === group);
+/** Each test's directory, the file its shell records the sleep it starts in, and every process Bun spawned for it, known
+ * from the moment each started. Each leads its own group, which the sleep its shell starts is in from the start. */
+const started: {
+  dir: string;
+  descendant: string;
+  spawns: ReturnType<typeof spyOn<typeof Bun, "spawn">>;
+}[] = [];
+// Whatever the test came to, and without the helper it tests, what it started is killed: each group it spawned, whether
+// or not its shell came to record the sleep, and then a sleep its shell recorded, while its pid is still that sleep.
 afterEach(async () => {
-  for (const { dir, descendant } of started.splice(0)) {
-    await until(async () => (await recordedNumber(descendant)) !== undefined);
+  for (const { dir, descendant, spawns } of started.splice(0)) {
+    const children = spawns.mock.results.flatMap((result) =>
+      result.type === "return" ? [result.value] : [],
+    );
+    spawns.mockRestore();
+    for (const child of children)
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // Its group has gone.
+      }
+    // Reaped: each shell by the runner, and what it left in its group by launchd.
+    const reaped = await until(() =>
+      children.every((child) => !groupLeft(child.pid)),
+    );
+    // Its shell has ended, so the file is all it will ever be.
     const sleep = await recordedNumber(descendant);
     if (
       sleep !== undefined &&
@@ -49,13 +75,15 @@ afterEach(async () => {
         // It has just gone.
       }
     await rm(dir, { recursive: true, force: true });
+    expect(reaped).toBe(true);
   }
-});
+  // Longer than the one wait above, so a slow reap fails here rather than leaving the hook to time out.
+}, 15_000);
 
 test("ending a test kills a descendant that holds a process's output open, and the test's body settles at once", async () => {
   const dir = await mkdtemp(join(tmpdir(), "rig-test-processes-"));
   const recorded = join(dir, "descendant.pid");
-  started.push({ dir, descendant: recorded });
+  started.push({ dir, descendant: recorded, spawns: spyOn(Bun, "spawn") });
   const scope = testScope();
   // The shell exits at once; the sleep it leaves behind keeps its output open, so the run waits on it.
   const body = within(scope, async () => {

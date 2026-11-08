@@ -199,7 +199,7 @@ const points: {
 ];
 
 /** Spoils reads by `fault` at the read numbered `from`, alone or from there on as `spoiled` says. */
-const spoiling =
+const spoiledFrom =
   (from: number, fault: Fault, spoiled: "once" | "always") => (read: number) =>
     read === from || (spoiled === "always" && read > from) ? fault : undefined;
 
@@ -216,7 +216,7 @@ for (const point of points)
             command:
               point.as === "rigd" ? "/usr/local/bin/rigd" : "/bin/sleep 600",
             endsOn: point.endsOn,
-            fault: spoiling(point.from, fault, spoiled),
+            fault: spoiledFrom(point.from, fault, spoiled),
           },
           point.uninstall ?? true,
         );
@@ -291,7 +291,7 @@ for (const point of leftBehind)
       const fake = fakeProcess({
         command: "/bin/sleep 600",
         endsOn: point.endsOn,
-        fault: spoiling(point.from, fault, spoiled),
+        fault: spoiledFrom(point.from, fault, spoiled),
       });
       try {
         const failure = await stopLeftBehind(

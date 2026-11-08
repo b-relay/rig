@@ -69,7 +69,10 @@ export function createCaddyAdmin(
       if (response.ok) return undefined;
       const error = (() => {
         try {
-          return (JSON.parse(text) as { error?: unknown }).error;
+          const reply: unknown = JSON.parse(text);
+          return typeof reply === "object" && reply !== null && "error" in reply
+            ? reply.error
+            : undefined;
         } catch {
           return undefined;
         }

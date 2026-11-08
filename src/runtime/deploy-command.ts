@@ -9,7 +9,7 @@ import {
   watchWarnings,
 } from "./deploy";
 import { describeServices, type KeepDecision } from "./keep-decision";
-import { assertSourceBuildsKnown } from "./lifecycle";
+import { assertSourceBuildsKnown } from "./preparation-evidence";
 import type { OperationCoordinator } from "./operation-coordinator";
 import { targetScope } from "./operation-locks";
 import type { OrphanSweep } from "./orphan-routes";

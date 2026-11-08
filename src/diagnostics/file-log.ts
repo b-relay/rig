@@ -257,10 +257,14 @@ async function segmentDay(path: string): Promise<string | undefined> {
 }
 function recordDay(line: string): string | undefined {
   try {
-    const record = JSON.parse(line) as { timestamp?: unknown };
-    return typeof record.timestamp === "string" &&
-      /^\d{4}-\d{2}-\d{2}T/.test(record.timestamp)
-      ? record.timestamp.slice(0, 10)
+    const record: unknown = JSON.parse(line);
+    const timestamp =
+      typeof record === "object" && record !== null && "timestamp" in record
+        ? record.timestamp
+        : undefined;
+    return typeof timestamp === "string" &&
+      /^\d{4}-\d{2}-\d{2}T/.test(timestamp)
+      ? timestamp.slice(0, 10)
       : undefined;
   } catch {
     return undefined;

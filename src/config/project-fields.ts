@@ -13,6 +13,7 @@ import {
   isHealthUrl,
 } from "./healthcheck";
 import { isTimeZone, parseCron } from "../domain/cron";
+import { keyedMap } from "./keyed-map";
 import {
   MAX_NAME_LENGTH,
   NAME_CHARACTERS,
@@ -140,47 +141,31 @@ const envName = z
   );
 /** Public inline environment; only wildcard addresses under bind-style keys are rejected, since HOST may also name a public hostname. */
 const environmentMap = (scope: ReferenceScope) =>
-  z
-    .unknown()
-    // The record parser drops a __proto__ key without a word, so it is refused before it gets there. The refusal aborts,
-    // as a wrong type does, so the cross-field rules never read the map the record parser did not check.
-    .refine(
-      (env) =>
-        typeof env !== "object" ||
-        env === null ||
-        !Object.hasOwn(env, "__proto__"),
-      {
-        message: "__proto__ is not an environment variable name.",
-        abort: true,
-      },
-    )
-    .pipe(
-      z.record(
-        envName,
-        z
-          .string()
-          .describe(
-            `Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. ${referencesIn(scope)}`,
-          ),
+  keyedMap(
+    envName,
+    z
+      .string()
+      .describe(
+        `Public value. It reaches the process exactly, so a NUL character or an unpaired surrogate is refused. ${referencesIn(scope)}`,
       ),
-    )
-    .superRefine((env, ctx) => {
-      for (const [key, value] of Object.entries(env)) {
-        if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
-          ctx.addIssue({
-            code: "custom",
-            path: [key],
-            message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
-          });
-        const unrepresentable = unrepresentableValue(value);
-        if (unrepresentable)
-          ctx.addIssue({
-            code: "custom",
-            path: [key],
-            message: `${key} holds ${unrepresentable}.`,
-          });
-      }
-    });
+    "an environment variable name",
+  ).superRefine((env, ctx) => {
+    for (const [key, value] of Object.entries(env)) {
+      if (BIND_KEY.test(key) && WILDCARD_ADDRESS.test(value.trim()))
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `${key} must bind to 127.0.0.1 or localhost, not a wildcard address.`,
+        });
+      const unrepresentable = unrepresentableValue(value);
+      if (unrepresentable)
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `${key} holds ${unrepresentable}.`,
+        });
+    }
+  });
 const env = (scope: ReferenceScope) =>
   environmentMap(scope).describe(
     "Public environment values passed to the process; never put secrets here. Names may not start with _RIG_, which Rig reserves. Values may use ${...} references. Bind-style keys such as HOST or BIND_ADDR may not use a wildcard address.",
@@ -209,14 +194,13 @@ const portName = text
   .describe(
     "Port name used in ${ports.<port>} and ${services.<service>.ports.<port>} references. A Service with exactly one port can also be referenced as ${port} in its own settings and as ${services.<service>.port} anywhere.",
   );
-const ports = z
-  .record(
-    portName,
-    z.union([z.literal("auto"), z.number().int().min(1).max(65535)]),
-  )
-  .describe(
-    "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
-  );
+const ports = keyedMap(
+  portName,
+  z.union([z.literal("auto"), z.number().int().min(1).max(65535)]),
+  "a port name",
+).describe(
+  "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
+);
 /** A Service's own hostname: a hostname, or a hostname with the port it reaches. */
 const serviceDomain = z
   .union([
@@ -467,27 +451,26 @@ const job = z.strictObject(jobFields);
 /** A proxy upstream: a Service name, `${services.<name>.port}`, or `${services.<name>.ports.<port>}`. */
 export const PROXY_UPSTREAM =
   /^(?:([a-z0-9][a-z0-9-]*)|\$\{services\.([a-z0-9][a-z0-9-]*)\.(?:port|ports\.([a-z0-9][a-z0-9-]*))\})$/;
-const proxy = z
-  .record(
-    z
-      .string()
-      .regex(
-        /^\/[A-Za-z0-9._~/-]*$/,
-        "must be a path prefix starting with '/' without wildcards or references",
-      ),
-    z
-      .string()
-      .regex(
-        PROXY_UPSTREAM,
-        "must name a Service, such as web, or one of its ports, such as ${services.web.ports.http}",
-      )
-      .describe(
-        "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed.",
-      ),
-  )
-  .describe(
-    "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
-  );
+const proxy = keyedMap(
+  z
+    .string()
+    .regex(
+      /^\/[A-Za-z0-9._~/-]*$/,
+      "must be a path prefix starting with '/' without wildcards or references",
+    ),
+  z
+    .string()
+    .regex(
+      PROXY_UPSTREAM,
+      "must name a Service, such as web, or one of its ports, such as ${services.web.ports.http}",
+    )
+    .describe(
+      "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed.",
+    ),
+  "a path prefix",
+).describe(
+  "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
+);
 /** A build in a Target patch: a command, or false to turn the inherited build off for that role. */
 const BUILD_OFF =
   "false turns the inherited build off for this role's Targets; leaving the key out keeps it.";
@@ -511,20 +494,23 @@ const patchFields = {
   environment: env("project").optional(),
   env_file: envFile("project").optional(),
   proxy: proxy.optional(),
-  services: z
-    .record(
-      entryName,
-      z
-        .strictObject(serviceFields)
-        .partial()
-        .extend({ build: patchBuild(serviceFields.build.unwrap()) }),
-    )
+  services: keyedMap(
+    entryName,
+    z
+      .strictObject(serviceFields)
+      .partial()
+      .extend({ build: patchBuild(serviceFields.build.unwrap()) }),
+    "a Service name",
+  )
     .optional()
     .describe(
       "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
     ),
-  tools: z
-    .record(entryName, z.strictObject(toolFields).partial())
+  tools: keyedMap(
+    entryName,
+    z.strictObject(toolFields).partial(),
+    "a Tool name",
+  )
     .optional()
     .describe(
       "Setting overrides keyed by an existing Tool name; a patch cannot add or remove Tools.",
@@ -577,16 +563,13 @@ export const projectFields = z.strictObject({
     ),
   environment: env("project").optional(),
   env_file: envFile("project").optional(),
-  services: z
-    .record(entryName, z.strictObject(serviceFields))
+  services: keyedMap(entryName, z.strictObject(serviceFields), "a Service name")
     .optional()
     .describe("Long-running Services keyed by name."),
-  tools: z
-    .record(entryName, tool)
+  tools: keyedMap(entryName, tool, "a Tool name")
     .optional()
     .describe("Installed command-line Tools keyed by name."),
-  jobs: z
-    .record(entryName, job)
+  jobs: keyedMap(entryName, job, "a job name")
     .optional()
     .describe(
       "Scheduled jobs keyed by name: commands rigd runs at cron times, such as a nightly import, with the same command, environment, env_file and working_dir keys and references as a Service. By default a job runs in the stable Target only. A run never overlaps the one before it, appears in rig activity, writes to rig logs under the job's name, and rig status shows its last and next run; rig run <job> runs it now. A job with backup: is a backup job: each run writes a fresh $RIG_BACKUP_DIR, the newest backup.keep are kept, and rig backup list and rig backup restore read them. A job cannot share its name with a Service or Tool.",

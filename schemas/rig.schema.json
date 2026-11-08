@@ -99,6 +99,7 @@
             "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
           },
           "ports": {
+            "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
             "type": "object",
             "propertyNames": {
               "type": "string",
@@ -118,8 +119,7 @@
                   "maximum": 65535
                 }
               ]
-            },
-            "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+            }
           },
           "domain": {
             "anyOf": [
@@ -433,6 +433,7 @@
       }
     },
     "proxy": {
+      "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
       "type": "object",
       "propertyNames": {
         "type": "string",
@@ -442,8 +443,7 @@
         "type": "string",
         "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
         "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
-      },
-      "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
+      }
     },
     "targets": {
       "description": "Which Targets are on, keyed by their fixed names working, stable and preview, each true, false or a settings patch. Only the Targets it turns on are on; without this key every Target is off.",
@@ -512,6 +512,7 @@
                   "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                 },
                 "proxy": {
+                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
                   "type": "object",
                   "propertyNames": {
                     "type": "string",
@@ -521,8 +522,7 @@
                     "type": "string",
                     "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
                     "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
-                  },
-                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
+                  }
                 },
                 "services": {
                   "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -566,6 +566,7 @@
                         "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
                       },
                       "ports": {
+                        "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
                         "type": "object",
                         "propertyNames": {
                           "type": "string",
@@ -585,8 +586,7 @@
                               "maximum": 65535
                             }
                           ]
-                        },
-                        "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                        }
                       },
                       "domain": {
                         "anyOf": [
@@ -841,6 +841,7 @@
                   "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                 },
                 "proxy": {
+                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
                   "type": "object",
                   "propertyNames": {
                     "type": "string",
@@ -850,8 +851,7 @@
                     "type": "string",
                     "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
                     "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
-                  },
-                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
+                  }
                 },
                 "services": {
                   "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -895,6 +895,7 @@
                         "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
                       },
                       "ports": {
+                        "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
                         "type": "object",
                         "propertyNames": {
                           "type": "string",
@@ -914,8 +915,7 @@
                               "maximum": 65535
                             }
                           ]
-                        },
-                        "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                        }
                       },
                       "domain": {
                         "anyOf": [
@@ -1170,6 +1170,7 @@
                   "description": "Environment file path, or an ordered list of paths where later files win. Listed files are required and hold plain KEY=value data; their contents never take part in ${...} references. Relative paths resolve against the workspace root, never against a Service's working_dir; ~ is the operator home. The path itself may use references. References: ${environment.NAME}, ${services.<service>.port} (a Service's only port), ${services.<service>.ports.<port>}, ${services.<service>.data} (a Service's persistent directory), a scalar setting by its path such as ${services.api.stop_timeout}, ${rig.target}, ${rig.workspace}, ${rig.host}, ${rig.url}. $${VAR} writes a literal ${VAR}."
                 },
                 "proxy": {
+                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one.",
                   "type": "object",
                   "propertyNames": {
                     "type": "string",
@@ -1179,8 +1180,7 @@
                     "type": "string",
                     "pattern": "^(?:([a-z0-9][a-z0-9-]*)|\\$\\{services\\.([a-z0-9][a-z0-9-]*)\\.(?:port|ports\\.([a-z0-9][a-z0-9-]*))\\})$",
                     "description": "Upstream of this prefix: a Service name such as web, which means its only port, or exactly one port reference such as ${services.web.ports.http} or ${services.web.port}. No other reference or text is allowed."
-                  },
-                  "description": "Path prefix to the Service, or the Service port, that serves it. Prefixes match at a slash boundary, longest first, and the upstream path is unchanged; '/' is required. Without proxy, a Target with a hostname routes '/' to the one Service that declares ports when that Service declares exactly one."
+                  }
                 },
                 "services": {
                   "description": "Setting overrides keyed by an existing Service name; a patch cannot add or remove Services.",
@@ -1224,6 +1224,7 @@
                         "description": "Directory the Service's command, its build and its healthcheck command run in, relative to the workspace, such as apps/web (default: the workspace root). It cannot leave the workspace: absolute paths, ~, '..' and references are refused. Relative env_file paths and ${rig.workspace} still mean the workspace root."
                       },
                       "ports": {
+                        "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports.",
                         "type": "object",
                         "propertyNames": {
                           "type": "string",
@@ -1243,8 +1244,7 @@
                               "maximum": 65535
                             }
                           ]
-                        },
-                        "description": "Named local TCP ports: auto lets Rig choose and keep a free port, a number from 1 to 65535 pins it. Previews always use chosen ports."
+                        }
                       },
                       "domain": {
                         "anyOf": [

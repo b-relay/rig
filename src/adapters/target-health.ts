@@ -10,7 +10,7 @@ import type {
 import type { ListenerInspection } from "../providers/listener-inspection";
 import type { PortProbe } from "../providers/port-probe";
 import { declaredPorts, plannedRoutes } from "../runtime/ports";
-import { ownedListeners } from "../runtime/lifecycle";
+import { ownedListeners } from "../runtime/service-readiness";
 import type { HealthObservation } from "../runtime/status";
 import {
   failureReason as describedFailure,

@@ -96,18 +96,6 @@ const SENTINELS: readonly (Pick<ContractBreach, "file"> &
     why: "The Operation selects again: isReselect catches it, and after the last try admission gives OPERATION_CONTENDED.",
   },
   {
-    file: "src/runtime/application.ts",
-    count: 3,
-    text: "admission.moved()",
-    why: "Typed Error, but gives Reselect or OPERATION_CONTENDED; #827 types it.",
-  },
-  {
-    file: "src/runtime/route-guard.ts",
-    count: 1,
-    text: "start.follow.exited(service, exits.get(service)!)",
-    why: "Typed Error, but its one implementation gives exitedAfterReady's RigError; #827 types it.",
-  },
-  {
     file: "src/adapters/proxy-verify.ts",
     count: 1,
     text: "checkServerIdentity(hostname, certificate)",

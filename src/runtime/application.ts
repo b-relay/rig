@@ -283,8 +283,15 @@ const reads = readActions;
 const STATE_WORK = "state";
 /** How many times an Operation selects again because what it selected changed while it waited. */
 const MAX_SELECTIONS = 3;
+declare const reselection: unique symbol;
+/** A selection that changed while its Operation waited, which the Operation answers by selecting again: a signal, not a
+ * failure, so its type is no Error. The brand is the type's alone; `isReselect` tells one apart at run time. */
+interface Reselection {
+  readonly [reselection]: true;
+}
 /** What an Operation selected changed while it waited for its scopes; it selects again. */
-class Reselect extends Error {
+class Reselect extends Error implements Reselection {
+  declare readonly [reselection]: true;
   constructor() {
     super("The selection changed while the Operation waited.");
     reselections.add(this);
@@ -306,8 +313,9 @@ interface Admission {
   holds(scopes: readonly LockScope[]): boolean;
   /** Names what the Operation is doing now; `target` is the recorded Target it does it to. */
   phase(phase: OperationPhase, target?: Pick<TargetRecord, "id">): void;
-  /** The failure for a selection that changed while this Operation waited. */
-  moved(): Error;
+  /** What to throw for a selection that changed while this Operation waited: a Reselection, or OPERATION_CONTENDED once
+   * the Operation may select no more. */
+  moved(): RigError | Reselection;
 }
 /** For reads, which run beside everything and never wait. */
 const UNLOCKED: Admission = {

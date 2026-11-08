@@ -11,7 +11,8 @@ import type { TargetOutput } from "./target-output";
 
 /** Runs a Target's build or dependency installation: `command` through /bin/sh in `cwd` (the workspace when absent) with
  * `env`, within `timeoutSeconds`, its output recorded under `componentName` (setup when absent), including what a killed
- * command printed before its budget ran out; all of it is recorded before the command returns or fails. */
+ * command printed before its budget ran out. All of it is recorded before the command returns. A failing command waits
+ * for its recording only up to a bound, then fails with its own error: a slow recording still finishes, just after. */
 export type TargetCommand = (
   command: string,
   target: TargetRecord,

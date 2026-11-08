@@ -726,18 +726,22 @@ test("a read that fails while the Host restart's stop is recorded keeps it pendi
   const w = await world("always", { working: true }, false);
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
   const spawned = w.spawns.length;
-  // The state read that orders the restart among starts fails once, during the first pass after the reboot.
+  // The state read that orders the restart among starts fails once, during the first pass after the reboot: the first
+  // time a pass looks for the Host restart in a read that records it.
   let failing = true;
   const read = w.store.read.bind(w.store);
   w.store.read = async () => {
-    if (
-      failing &&
-      new Error().stack?.includes("recordStoppedAfterHostRestart")
-    ) {
-      failing = false;
-      throw new Error("I/O error");
-    }
-    return await read();
+    const state = await read();
+    if (!failing || !w.inPass() || !state.host?.restart) return state;
+    return new Proxy(state, {
+      get(target, key, receiver) {
+        if (failing && key === "host") {
+          failing = false;
+          throw new Error("I/O error");
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
   };
   await w.reboot();
   expect(failing).toBe(false);

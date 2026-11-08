@@ -1,4 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { startControlPlane } from "../src/daemon/server";
 import { RigError, internalInvariant } from "../src/domain/errors";
 import { RIG_BUILD } from "../src/domain/version";
@@ -130,16 +131,17 @@ test("a stalled or dripping upload is refused at the receive deadline and its co
 test("an upload's timer runs for the documented 10 s, or the deadline the control plane is given", async () => {
   const real = globalThis.setTimeout;
   const delays: (number | undefined)[] = [];
-  // Only the timers the control plane's body reader sets: the process sets others while the requests run.
+  // Only the timers a control plane sets while it answers: the process sets others while the requests run. A server
+  // answers in the context it was started in, and the runtime it reaches here sets none.
+  const serving = new AsyncLocalStorage<true>();
   const timers = spyOn(globalThis, "setTimeout").mockImplementation(((
     ...args: Parameters<typeof setTimeout>
   ) => {
-    if (new Error().stack?.includes("/src/daemon/request-body.ts:"))
-      delays.push(args[1]);
+    if (serving.getStore()) delays.push(args[1]);
     return real(...args);
   }) as typeof setTimeout);
-  const documented = controlPlane();
-  const given = controlPlane({ bodyDeadlineMs: 50 });
+  const documented = serving.run(true, () => controlPlane());
+  const given = serving.run(true, () => controlPlane({ bodyDeadlineMs: 50 }));
   try {
     const command = JSON.stringify({ action: "list" });
     await post(documented.server.port!, "/v1/command", command);

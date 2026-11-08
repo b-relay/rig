@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Cloud, Lock, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import {
   DNS_RECORD_TYPES,
@@ -271,17 +271,25 @@ export function RecordDialog({
     { busy: false },
   );
   const busy = check.busy || act.busy;
+  // Counts edits, so a check answered after the draft changed speaks for a draft no longer shown, and is dropped.
+  const edits = useRef(0);
   const set = <K extends keyof RecordDraft>(key: K, value: RecordDraft[K]) => {
+    edits.current += 1;
     setDraft((now) => ({ ...now, [key]: value }));
     setIssues(({ [key]: _gone, ...rest }) => rest);
   };
   const save = async () => {
+    const checking = edits.current;
     setCheck({ busy: true });
     let outcome: Outcome<DraftCheck>;
     try {
       outcome = await checkDnsRecord({ zone, draft });
     } catch (error) {
       outcome = { ok: false, failure: transportFailure(error) };
+    }
+    if (edits.current !== checking) {
+      setCheck({ busy: false });
+      return;
     }
     if (!outcome.ok) {
       setCheck({ busy: false, failure: outcome.failure });

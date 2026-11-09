@@ -231,6 +231,87 @@ test.each([
   },
 );
 
+/** A Project whose Service's command was built from the public `MODE`, and whose env files are `files`, in order. */
+async function guardedWorld(files: number) {
+  const scratch = await mkdtemp(join(tmpdir(), "rig-doctor-conflict-"));
+  roots.push(scratch);
+  const paths = Array.from({ length: files }, (_, index) =>
+    join(scratch, `values-${index}.env`),
+  );
+  const w = await world({
+    env_file: paths,
+    environment: { MODE: "live" },
+    services: {
+      web: {
+        command: "web ${environment.MODE}",
+        ports: { http: WEB },
+      },
+    },
+    targets: { working: true },
+  });
+  return { ...w, paths };
+}
+const CONFLICT = "conflicting-value-x";
+
+test("doctor fails a Target whose env file changes a public value a command was built from (ENV_CONFLICT), naming the key and file, never a value", async () => {
+  const w = await guardedWorld(1);
+  const [file] = w.paths;
+  await writeFile(file!, `MODE=${CONFLICT}\n`);
+  await expect(
+    w.command({ action: "up", project: "demo", target: "working" }),
+  ).rejects.toMatchObject({ code: "ENV_CONFLICT" });
+  const report = await w.doctor();
+  expect(
+    report.checks.find((check) => check.name === "working/env-files"),
+  ).toEqual({
+    name: "working/env-files",
+    ok: false,
+    message: `${file} changes MODE, but a command of web was already built from the public value at environment.MODE. Read by Service web. Nothing that reads it can start until then; what already runs keeps running.`,
+    reason: "env-file-unusable",
+    hint: expect.stringContaining("Remove MODE from the file"),
+  });
+  expect(JSON.stringify(report)).not.toContain(CONFLICT);
+});
+
+test.each([
+  ["the same value", ["MODE=live\n"]],
+  [
+    "a value a later file sets back to the public one",
+    [`MODE=${CONFLICT}\n`, "MODE=live\n"],
+  ],
+])(
+  "doctor passes a Target whose env files give a guarded name %s, as its start does",
+  async (_, contents) => {
+    const w = await guardedWorld(contents.length);
+    for (const [index, content] of contents.entries())
+      await writeFile(w.paths[index]!, content);
+    await w.command({ action: "up", project: "demo", target: "working" });
+    expect(await w.check("working/env-files")).toBeUndefined();
+    expect((await w.doctor()).ok).toBe(true);
+  },
+);
+
+test("doctor fails a running Target whose env file now changes a guarded public value, which its restart refuses", async () => {
+  const w = await guardedWorld(1);
+  const [file] = w.paths;
+  await writeFile(file!, "MODE=live\n");
+  await w.command({ action: "up", project: "demo", target: "working" });
+  expect(await w.check("working/env-files")).toBeUndefined();
+  await writeFile(file!, `MODE=${CONFLICT}\n`);
+  const report = await w.doctor();
+  expect(
+    report.checks.find((check) => check.name === "working/env-files"),
+  ).toMatchObject({
+    ok: false,
+    reason: "env-file-unusable",
+    message: expect.stringContaining(`${file} changes MODE`),
+  });
+  expect(JSON.stringify(report)).not.toContain(CONFLICT);
+  await expect(
+    w.command({ action: "restart", project: "demo", target: "working" }),
+  ).rejects.toMatchObject({ code: "ENV_CONFLICT" });
+});
+
 test("doctor fails a Target whose optional operator env file is present but refused, naming who reads it, never a value", async () => {
   const w = await world({
     services: { web: { command: "serve", ports: { http: WEB } } },

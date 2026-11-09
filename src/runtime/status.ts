@@ -79,13 +79,14 @@ export interface ObservationEffects {
   unusableEnvFiles?(target: TargetRecord): Promise<UnusableEnvFile[]>;
 }
 /** An env file a start of its Target would refuse: missing, unreadable, unparsable, holding a value no process could get
- * exactly, or inside the checkout without Git ignoring it. */
+ * exactly, inside the checkout without Git ignoring it, or changing a public value a command was built from. */
 export interface UnusableEnvFile {
   readonly path: string;
   /** Who reads it, as an operator names them: "the whole Project", "Service web", "job nightly". */
   readonly readers: readonly string[];
-  /** The refusal a start would give (ENV_FILE_MISSING, ENV_FILE, ENV_VALUE, ENV_FILE_TRACKED, ENV_FILE_UNVERIFIED), which
-   * names the file, and for ENV_VALUE its line and name, never a value. */
+  /** The refusal a start would give (ENV_FILE_MISSING, ENV_FILE, ENV_VALUE, ENV_FILE_TRACKED, ENV_FILE_UNVERIFIED, or
+   * ENV_CONFLICT for a file that changes a public value a command of `readers` was built from), which names the file, and
+   * for ENV_VALUE and ENV_CONFLICT the name, never a value. */
   readonly refusal: RigError;
 }
 /** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget.

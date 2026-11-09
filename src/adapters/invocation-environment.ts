@@ -18,9 +18,12 @@ import {
   readEnvironmentFile,
 } from "./env-file";
 import {
+  assertGuardedInputs,
   assertRepresentableEnvironment,
   composeEnvironment,
+  type LoadedEnvFile,
 } from "../domain/process-environment";
+import type { PublicInput } from "../config/references";
 import { RigError, diagnosticErrorCode } from "../domain/errors";
 import { assertContainedDirectory } from "../providers/contained-directory";
 import { privateDirectory } from "../providers/private-files";
@@ -143,27 +146,37 @@ export function createInvocationEnvironment(options: {
       const { plan } = target;
       // A file the Project lists is in every scope's list too; it is named once, as the whole Project's.
       const project = new Set((plan.envFiles ?? []).map(({ path }) => path));
-      const scopes: [string, readonly EnvFileRef[] | undefined][] = [
-        ["the whole Project", plan.envFiles],
-        ...plan.components.flatMap(
-          (component): [string, EnvFileRef[] | undefined][] =>
-            component.kind === "persistent"
-              ? []
-              : [
-                  [
-                    `${component.kind === "managed" ? "Service" : "Tool"} ${component.name}`,
-                    component.envFiles,
-                  ],
-                ],
+      /** Each invocation scope as `compose` composes it: its env files in order and the public inputs its commands were built
+       * from, the shared build's for the Project. */
+      const scopes: {
+        reader: string;
+        refs: readonly EnvFileRef[];
+        guarded: readonly PublicInput[];
+        component?: string;
+      }[] = [
+        {
+          reader: "the whole Project",
+          refs: plan.envFiles ?? [],
+          guarded:
+            plan.builds?.find((unit) => unit.component === undefined)
+              ?.commandInputs ?? [],
+        },
+        ...[...plan.components, ...(plan.jobs ?? [])].flatMap((scope) =>
+          "kind" in scope && scope.kind === "persistent"
+            ? []
+            : [
+                {
+                  reader: `${!("kind" in scope) ? "job" : scope.kind === "managed" ? "Service" : "Tool"} ${scope.name}`,
+                  refs: scope.envFiles ?? [],
+                  guarded: scope.commandInputs ?? [],
+                  component: scope.name,
+                },
+              ],
         ),
-        ...(plan.jobs ?? []).map((job): [string, EnvFileRef[] | undefined] => [
-          `job ${job.name}`,
-          job.envFiles,
-        ]),
       ];
       const files = new Map<string, { ref: EnvFileRef; readers: string[] }>();
-      for (const [reader, refs] of scopes)
-        for (const ref of refs ?? []) {
+      for (const { reader, refs } of scopes)
+        for (const ref of refs) {
           const file = files.get(ref.path) ?? { ref, readers: [] };
           // Required wherever one scope lists it.
           if (ref.required) file.ref = ref;
@@ -172,15 +185,40 @@ export function createInvocationEnvironment(options: {
           files.set(ref.path, file);
         }
       const unusable: UnusableEnvFile[] = [];
-      for (const { ref, readers } of files.values())
+      /** Each file's contents as a start loads it, or absent when it is skipped or refused. */
+      const loaded = new Map<string, LoadedEnvFile | undefined>();
+      for (const [path, { ref, readers }] of files)
         try {
           // As the next start reads it, which refuses a value no process could get exactly (ENV_VALUE), whether or not a
           // process started before Rig refused such values still runs.
-          await loadEnvironmentFiles([ref], plan.workspacePath, ignored);
+          loaded.set(
+            path,
+            (await loadEnvironmentFiles([ref], plan.workspacePath, ignored))
+              .files[0],
+          );
         } catch (refusal) {
           if (!(refusal instanceof RigError)) throw refusal;
-          unusable.push({ path: ref.path, readers, refusal });
+          unusable.push({ path, readers, refusal });
         }
+      // Then each scope whose files all load is composed as a start composes it, its files in order, by the same rule.
+      for (const scope of scopes) {
+        if (scope.refs.some(({ path }) => !loaded.has(path))) continue;
+        try {
+          assertGuardedInputs({
+            files: scope.refs.flatMap(({ path }) => loaded.get(path) ?? []),
+            guarded: scope.guarded,
+            ...(scope.component ? { component: scope.component } : {}),
+          });
+        } catch (refusal) {
+          if (!(refusal instanceof RigError)) throw refusal;
+          const sources = refusal.details.sources;
+          unusable.push({
+            path: Array.isArray(sources) ? String(sources.at(-1)) : "",
+            readers: [scope.reader],
+            refusal,
+          });
+        }
+      }
       return unusable;
     },
   };

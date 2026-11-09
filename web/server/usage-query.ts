@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_NAME_LENGTH } from "../../src/domain/names";
 import { USAGE_RANGES } from "../../src/domain/usage-summary";
 
 const range = z
@@ -26,7 +27,7 @@ export const usageQuerySchema = z.union([
     target: z
       .string()
       .min(1)
-      .max(63)
+      .max(MAX_NAME_LENGTH)
       .describe(
         "The Target the page charts, by name: only its Components' series are sent, beside the Project's and each Target's totals. `all` sends no Component's. It must be a Target the Project has now or one whose history the range still holds (a destroyed Preview); any other answers TARGET_MISSING.",
       ),

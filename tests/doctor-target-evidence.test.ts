@@ -183,7 +183,8 @@ test("doctor fails a Target whose env file lies in the repository without Git ig
   expect(JSON.stringify(await w.doctor())).not.toContain("hunter2-secret");
   await writeFile(join(w.repo, ".gitignore"), ".env\n");
   expect(await w.check("working/env-files")).toBeUndefined();
-});
+  // Real Git runs on every read, slower than the default limit on a loaded CI runner.
+}, 15_000);
 
 test.each([
   ["a NUL in a value", "TOKEN=synthetic-secret\0bad\n", "line 1"],

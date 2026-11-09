@@ -17,6 +17,7 @@ import {
   createHealthMonitor,
   type HealthMonitor,
 } from "../src/runtime/health-monitor";
+import { recordStoppedAfterHostRestart } from "../src/runtime/host-restart";
 import { runtimeWorld } from "./support/runtime-world";
 
 /** A health restart whose start fails, end to end: the real runtime, lifecycle hooks, state-write transitions,
@@ -320,6 +321,8 @@ async function world(
     run: async (kind: "working" | "stable" = "working") =>
       (await targetOf(kind)).services!.web!,
     store: w.store,
+    /** The runtime's dependencies, for a test that calls one of its steps itself. */
+    deps: w.deps,
     /** Whether the caller runs on behalf of a supervision pass the world started. */
     inPass: () => passing.getStore() === true,
     activity: async () =>
@@ -726,18 +729,22 @@ test("a read that fails while the Host restart's stop is recorded keeps it pendi
   const w = await world("always", { working: true }, false);
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
   const spawned = w.spawns.length;
-  // The state read that orders the restart among starts fails once, during the first pass after the reboot.
+  // The state read that orders the restart among starts fails once, during the first pass after the reboot: the first
+  // time a pass looks for the Host restart in a read that records it.
   let failing = true;
   const read = w.store.read.bind(w.store);
   w.store.read = async () => {
-    if (
-      failing &&
-      new Error().stack?.includes("recordStoppedAfterHostRestart")
-    ) {
-      failing = false;
-      throw new Error("I/O error");
-    }
-    return await read();
+    const state = await read();
+    if (!failing || !w.inPass() || !state.host?.restart) return state;
+    return new Proxy(state, {
+      get(target, key, receiver) {
+        if (failing && key === "host") {
+          failing = false;
+          throw new Error("I/O error");
+        }
+        return Reflect.get(target, key, receiver);
+      },
+    });
   };
   await w.reboot();
   expect(failing).toBe(false);
@@ -753,6 +760,58 @@ test("a read that fails while the Host restart's stop is recorded keeps it pendi
   );
   await w.runtime.command({ action: "up", project: "demo", target: "working" });
   expect(await w.running()).toBe(true);
+}, 30_000);
+
+test("recording a Host restart's stop of a Target answers false when its state read fails: it writes nothing, uses nothing else, and records the failure", async () => {
+  const w = await world("always", { working: true }, false);
+  await w.runtime.command({ action: "up", project: "demo", target: "working" });
+  const target = (await w.store.read()).targets[0]!;
+  const store = Object.create(w.store) as typeof w.store;
+  let reads = 0;
+  store.read = async () => {
+    reads++;
+    throw new Error("I/O error");
+  };
+  let writes = 0;
+  store.update = async () => {
+    writes++;
+    throw new Error("the step wrote");
+  };
+  const diagnostics: unknown[] = [];
+  // The step may catch what the lifecycle throws, so count its uses rather than rely on the throw alone.
+  let lifecycleUses = 0;
+  const unused = new Proxy({} as never, {
+    get() {
+      lifecycleUses++;
+      throw new Error("the step used the lifecycle");
+    },
+  });
+  const recorded = await recordStoppedAfterHostRestart(
+    target,
+    { kind: "reboot", boot: "BOOT-2", login: "100002" },
+    {
+      ...w.deps,
+      store,
+      lifecycle: unused,
+      async diagnostic(entry) {
+        diagnostics.push(entry);
+      },
+    },
+  );
+  expect(recorded).toBe(false);
+  expect(reads).toBe(1);
+  expect(lifecycleUses).toBe(0);
+  expect(writes).toBe(0);
+  expect(diagnostics).toEqual([
+    expect.objectContaining({
+      action: "reconcile",
+      outcome: "failed",
+      target: target.name,
+    }),
+  ]);
+  expect(await w.run()).not.toMatchObject({
+    outcome: { hostRestart: expect.anything() },
+  });
 }, 30_000);
 
 test("when the first pass after a reboot cannot read the state, later passes detect the Host restart first: web stays stopped until rig up", async () => {

@@ -30,6 +30,17 @@ export const SPOILED = [
   ...FAULTS.map((fault) => [fault, "once"] as const),
   ...MALFORMED.map((fault) => [fault, "always"] as const),
 ];
+/** Spoiled reads of the process table: those of a process but `unasked`, since a table asks for every pid. */
+export const TABLE_MALFORMED = MALFORMED.filter((fault) => fault !== "unasked");
+/** Each spoiled table read that leaves the process's row out, once, and each malformed one every time. A read taken once
+ * that still shows the row (`commandless`, `misborn`, `alone`, `alone-reborn`) is not among the first: a fixture that
+ * trusted it would still see the process at its pid and group, so at the final look it would act as on an honest read. */
+export const TABLE_SPOILED = [
+  ...(
+    ["failed", "empty", "partial", "unlisted", "failing", "truncated"] as const
+  ).map((fault) => [fault, "once"] as const),
+  ...TABLE_MALFORMED.map((fault) => [fault, "always"] as const),
+];
 
 /** The fields a read asks for, in order: those of each `-o` or `-axo` list, without their headers. */
 function fieldsOf(args: readonly string[]) {
@@ -149,18 +160,36 @@ function spoil(
   }
 }
 
-/** `inspect`, except that the `n`th read asking for the process `pid()` answers as `fault(n)` spoils it, when it does. */
+/** `inspect`, except that the `n`th read asking for the process `pid()` answers as `fault(n)` spoils it, when it does.
+ * `counts` picks the reads that are numbered and spoiled instead, such as those of the whole process table. */
 export function spoiling(
   inspect: Inspect,
   pid: () => number,
   fault: (read: number) => Fault | undefined,
+  counts: (args: readonly string[]) => boolean = (args) => asksFor(args, pid()),
 ): Inspect {
   let reads = 0;
   return (args) => {
-    if (!asksFor(args, pid())) return inspect(args);
+    if (!counts(args)) return inspect(args);
     const spoiled = fault(++reads);
     const answer = inspect(args);
     return spoiled ? spoil(spoiled, args, answer, pid()) : answer;
+  };
+}
+
+/** `inspect`, except that the `n`th read of the whole process table shows `rows(n)`, by field, in place of the rows of
+ * `pids`: as when a process exits, or another takes its pid, between two reads. */
+export function rewritingTables(
+  inspect: Inspect,
+  pids: readonly number[],
+  rows: (read: number) => readonly Record<string, string>[],
+): Inspect {
+  let reads = 0;
+  return (args) => {
+    const answer = inspect(args);
+    if (args[0] !== "-axo") return answer;
+    const shown = rows(++reads).map((values) => rowWith(args, values));
+    return { ...answer, stdout: rowsBut(args, answer, pids, shown) };
   };
 }
 
@@ -169,13 +198,14 @@ export const FAKE_PID = 987654321;
 /** A process at `FAKE_PID` that runs `command`, shown to whatever reads processes through `inspect`, with the birth
  * `birth(n)` gives at its `n`th read by pid, until a signal in `endsOn` ends it. `process.kill` to its pid is recorded
  * in `signals` and sent nowhere, and each read moves `Date.now` a minute on, so every wait for it to exit runs out at its
- * first look. `fault` spoils reads that ask for it by pid, by number, as `spoiling` does. `restore` puts `Date.now` and
- * `process.kill` back. */
+ * first look. `fault` spoils reads that ask for it by pid, by number, as `spoiling` does, and `tableFault` reads of the
+ * whole process table, numbered apart. `restore` puts `Date.now` and `process.kill` back. */
 export function fakeProcess(options: {
   command: string;
   endsOn: readonly NodeJS.Signals[];
   birth?: (read: number) => string;
   fault?: (read: number) => Fault | undefined;
+  tableFault?: (read: number) => Fault | undefined;
 }) {
   const pid = FAKE_PID;
   const birth = options.birth ?? (() => "Thu Jan  1 00:00:00 1970");
@@ -183,6 +213,14 @@ export function fakeProcess(options: {
   let reads = 0;
   let skew = 0;
   const signals: unknown[] = [];
+  /** The real processes, read once: only the fake's row changes from one table read to the next. */
+  const tables = new Map<string, ReturnType<Inspect>>();
+  const realTable = (args: readonly string[]) => {
+    const key = args.join(" ");
+    const read = tables.get(key) ?? platformInspect(args);
+    if (read.exitCode === 0) tables.set(key, read);
+    return read;
+  };
   const shown: Inspect = (args) => {
     const table = args[0] === "-axo";
     const at = args.indexOf("-p");
@@ -190,7 +228,7 @@ export function fakeProcess(options: {
       ? []
       : args[at + 1]!.split(",").filter((each) => each !== String(pid));
     const real = table
-      ? platformInspect(args)
+      ? realTable(args)
       : others.length > 0
         ? platformInspect(
             args.map((arg, index) =>
@@ -208,12 +246,17 @@ export function fakeProcess(options: {
     return { exitCode: 0, stdout: `${real.stdout}${row}\n` };
   };
   const answered = spoiling(
-    (args) =>
-      args[0] === "-axo" || asksFor(args, pid)
-        ? shown(args)
-        : platformInspect(args),
+    spoiling(
+      (args) =>
+        args[0] === "-axo" || asksFor(args, pid)
+          ? shown(args)
+          : platformInspect(args),
+      () => pid,
+      options.fault ?? (() => undefined),
+    ),
     () => pid,
-    options.fault ?? (() => undefined),
+    options.tableFault ?? (() => undefined),
+    (args) => args[0] === "-axo",
   );
   const inspect: Inspect = (args) => {
     skew += 60_000;

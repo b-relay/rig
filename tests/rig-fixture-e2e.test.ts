@@ -361,7 +361,9 @@ test("a process table that cannot be read keeps the root: it is no proof that no
     owned.push(await leasedShell(fixture.root, "exec /bin/sleep 120"));
     const failure = await cleanupFailure(fixture.cleanup);
     expect(failure).toContain(`its root is kept at ${fixture.base}:`);
-    expect(failure).toContain("the process table could not be read");
+    expect(failure).toContain(
+      "the reads of the process table were inconclusive",
+    );
     expect(await exists(fixture.root)).toBe(true);
   } finally {
     for (const each of owned) await stopOwned(each);
@@ -418,7 +420,7 @@ for (const read of ["the process table", "the recorded rigd"] as const)
       expect(failure).toContain(
         read === "the recorded rigd"
           ? "cleanup stopped short, so what it had yet to stop may still run: Error: `/bin/ps -p"
-          : "the process table could not be read",
+          : "the reads of the process table were inconclusive",
       );
       expect(await exists(fixture.root)).toBe(true);
     } finally {

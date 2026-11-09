@@ -142,7 +142,7 @@ test("doctor fails a Target whose required env_file is missing, names the file, 
   ).toEqual({
     name: "working/env-files",
     ok: false,
-    message: `The environment file ${absent} does not exist. Read by Service web. Nothing that reads it can start until then; what already runs keeps running.`,
+    message: `The environment file ${absent} does not exist. Read by Service web. Rig cannot use it as it is now; what already runs keeps running.`,
     reason: "env-file-unusable",
     hint: "A listed env_file is required. A deployed Target resolves a relative path inside its checked-out Commit, where an ignored file is absent: provide the values under ~/.rig/env/<project>/, or list an absolute or ~/ path outside the repository. Never commit a file that holds secrets.",
   });
@@ -177,7 +177,7 @@ test("doctor fails a Target whose env file lies in the repository without Git ig
   expect(check).toMatchObject({
     ok: false,
     reason: "env-file-unusable",
-    message: `The environment file ${join(w.repo, ".env")} is inside the repository and Git does not ignore it. Read by the whole Project. Nothing that reads it can start until then; what already runs keeps running.`,
+    message: `The environment file ${join(w.repo, ".env")} is inside the repository and Git does not ignore it. Read by the whole Project. Rig cannot use it as it is now; what already runs keeps running.`,
     hint: expect.stringContaining("add the path to .gitignore"),
   });
   expect(JSON.stringify(await w.doctor())).not.toContain("hunter2-secret");
@@ -189,7 +189,7 @@ test.each([
   ["a NUL in a value", "TOKEN=synthetic-secret\0bad\n", "line 1"],
   ["bytes that are not UTF-8", Buffer.from([84, 61, 255, 10]), "line 1"],
 ])(
-  "doctor fails a Target whose env file holds %s, which its next start refuses, stopped or running, never showing the value",
+  "doctor fails a Target whose env file holds %s, a value Rig refuses, stopped or running, never showing the value",
   async (_, content, line) => {
     const scratch = await mkdtemp(join(tmpdir(), "rig-doctor-value-"));
     roots.push(scratch);
@@ -204,7 +204,7 @@ test.each([
       ok: false,
       message: expect.stringMatching(
         new RegExp(
-          `^The environment file ${file} has .* on ${line}.* Read by the whole Project\\. Nothing that reads it can start until then; what already runs keeps running\\.$`,
+          `^The environment file ${file} has .* on ${line}.* Read by the whole Project\\. Rig cannot use it as it is now; what already runs keeps running\\.$`,
         ),
       ),
       reason: "env-file-unusable",
@@ -221,7 +221,7 @@ test.each([
     ).rejects.toMatchObject({ code: "ENV_VALUE" });
     expect(await w.check("working/env-files")).toEqual(finding);
     await unshown();
-    // Running from a good file, the same edit leaves it running, and its next start would be refused.
+    // Running from a good file, the same edit leaves it running, and doctor still names the file Rig cannot use.
     await writeFile(file, "TOKEN=synthetic-secret\n");
     await w.command({ action: "up", project: "demo", target: "working" });
     expect(await w.check("working/env-files")).toBeUndefined();
@@ -230,87 +230,6 @@ test.each([
     await unshown();
   },
 );
-
-/** A Project whose Service's command was built from the public `MODE`, and whose env files are `files`, in order. */
-async function guardedWorld(files: number) {
-  const scratch = await mkdtemp(join(tmpdir(), "rig-doctor-conflict-"));
-  roots.push(scratch);
-  const paths = Array.from({ length: files }, (_, index) =>
-    join(scratch, `values-${index}.env`),
-  );
-  const w = await world({
-    env_file: paths,
-    environment: { MODE: "live" },
-    services: {
-      web: {
-        command: "web ${environment.MODE}",
-        ports: { http: WEB },
-      },
-    },
-    targets: { working: true },
-  });
-  return { ...w, paths };
-}
-const CONFLICT = "conflicting-value-x";
-
-test("doctor fails a Target whose env file changes a public value a command was built from (ENV_CONFLICT), naming the key and file, never a value", async () => {
-  const w = await guardedWorld(1);
-  const [file] = w.paths;
-  await writeFile(file!, `MODE=${CONFLICT}\n`);
-  await expect(
-    w.command({ action: "up", project: "demo", target: "working" }),
-  ).rejects.toMatchObject({ code: "ENV_CONFLICT" });
-  const report = await w.doctor();
-  expect(
-    report.checks.find((check) => check.name === "working/env-files"),
-  ).toEqual({
-    name: "working/env-files",
-    ok: false,
-    message: `${file} changes MODE, but a command of web was already built from the public value at environment.MODE. Read by Service web. Nothing that reads it can start until then; what already runs keeps running.`,
-    reason: "env-file-unusable",
-    hint: expect.stringContaining("Remove MODE from the file"),
-  });
-  expect(JSON.stringify(report)).not.toContain(CONFLICT);
-});
-
-test.each([
-  ["the same value", ["MODE=live\n"]],
-  [
-    "a value a later file sets back to the public one",
-    [`MODE=${CONFLICT}\n`, "MODE=live\n"],
-  ],
-])(
-  "doctor passes a Target whose env files give a guarded name %s, as its start does",
-  async (_, contents) => {
-    const w = await guardedWorld(contents.length);
-    for (const [index, content] of contents.entries())
-      await writeFile(w.paths[index]!, content);
-    await w.command({ action: "up", project: "demo", target: "working" });
-    expect(await w.check("working/env-files")).toBeUndefined();
-    expect((await w.doctor()).ok).toBe(true);
-  },
-);
-
-test("doctor fails a running Target whose env file now changes a guarded public value, which its restart refuses", async () => {
-  const w = await guardedWorld(1);
-  const [file] = w.paths;
-  await writeFile(file!, "MODE=live\n");
-  await w.command({ action: "up", project: "demo", target: "working" });
-  expect(await w.check("working/env-files")).toBeUndefined();
-  await writeFile(file!, `MODE=${CONFLICT}\n`);
-  const report = await w.doctor();
-  expect(
-    report.checks.find((check) => check.name === "working/env-files"),
-  ).toMatchObject({
-    ok: false,
-    reason: "env-file-unusable",
-    message: expect.stringContaining(`${file} changes MODE`),
-  });
-  expect(JSON.stringify(report)).not.toContain(CONFLICT);
-  await expect(
-    w.command({ action: "restart", project: "demo", target: "working" }),
-  ).rejects.toMatchObject({ code: "ENV_CONFLICT" });
-});
 
 test("doctor fails a Target whose optional operator env file is present but refused, naming who reads it, never a value", async () => {
   const w = await world({
@@ -331,7 +250,7 @@ test("doctor fails a Target whose optional operator env file is present but refu
   ).toEqual({
     name: "working/env-files",
     ok: false,
-    message: `The environment file ${project} has an unsupported assignment on line 2. Read by the whole Project. The environment file ${service} has an unmatched quote on line 1. Read by Service web. Nothing that reads them can start until then; what already runs keeps running.`,
+    message: `The environment file ${project} has an unsupported assignment on line 2. Read by the whole Project. The environment file ${service} has an unmatched quote on line 1. Read by Service web. Rig cannot use them as they are now; what already runs keeps running.`,
     reason: "env-file-unusable",
     hint: "Use one KEY=value assignment per line; a bare KEY without = is not an assignment. Close the quote on the same line; a value cannot span lines.",
   });

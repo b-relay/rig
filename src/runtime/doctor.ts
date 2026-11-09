@@ -556,9 +556,10 @@ async function stillRecorded(
     isDeepStrictEqual(expectedRoute(live), expectedRoute(target))
   );
 }
-/** A failing `<target>/env-files` check when a start of `target` would refuse env files its plan lists, each named with who
- * reads it and the refusal it would give; what already runs keeps running. Undefined when every one is usable, or when the
- * observations check none. */
+/** A failing `<target>/env-files` check when env files `target`'s plan lists cannot be used as they are now: missing,
+ * unreadable, unparsable, holding a value Rig refuses, or tracked by Git. Each is named with who reads it and Rig's refusal.
+ * It does not predict a start: a build may still write a file before it is read. Undefined when every one is usable, or
+ * when the observations check none. */
 async function envFilesCheck(
   target: TargetRecord,
   observations: Pick<ObservationEffects, "unusableEnvFiles">,
@@ -573,7 +574,7 @@ async function envFilesCheck(
         ({ refusal, readers }) =>
           `${refusal.message} Read by ${readers.join(", ")}.`,
       ),
-      `Nothing that reads ${unusable.length === 1 ? "it" : "them"} can start until then; what already runs keeps running.`,
+      `Rig cannot use ${unusable.length === 1 ? "it as it is" : "them as they are"} now; what already runs keeps running.`,
     ].join(" "),
     reason: "env-file-unusable",
     hint: [...new Set(unusable.map(({ refusal }) => refusal.hint))].join(" "),

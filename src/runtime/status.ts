@@ -74,19 +74,19 @@ export interface ObservationEffects {
     component: ManagedComponent,
     signal: AbortSignal,
   ): Promise<number[]>;
-  /** The env files `target`'s plan lists that a start would refuse now, each with that refusal. Reads them and changes
-   * nothing; no value leaves it. Absent: none is checked. */
+  /** The env files `target`'s plan lists that Rig, reading each as it is now, cannot use, each with Rig's refusal. Reads
+   * them and changes nothing; no value leaves it. Says nothing of a file a build writes before it is read, or of how the
+   * files combine. Absent: none is checked. */
   unusableEnvFiles?(target: TargetRecord): Promise<UnusableEnvFile[]>;
 }
-/** An env file a start of its Target would refuse: missing, unreadable, unparsable, holding a value no process could get
- * exactly, inside the checkout without Git ignoring it, or changing a public value a command was built from. */
+/** An env file that, as it is now, Rig cannot use: missing, unreadable, unparsable, holding a value Rig refuses, or inside
+ * the checkout without Git ignoring it. */
 export interface UnusableEnvFile {
   readonly path: string;
   /** Who reads it, as an operator names them: "the whole Project", "Service web", "job nightly". */
   readonly readers: readonly string[];
-  /** The refusal a start would give (ENV_FILE_MISSING, ENV_FILE, ENV_VALUE, ENV_FILE_TRACKED, ENV_FILE_UNVERIFIED, or
-   * ENV_CONFLICT for a file that changes a public value a command of `readers` was built from), which names the file, and
-   * for ENV_VALUE and ENV_CONFLICT the name, never a value. */
+  /** Rig's refusal of the file (ENV_FILE_MISSING, ENV_FILE, ENV_VALUE, ENV_FILE_TRACKED, ENV_FILE_UNVERIFIED), which names
+   * the file, and for ENV_VALUE its line and name, never a value. */
   readonly refusal: RigError;
 }
 /** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget.

@@ -62,19 +62,21 @@ export interface ComposedEnvironment {
   /** Every value an env file supplies, which output Rig keeps or shows beyond the Target logs must not carry. */
   secrets: string[];
 }
-/** Pure: refuses an invocation's env files (`files`, in order) when the last one that supplies a public env leaf its commands
- * were built from (`guarded`) gives it a different value, because the command text and the process environment would then
- * disagree; an equal value is no conflict. Throws RigError ENV_CONFLICT naming the key, the Component and the competing
- * sources, never a value. */
-export function assertGuardedInputs(input: {
+/** Composes one invocation's process environment: the controlled baseline, then public env, then each file in order.
+ * A public env leaf the invocation's commands were built from (`guarded`) may not get a different final value from a file,
+ * because the command text and the process environment would then disagree; an equal value is no conflict.
+ * Throws RigError ENV_CONFLICT naming the key, the Component and the competing sources, never a value. */
+export function composeEnvironment(input: {
+  baseline: Readonly<Record<string, string>>;
+  publicEnv: Readonly<Record<string, string>>;
   files: readonly LoadedEnvFile[];
   guarded: readonly PublicInput[];
   component?: string;
-}): void {
+}): ComposedEnvironment {
+  const supplying = (key: string) =>
+    input.files.filter((file) => Object.hasOwn(file.values, key));
   for (const leaf of input.guarded) {
-    const winner = input.files
-      .filter((file) => Object.hasOwn(file.values, leaf.name))
-      .at(-1);
+    const winner = supplying(leaf.name).at(-1);
     if (winner && winner.values[leaf.name] !== leaf.value)
       throw new RigError(
         "ENV_CONFLICT",
@@ -87,19 +89,6 @@ export function assertGuardedInputs(input: {
         },
       );
   }
-}
-/** Composes one invocation's process environment: the controlled baseline, then public env, then each file in order.
- * Refuses files that change a value the invocation's commands were built from (`assertGuardedInputs`). */
-export function composeEnvironment(input: {
-  baseline: Readonly<Record<string, string>>;
-  publicEnv: Readonly<Record<string, string>>;
-  files: readonly LoadedEnvFile[];
-  guarded: readonly PublicInput[];
-  component?: string;
-}): ComposedEnvironment {
-  assertGuardedInputs(input);
-  const supplying = (key: string) =>
-    input.files.filter((file) => Object.hasOwn(file.values, key));
   const keys = new Set(input.files.flatMap((file) => Object.keys(file.values)));
   const overrides = [...keys]
     .sort()

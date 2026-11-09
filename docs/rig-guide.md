@@ -2938,12 +2938,13 @@ Git, otherwise the command fails as `ENV_FILE_TRACKED`: never commit a file
 that holds secrets. When Git is present but cannot answer, the command fails
 as `ENV_FILE_UNVERIFIED` rather than loading an unchecked file. A file other users can read still loads, with a warning in
 the Target log asking for `chmod 600`. `rig doctor` reads each env file a
-recorded Target's plan lists, as a start would, and fails `<target>/env-files`
-(`env-file-unusable`) for each one the next start would refuse, with these codes,
-`ENV_VALUE`, or `ENV_CONFLICT` (below) when the files of a Service, Tool, job or
-the shared build, combined in order, change a value its commands were built
-from. It names the file, who reads it and the refusal's hint, never a value. A running Target is judged so too: what runs keeps running, but its next
-start is refused. An absent optional file under `<RIG_ROOT>/env/` is no finding.
+recorded Target's plan lists, as it is now, and fails `<target>/env-files`
+(`env-file-unusable`) for each one Rig cannot use: refused with these codes, or
+with `ENV_VALUE` for a value Rig refuses. It names the file, who reads it and the
+refusal's hint, never a value, for a running Target too, whose processes keep
+running. It judges each file alone and as it is, not as a build may rewrite it,
+so it does not say whether a start will succeed. An absent optional file under
+`<RIG_ROOT>/env/` is no finding.
 
 When a file supplies a name that `environment` or a lower file also supplies,
 the Target log notes the name and the sources, never the values. One case is

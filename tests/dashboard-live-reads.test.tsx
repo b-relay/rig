@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
 import { basic, local } from "./support/dashboard-site";
 import { DaemonClient } from "../src/daemon/client";
 import type { RuntimeCommand } from "../src/daemon/protocol";
+import { MAX_NAME_LENGTH } from "../src/domain/names";
 import * as daemon from "../web/server/daemon";
 import { renderToStaticMarkup } from "react-dom/server";
 import { LiveRefresh } from "../web/components/live-refresh";
@@ -470,7 +471,7 @@ const MONITOR = {
 test.each([
   ["missing", {}],
   ["empty", { target: "" }],
-  ["overlong", { target: "x".repeat(64) }],
+  ["overlong", { target: "x".repeat(129) }],
   ["of the wrong type", { target: -1 }],
 ])(
   "a Target selector that is %s is refused before rigd is read",
@@ -510,6 +511,14 @@ test.each([
     reply.value!.series.filter((each) => each.series.scope === "component")
       .length,
   ).toBe(components);
+});
+
+test("a Preview whose name is as long as a name may be is charted", async () => {
+  const preview = "p".repeat(MAX_NAME_LENGTH);
+  monitored = () => ({ ...MONITOR, targets: [...MONITOR.targets, preview] });
+  expect(
+    await usage({ project: "probe", range: "1h", target: preview }),
+  ).toMatchObject({ ok: true });
 });
 
 // The corner of the page: a pulse decides whether the page is read again.

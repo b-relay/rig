@@ -3,7 +3,7 @@ import { homedir, userInfo } from "node:os";
 import type { ProxySettings } from "../config/proxy-schema";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { RigError } from "../domain/errors";
-import { proxyPaths } from "../domain/managed-proxy";
+import { proxyPaths, settingsDigest } from "../domain/managed-proxy";
 import {
   currentGeneration,
   pendingSettings,
@@ -133,8 +133,19 @@ export async function inspectManagedProxy(
   // One generation for the whole inspection, resolved once: its settings, routes and adapted JSON all come from it.
   const generation = await currentGeneration(root);
   checks.push(...(await generationChecks(root, paths, settings, generation)));
+  // Caddy starts from the generation's adapted JSON, and what it serves is compared with it: without it, neither holds,
+  // whether or not Caddy runs now.
+  const startup = generation?.damaged?.adapted;
+  if (startup)
+    checks.push({
+      name: "proxy-serving",
+      ok: false,
+      message: `${startup.message} Caddy is started from that file, so Rig cannot tell whether Caddy serves the current generation, and Caddy cannot be restarted from it.`,
+      reason: "proxy-serving-unknown",
+      hint: startup.hint,
+    });
   // What Caddy runs, not what the files say: after a crash between switching and activating they differ.
-  if (reachable) {
+  else if (reachable) {
     const loaded = await admin
       .config()
       .catch((error: unknown) =>
@@ -209,10 +220,18 @@ async function generationChecks(
         hint: "Run rigd install.",
       },
     ];
-  const pending = await pendingSettings(root, settings, generation.proxy).catch(
-    (error: unknown) =>
-      error instanceof RigError ? error : Promise.reject(error),
-  );
+  // Without its record, nothing says what settings the generation was accepted with. A record that holds only their digest
+  // (settings this Rig does not read) still says whether they are Host config's.
+  const pending =
+    generation.damaged?.metadata ??
+    (generation.proxy
+      ? await pendingSettings(root, settings, generation.proxy).catch(
+          (error: unknown) =>
+            error instanceof RigError ? error : Promise.reject(error),
+        )
+      : generation.settings === settingsDigest(settings)
+        ? undefined
+        : { fields: [], reason: "Not applied yet: run rig proxy reload." });
   checks.push(
     pending instanceof RigError
       ? {

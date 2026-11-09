@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { RigError } from "../domain/errors";
+import { RigError, errorMessage } from "../domain/errors";
+import { describeInvalidDocument } from "../domain/invalid-document";
 
 /** `<RIG_ROOT>/daemon/install.json`, written by `rigd install` and read by `rigd` itself at startup. */
 export const installationSchema = z.object({
@@ -44,29 +45,36 @@ export function installLockPath(root: string): string {
   return join(root, "daemon", "install.lock");
 }
 
-/** Undefined when rigd was never installed under this root; a record that cannot be read or parsed is a DAEMON_INSTALL_STATE error. */
+/** Undefined when rigd was never installed under this root; a record that cannot be read or parsed is a DAEMON_INSTALL_STATE
+ * error whose hint names the file, what is wrong with it, and the repair, which works whether or not rigd still runs: an
+ * install with no record adopts the rigd that serves, or starts one. */
 export async function readInstallationRecord(
   root: string,
 ): Promise<InstallationRecord | undefined> {
-  let saved: unknown;
+  const path = installationPath(root);
+  const refused = (message: string, problem: string) =>
+    new RigError(
+      "DAEMON_INSTALL_STATE",
+      message,
+      `${path} ${problem}. Delete it, then run rigd install, which records the rigd that is running, or starts one when none is.`,
+      { path },
+    );
+  let text: string;
   try {
-    saved = JSON.parse(await readFile(installationPath(root), "utf8"));
+    text = await readFile(path, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw new RigError(
-      "DAEMON_INSTALL_STATE",
-      "The installation record is unreadable.",
-      `Inspect ${installationPath(root)}; with no rigd running, rigd install rewrites it.`,
-      { path: installationPath(root) },
+    throw refused(
+      `The installation record ${path} is unreadable.`,
+      `cannot be read (${errorMessage(error)})`,
     );
   }
-  const installation = installationSchema.safeParse(saved);
-  if (!installation.success)
-    throw new RigError(
-      "DAEMON_INSTALL_STATE",
-      "The installation record is invalid.",
-      `Inspect ${installationPath(root)}; with no rigd running, rigd install rewrites it.`,
-      { path: installationPath(root) },
+  try {
+    return installationSchema.parse(JSON.parse(text));
+  } catch (error) {
+    throw refused(
+      `The installation record ${path} is invalid.`,
+      describeInvalidDocument(error, "installation record"),
     );
-  return installation.data;
+  }
 }

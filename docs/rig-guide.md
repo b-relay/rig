@@ -261,7 +261,12 @@ so package upgrades do not strand it. The job restarts only after a crash, with
 a ten second throttle, so a broken install does not spin. `rigd status` and
 `rig doctor` name the recorded program when it no longer exists; run
 `rigd install` again to record the current one. A failed `launchctl bootstrap`
-reports launchctl's reason and leaves nothing installed.
+reports launchctl's reason and leaves nothing installed. An installation
+record (`<RIG_ROOT>/daemon/install.json`) that cannot be read or is not one
+makes `rigd install` and `rigd uninstall` refuse with `DAEMON_INSTALL_STATE`;
+`rigd status` warns and `rig doctor` fails `daemon-installation`, each naming
+the file. Delete it, then run `rigd install`: with rigd still serving it
+records that rigd again, and with none it installs one.
 
 The daemon's loopback `/health` endpoint answers `HEAD` as well as `GET`, so
 a probe that only wants the status line gets 200 without a body.
@@ -401,7 +406,13 @@ or `adapted.json`, `settings-rejected.json`, `process.json` or
 `bin/state.json`) that cannot be read or is not what Rig wrote is refused as
 `PROXY_STATE_CORRUPT`, naming the file and its repair: delete it, then run the
 `rig proxy reload` or `rigd install` the hint names. An answer from Caddy's admin socket
-that is not a configuration is `PROXY_PROTOCOL`.
+that is not a configuration is `PROXY_PROTOCOL`. In the current generation,
+`rig doctor` reports a `generation.json` that is missing or damaged as
+`proxy-settings` failing with `proxy-settings-unknown`, since nothing then says
+which settings Caddy accepted, and an `adapted.json` that is missing or
+damaged, which Caddy is started from, as `proxy-serving` failing with
+`proxy-serving-unknown`, whether or not Caddy runs. `rig proxy reload` builds a
+complete generation again.
 
 Your own hostnames, outside any Rig Project, go under `proxy.routes` in Host
 config, each sent to a service on this Mac:
@@ -465,7 +476,12 @@ reach, so Rig withdraws it: when rigd starts, before a deploy, `up` or
 Only a route no recorded Target owns is withdrawn, and never two owners are
 published. Until then `rig doctor` names it (`route-owners`) with its
 hostnames, and a deploy that meets it is refused with `ROUTE_CONFLICT` saying
-so. With an external Caddy whose route file (`providers.caddy.caddyfile`) lies
+so. The other way round, a Target recorded running whose block is gone from the
+route file, or serves fewer of its hostnames, fails its `<target>/hostnames`
+check with `route-missing`: Caddy serves hostnames from that file, so they are
+not served, or not after its next reload. `rig up` of that Target publishes the
+block again without restarting its Services. A stopped Target is not judged.
+With an external Caddy whose route file (`providers.caddy.caddyfile`) lies
 outside `RIG_ROOT`, another Rig root may own the blocks there, so Rig
 withdraws them only when you run `rig proxy reload`, which then does nothing
 else.
@@ -1558,7 +1574,10 @@ An unreadable `<RIG_ROOT>/runtime/state.json` (invalid JSON, a wrong version,
 or a malformed record) never makes `rigd` exit: startup records the failure in
 the daemon diagnostic log and keeps serving, `rig doctor` reports
 `runtime-state` as failed with the file path and the first problem, and every
-other command fails with that same message. Every state write is flushed to
+other command fails with that same message. Doctor then runs the Host checks
+alone, in a Project or with `--project`, and its note says Project checks were
+skipped because runtime state could not be read; the Project's config is not
+reported invalid. Every state write is flushed to
 disk before it replaces the file, and the version it replaces stays beside it
 as `state.json.bak`; the failure message points at that copy when it exists.
 `rigd uninstall` refuses until the file is repaired, because it cannot verify
@@ -2918,7 +2937,14 @@ checked-out revision. An env file inside a Git repository must be ignored by
 Git, otherwise the command fails as `ENV_FILE_TRACKED`: never commit a file
 that holds secrets. When Git is present but cannot answer, the command fails
 as `ENV_FILE_UNVERIFIED` rather than loading an unchecked file. A file other users can read still loads, with a warning in
-the Target log asking for `chmod 600`.
+the Target log asking for `chmod 600`. `rig doctor` reads each env file a
+recorded Target's plan lists, as it is now, and fails `<target>/env-files`
+(`env-file-unusable`) for each one Rig cannot use: refused with these codes, or
+with `ENV_VALUE` for a value Rig refuses. It names the file, who reads it and the
+refusal's hint, never a value, for a running Target too, whose processes keep
+running. It judges each file alone and as it is, not as a build may rewrite it,
+so it does not say whether a start will succeed. An absent optional file under
+`<RIG_ROOT>/env/` is no finding.
 
 When a file supplies a name that `environment` or a lower file also supplies,
 the Target log notes the name and the sources, never the values. One case is

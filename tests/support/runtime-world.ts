@@ -1,4 +1,8 @@
-import { mkdir, mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import {
+  countOwnedRoutes,
+  ownedRouteBlocks,
+} from "../../src/domain/proxy-publication";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -104,11 +108,14 @@ export async function runtimeWorld(options: RuntimeWorldOptions) {
     async inspectHost() {
       return [];
     },
+    // The route file `unreloadedCaddy` writes; a world over another router holds none.
     async inspectProxy() {
+      const proxyFile = join(root, "Caddyfile");
+      const text = await readFile(proxyFile, "utf8").catch(() => "");
       return {
-        proxyFile: join(root, "Caddyfile"),
-        routes: 0,
-        blocks: [],
+        proxyFile,
+        routes: countOwnedRoutes(text),
+        blocks: ownedRouteBlocks(text),
         state: "unpublished" as const,
       };
     },

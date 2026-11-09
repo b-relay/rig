@@ -12,7 +12,11 @@ import type { ConfigDocument, ProjectConfig } from "../config/types";
 import type { OrphanedTool, RuntimeDependencies } from "./contracts";
 import { join } from "node:path";
 import { RigError } from "../domain/errors";
-import { observeTargets, OBSERVATION_EXPIRED } from "./status";
+import {
+  observeTargets,
+  OBSERVATION_EXPIRED,
+  type ObservationEffects,
+} from "./status";
 import { pendingRenameAdvice } from "./rename";
 import type { ComponentReport } from "../domain/project-status";
 import type { DoctorCheck } from "../daemon/offline-doctor";
@@ -28,7 +32,10 @@ import {
 import { recordedForms, withPlanDefaults } from "../config/plan-defaults";
 import { replannedPolicy } from "./plan-drift";
 import { plannedSites } from "./ports";
-import { routeOwnerToken } from "../domain/proxy-publication";
+import {
+  routeOwnerToken,
+  type ProxyPublication,
+} from "../domain/proxy-publication";
 import { transitionInProgress } from "./project-status";
 import { rigCommand } from "../domain/rig-command";
 import {
@@ -45,43 +52,42 @@ export interface DoctorReport {
   /** Why Project checks are absent, so a clean Host report is not read as a clean Project. */
   note?: string;
 }
-/** Host checks and ownership evidence remain available when Project discovery fails;
- * the report says why Project checks were skipped instead of implying they passed. */
+/** Why a doctor report holds no Project checks: none is selected (`selection`, saying why), the Project's config could not be
+ * discovered (`discovery`, with the failure), or runtime state, which records every registration, could not be read
+ * (`state`; the runtime-state check reports it). */
+export type ProjectSkip =
+  | { stage: "selection"; why: string }
+  | { stage: "discovery"; failure: unknown }
+  | { stage: "state" };
+/** Host checks and ownership evidence remain available when no Project can be checked; the report says why Project checks
+ * were skipped instead of implying they passed. Only a discovery failure is a finding about the Project's config. */
 export async function hostDoctor(
   deps: RuntimeDependencies,
-  discoveryFailure?: unknown,
+  skip: ProjectSkip,
 ): Promise<DoctorReport> {
   const checks = await inspectRuntimeHost(deps);
-  const skipped = (why: string) => `Project checks were skipped: ${why}`;
-  let note = skipped("no Project selected.");
-  if (
-    discoveryFailure instanceof RigError &&
-    discoveryFailure.code === "PROJECT_MISSING"
-  )
-    note = skipped(`${discoveryFailure.message} ${discoveryFailure.hint}`);
-  else if (
-    discoveryFailure !== undefined &&
-    !(
-      discoveryFailure instanceof ConfigError &&
-      discoveryFailure.code === "missing_config"
-    )
-  ) {
-    note = skipped("the Project config could not be read.");
-    checks.push({
-      name: "project-config",
-      ok: false,
-      message:
-        discoveryFailure instanceof ConfigError
-          ? discoveryFailure.message
-          : "Project discovery failed.",
-      reason: "config-invalid",
-      hint:
-        discoveryFailure instanceof ConfigError
-          ? discoveryFailure.hint
-          : "Inspect the Project directory.",
-    });
-  }
-  return { ok: checks.every((check) => check.ok), checks, note };
+  const report = (why: string): DoctorReport => ({
+    ok: checks.every((check) => check.ok),
+    checks,
+    note: `Project checks were skipped: ${why}`,
+  });
+  if (skip.stage === "selection") return report(skip.why);
+  if (skip.stage === "state")
+    return report(
+      "runtime state could not be read, so which Projects are registered is unknown. The runtime-state check says how to repair it.",
+    );
+  const { failure } = skip;
+  if (failure instanceof ConfigError && failure.code === "missing_config")
+    return report("no Project selected.");
+  const known = failure instanceof ConfigError || failure instanceof RigError;
+  checks.push({
+    name: "project-config",
+    ok: false,
+    message: known ? failure.message : "Project discovery failed.",
+    reason: "config-invalid",
+    hint: known ? failure.hint : "Inspect the Project directory.",
+  });
+  return report("the Project config could not be read.");
 }
 
 async function inspectRuntimeHost(
@@ -363,6 +369,8 @@ export async function doctor(
     deps.documents,
   );
   checks.push(projectConfigCheck(project, repository));
+  // Read after the Targets, each recorded before it publishes a route; unreadable, the Host checks report it.
+  const publication = await deps.inspectProxy().catch(() => undefined);
   if (project.renaming)
     checks.push({
       name: "project-rename",
@@ -431,18 +439,17 @@ export async function doctor(
         ok: true,
         message: `The deployed revision's rig.yaml names '${source.formerName}', this Project's name before it was renamed '${project.name}'; it runs as '${project.name}'. Commit rig.yaml with the new name, and the next deploy records it.`,
       });
-    const sites = plannedSites(target.plan);
-    if (sites.length)
-      checks.push({
-        name: `${target.name}/hostnames`,
-        ok: true,
-        message: `Recorded hostnames: ${sites
-          .map(
-            (site) =>
-              `${site.hostname} (${[...new Set(site.routes.map((route) => route.service))].join(", ")})`,
-          )
-          .join(", ")}.`,
-      });
+    let hostnames = hostnamesCheck(target, publication);
+    // The record was read before the route file, and a change of the Target (a restart that replaces its hostnames, say)
+    // may have begun since: a missing route is judged only while the record is still the one it was compared with.
+    if (hostnames?.ok === false && !(await stillRecorded(target, deps.store)))
+      hostnames = hostnamesCheck(target, undefined);
+    if (hostnames) checks.push(hostnames);
+    // A Preview awaiting destruction starts nothing again.
+    const envFiles = target.destructionPending
+      ? undefined
+      : await envFilesCheck(target, deps.observations);
+    if (envFiles) checks.push(envFiles);
     if (target.kind === "stable" && repository.outcome === "usable")
       checks.push(
         productionBranchCheck(
@@ -472,6 +479,105 @@ export async function doctor(
     ok: checks.every((c) => c.ok),
     checks,
     project: project.name,
+  };
+}
+/** A Target's recorded hostnames, and whether the route file still serves them. A Target recorded running has published its
+ * route, since it is recorded so only once a start has, so one whose route block is gone, or lacks one of them, fails: Caddy
+ * serves them from that file, now or from its next reload. One stopped, in a transition or awaiting destruction is not
+ * judged, nor any when the route file cannot be read. Undefined for a Target with no hostname. */
+function hostnamesCheck(
+  target: TargetRecord,
+  publication: ProxyPublication | undefined,
+): DoctorCheck | undefined {
+  const sites = plannedSites(target.plan);
+  if (!sites.length) return undefined;
+  const name = `${target.name}/hostnames`;
+  const recorded = `Recorded hostnames: ${sites
+    .map(
+      (site) =>
+        `${site.hostname} (${[...new Set(site.routes.map((route) => route.service))].join(", ")})`,
+    )
+    .join(", ")}.`;
+  const block = publication?.blocks.find(
+    (owned) => owned.token === routeOwnerToken(target.id),
+  );
+  const missing = publication
+    ? (expectedRoute(target) ?? []).filter(
+        (hostname) => !block?.hostnames.includes(hostname),
+      )
+    : [];
+  if (!missing.length) return { name, ok: true, message: recorded };
+  const file = publication!.proxyFile;
+  return {
+    name,
+    ok: false,
+    message: `${recorded} ${
+      block
+        ? `The route of ${target.name} in ${file} does not serve ${missing.join(", ")}`
+        : `${file} holds no route for ${target.name}`
+    }, though it is recorded running: Caddy serves its hostnames from that file, so ${missing.length === 1 ? "that one is" : "those are"} not served, or not after Caddy's next reload.`,
+    reason: "route-missing",
+    hint: `Run ${rigCommand("up", { target })} to publish its route again; its running Services keep running.`,
+  };
+}
+/** The hostnames `target`'s route block must serve: its planned ones while it is recorded running and in no transition;
+ * undefined when its route is not judged. */
+function expectedRoute(
+  target: Pick<
+    TargetRecord,
+    | "desired"
+    | "recovery"
+    | "deploymentIncomplete"
+    | "destructionPending"
+    | "plan"
+  >,
+): string[] | undefined {
+  if (
+    target.desired !== "running" ||
+    target.recovery ||
+    target.deploymentIncomplete ||
+    target.destructionPending
+  )
+    return undefined;
+  return plannedSites(target.plan).map((site) => site.hostname);
+}
+/** Whether state still records for `target` the route it was judged by; false when that changed, the Target is gone, or
+ * state cannot be read. A write of anything else, such as when it was updated, changes nothing here. */
+async function stillRecorded(
+  target: TargetRecord,
+  store: RuntimeDependencies["store"],
+): Promise<boolean> {
+  const live = await store.read().then(
+    (state) => state.targets.find((each) => each.id === target.id),
+    () => undefined,
+  );
+  return (
+    live !== undefined &&
+    isDeepStrictEqual(expectedRoute(live), expectedRoute(target))
+  );
+}
+/** A failing `<target>/env-files` check when env files `target`'s plan lists cannot be used as they are now: missing,
+ * unreadable, unparsable, holding a value Rig refuses, or tracked by Git. Each is named with who reads it and Rig's refusal.
+ * It does not predict a start: a build may still write a file before it is read. Undefined when every one is usable, or
+ * when the observations check none. */
+async function envFilesCheck(
+  target: TargetRecord,
+  observations: Pick<ObservationEffects, "unusableEnvFiles">,
+): Promise<DoctorCheck | undefined> {
+  const unusable = (await observations.unusableEnvFiles?.(target)) ?? [];
+  if (!unusable.length) return undefined;
+  return {
+    name: `${target.name}/env-files`,
+    ok: false,
+    message: [
+      ...unusable.map(
+        ({ refusal, readers }) =>
+          `${refusal.message} Read by ${readers.join(", ")}.`,
+      ),
+      `Rig cannot use ${unusable.length === 1 ? "it as it is" : "them as they are"} now; what already runs keeps running.`,
+    ].join(" "),
+    reason: "env-file-unusable",
+    hint: [...new Set(unusable.map(({ refusal }) => refusal.hint))].join(" "),
   };
 }
 /** A recorded Target whose role the checkout's rig.yaml leaves off, such as the working Target of a Project registered

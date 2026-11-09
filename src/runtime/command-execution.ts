@@ -36,7 +36,7 @@ import {
   listProjects,
   prepareUninstall,
   proxyReport,
-  unregisteredDoctor,
+  hostOnlyDoctor,
 } from "./host-commands";
 import {
   activityScopeError,
@@ -182,8 +182,8 @@ export function createCommandRunner(capabilities: {
       if (command.action === "init") return await initProject(command, context);
       if (command.action === "forget")
         return await forgetCommand(command, context);
-      if (command.action === "doctor" && !command.project) {
-        const report = await unregisteredDoctor(command, deps);
+      if (command.action === "doctor") {
+        const report = await hostOnlyDoctor(command, deps);
         if (report) return report;
       }
       if (command.action === "status") return await status(command);

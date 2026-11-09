@@ -12,6 +12,7 @@ import type {
   PlanComponent,
 } from "../config/types";
 import type { TargetRecord } from "../domain/runtime";
+import type { RigError } from "../domain/errors";
 import type { HealthCheck, ProcessObservation } from "../providers/contracts";
 import type { HealthResults } from "./health-monitor";
 import { plannedSites, serviceHostnames } from "./ports";
@@ -73,6 +74,20 @@ export interface ObservationEffects {
     component: ManagedComponent,
     signal: AbortSignal,
   ): Promise<number[]>;
+  /** The env files `target`'s plan lists that Rig, reading each as it is now, cannot use, each with Rig's refusal. Reads
+   * them and changes nothing; no value leaves it. Says nothing of a file a build writes before it is read, or of how the
+   * files combine. Absent: none is checked. */
+  unusableEnvFiles?(target: TargetRecord): Promise<UnusableEnvFile[]>;
+}
+/** An env file that, as it is now, Rig cannot use: missing, unreadable, unparsable, holding a value Rig refuses, or inside
+ * the checkout without Git ignoring it. */
+export interface UnusableEnvFile {
+  readonly path: string;
+  /** Who reads it, as an operator names them: "the whole Project", "Service web", "job nightly". */
+  readonly readers: readonly string[];
+  /** Rig's refusal of the file (ENV_FILE_MISSING, ENV_FILE, ENV_VALUE, ENV_FILE_TRACKED, ENV_FILE_UNVERIFIED), which names
+   * the file, and for ENV_VALUE its line and name, never a value. */
+  readonly refusal: RigError;
 }
 /** Read-only observations share one deadline; unresponsive adapters cannot extend the request budget.
  * The caller chooses the budget and the deadline scheduler, so a test can expire an observation deterministically.

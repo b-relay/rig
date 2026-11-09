@@ -2,6 +2,7 @@ import { access, constants, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readHostConfig } from "../config";
 import { ConfigError } from "../config/errors";
+import { RigError } from "../domain/errors";
 import type { DoctorCheck } from "../daemon/offline-doctor";
 import { inspectHostProxy, proxyCheck } from "./proxy-publication";
 import { readInstallationRecord } from "../daemon/installation";
@@ -125,13 +126,23 @@ export async function inspectHost(root: string): Promise<DoctorCheck[]> {
   return checks;
 }
 /** An installed daemon whose recorded program is gone (for example after a package upgrade) can never start; naming it beats
- * "unreachable". Likewise a recorded bun that is gone makes every Tool whose bin is a source file fail to install. */
+ * "unreachable". Likewise a recorded bun that is gone makes every Tool whose bin is a source file fail to install. A record
+ * that cannot be read fails `daemon-installation`: rigd install and uninstall refuse it until it is repaired. */
 async function inspectDaemonExecutable(root: string): Promise<DoctorCheck[]> {
   let installation;
   try {
     installation = await readInstallationRecord(root);
-  } catch {
-    return [];
+  } catch (error) {
+    if (!(error instanceof RigError)) throw error;
+    return [
+      {
+        name: "daemon-installation",
+        ok: false,
+        message: `${error.message} rigd install and rigd uninstall refuse to run until it is repaired.`,
+        reason: "installation-corrupt",
+        hint: error.hint,
+      },
+    ];
   }
   const checks: DoctorCheck[] = [];
   const executable = installation?.command?.[0];

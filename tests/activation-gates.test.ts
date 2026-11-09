@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
+import { routeOwnerToken } from "../src/domain/proxy-publication";
 import type { RouteRequest, Router } from "../src/providers/caddy-router";
 import { parseOwnedSites, renderOwnedBlock } from "../src/providers/route-file";
 import type { ListenerEvidence } from "../src/providers/listener-inspection";
@@ -163,8 +165,21 @@ async function fixture(project: Record<string, unknown> = PROJECT) {
       },
     },
     router,
-    dependencies: ({ store }) => ({
+    dependencies: ({ root, store }) => ({
       supervision: workReport(board, FAILURE_MONITOR),
+      // The route file as this router holds it.
+      async inspectProxy() {
+        const blocks = [...published.values()].map((route) => ({
+          token: routeOwnerToken(route.key),
+          hostnames: route.sites.map((site) => site.hostname),
+        }));
+        return {
+          proxyFile: join(root, "Caddyfile"),
+          routes: blocks.length,
+          blocks,
+          state: "unpublished" as const,
+        };
+      },
       store: {
         read: () =>
           stateFailure.read ? Promise.reject(stateFailure.read) : store.read(),

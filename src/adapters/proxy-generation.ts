@@ -4,7 +4,9 @@ import {
   proxySettingsSchema,
   type ProxySettings,
 } from "../config/proxy-schema";
-import { isRecord, type Fields } from "../config/record";
+import type { z } from "zod";
+import { caddyConfigSchema } from "../domain/caddy-config";
+import { RigError } from "../domain/errors";
 import {
   CADDY_IGNORED_FIELDS,
   generationFiles,
@@ -15,6 +17,7 @@ import {
   type PublishedDashboard,
 } from "../domain/managed-proxy";
 import {
+  generationMetadataSchema,
   readProxyRecord,
   rejectedSettingsSchema,
 } from "../providers/proxy-records";
@@ -30,14 +33,26 @@ export interface PublishedGeneration {
   /** The proxy settings it was accepted with. A generation without them (none was ever released) is no last-good: what it
    * serves is described as before the first generation. */
   readonly proxy?: ProxySettings;
+  /** The digest (`settingsDigest`) of the settings it was accepted with, also when this Rig cannot read them; absent with its
+   * record. */
+  readonly settings?: string;
   /** The owner's `proxy.routes` it serves, and the dashboard's route. */
   readonly customRoutes: readonly HostRoute[];
   /** The dashboard's route it serves, as rigd asked for it; null for none. Absent from an older rigd's generations. */
   readonly dashboard?: PublishedDashboard | null;
-  /** Its adapted JSON: what a Caddy serving it reports at GET /config/; absent when unreadable. */
+  /** Its adapted JSON: what a Caddy serving it reports at GET /config/, and what Caddy starts from; absent when damaged. */
   readonly adapted?: unknown;
+  /** Why its record (`metadata`, which says what settings it was accepted with) or its adapted JSON (`adapted`) cannot be
+   * used: PROXY_STATE_CORRUPT naming the file, what is wrong with it, missing included, and its repair. Absent when both can.
+   * The evidence the damaged file held is absent too. */
+  readonly damaged?: {
+    readonly metadata?: RigError;
+    readonly adapted?: RigError;
+  };
 }
-/** The generation `current` names now, resolved once; undefined before the first. */
+/** The generation `current` names now, resolved once; undefined before the first. Its record and adapted JSON are read as
+ * Rig's Caddy reads them (`generationMetadataSchema`, `caddyConfigSchema`); one that is missing or damaged is no evidence,
+ * and `damaged` says why. */
 export async function currentGeneration(
   root: string,
 ): Promise<PublishedGeneration | undefined> {
@@ -47,42 +62,68 @@ export async function currentGeneration(
   const directory = target.startsWith("/")
     ? target
     : join(dirname(link), target);
+  const id = basename(directory);
   const files = generationFiles(directory);
-  // A record that is not an object reads as one that is not JSON: no evidence (#568 owns how doctor reports either).
-  const metadata = await readFile(files.metadata, "utf8")
-    .then((text): unknown => JSON.parse(text))
-    .then((record) => (isRecord(record) ? record : {}))
-    .catch((): Fields => ({}));
-  const proxy = proxySettingsSchema.safeParse(metadata.proxy);
-  const customRoutes = Array.isArray(metadata.customRoutes)
-    ? metadata.customRoutes.flatMap((entry: unknown) => {
-        const route = entry as Partial<HostRoute> | null;
-        return typeof route?.hostname === "string" &&
-          (typeof route.upstream === "string" || route.upstream === null)
-          ? [{ hostname: route.hostname, upstream: route.upstream }]
-          : [];
-      })
-    : [];
-  const dashboard = metadata.dashboard as Partial<PublishedDashboard> | null;
-  const adapted = await readFile(files.adapted, "utf8")
-    .then((text) => JSON.parse(text) as unknown)
-    .catch(() => undefined);
+  const metadata = await generationRecord(
+    files.metadata,
+    generationMetadataSchema,
+    `the record of Caddy generation ${id}`,
+  );
+  const adapted = await generationRecord(
+    files.adapted,
+    caddyConfigSchema,
+    `the configuration Caddy generation ${id} was validated as`,
+  );
+  const recorded = metadata instanceof RigError ? undefined : metadata;
+  const proxy = proxySettingsSchema.safeParse(recorded?.proxy);
+  const damaged = {
+    ...(metadata instanceof RigError ? { metadata } : {}),
+    ...(adapted instanceof RigError ? { adapted } : {}),
+  };
   return {
-    id: basename(directory),
+    id,
     routes: await readFile(files.routes, "utf8").catch(() => ""),
     wildcards: renderedWildcards(
       await readFile(files.main, "utf8").catch(() => ""),
     ),
-    ...(adapted !== undefined ? { adapted } : {}),
+    ...(adapted instanceof RigError ? {} : { adapted }),
     ...(proxy.success ? { proxy: proxy.data } : {}),
-    customRoutes,
-    ...(dashboard === null
-      ? { dashboard: null }
-      : typeof dashboard?.domain === "string" &&
-          (typeof dashboard.port === "number" || dashboard.port === null)
-        ? { dashboard: { domain: dashboard.domain, port: dashboard.port } }
-        : {}),
+    ...(recorded ? { settings: recorded.settings } : {}),
+    customRoutes: recorded?.customRoutes ?? [],
+    ...(recorded?.dashboard !== undefined
+      ? { dashboard: recorded.dashboard }
+      : {}),
+    ...(Object.keys(damaged).length ? { damaged } : {}),
   };
+}
+/** A generation file every generation Rig publishes holds, checked against `schema`; PROXY_STATE_CORRUPT when it is missing,
+ * unreadable or of the wrong shape, with the repair that builds a complete generation again. */
+async function generationRecord<T>(
+  path: string,
+  schema: z.ZodType<T>,
+  what: string,
+): Promise<T | RigError> {
+  const rebuild =
+    "run rig proxy reload: Rig builds a new generation from Host config.";
+  try {
+    return (
+      (await readProxyRecord(
+        path,
+        schema,
+        what,
+        `Delete it, then ${rebuild}`,
+      )) ??
+      new RigError(
+        "PROXY_STATE_CORRUPT",
+        `Rig cannot read ${what}.`,
+        `${path} is missing. To make the generation complete again, ${rebuild}`,
+        { path },
+      )
+    );
+  } catch (error) {
+    if (error instanceof RigError) return error;
+    throw error;
+  }
 }
 /** Host config's proxy section that Caddy does not serve: which of its parts differ from the accepted settings, and why,
  * when Rig refused them. */

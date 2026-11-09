@@ -323,6 +323,32 @@ test("doctor does not take a route a restart is replacing for a missing one: the
   });
 });
 
+test("a write that leaves a Target's route as it was, such as a new updatedAt, does not hide its missing route", async () => {
+  const w = await world(routed());
+  await w.command({ action: "up", project: "demo", target: "working" });
+  await writeFile(join(w.root, "Caddyfile"), "");
+  // Every read of the route file is followed by a write of the Target that changes only when it was updated.
+  const inspect = w.deps.inspectProxy;
+  let writes = 0;
+  w.deps.inspectProxy = async () => {
+    const publication = await inspect();
+    await w.store.update((state) => {
+      state.targets[0]!.updatedAt = new Date(
+        Date.UTC(2027, 0, ++writes),
+      ).toISOString();
+    });
+    return publication;
+  };
+  for (let run = 1; run <= 3; run++) {
+    expect(await w.check("working/hostnames")).toMatchObject({
+      ok: false,
+      reason: "route-missing",
+    });
+    // Doctor read the route file this run (the Host's route-owners check reads it too), and the record changed after.
+    expect(writes).toBeGreaterThanOrEqual(run);
+  }
+});
+
 test("doctor fails a running Target whose route block is gone from the route file, until rig up publishes it again without a restart", async () => {
   const w = await world(routed());
   await w.command({ action: "up", project: "demo", target: "working" });

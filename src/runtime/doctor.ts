@@ -498,19 +498,13 @@ function hostnamesCheck(
         `${site.hostname} (${[...new Set(site.routes.map((route) => route.service))].join(", ")})`,
     )
     .join(", ")}.`;
-  const judged =
-    publication !== undefined &&
-    target.desired === "running" &&
-    !target.recovery &&
-    !target.deploymentIncomplete &&
-    !target.destructionPending;
   const block = publication?.blocks.find(
     (owned) => owned.token === routeOwnerToken(target.id),
   );
-  const missing = judged
-    ? sites
-        .map((site) => site.hostname)
-        .filter((hostname) => !block?.hostnames.includes(hostname))
+  const missing = publication
+    ? (expectedRoute(target) ?? []).filter(
+        (hostname) => !block?.hostnames.includes(hostname),
+      )
     : [];
   if (!missing.length) return { name, ok: true, message: recorded };
   const file = publication!.proxyFile;
@@ -526,7 +520,29 @@ function hostnamesCheck(
     hint: `Run ${rigCommand("up", { target })} to publish its route again; its running Services keep running.`,
   };
 }
-/** Whether state still records `target` exactly as it was read; false when it changed, is gone, or cannot be read. */
+/** The hostnames `target`'s route block must serve: its planned ones while it is recorded running and in no transition;
+ * undefined when its route is not judged. */
+function expectedRoute(
+  target: Pick<
+    TargetRecord,
+    | "desired"
+    | "recovery"
+    | "deploymentIncomplete"
+    | "destructionPending"
+    | "plan"
+  >,
+): string[] | undefined {
+  if (
+    target.desired !== "running" ||
+    target.recovery ||
+    target.deploymentIncomplete ||
+    target.destructionPending
+  )
+    return undefined;
+  return plannedSites(target.plan).map((site) => site.hostname);
+}
+/** Whether state still records for `target` the route it was judged by; false when that changed, the Target is gone, or
+ * state cannot be read. A write of anything else, such as when it was updated, changes nothing here. */
 async function stillRecorded(
   target: TargetRecord,
   store: RuntimeDependencies["store"],
@@ -535,7 +551,10 @@ async function stillRecorded(
     (state) => state.targets.find((each) => each.id === target.id),
     () => undefined,
   );
-  return live !== undefined && isDeepStrictEqual(live, target);
+  return (
+    live !== undefined &&
+    isDeepStrictEqual(expectedRoute(live), expectedRoute(target))
+  );
 }
 /** A failing `<target>/env-files` check when a start of `target` would refuse env files its plan lists, each named with who
  * reads it and the refusal it would give; what already runs keeps running. Undefined when every one is usable, or when the
